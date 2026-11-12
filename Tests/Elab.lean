@@ -3662,7 +3662,10 @@ def selfhostProjShare : String :=
 def selfhostC (file : String) (flags : Array String := #[]) : IO (Option String) := do
   match ← selfhostCompiler with
   | .error e =>
-    if (e.splitOn "gmp.h").length > 1 then skip "no toolchain"; return none else throw (IO.userError e)
+    if (e.splitOn "gmp.h").length > 1 then
+      skip "no toolchain"
+      return none
+    else throw (IO.userError e)
   | .ok exe =>
     let dir ← IO.FS.createTempDir
     IO.FS.writeFile (dir / "input.wiz") file
@@ -4272,8 +4275,9 @@ def selfHostGroup : Group where
         -- (the prefixes of `sumW`'s parameter are locals, read once each)
         for flags in [#[], #["--rc"]] do
           if let some c ← selfhostC selfhostProjShare flags then
-            let fn := ((c.splitOn "V d_sumW(V p0) {").getD 1 "").takeWhile (· != '\n')
-            check ((fn.splitOn "fld(qp0_4, 1)").length == 2 && (fn.splitOn "fld(p0, 1)").length == 2)
+            let fn := (((c.splitOn "V d_sumW(V p0) {").getD 1 "").takeWhile (· != '\n')).toString
+            -- (`p0.2` read once, into `qp0_1`)
+            check ((fn.splitOn "fld(p0, 1)").length == 2 && (fn.splitOn "V qp0_1 = ").length == 2)
               s!"no shared prefixes ({flags}):\n{fn.take 2000}" },
     { name := "the self-hosted backend: phantom parameters are erased (21i)", run := fun _ =>
         selfhostCompileRun ("import Prelude\ninductive Box (w : Nat) where\n  | mk (n : Nat)\nstructure Pt (w : Nat) where\n  x : Nat\n  y : Nat\n" ++
