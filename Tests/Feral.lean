@@ -96,6 +96,39 @@ def firstError (src : String) : IO String := do
 
 def pre : String := "import FeralCore\nimport Feral\n"
 
+/-- Elaborate as the language server does (recording what hovers read). -/
+def frontendInfo (src : String) : IO (CommandState ZeroOneMany) := do
+  pure (runFrontend (R := ZeroOneMany) src { trustedModule := Tests.libModule, loader := ← loader, termInfo := true })
+
+/-- The character offset of the `k`th occurrence of `needle` in `src`, plus `delta`. -/
+def offOf (src needle : String) (delta : Nat := 0) (k : Nat := 0) : Nat :=
+  ((src.splitOn needle).take (k + 1)).foldl (· + ·.length) 0 + needle.length * k + delta
+
+/-- The text of `src` in a range. -/
+def textAt (src : String) (i : SourceInfo) : String :=
+  String.ofList ((src.toList.drop i.start).take (i.stop - i.start))
+
+/-- What a hover at `off` shows: the type, and the source text it is about. -/
+def hoverText (s : CommandState ZeroOneMany) (src : String) (off : Nat) : String :=
+  match Query.identAt s off with
+  | some (.ident i _ _ names ty) => s!"{textAt src i} : {ty.pretty names (some s.globals)}"
+  | _ => "none"
+
+/-- Every identifier the info tree has inside the `feral` block (for failure messages). -/
+def identsIn (s : CommandState ZeroOneMany) (src : String) : String :=
+  let from_ := offOf src "\nferal\n"
+  "\n".intercalate (s.infos.toList.filterMap fun
+    | .ident i n _ names ty => if i.start ≥ from_ && i.start < offOf src "\nend\n" then
+        some s!"{i.start}-{i.stop} `{textAt src i}` {n} : {ty.pretty names (some s.globals)}" else none
+    | _ => none)
+
+/-- A program for the position tests (hovers, go to definition). -/
+def posSrc : String := pre ++ "feral\n  fn double (n : U64) : U64 := n + n\n" ++
+  "  fn bump {'a} (y : &'a mut U64) : Unit := { *y := *y + 1 }\n" ++
+  "  fn f (x : U64) : U64 := {\n    let mut v := Vec.new;\n    let r := &mut v;\n    r.push x;\n" ++
+  "    let mut a := x;\n    bump (&mut a);\n    double (v.len) + a\n  }\nend\n" ++
+  "#eval Result.map U64.toNat (f (U64.lit 3))\n"
+
 def surfaceNames : List String :=
   ["01_swap", "02_push", "03_get_mut", "04_reverse", "05_bst", "06_count", "07_disjoint", "08_first_mut",
    "09_bsearch", "10_regions", "11_list", "12_pick"]
@@ -184,6 +217,45 @@ def group : Group where
         let u ← frontend un
         checkEq "[]" (toString (errorsOf u un))
         check ((infosOf u).any (has · "E0499")) "no verdict from the front end" },
+    { name := "positions inside a block: hovers on variables, calls, borrows and binders", run := fun _ => do
+        let s ← frontendInfo posSrc
+        checkEq "[]" (toString (errorsOf s posSrc))
+        checkEq "[.ok 6]" (toString (infosOf s))
+        let at_ (needle : String) (delta : Nat := 0) (k : Nat := 0) := hoverText s posSrc (offOf posSrc needle delta k)
+        let checkEq (want got : String) : IO Unit := check (want == got) s!"expected {want}\n      got {got}\n{identsIn s posSrc}"
+        let starts (want got : String) : IO Unit := check (got.startsWith want) s!"expected {want}…\n      got {got}\n{identsIn s posSrc}"
+        -- a variable (the second `n` of `n + n`), parameters, a `let`
+        checkEq "n : U64" (at_ "n + n" 4)
+        checkEq "n : U64" (at_ "(n : U64)" 1)
+        checkEq "x : U64" (at_ "push x" 5)
+        checkEq "a : U64" (at_ "let mut a" 8)
+        starts "y : Uniq ρa U64" (at_ "(y :" 1)
+        -- a call, the function it names, an operator, a method call
+        checkEq "double : U64 → Result U64" (at_ "double (v.len)" 1)
+        checkEq "double (v.len) : U64" (at_ "double (v.len)" 7)
+        checkEq "+ : U64 → U64 → Result U64" (at_ "n + n" 2)
+        checkEq "double (v.len) + a : U64" (at_ ") + a" 1)
+        -- a `&mut` argument (its handle) and a named borrow
+        starts "(&mut a) : Uniq ρ" (at_ "&mut a" 1)
+        starts "r : Uniq ρ" (at_ "let r" 4)
+        -- (a method call on a variable is one identifier: the receiver's handle shows)
+        starts "r.push : Uniq ρ" (at_ "r.push" 0) },
+    { name := "positions inside a block: go to definition, errors at the sub-expression", run := fun _ => do
+        let s ← frontendInfo posSrc
+        -- `double` in `f` goes to `fn double`, not to the whole block
+        match Query.definitionAt s (offOf posSrc "double (v.len)" 1) with
+        | some (n, i, m) =>
+          checkEq "double" (toString n)
+          checkEq "" m
+          check ((textAt posSrc i).startsWith "fn double (n : U64)") s!"jumps to {textAt posSrc i}"
+          check (!(textAt posSrc i).contains "fn f") s!"jumps to {textAt posSrc i}"
+        | none => throw (IO.userError "no definition for `double`")
+        -- the kernel's verdict on an unchecked lowering is at the expression it is about
+        -- (E0499_two_mut: `r2.push 2` gets the handle of a borrow of the token, line 13)
+        let src ← IO.FS.readFile "drafts/feral/rejected/surface/E0499_two_mut.wiz"
+        let un := src.replace "\nferal\n" "\n#unchecked feral\n"
+        let errs := errorsOf (← frontend un) un
+        check (errs.any fun e => !has e "generated source" && e.startsWith "13:5: ") (toString errs) },
     { name := "command macros: errors, info and generated source at a node of the input (Syntax.errorAt …)", run := fun _ => do
         let src := "import Prelude\nsyntax (name := three) \"three!\" ident ident ident : command\n" ++
           "def threeMacro : CommandMacro := fun stx => MacroM.pure (.cons (Syntax.errorAt (.cons 2 .nil) \"second\")\n" ++
