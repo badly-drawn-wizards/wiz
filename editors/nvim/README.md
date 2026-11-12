@@ -131,6 +131,7 @@ What the server offers, and Neovim's keys for it:
 
 | | |
 |---|---|
+| references (`grr`), rename (`grn`) | a global's uses in the open files and the package's modules; a local's in its declaration. Rename refuses the toolchain's library |
 | outline (`gO`), workspace symbols (`:lua vim.lsp.buf.workspace_symbol()`) | the file's declarations (fields and constructors as children); every declaration of the open files and their imports |
 | folding (`lsp.folding`) | commands, `by` blocks, `match`es, block comments |
 
