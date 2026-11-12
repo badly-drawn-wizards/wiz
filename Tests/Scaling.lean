@@ -164,6 +164,26 @@ def m : Nat := List.length (Netlist.simulate (Circuit.netlist \"c\" ctr) (Hdl.ma
 #eval m
 "
 
+/-- A RAM read every cycle for 50000 cycles, written in the first only: a disabled write is
+the memory itself (no extra function per cycle), so each read costs the number of enabled
+writes, and the run is linear (it was quadratic: artix-target, wiz-rv). -/
+def hdlMemScaleSrc : String := "import Hdl.Core
+def m4 : HwTy := HwTy.mem 4 8
+def ram : Circuit (HwTy.prod (HwTy.bits 1) (HwTy.bits 8)) (HwTy.bits 8) :=
+  Circuit.mk m4 (fun (a : BitVec 4) => BitVec.ofNat 8 0)
+    (fun s x => Hw.pair (Hw.memWrite s (Hw.fst x) (Hw.lit 4 5) (Hw.snd x)) (Hw.memRead s (Hw.lit 4 5)))
+def off (m : HwTy.El m4) (a : BitVec 4) (d : BitVec 8) : HwTy.El.memWrite m (BitVec.ofNat 1 0) a d = m := rfl
+def Rep.go : Nat → List (HwTy.El (HwTy.prod (HwTy.bits 1) (HwTy.bits 8))) → List (HwTy.El (HwTy.prod (HwTy.bits 1) (HwTy.bits 8)))
+  | .zero, acc => List.cons (BitVec.ofNat 1 1, BitVec.ofNat 8 42) acc
+  | .succ k, acc => Rep.go k (List.cons (BitVec.ofNat 1 0, BitVec.ofNat 8 7) acc)
+def last : List (HwTy.El (HwTy.bits 8)) → Nat
+  | .nil => 0
+  | .cons x .nil => BitVec.toNat x
+  | .cons _ xs => last xs
+def r : Nat := last (Circuit.run ram (Rep.go 50000 List.nil))
+#eval r
+"
+
 def group : Group where
   name := "scaling"
   exercise := "super-linear time and memory"
@@ -259,7 +279,11 @@ def group : Group where
     -- cycles (the old interpreter: about 5·10⁸ list steps), compared with the values;
     -- then `Circuit.run` and `Netlist.simulate` on a 200000-cycle trace.
     { name := "the HDL's netlist simulation is O(n log n) per cycle; long traces run", run := fun _ =>
-        within 120 1500 fun _ => Tests.Elab.okLibs hdlScaleSrc ["(.true, 3258)", "200000", "200000"] }]
+        within 120 1500 fun _ => Tests.Elab.okLibs hdlScaleSrc ["(.true, 3258)", "200000", "200000"] },
+    -- a disabled memory write is the memory itself at values (`off` by `rfl`), so a RAM's
+    -- value simulation is linear in cycles: 50000 cycles of reads after one write
+    { name := "the HDL's value simulation of a memory is linear in cycles (a disabled write adds nothing)", run := fun _ =>
+        within 120 1500 fun _ => Tests.Elab.okLibs hdlMemScaleSrc ["42"] }]
 
 
 /-! ### A probe (`tests --probe-checker [unbox] [rc]`): where building the self-hosted checker spends
