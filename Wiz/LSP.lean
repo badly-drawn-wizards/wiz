@@ -222,6 +222,17 @@ def expansionText (e : Syntax) : String :=
   let t := e.reprint
   if t.length > 600 then (t.take 597).toString ++ "…" else t
 
+/-- How a hover names the identifier at `off`: its name, except for a local a macro
+introduced at the range of other source (Feral's `v_26` for a call `double (v.len)`, at
+the call: Elab/ProcMacro.lean, `locateMarked`), which is named by that source when it
+is short and on one line. -/
+def identLabel (doc : Doc) (off : Nat) (n : Name) : String :=
+  match Query.identAt doc.state off with
+  | some (.ident i _ true _ _) =>
+    let src := String.ofList ((doc.text.toList.drop i.start).take (i.stop - i.start))
+    if src != n && !src.contains '\n' && src.length ≤ 60 && !src.isEmpty then src else n
+  | _ => n
+
 /-- The hover of a use of syntax or an `import` (`Query.syntaxAt`), as Markdown. -/
 def syntaxHover (srv : Server) (uri : String) (doc : Doc) (es : Array (Info ZeroOneMany)) : Option String := do
   let e ← es[0]?
@@ -230,6 +241,10 @@ def syntaxHover (srv : Server) (uri : String) (doc : Doc) (es : Array (Info Zero
   -- the syntax and its type (the expected type where it was checked), as Lean shows it
   let ty := st.infos.findSome? fun
     | .term r g _ => if r.start == e.info.start && r.stop == e.info.stop then some (g.target.pretty g.names (some st.globals)) else none
+    | _ => none
+  -- else an identifier there (not checked against a type: a function applied, say)
+  let ty := ty.orElse fun _ => st.infos.findSome? fun
+    | .ident r _ _ names t => if r.start == e.info.start && r.stop == e.info.stop then some (t.pretty names (some st.globals)) else none
     | _ => none
   for x in es do
     match x with
@@ -519,7 +534,7 @@ def handle (srv : Server) (msg : Json) : Server × Array Json := Id.run do
     | "textDocument/hover" =>
       let md? := match syntaxHover srv uri doc (Query.syntaxAt doc.state off) with
         | some md => some md
-        | none => (Query.hoverAt doc.state off).map fun (n, ty) => s!"```wiz\n{n} : {ty}\n```"
+        | none => (Query.hoverAt doc.state off).map fun (n, ty) => s!"```wiz\n{identLabel doc off n} : {ty}\n```"
       match md? with
       | some md => (srv, #[reply (Json.mkObj [("contents", Json.mkObj [("kind", "markdown"), ("value", md)])])])
       | none => (srv, #[reply Json.null])

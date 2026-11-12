@@ -289,7 +289,8 @@ where
     let s := if s.termInfo then { s with infos := s.infos ++ syntaxRefs s cmd } else s
     let s' := ((elabCommand cmd).run { s with pristine := false }).2
     let added := s'.globals.order.extract before s'.globals.order.size
-    { s' with declSites := added.foldl (fun m n => m.insert n (cmd.info, s.module)) s'.declSites,
+    -- (a command macro's located output may have placed them already: keep that)
+    { s' with declSites := added.foldl (fun m n => if m.contains n then m else m.insert n (cmd.info, s.module)) s'.declSites,
               declDocs := if added.isEmpty then s'.declDocs else declDocsOf chars cmd added s'.declDocs }
 
 end Wiz
