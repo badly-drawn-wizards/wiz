@@ -187,6 +187,75 @@ Not done: shifts by a signal (a barrel shifter needs a `NetOp`), signed comparis
 arithmetic shift, ASCII spellings of `≤ᵤ` …, `&&`/`||` on signals (they are `if`s whose
 other branch is a `Bool`).
 
+## H14 C1: traces, the common semantics (`lib/Trace.wiz`) ✅
+
+One semantics for everything that runs step by step (design:
+`/workspace/wiz-notes/cohesion-hardware.md`, 2.1). A trace is a function, `Trace A :=
+Nat → A` (equality is pointwise and computes; a ν-stream's is stuck), and a Mealy machine
+is a step `Mealy S I O := S → I → S × O`, run along an input trace by
+`Mealy.stateAt m s0 xs t` and `Mealy.outAt`. `Mealy.run` is the finite run on a list and
+`Mealy.run_take` says it is a prefix of the infinite one. Proof rules on the trace:
+`Mealy.invariant` (an inductive invariant under an environment assumption) and
+`Mealy.simulates`/`simulatesOut` (refinement by a representation map, one step as the
+premise). `Trace.tail`, `map`, `zip`, `cons`, `const`, `once`, `ofList`, `take`.
+
+A circuit is such a machine: `Circuit.mealy c` (its step at values),
+`Circuit.trace c xs : Trace (El o)`, `Circuit.stateAt`, `Circuit.obs` (state and input
+per cycle, what temporal formulas are about), and `Circuit.run_take`:
+`Circuit.run c (Trace.take n xs) = Trace.take n (Circuit.trace c xs)`, so what a
+simulation prints is what a theorem about the trace says. The temporal logic (H14 T)
+builds on these.
+
+## H14 C3: memories (`HwTy.mem`) ✅
+
+The toy CPU's finding C1 (no memories: a ROM as a chain of multiplexers, RAM as
+flip-flops). A memory is a code, `HwTy.mem aw dw` (2^aw words of dw bits), and at values
+a function `BitVec aw → BitVec dw`, so reasoning about it is pointwise. `Hw.memRead m a`
+reads a word (combinationally); `Hw.memWrite m we a d` is the memory with word `a`
+replaced by `d` when `we` is high (a disabled write is the memory itself, so a value
+simulation's read costs the number of enabled writes so far, not the number of cycles).
+A memory that is part of a circuit's state takes the
+writes of its next value at the clock edge; a read of the written value in the same
+cycle sees the write (the netlist adds the bypass). `Hw.const (HwTy.mem aw dw) f` is a
+ROM. Lemmas: `HwTy.El.memRead_write_miss` (another address: the old word),
+`memRead_write_hit`, `memRead_write_off`. A reset leaves the contents alone
+(`HwTy.El.resetToAt`, as block RAM does; `Circuit.stepEl_withReset` states it), a clock
+enable gates the writes.
+
+In the netlist a memory is a `NetMem` (name, widths, initial contents, its writes in
+order) read by `memRead k` nodes; the simulator keeps its contents in a trie. Verilog: an
+array with an `initial` block, reads `m[addr]`, the writes in one `always` block (a later
+write wins). yosys maps a memory whose read data (or address) goes through a register to
+iCE40 block RAM (`SB_RAM40_4K`): `examples/hdl-mem.wiz` (a 16×8 RAM with a registered read,
+a ROM; checked by Icarus and yosys in group `hdl` when they are on PATH). Small ROMs
+become LUTs, a 256-word one block RAM. For Xilinx 7-series (`synth_xilinx`) the same RAMs
+become RAMB18E1 or RAMB36E1 and `Hw.mul` a DSP48E1; a ROM of 4 Kbit or more is declared
+`(* rom_style = "block" *)`, without which synth_xilinx builds it of LUTs
+(`examples/hdl-arty.wiz`, below). What the netlist cannot express is listed in
+`Netlist.errors` and printed as `// error:` lines: a choice between two different
+memories, a memory in a port, a state memory replaced instead of written.
+
+## Xilinx 7-series pin constraints and the Arty A7 (`Hdl.Xdc`, `Hdl.Arty`)
+
+`lib/Hdl/Xdc.wiz` (`import Hdl.Xdc`) is `Pcf` for Xilinx: an `XBoard` is the clock's
+package pin and period (picoseconds), an I/O standard and a table of resources (`XPin.one
+port pin`, `XPin.bus port pins`, bit 0 first; `XPin.rename`, `XPin.take k`).
+`Xdc.emit n board` writes the XDC (`set_property -dict { PACKAGE_PIN … IOSTANDARD … }`
+per port bit, `create_clock` for `clk`) that Vivado and nextpnr-xilinx read; ports are
+looked up by name, so the table can list the whole board. `Xdc.check n board` lists the
+ports without a resource and those of another width.
+
+`lib/Hdl/Arty.wiz` (`import Hdl.Arty`) is the Digilent Arty A7 (Artix-7, CSG324): its pins
+from Digilent's master XDC (`clk` E3 at 100 MHz, `led` 4, `rgb` 12, `btn` 4, `sw` 4,
+`uart_rx` A9 and `uart_tx` D10 (FT2232 channel B), `ck_rst`, the Pmod headers `ja` … `jd`
+8 each; all LVCMOS33) as `Arty.board`, and its two devices, `Arty.Device.a35t`
+(xc7a35ticsg324-1L, the default) and `.a100t` (xc7a100tcsg324-1), with the part names
+Project X-Ray and nextpnr use. `examples/hdl-arty.wiz` (group `hdl`) checks the XDC and
+that synth_xilinx maps its RAMs, ROM and multiply to RAMB18E1, RAMB36E1 and DSP48E1. The
+flow from there to a bitstream (yosys, nextpnr-xilinx, fasm2frames, xc7frames2bit; the
+openXC7 toolchain from Nix) is a separate package, wiz-arty, as wiz-icestick-uart is for
+the iCEstick.
+
 ## Logic, heap predicates and Hoare triples ✅
 
 `lib/Logic.wiz` (`∧`, `∨`, `∃` with binder notation `∃ x : A, P`, `↔`, `¬`, ASCII
