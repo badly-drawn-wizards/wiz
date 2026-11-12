@@ -541,7 +541,7 @@ def piInfos : Term R → List (Name × BinderInfo × Term R)
   | .pi x bi _ A b _ => (x, bi, A) :: piInfos b
   | _ => []
 
-/-- A proof of a proposition that holds by computation: `Unit`, pairs of such, and stuck
+/-- A proof of a proposition that holds by computation: `Unit`, pairs and functions into such, and stuck
 equations `a = b` (which hold by `refl` when they arise from a match on a family with a
 concrete index, `SyntaxF .false`). -/
 partial def trivialProof (g : Globals R) (tys : Array (VTy R)) (ty : Val R) : Option (Val R) :=
@@ -551,6 +551,12 @@ partial def trivialProof (g : Globals R) (tys : Array (VTy R)) (ty : Val R) : Op
     let a ← trivialProof g tys A
     let b ← trivialProof g tys (Closure.inst g B a)
     pure (.pair a b)
+  -- (22m) a function: the index equation of a family whose index tail is a Π (a brand's,
+  -- a phantom's) has `(0 x : T.brand✝) → True` in it
+  | .pi x _ _ A B _ => do
+    let lvl := tys.size
+    let b ← trivialProof g (tys.push A) (Closure.inst g B (.var lvl))
+    pure (eval g ((List.range lvl).reverse.map Val.var) (.lam x (quote g (lvl + 1) b)))
   -- (13b) `refl` only when the two sides are convertible *here* (`g` is the elaborator's
   -- view, where a type with a private constructor of another module is opaque): the
   -- kernel compares by shape, so the comparison can't be left to it (`sameSides`)

@@ -451,7 +451,7 @@ def ottGroup : Group where
           "#reduce N.s N.z = N.s N.z\n" ++
           "#reduce fun (n m : N) => (V N n = V N m)\n" ++
           "#reduce fun (e : V N (.s .z) = V N (.s .z)) => (cast e (V.cons N.z V.nil : V N (.s .z)) : V N (.s .z))")
-          ["fun e => .s .z", "True", "fun n m => (0 e : (0 e : (0 e : True) × (0 e' : (0 e' : True) × ((0 x : Enum [z, s]) → cast (transp (fun y _ => (0 e'' : Unit = y) × ((0 x' : Desc Unit) → Unit = y)) (refl (Desc Unit × Unit)) e).1 (ecase x [Desc.ret (), Desc.rec ω () (Desc.ret ())]) = ecase x [Desc.ret (), Desc.rec ω () (Desc.ret ())])) × True) × ((0 x : N) → True)) × (0 e' : (0 e' : True) × ((0 x : Enum [nil, cons]) → cast (transp (fun y _ => (0 e'' : (N × Unit) = y) × ((0 x' : Desc (N × Unit)) → (N × Unit) = y)) (refl (Desc (N × Unit) × N × Unit)) e).1 (ecase x [Desc.ret (.z, ()), Desc.arg 0 N (fun n' => Desc.arg ω N (fun x' => Desc.rec ω (n', ()) (Desc.ret (.s n', ()))))]) = ecase x [Desc.ret (.z, ()), Desc.arg 0 N (fun n' => Desc.arg ω N (fun x' => Desc.rec ω (n', ()) (Desc.ret (.s n', ()))))])) × (0 e'' : n = m) × True",
+          ["fun e => .s .z", "True", "fun n m => (0 e : (0 e : (0 e : (0 e : N.brand✝ = N.brand✝) × ((0 x : N.brand✝) → True)) × (0 e' : (0 e' : True) × ((0 x : Enum [z, s]) → cast (transp (fun y _ => (0 e'' : ((0 phantom✝ : N.brand✝) → Unit) = y) × ((0 x' : Desc ((0 phantom✝ : N.brand✝) → Unit)) → ((0 phantom✝ : N.brand✝) → Unit) = y)) (refl (Desc ((0 phantom✝ : N.brand✝) → Unit) × ((0 phantom✝ : N.brand✝) → Unit))) e).1 (ecase x [Desc.ret (fun phantom✝ => ()), Desc.rec ω (fun phantom✝ => ()) (Desc.ret (fun phantom✝ => ()))]) = ecase x [Desc.ret (fun phantom✝ => ()), Desc.rec ω (fun phantom✝ => ()) (Desc.ret (fun phantom✝ => ()))])) × ((0 phantom✝ : N.brand✝) → True)) × ((0 x : N) → (0 e' : V.brand✝ = V.brand✝) × ((0 x' : V.brand✝) → True))) × (0 e' : (0 e' : True) × ((0 x : Enum [nil, cons]) → cast (transp (fun y _ => (0 e'' : (N × ((0 phantom✝ : V.brand✝) → Unit)) = y) × ((0 x' : Desc (N × ((0 phantom✝ : V.brand✝) → Unit))) → (N × ((0 phantom✝ : V.brand✝) → Unit)) = y)) (refl (Desc (N × ((0 phantom✝ : V.brand✝) → Unit)) × N × ((0 phantom✝ : V.brand✝) → Unit))) e).1 (ecase x [Desc.ret (.z, fun phantom✝ => ()), Desc.arg 0 N (fun n' => Desc.arg ω N (fun x' => Desc.rec ω (n', fun phantom✝ => ()) (Desc.ret (.s n', fun phantom✝ => ()))))]) = ecase x [Desc.ret (.z, fun phantom✝ => ()), Desc.arg 0 N (fun n' => Desc.arg ω N (fun x' => Desc.rec ω (n', fun phantom✝ => ()) (Desc.ret (.s n', fun phantom✝ => ()))))])) × (0 e'' : n = m) × ((0 phantom✝ : V.brand✝) → True)",
            "fun e => .cons .z .z .nil"] },
     { name := "type equality", run := fun _ =>
         ok "def t : Type = Type := refl Type" },
@@ -477,11 +477,11 @@ def ottGroup : Group where
         ok (tyOfDef ++ "inductive N where\n  | z\n  | s (n : N)\ndef h (x : N) : N := x\n" ++
           "#reduce TyOf h = (N → N)\n" ++
           "#reduce fun (e : TyOf h = (N → N)) (u : TyOf h) => (cast e u : N → N)")
-          ["(0 e : (0 e : True) × (0 e' : (0 e' : True) × ((0 x : Enum [z, s]) → cast (transp (fun y _ => (0 e'' : Unit = y) × ((0 x' : Desc Unit) → Unit = y)) (refl (Desc Unit × Unit)) e).1 (ecase x [Desc.ret (), Desc.rec ω () (Desc.ret ())]) = ecase x [Desc.ret (), Desc.rec ω () (Desc.ret ())])) × True) × ((0 x : N) → (0 e' : True) × (0 e'' : (0 e'' : True) × ((0 x' : Enum [z, s]) → cast (transp (fun y _ => (0 e''' : Unit = y) × ((0 x'' : Desc Unit) → Unit = y)) (refl (Desc Unit × Unit)) e').1 (ecase x' [Desc.ret (), Desc.rec ω () (Desc.ret ())]) = ecase x' [Desc.ret (), Desc.rec ω () (Desc.ret ())])) × True)", "fun e u x => u x"] },
+          ["(0 e : (0 e : (0 e : N.brand✝ = N.brand✝) × ((0 x : N.brand✝) → True)) × (0 e' : (0 e' : True) × ((0 x : Enum [z, s]) → cast (transp (fun y _ => (0 e'' : ((0 phantom✝ : N.brand✝) → Unit) = y) × ((0 x' : Desc ((0 phantom✝ : N.brand✝) → Unit)) → ((0 phantom✝ : N.brand✝) → Unit) = y)) (refl (Desc ((0 phantom✝ : N.brand✝) → Unit) × ((0 phantom✝ : N.brand✝) → Unit))) e).1 (ecase x [Desc.ret (fun phantom✝ => ()), Desc.rec ω (fun phantom✝ => ()) (Desc.ret (fun phantom✝ => ()))]) = ecase x [Desc.ret (fun phantom✝ => ()), Desc.rec ω (fun phantom✝ => ()) (Desc.ret (fun phantom✝ => ()))])) × ((0 phantom✝ : N.brand✝) → True)) × ((0 x : N) → (0 e' : (0 e' : N.brand✝ = N.brand✝) × ((0 x' : N.brand✝) → True)) × (0 e'' : (0 e'' : True) × ((0 x' : Enum [z, s]) → cast (transp (fun y _ => (0 e''' : ((0 phantom✝ : N.brand✝) → Unit) = y) × ((0 x'' : Desc ((0 phantom✝ : N.brand✝) → Unit)) → ((0 phantom✝ : N.brand✝) → Unit) = y)) (refl (Desc ((0 phantom✝ : N.brand✝) → Unit) × ((0 phantom✝ : N.brand✝) → Unit))) e').1 (ecase x' [Desc.ret (fun phantom✝ => ()), Desc.rec ω (fun phantom✝ => ()) (Desc.ret (fun phantom✝ => ()))]) = ecase x' [Desc.ret (fun phantom✝ => ()), Desc.rec ω (fun phantom✝ => ()) (Desc.ret (fun phantom✝ => ()))])) × ((0 phantom✝ : N.brand✝) → True))", "fun e u x => u x"] },
     { name := "a constructor's type carries its sort", run := fun _ =>
         ok (tyOfDef ++ "inductive Box (A : Type) where\n  | mk (a : A)\n" ++
           "#reduce TyOf (@Box.mk Unit) = (Unit → Box Unit)")
-          ["(0 e : True) × ((0 x : Unit) → (0 e' : True) × (0 e'' : (0 e'' : True) × ((0 x' : Enum [mk]) → cast (transp (fun y _ => (0 e''' : Unit = y) × ((0 x'' : Desc Unit) → Unit = y)) (refl (Desc Unit × Unit)) e').1 (ecase x' [Desc.arg ω Unit (fun a => Desc.ret ())]) = ecase x' [Desc.arg ω Unit (fun a => Desc.ret ())])) × True)"] },
+          ["(0 e : True) × ((0 x : Unit) → (0 e' : (0 e' : Box.brand✝ = Box.brand✝) × ((0 x' : Box.brand✝) → True)) × (0 e'' : (0 e'' : True) × ((0 x' : Enum [mk]) → cast (transp (fun y _ => (0 e''' : ((0 phantom✝ : Box.brand✝) → Unit) = y) × ((0 x'' : Desc ((0 phantom✝ : Box.brand✝) → Unit)) → ((0 phantom✝ : Box.brand✝) → Unit) = y)) (refl (Desc ((0 phantom✝ : Box.brand✝) → Unit) × ((0 phantom✝ : Box.brand✝) → Unit))) e').1 (ecase x' [Desc.arg ω Unit (fun a => Desc.ret (fun phantom✝ => ()))]) = ecase x' [Desc.arg ω Unit (fun a => Desc.ret (fun phantom✝ => ()))])) × ((0 phantom✝ : Box.brand✝) → True))"] },
     { name := "a match on several scrutinees whose types mention a variable", run := fun _ =>
         ok "def pick (A : Type) (x y : A) : A := match x, y with\n  | a, b => b" },
     { name := "equality of proofs is rejected", run := fun _ =>
@@ -6381,8 +6381,8 @@ def trustGroup : Group where
         -- the library's are listed too: words run natively, in a native representation
         okLib ("import Prelude\nimport Word\ndef idW (x : UIntN 8) : UIntN 8 := x\n#print axioms idW\n" ++
             "def w : UIntN 8 := UIntN.add (UIntN.ofNat 8 3) (UIntN.ofNat 8 4)\n#print axioms w\n")
-          ["'idW' depends on axioms: [native UIntN := UIntN.ofBits/UIntN.toBits, UIntN.seal✝]" ++ note,
-           "'w' depends on axioms: [native UIntN.ofNat := UIntN.ofNatNative, native UIntN := UIntN.ofBits/UIntN.toBits, UIntN.seal✝, " ++
+          ["'idW' depends on axioms: [native UIntN := UIntN.ofBits/UIntN.toBits]" ++ note,
+           "'w' depends on axioms: [native UIntN.ofNat := UIntN.ofNatNative, native UIntN := UIntN.ofBits/UIntN.toBits, " ++
              "native UIntN.add := UIntN.addNative, native UIntN.toNat := UIntN.toBits]" ++ note] },
     { name := "O2 in the self-hosted frontend", run := fun _ =>
         selfhostCheckFile (familyTF ++ "inductive Nat where\n  | zero\n  | succ (n : Nat)\n" ++
@@ -6774,7 +6774,7 @@ def descEqGroup : Group where
   cases := [
     { name := "List Nat = List Bool computes through the codes, and gives Nat = Bool", run := fun _ =>
         ok (descEqTypes ++ "#reduce L N = L B\n")
-          ["(0 e : True) × (0 e' : (0 e' : True) × ((0 x : Enum [nil, cons]) → cast (transp (fun y _ => (0 e'' : Unit = y) × ((0 x' : Desc Unit) → Unit = y)) (refl (Desc Unit × Unit)) e).1 (ecase x [Desc.ret (), Desc.arg ω N (fun x' => Desc.rec ω () (Desc.ret ()))]) = ecase x [Desc.ret (), Desc.arg ω B (fun x' => Desc.rec ω () (Desc.ret ()))])) × True"] },
+          ["(0 e : (0 e : L.brand✝ = L.brand✝) × ((0 x : L.brand✝) → True)) × (0 e' : (0 e' : True) × ((0 x : Enum [nil, cons]) → cast (transp (fun y _ => (0 e'' : ((0 phantom✝ : L.brand✝) → Unit) = y) × ((0 x' : Desc ((0 phantom✝ : L.brand✝) → Unit)) → ((0 phantom✝ : L.brand✝) → Unit) = y)) (refl (Desc ((0 phantom✝ : L.brand✝) → Unit) × ((0 phantom✝ : L.brand✝) → Unit))) e).1 (ecase x [Desc.ret (fun phantom✝ => ()), Desc.arg ω N (fun x' => Desc.rec ω (fun phantom✝ => ()) (Desc.ret (fun phantom✝ => ())))]) = ecase x [Desc.ret (fun phantom✝ => ()), Desc.arg ω B (fun x' => Desc.rec ω (fun phantom✝ => ()) (Desc.ret (fun phantom✝ => ())))])) × ((0 phantom✝ : L.brand✝) → True)"] },
     { name := "List Nat = List Bool is refutable (at the tag cons, Nat = Bool; at succ, rec against ret)", run := fun _ =>
         ok (descEqTypes ++ "def refute (e : L N = L B) : Empty := absurd (((e.2.1.2 'cons).1).2.1.2 's)\n") },
     { name := "List A = List C contains A = C (the cons field's equation)", run := fun _ =>
@@ -6908,7 +6908,8 @@ def phantomGroup : Group where
           "inductive N (w : Nat) where\n  | z\n  | s (n : N w)\n" ++
           "def N.add {i : Size} {w : Nat} : (N w)^i → N w → N w\n  | .z, m => m\n  | .s n, m => .s (N.add n m)\n" ++
           "#eval N.add (.s .z : N 3) (.s .z)\n#eval L.app (.cons 1 .nil) (.cons 2 .nil)")
-          [".s (.s .z)", ".cons 1 (.cons 2 .nil)"] },
+          -- (a copy of `Nat`, branded and with a phantom: a number, 22m)
+          ["2", ".cons 1 (.cons 2 .nil)"] },
     { name := "deriving still works", run := fun _ =>
         okDeriving ("import Deriving\ninductive Tagged (w : Nat) where\n  | none\n  | some (n : Nat)\n  deriving Repr, BEq, Inhabited\n" ++
           "#eval Repr.repr (Tagged.some 3 : Tagged 8)\n#eval BEq.beq (Tagged.some 3 : Tagged 8) (Tagged.some 3)\n" ++
@@ -6998,8 +6999,10 @@ def reprAll (src expected : String) (unbox : Bool := false) (libs : Bool := fals
 def r3Marker : String := "import Prelude
 structure S where
   val : Nat
-def toS (p : (val : Nat) × ((0 f : Enum [x]) → Unit)) : S := p
-def ofS (s : S) : (val : Nat) × ((0 f : Enum [x]) → Unit) := s
+def tyOf {ω A : Type} (0 a : A) : Type := A
+def Tl : Type := tyOf (S.mk 0).2
+def toS (p : (val : Nat) × Tl) : S := p
+def ofS (s : S) : (val : Nat) × Tl := s
 def main : Nat := (toS (5, fun _ => ())).val + 10 * (ofS (S.mk 7)).1
 "
 
@@ -7007,9 +7010,11 @@ def main : Nat := (toS (5, fun _ => ())).val + 10 * (ofS (S.mk 7)).1
 def r3PhantomTail : String := "import Prelude
 structure P (n : Nat) where
   val : Nat
-def tailOf (p : P 3) : (0 d : (0 x : Nat) × (x = 3)) → (0 f : Enum [q]) → Unit := p.2
-def useT (t : (0 d : (0 x : Nat) × (x = 3)) → (0 f : Enum [q]) → Unit) : Unit := t (3, rfl) 'q
-def keep (u : Unit) : Nat := 9
+def tyOf {ω A : Type} (0 a : A) : Type := A
+def R : Type := tyOf ((P.mk 0 : P 3).2 (3, rfl))
+def tailOf (p : P 3) : (0 d : (0 x : Nat) × (x = 3)) → R := p.2
+def useT (t : (0 d : (0 x : Nat) × (x = 3)) → R) : R := t (3, rfl)
+def keep {A : Type} (u : A) : Nat := 9
 def main : Nat := keep (useT (tailOf (P.mk 4)))
 "
 
@@ -7017,10 +7022,12 @@ def main : Nat := keep (useT (tailOf (P.mk 4)))
 def r3PhantomGeneric : String := "import Prelude
 structure P (n : Nat) where
   val : Nat
+def tyOf {ω A : Type} (0 a : A) : Type := A
+def R : Type := tyOf ((P.mk 0 : P 3).2 (3, rfl))
 def app0 {D A : Type} (0 d : D) (f : (0 _ : D) → A) : A := f d
-def tailU (p : P 3) : (0 f : Enum [q]) → Unit := app0 (D := (0 x : Nat) × (x = 3)) (3, rfl) p.2
-def keep (u : Unit) : Nat := 9
-def main : Nat := keep (tailU (P.mk 4) 'q)
+def tailU (p : P 3) : R := app0 (D := (0 x : Nat) × (x = 3)) (3, rfl) p.2
+def keep {A : Type} (u : A) : Nat := 9
+def main : Nat := keep (tailU (P.mk 4))
 "
 
 /-- Generic code over pairs, used at a structure: unification puts the structure's tail
@@ -7047,13 +7054,17 @@ def isT (q : (b : Bool) × T b) : Nat := match q.1 with
 def main : Nat := isT p + 10 * isT q
 "
 
-/-- A copy of `Nat`'s declaration is convertible to `Nat`. -/
+/-- A copy of `Nat`'s declaration is another type (22m), with `Nat`'s representation. -/
 def r3NatCopy : String := "import Prelude
 inductive MyNat where
   | zero
   | succ (n : MyNat)
-def ofNat (n : Nat) : MyNat := n
-def toNat (n : MyNat) : Nat := n
+def ofNat : Nat → MyNat
+  | .zero => .zero
+  | .succ n => .succ (ofNat n)
+def toNat : MyNat → Nat
+  | .zero => .zero
+  | .succ n => .succ (toNat n)
 def count : MyNat → Nat
   | .zero => 0
   | .succ n => count n + 1
@@ -7089,7 +7100,7 @@ def main : Nat := keep (A := 0 = 0) (B := 1 = 1) (rfl, rfl)
 its shape written by hand: values converted back and forth, read through the structure's
 projections and through the raw ones. Returns the program and the value of `main`. -/
 def r3RoundTrips : String × Nat := Id.run do
-  let mut src := "import Prelude\ndef lsum : List Nat → Nat\n  | .nil => 0\n  | .cons x xs => x + lsum xs\n"
+  let mut src := "import Prelude\ndef tyOf {ω A : Type} (0 a : A) : Type := A\ndef lsum : List Nat → Nat\n  | .nil => 0\n  | .cons x xs => x + lsum xs\n"
   let mut total := 0
   let mut terms : List String := []
   let mut k := 0
@@ -7103,9 +7114,11 @@ def r3RoundTrips : String × Nat := Id.run do
       let lit (i : Nat) : String := if isList i then s!"(List.cons {v i} (List.cons 1 List.nil))" else s!"{v i}"
       let rd (i : Nat) (e : String) : String := if isList i then s!"lsum ({e})" else e
       let (ps, arg) := if phantom then (" (w : Nat)", " 3") else ("", "")
-      let tail := if phantom then "((0 d : (0 x : Nat) × (x = 3)) → (0 f : Enum [q]) → Unit)" else "((0 f : Enum [q]) → Unit)"
-      let tailV := if phantom then "(fun _ _ => ())" else "(fun _ => ())"
       let fields := List.range nf
+      -- (the tail, with the structure's brand, 22m: read off a value's type)
+      let tail := s!"tyOf (S{k}.mk {" ".intercalate (fields.map fun i => if isList i then "List.nil" else "0")} : S{k}{arg})" ++
+        String.join (List.replicate nf ".2")
+      let tailV := if phantom then "(fun _ _ => ())" else "(fun _ => ())"
       src := src ++ s!"structure S{k}{ps} where\n" ++ String.join (fields.map fun i => s!"  f{i} : {fty i}\n")
       src := src ++ s!"def H{k} : Type := " ++ String.join (fields.map fun i => s!"(f{i} : {fty i}) × ") ++ tail ++ "\n"
       src := src ++ s!"def to{k} (h : H{k}) : S{k}{arg} := h\ndef of{k} (s : S{k}{arg}) : H{k} := s\n"
@@ -7186,7 +7199,7 @@ def reprGroup : Group where
     { name := "a Σ whose second component depends on the first is always a pair", run := fun _ => do
         reprAll r3Dependent "1"
         reprAll r3Dependent "1" (unbox := true) },
-    { name := "a copy of Nat's declaration is convertible to Nat, and is a number too", run := fun _ =>
+    { name := "a copy of Nat's declaration is another type, and is a number too", run := fun _ =>
         reprAll r3NatCopy "33" },
     { name := "a proof-valued function applied by code generic in the sort", run := fun _ =>
         reprAll r3SortPoly "4" },
@@ -7220,15 +7233,15 @@ def reprGroup : Group where
     { name := "22k: a sealed type: a look-alike, another sealed type, another width are other types", run := fun _ => do
         let hdr := "import Prelude\n" ++ sealHeader
         okLib (hdr ++ "def same (x : W 8) : W 8 := x\ndef get {w : Nat} : W w → Nat\n  | .mk n => n\n#eval get (W.mk 5 : W 8)\n#print axioms same\n")
-          ["5", "'same' depends on axioms: [W.seal✝]"]
+          ["5", "'same' does not depend on any axioms"]
         for d in ["def bad (x : L 8) : W 8 := x", "def bad (x : W 8) : L 8 := x", "def bad (x : V 8) : W 8 := x",
             "def bad (x : W 8) : W 16 := x"] do
           failsLib (hdr ++ d ++ "\n") "type mismatch"
         failsLib (hdr ++ "def bad : W 8 = L 8 := rfl\n") "not definitionally equal"
         failsLib (hdr ++ "def bad : W 8 = V 8 := rfl\n") "not definitionally equal"
         failsLib "import Prelude\nsealed structure P where\n  x : Nat\n" "`sealed` applies to an `inductive` declaration"
-        -- the seal can't be named
-        check (!(← sealErrors "import Nat8\ndef s : Type := W.seal✝\n").isEmpty) "W.seal✝ was named" },
+        -- the brand can't be named
+        check (!(← sealErrors "import Nat8\ndef s : Type := W.brand✝\n").isEmpty) "W.brand✝ was named" },
     { name := "22k: a native sealed type in its own module: its functions, generic code and lists of it, interpreted and compiled", run := fun _ =>
         reprAll ("import Nat8\ndef keep {A : Type} (x : A) : A := x\ndef sum : List W → Nat\n  | .nil => 0\n  | .cons x xs => x.get + sum xs\n" ++
           "def main : Nat := W.get (keep (W.succ (W.of 299))) + sum (.cons (W.of 1) (.cons (W.of 256) .nil))\n") "45" (extra := sealLoader) },
@@ -7248,18 +7261,66 @@ def reprGroup : Group where
         sealFails "import Word\ndef e : UIntN 8 = IntN 8 := rfl\n" "not definitionally equal"
         -- the conversions are the identity on the bits
         okLib "import Word\n#eval (UIntN.toIntN (UIntN.ofNat 8 200)).toNat\n#eval (IntN.toUIntN (IntN.ofNeg 8 1)).toNat\n" ["200", "255"] },
-    { name := "22k: a native representation needs a sealed type and a private constructor", run := fun _ => do
+    { name := "22k: a native representation needs a private constructor (every inductive type has a brand, 22m)", run := fun _ => do
         let natives := "extern \"wiz_word_of_bits\" W.ofBits : NatObj → W\nextern \"wiz_word_to_bits\" W.toBits : W → NatObj\n" ++
           "attribute [implemented_by W.ofBits W.toBits] W.mk\n"
-        sealFails ("import Word\ninductive W where\n  | private mk (toNat : Nat)\n" ++ natives) "needs `sealed inductive W`"
-        sealFails ("import Word\nsealed inductive W where\n  | mk (toNat : Nat)\n" ++ natives) "needs a private constructor" },
+        sealFails ("import Word\ninductive W where\n  | mk (toNat : Nat)\n" ++ natives) "needs a private constructor" },
     { name := "22k: erasure refuses a native value built outside its module, and the seal outside its type (layer 3)", run := fun _ => do
         -- a `W` built by `con` (the elaborator refuses `W.mk`; a kernel term need not)
         sealLayer3 { name := "forged", type := .const "W" [], value := some (.con .tt) } (some nativeHomeMsg)
         -- the seal as a term outside a `μ`
-        sealLayer3 { name := "leak", type := .sort (.succ .zero), value := some (.const (sealName "W") []) } (some "has a native representation (it is a sealed type)")
+        sealLayer3 { name := "leak", type := .sort (.succ .zero), value := some (.const (brandName "W") []) } (some "has a native representation (found by its brand)")
         -- and the module's own functions are fine
-        sealLayer3 { name := "fine", type := .const "Nat" [], value := some (.app (.const "W.get" []) (.app (.const "W.of" []) (.const "ok" []))) } none }
+        sealLayer3 { name := "fine", type := .const "Nat" [], value := some (.app (.const "W.get" []) (.app (.const "W.of" []) (.const "ok" []))) } none },
+    { name := "22m: every declared type has a brand: look-alikes are other types", run := fun _ => do
+        -- smt-review B1: a copy of `Bool` is not `Bool` (Bool, from the Prelude, has a brand too)
+        failsLib "import Prelude\ninductive Flip where\n  | true\n  | false\ndef x : Bool := Flip.true\n" "type mismatch"
+        -- a copy of `Nat`, structures and classes of one shape
+        failsLib "import Prelude\ninductive M where\n  | zero\n  | succ (n : M)\ndef x : Nat := M.zero\n" "type mismatch"
+        let pq := "import Prelude\nstructure Pt where\n  x : Nat\n  y : Nat\nstructure Qt where\n  x : Nat\n  y : Nat\n"
+        failsLib (pq ++ "def f (p : Pt) : Qt := p\n") "type mismatch"
+        failsLib (pq ++ "def e : Pt = Qt := rfl\n") "not definitionally equal"
+        failsLib ("import Prelude\nclass Add2 (A : Type) where\n  add : A → A → A\nclass Mul2 (A : Type) where\n  mul : A → A → A\n" ++
+          "def m : Mul2 Nat := Mul2.mk Nat.mul\ndef bad : Add2 Nat := m\n") "type mismatch"
+        failsLib "import Prelude\ninductive A where\n  | a\ninductive B where\n  | a\ndef e : A = B := rfl\n" "not definitionally equal"
+        -- coinductive types, mutual blocks, empty structures
+        failsLib ("import Prelude\ncoinductive S1 where\n  head : Nat\n  tail : S1\ncoinductive S2 where\n  head : Nat\n  tail : S2\n" ++
+          "def f (s : S1) : S2 := s\n") "type mismatch"
+        failsLib ("import Prelude\nmutual\ninductive E1 where\n  | z1\n  | s1 (o : O1)\ninductive O1 where\n  | t1 (e : E1)\nend\n" ++
+          "mutual\ninductive E2 where\n  | z1\n  | s1 (o : O2)\ninductive O2 where\n  | t1 (e : E2)\nend\ndef f (x : E1) : E2 := x\n") "type mismatch"
+        failsLib "import Prelude\nstructure U1 where\nstructure U2 where\ndef f (x : U1) : U2 := x\n" "type mismatch"
+        -- aliases keep structural identity
+        okLib "import Prelude\ndef MyNat : Type := Nat\ndef x : MyNat := 3\ndef y : Nat := x\n" },
+    { name := "22m: at one brand everything is as before: η, rfl, casts, instances, generic code", run := fun _ => do
+        okLib ("import Prelude\nstructure Pt where\n  x : Nat\n  y : Nat\n" ++
+          "def c1 (s : Pt) : Pt.mk s.x s.y = s := rfl\ndef c2 (s : Pt) : Pt.mk s.x s.y = s := refl s\ndef c3 (s : Pt) : s = s := rfl\n" ++
+          "structure E where\ndef e1 (a b : E) : a = b := rfl\n" ++
+          -- ground regularity (C1): the brand's tail is inert
+          "inductive Col where\n  | red\n  | green\ndef k2 (c : Col) (e : Col = Col) : (cast e c : Col) = c := rfl\n" ++
+          "def k3 (n : Nat) (e : Nat = Nat) : (cast e n : Nat) = n := rfl\n" ++
+          "def k4 (s : Pt) (e : Pt = Pt) : (cast e s : Pt) = s := rfl\n" ++
+          -- instances are told apart (the HDL wrong-bundle bug)
+          "class Tag (A : Type) where\n  name : Nat\nstructure Cnt where\n  n : Nat\nstructure CntOut where\n  n : Nat\n" ++
+          "instance : Tag Cnt := ⟨1⟩\ninstance : Tag CntOut := ⟨2⟩\n#eval @Tag.name Cnt _\n#eval @Tag.name CntOut _\n" ++
+          -- generic code over descriptions still applies to declared types
+          "inductive N where\n  | z\n  | s (n : N)\ndef depth {I : Type} {D : Desc I} {i : I} (x : μ D i) : Nat := 0\n#eval depth (N.s N.z)\n" ++
+          "def r3 : List Nat = List Nat := rfl\ndef r4 {A : Type} (x : List A) : x = x := rfl\n" ++
+          -- a brand is not an axiom
+          "def b : Bool := .true\n#print axioms b\n#print axioms k2\n")
+          ["1", "2", "0", "'b' does not depend on any axioms", "'k2' does not depend on any axioms"] },
+    { name := "22m: a brand can't be named, and a copy of Nat is still a number at run time", run := fun _ => do
+        check (!(← sealErrors "import Prelude\ndef k : Type := Nat.brand✝\n").isEmpty) "Nat.brand✝ was named"
+        reprAll ("import Prelude\ninductive M where\n  | z\n  | s (n : M)\ndef M.len : M → Nat\n  | .z => 0\n  | .s n => M.len n + 1\n" ++
+          "def M.of : Nat → M\n  | .zero => .z\n  | .succ n => .s (M.of n)\ndef main : Nat := M.len (M.of 40) + Nat.mul 2 1\n") "42" },
+    { name := "22m: erasure refuses a cast between a native type and another type (layer 3)", run := fun _ => do
+        let src := "import Nat8\ninductive L where\n  | mk (toNat : Nat)\naxiom e : L = W\ndef forge : W := cast e (L.mk 300)\ndef main : Nat := W.get forge\n"
+        let loader ← preludeLoader
+        let s := runFrontend (R := ZeroOneMany) src { trustedModule := Tests.libModule, loader := fun m => sealLoader m <|> loader m }
+        let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
+        unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
+        match Build.irProgram s "main" with
+        | .ok _ => throw (IO.userError "forge compiled; expected the cast to be refused")
+        | .error err => check ((err.splitOn nativeCastMsg).length > 1) err }
   ]
 
 /-- A user-declared `ShareLet` (no HDL library): the hook fires on a `let` in check mode

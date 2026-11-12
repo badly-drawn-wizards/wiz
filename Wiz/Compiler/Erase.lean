@@ -343,16 +343,14 @@ def unfoldCases? (g : Globals R) (t : Term R) : Option (Term R) := do
   let b ← beta v (d.type.instLevels d.levelParams us) (args.take k)
   pure ((args.drop k).foldl .app b)
 
-/-- Is this description shaped like the natural numbers' (over the index type `Unit`: a
-choice between two tags, the first with no field, the second with one recursive field)? -/
+/-- Is this description shaped like the natural numbers' (over an index type with one
+value, `Unit` or a singleton tail such as a brand's, 22m: a choice between two tags, the
+first with no field, the second with one recursive field)? -/
 def natShaped (g : Globals R) (I D : Val R) : Bool :=
   let isRet (d : Val R) : Bool := match whnf d with
     | .dret _ => true
     | _ => false
-  let isUnit : Bool := match whnf I with
-    | .unit _ => true
-    | _ => false
-  isUnit &&
+  singletonTail g 0 I &&
   match whnf D with
   | .darg _ S F => match whnf S with
     | .enum [a, b] =>
@@ -373,30 +371,28 @@ def isNatTy (g : Globals R) (ty : Val R) : Bool :=
     (match hint with | some (T, _, _) => T == N | none => false) || natShaped g I D
   | _, _ => false
 
-/-- The sealed type a `μ`'s index type names (22k): `sealed inductive T` puts its seal, the
-axiom `T.seal✝`, among the erased domains of the index tail (after the indices of an
-indexed family). A constant without a value is compared by name, so this is a function
-of the type up to conversion, unlike the display name on the `μ`. -/
-partial def sealedIx? (g : Globals R) (I : Val R) (lvl : Nat := 2000000) : Option Name :=
+/-- The declared type a `μ`'s index type names by its brand (22m): every declared type
+puts its brand, the constant `T.brand✝` (`brandName`), among the erased domains of the
+index tail (after the indices of an indexed family). A constant without a value is
+compared by name, so this is a function of the type up to conversion, unlike the display
+name on the `μ`. -/
+partial def brandIx? (g : Globals R) (I : Val R) (lvl : Nat := 2000000) : Option Name :=
   match whnf I with
-  | .sigma _ _ _ B _ => sealedIx? g (Closure.inst g B (.var lvl)) (lvl + 1)
+  | .sigma _ _ _ B _ => brandIx? g (Closure.inst g B (.var lvl)) (lvl + 1)
   | .pi _ _ _ dom cod _ =>
     let here : Option Name := match whnf dom with
-      | .neutral (.global k _) sp =>
-        if sp.isEmpty then g.builtins.findSome? fun (key, x) =>
-          if x == k && key.startsWith "seal:" then some (key.drop 5).toString else none
-        else none
+      | .neutral (.global k _) sp => if sp.isEmpty then brandOf? k else none
       | _ => none
-    here <|> sealedIx? g (Closure.inst g cod (.var lvl)) (lvl + 1)
+    here <|> brandIx? g (Closure.inst g cod (.var lvl)) (lvl + 1)
   | _ => none
 
 /-- The type with a native representation that `ty` is, with the representation: found
-by the seal of a sealed type (a native representation needs `sealed`), never by the
+by the brand (a native representation is registered for a declared type), never by the
 display name. -/
 def nativeTy? (g : Globals R) (ty : Val R) : Option (Name × ReprInfo) :=
   match whnf ty with
   | .mu _ I _ _ _ _ =>
-    match sealedIx? g I with
+    match brandIx? g I with
     | some T => (reprOf? g.builtins T).map (T, ·)
     | none => none
   | _ => none
@@ -436,16 +432,20 @@ def nativeHome? (g : Globals R) (ty : Val R) : Option (Name × String) :=
   match nativeTy? g ty with
   | some (T, _) =>
     let ctorPrivate := g.privates.fold (init := false) fun acc n _ =>
-      acc || (n.startsWith (T ++ ".") && n != T ++ ".desc" && n != sealName T)
+      acc || (n.startsWith (T ++ ".") && n != T ++ ".desc" && n != brandName T)
     let home := (g.declModule[T]?).getD ""
     if ctorPrivate && home != g.module then some (T, home) else none
   | none => none
 
+/-- The start of the message with which erasure refuses a cast between a type with a
+native representation and a different type (22m, layer 3). Fatal, like `nativeHomeMsg`. -/
+def nativeCastMsg : String := "cannot compile a cast between a type with a native representation and a different type"
+
 def nativeHomeError (T : Name) (home : String) : TypeError :=
   .other (nativeHomeMsg ++ s!" ({T}, of module {home}): use {T}'s functions")
 
-/-- Does a seal (`isSeal`) occur in `t` outside a complete `μ` type? (Layer 3, (i): the
-seal of a type with a native representation as a type argument, or the type's
+/-- Does a brand (`isSeal`) occur in `t` outside a complete `μ` type? (Layer 3, (i): the
+brand of a type with a native representation as a type argument, or the type's
 description as an argument, is how generic code would come to handle a native value as
 the model's object.) -/
 partial def sealOutsideMu (isSeal : Name → Bool) : Term R → Bool
@@ -739,7 +739,16 @@ partial def eraseInfer (ctx : Ctx R) (t : Term R) (known : Option (VTy R) := non
       let bs' ← bs.toArray.mapIdxM fun k b => eraseCheck ctx b (Closure.inst g mc (.tag ls k)) inDesc
       pure (.case s' bs')
     -- (checked against its own type: it may be a function that can't be inferred)
-    | .cast A _ _ x => eraseCheck ctx x (ctx.eval A)
+    | .cast A B _ x => do
+      -- (22m, layer 3) a cast between two declared types computes on constructors even
+      -- when they differ (under a false hypothesis or a user's axiom): never between a
+      -- type with a native representation and another type, whose values are built
+      -- differently
+      let (nA, nB) := ((nativeTy? g (ctx.eval A)).map (·.1), (nativeTy? g (ctx.eval B)).map (·.1))
+      if nA != nB then
+        let nm (n : Option Name) : Name := n.getD "a type without it"
+        throw (.other s!"{nativeCastMsg} ({nm nA} to {nm nB})")
+      eraseCheck ctx x (ctx.eval A)
     | .absurd .. => pure (.prim .unreachable #[])
     -- eliminators: their function arguments are erased against the kernel's types
     | .ind l I D v P m i x => do

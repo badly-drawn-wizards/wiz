@@ -106,6 +106,8 @@ def inductiveView (g : Globals R) (T : Name) : Option RVal := do
           | .lam _ b => b
           | t => t) v) with
         | some (.sigma ..) | some (.unit _) => true
+        -- (22m: a structure without fields is its marker, `(0 fields✝ : S.brand✝) → Unit`)
+        | some (.pi x ..) => isPhantomName x
         | _ => false
       if isSigma && g.contains (T ++ ".mk") then some (tBinders.length, ["mk"], true) else none
   let (params, scopeΔ) := telescopeSyntax [] (tBinders.take nΔ)

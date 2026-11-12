@@ -58,6 +58,10 @@ def lamsTm (xs : List Name) (b : Term R) : Term R := xs.foldr .lam b
 phantom tail's `fun _ => ()`). -/
 def tupleWith (tail : Term R) (as : List (Term R)) : Term R := as.foldr .pair tail
 
+/-- The brand of the type `T` being declared (`brandName`), if `declareBrand` declared it. -/
+def brandOfDecl (T : Name) : ElabM R (Option Name) := do
+  pure (if (← getGlobals).contains (brandName T) then some (brandName T) else none)
+
 /-- **Phantom parameters.** Types are structural, so a parameter that nothing in the type
 mentions would be forgotten: `UIntN 8` and `UIntN 16` would be one type, and `w` could
 not be inferred. For each such parameter `p : P` the type's final `Unit` (of an index
@@ -77,15 +81,12 @@ the type's universe `lvl` (the tail would raise it).
 Given `used k` (whether the parameter `var k` of the context `Δ` is mentioned), returns
 the tail type and its value in `Δ`, and the names of the phantom parameters. -/
 def phantomTail (ctxΔ : LocalCtx R) (Δ : Array (Name × BinderInfo × Term R × Term R))
-    (used : Nat → Bool) (lvl : Level) (markTail : Bool := false) (sealAx : Option Name := none) :
+    (used : Nat → Bool) (lvl : Level) (markTail : Bool := false) (brand : Option Name := none) :
     ElabM R (Term R × Term R × List Name) := do
   let g ← getGlobals
   let nΔ := Δ.size
   let tys := ctxΔ.types.reverse.toArray
-  -- a sealed type's seal comes first (22k): a closed domain, the axiom itself
-  let mut doms : Array (Term R) := match sealAx with
-    | some k => #[.const k []]
-    | none => #[]
+  let mut doms : Array (Term R) := #[]
   let mut names : List Name := []
   for (x, _, _, A) in Δ, j in [0:nΔ] do
     let k := nΔ - 1 - j
@@ -103,10 +104,13 @@ def phantomTail (ctxΔ : LocalCtx R) (Δ : Array (Name × BinderInfo × Term R �
     unless u.le lvl do continue
     doms := doms.push D
     names := names ++ [x]
-  -- a structure with fields ends in the marker `(0 fields✝ : Enum [fields✝]) → Unit` (22i)
+  -- the brand comes last (22m): a closed domain, the constant itself. In a structure it
+  -- is the marker, `(0 fields✝ : S.brand✝) → Unit` (22i). (Last, so that an equation
+  -- between two instances of one type reaches the phantoms' equations without a value
+  -- of the brand: `UIntN 8 = UIntN 16` is refutable, its first component is `8 = 16`'s)
   let nPh := doms.size
-  let mark := markTail
-  if mark then doms := doms.push (structTailDom : Term R)
+  let mark := markTail && brand.isSome
+  if let some k := brand then doms := doms.push (.const k [])
   let bname (i : Nat) : Name := if mark && i == nPh then structTailName else phantomName
   let ty := (doms.toList.zipIdx).foldr (fun (D, i) acc => .pi (bname i) .default (.qlit 0) (D.lift i) acc none)
     (Term.unit lvl : Term R)
@@ -348,10 +352,9 @@ def elabInductive (cmd : Syntax) (levelParams : List Name) : ElabM R (List (Decl
     descs := descs ++ [D]
     ctorInfo := ctorInfo ++ [(cname, fs'.toList, js)]
   -- phantom parameters: those that neither a constructor nor an index type mentions
-  -- (a `sealed inductive`: the seal was declared just before, `command.sealed`)
-  let sealAx := if (← getGlobals).contains (sealName T) then some (sealName T) else none
+  -- (and the brand, declared just before, `declareBrand`)
   let (tailTy, tailV, _) ← phantomTail ctxΔ Δ (fun k => descs.any (·.hasVar k) || I.hasVar k) (.succ l)
-    (sealAx := sealAx)
+    (brand := ← brandOfDecl T)
   let I : Term R := Ξ.foldr (fun (x, _, q, X) acc => .sigma x q X acc none) (tailTy.lift nΞ)
   if !(tailV matches .tt) then
     descs ← (ctorInfo.zip ctorLevels).mapM fun ((cname, fs, js), lvs) => match ctorDesc nΔ (fs.map fun (x, _, q, A) => (x, q, A)) js tailV l lvs with
@@ -439,7 +442,7 @@ def elabCoinductive (cmd : Syntax) (levelParams : List Name) :
     | .ok D => pure D
     | .error e => throwAt cmd.info e
   -- phantom parameters (see `phantomTail`): the index type is the tail
-  let (I, tailV, _) ← phantomTail ctxΔ Δ (fun k => D.hasVar k) (.succ l)
+  let (I, tailV, _) ← phantomTail ctxΔ Δ (fun k => D.hasVar k) (.succ l) (brand := ← brandOfDecl T)
   let D ← if tailV matches .tt then pure D else
     match ctorDesc nΔ (fs'.toList.map fun (x, _, q, A) => (x, q, A)) [] tailV l lvs with
     | .ok D => pure D
@@ -538,9 +541,9 @@ def elabStructure (cmd : Syntax) (levelParams : List Name) : ElabM R (List (Decl
     | .error e => throwAt (cmd.child "sig").info e
   let body : Term R := fs'.toList.foldr (fun (x, _, q, A) acc => .sigma x q A acc none) (.unit (.succ l))
   -- phantom parameters (see `phantomTail`): the final `Unit` becomes the phantom tail
-  -- (a structure with fields marks its tail, so that erasure unboxes the last field, 22i)
+  -- (a structure marks its tail with its brand, 22i, 22m)
   let (tailTy, tailV, _) ← phantomTail ctxΔ Δ (fun k => body.hasVar k) (.succ l)
-    (markTail := !fs'.isEmpty)
+    (markTail := true) (brand := ← brandOfDecl S)
   let body : Term R := fs'.toList.foldr (fun (x, _, q, A) acc => .sigma x q A acc none) (tailTy.lift fs'.size)
   let ΔNames := Δ.toList.map (·.1)
   let n := fs'.size

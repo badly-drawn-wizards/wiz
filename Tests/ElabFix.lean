@@ -281,14 +281,13 @@ def group : Group where
           "def e : Fake Nat = Sig Nat := rfl") neq
         failsPriv privMod2 "import Priv\nstructure Fake where\n  owner : Nat\n  bal : Nat\ndef e : Fake = Acct := rfl" neq
         -- controls: a type and itself, through a definition, values; in its own module a
-        -- look-alike is still the same type
+        -- look-alike is another type too (22m: every declared type has a brand)
         okPriv privMod ("import Priv\ndef a : Pos Nat = Pos Nat := rfl\ndef T : Type := Pos Nat\ndef b : T = Pos Nat := rfl\n" ++
           "def c (p : Pos Nat) : p = p := rfl\ndef d : Nat.add 1 1 = 2 := rfl\ndef f : List Nat = List Nat := rfl\n" ++
           "def g (A : Type) : List A = List A := rfl\ndef i : (fun (n : Nat) => Nat.add 0 n) = (fun n => n) := rfl\n" ++
           "def l (x : Nat) : (x, 1) = (x, Nat.add 0 1) := rfl")
         okPriv privMod2 "import Priv\ndef e : Tok = Tok := rfl\ndef j : Sig Nat = Sig Nat := rfl\ndef k : Acct = Acct := rfl"
-        okPriv "" (privMod ++ "structure Look (A : Type) where\n  val : A\ndef e : Look Nat = Pos Nat := rfl\n" ++
-          "def forge (x : Look Nat) : Pos Nat := cast e x\n#eval (forge (Look.mk 4)).val") ["4"] },
+        failsPriv "" (privMod ++ "structure Look (A : Type) where\n  val : A\ndef e : Look Nat = Pos Nat := rfl\n") neq },
     { name := "the tactic request assign: a term with holes is type-checked at the end of the block (13b)", run := fun _ => do
         let tac (body : String) := "syntax (name := viaHole) \"viaHole\" : tactic\ndef Tactic.viaHole : Tactic := fun _ => do\n" ++
           "  g ← TacticM.mainGoal;\n  ng ← TacticM.newGoal g (.const \"Nat\");\n  e ← TacticM.goalExpr ng;\n" ++
@@ -302,15 +301,14 @@ def group : Group where
         -- control: a term with a hole of the goal's type (what `apply` does)
         okLib ("import Prelude\n" ++ tac "Expr.app (.const \"Nat.succ\") e" ++ "def three : Nat := by\n  viaHole\n  exact 2\n#eval three") ["3"]
         okLib ("import Prelude\ndef ap : (A B : Type) → (A → B) → A → B := by\n  intro A; intro B; intro f; intro a\n  apply f\n  assumption") },
-    { name := "OPEN (13b): a first-order unification solution forges a value of a private type", run := fun _ => do
-        -- not wanted: this records that the path is open. `?F ?p =?= G x` is solved by
-        -- `?F := G`, `?p := x`; nobody type-checks the solutions, and the kernel takes
-        -- `Look Nat` for `Pos Nat` by shape. When this test fails, the path was closed:
-        -- turn it into a `failsPriv` and update docs/stages/13-language.md, 13b.
-        okPriv privMod ("import Priv\nstructure Look (A : Type) where\n  val : A\n" ++
+    { name := "closed by brands (22m; was OPEN, 13b): a first-order unification solution doesn't forge a value of a private type", run := fun _ => do
+        -- `?F ?p =?= G x` is solved by `?F := G`, `?p := x`; nobody type-checks the
+        -- solutions, but `Look Nat` and `Pos Nat` have different brands, so the kernel
+        -- rejects the result
+        failsPriv privMod ("import Priv\nstructure Look (A : Type) where\n  val : A\n" ++
           "inductive G : Look Nat → Type where\n  | mk (l : Look Nat) : G l\n" ++
           "def sel {F : Pos Nat → Type} (p : Pos Nat) (w : F p) : Pos Nat := p\n" ++
-          "def forge (x : Look Nat) : Pos Nat := sel _ (G.mk x)\n#eval (forge (Look.mk 11)).val") ["11"] },
+          "def forge (x : Look Nat) : Pos Nat := sel _ (G.mk x)\n") "kernel rejected forge" },
     { name := "rfl is checked by the elaborator, not left to the kernel (wishful: elab-rfl-unchecked)", run := fun _ => do
         failsLib "import Prelude\ndef w (r a : Nat) : r = Nat.succ a := rfl" "rfl: the two sides are not definitionally equal"
         failsLib "import Prelude\ndef z (a : Nat) : a = a + 0 := rfl" "rfl: the two sides are not definitionally equal"

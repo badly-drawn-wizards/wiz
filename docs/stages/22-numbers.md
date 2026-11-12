@@ -491,3 +491,40 @@ Both frontends elaborate `sealed inductive` (the self-hosted one with the same a
 tail). Tests: groups `repr` (look-alikes, a native byte type in its own module
 interpreted and compiled, R5 and layer 1, the layer-3 refusals on hand-made kernel
 terms) and `selfhost` (the two frontends agree). Kernel rules: none, in either kernel.
+
+## 22m: brands: every declared type is a type of its own
+
+22k's seal, for every declaration (`wiz-notes/brands-design.md`, option S). Before this
+stage types were structural: two declarations of the same shape were one type, so a
+`Mul Nat` dictionary passed as an `Add Nat`, `inductive Flip | true | false` gave
+`Flip.true : Bool`, and two structures of one shape shared their instances. Now:
+
+* every `inductive`, `coinductive`, `structure` and `class` (and so every `mutual` block,
+  which becomes inductive types) first declares its **brand**, an opaque constant
+  `T.brand✝ : Type` that no source file can write. It is a partial-definition-style
+  constant with the witness `Unit` (22f), so it is not an axiom: `#print axioms` does not
+  list it (a brand asserts nothing; `Unit` inhabits its type);
+* the brand goes last in the type's singleton tail, after the phantom domains (22e): in an
+  inductive or coinductive type's index tail, `(the phantom domains) → (0 phantom✝ :
+  T.brand✝) → Unit` (after the indices of a family), and as the domain of a structure's
+  marker, `(0 fields✝ : S.brand✝) → Unit`, where 22i had `Enum [fields✝]`. A structure
+  without fields gets the marker too. (Last, unlike 22k's seal, which came first: an
+  equation `UIntN 8 = UIntN 16` then still starts with the phantoms' equation, so it is
+  refuted as before, without a value of the brand, which nobody has);
+* a constant without a value is compared by name, so two declared types are never
+  convertible, and their type equation is stuck (neither provable nor refutable); the
+  structure η, `refl s` and casts at one brand are as before. `T ps i ≡ μ (T.desc ps) i`
+  still holds, so generic code over descriptions applies to declared types;
+* the tail is erased, so the representation is unchanged. `Nat` stays a number: erasure
+  recognises its shape over any singleton tail (`natShaped`), not only `Unit`;
+* singleton tails are inert (C1, `docs/CoreSpec.md` §8.4), so ground regularity at
+  declared types is unchanged.
+
+**`sealed` is deprecated**: it warns and does nothing more. A native representation
+(22d) is found by the brand (`brandIx?`), and needs a private constructor, as before.
+Layer 3 (22k) gains one refusal: erasure refuses a `cast` between a type with a native
+representation and a different type (it computes on constructors under a false
+hypothesis or a user's axiom, and the two are built differently).
+
+What keeps structural identity: `def`/`abbrev` aliases, a hand-written `μ` or Σ, and
+an `axiom T : Type` (already nominal).

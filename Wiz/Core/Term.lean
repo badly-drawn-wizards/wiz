@@ -386,17 +386,20 @@ for convertible types. `Compiler/Erase.lean` goes by the shape (`erasedFunTy`), 
 unboxes the Σ before such a tail only under `--unbox-structs` (`unboxedSigma`). -/
 def structTailName : Name := "fields✝"
 
-/-- The marker's domain, `Enum [fields✝]`. -/
-def structTailDom {R : Type} : Term R := .enum [structTailName]
+/-- The **brand** of a declared type `T` (brands, `docs/stages/22-numbers.md` 22m; the
+seal of 22k, generalised): an opaque constant `T.brand✝ : Type`, declared just before `T`
+by every `inductive`, `coinductive`, `mutual` block, `structure` and `class`. `T`'s
+singleton tail mentions it, last: in an inductive or coinductive type's index tail
+(`… → (0 phantom✝ : T.brand✝) → Unit`, after the phantom domains, 22e), and as the
+marker's domain of a structure (`(0 fields✝ : S.brand✝) → Unit`). A constant without a value is compared by name, and no
+source file can write the name (it ends in `✝`), so no other declaration, however alike,
+is convertible to `T`. It has the witness `Unit` (`Decl.witness`), so it is not an axiom
+(`#print axioms` doesn't list it), and no value, so it stays a neutral. -/
+def brandName (T : Name) : Name := T ++ ".brand✝"
 
-/-- The **seal** of a `sealed inductive T` (stage 22k): an axiom `T.seal✝ : Type`, private
-to `T`'s module, that `T`'s index tail mentions (`(0 phantom✝ : T.seal✝) → … → Unit`,
-like a phantom type parameter, 22e). A constant without a value is compared by name, so
-a declaration of the same shape that can't write the name is not convertible to `T`. -/
-def sealName (T : Name) : Name := T ++ ".seal✝"
-
-/-- The registration of a seal, `seal:T` (with the seal's name), among the builtins. -/
-def sealKey (T : Name) : Name := "seal:" ++ T
+/-- The type whose brand `k` is (`brandName`), if `k` is a brand. -/
+def brandOf? (k : Name) : Option Name :=
+  if k.endsWith ".brand✝" then some (String.ofList (k.toList.take (k.length - ".brand✝".length))) else none
 
 /-- A binder name of a phantom tail (`phantomName` or `structTailName`). -/
 def isPhantomName (x : Name) : Bool := x == phantomName || x == structTailName

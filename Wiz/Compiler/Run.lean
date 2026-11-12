@@ -550,7 +550,7 @@ def compileReachableE (g : Globals R) (builtins : List (Name × Name)) (roots : 
   let mut todo := roots.toArray
   -- definitions registered as native operations
   let natives := builtins.filter fun (key, _) => key != "nat" && key != "string" && key != "int" && !key.startsWith "repr:" &&
-    !key.startsWith "cstruct:" && !key.startsWith "seal:" &&
+    !key.startsWith "cstruct:" &&
     !key.startsWith RVal.exportPrefix &&
     key != inlineKey
   -- native representations (stage 22d): the interpreters keep the model's objects when
@@ -566,12 +566,10 @@ def compileReachableE (g : Globals R) (builtins : List (Name × Name)) (roots : 
     if k == inlineKey then
       if let some d := g.find? f then
         if let .ok e := eraseDecl g d then inlines := inlines.insert f e
-  -- the seals of the sealed types with a native representation (22k)
-  let nativeSeals := g.builtins.filterMap fun (key, x) =>
-    if key.startsWith "seal:" then
-      let T : Name := (key.drop 5).toString
-      if (reprOf? g.builtins T).isSome then some (x, T) else none
-    else none
+  -- the brands of the types with a native representation (22k, 22m)
+  let nativeSeals := g.builtins.filterMap fun (key, _) => match ReprInfo.parse? key with
+    | some (T, _) => if g.contains (brandName T) then some (brandName T, T) else none
+    | none => none
   -- (HD9) the definitions compiled code substitutes (`trivialBody`) and the objects it
   -- projects from (`objBody`), by name, with each erased body
   let mut trivial : Std.HashMap Name ETerm := {}
@@ -616,15 +614,16 @@ def compileReachableE (g : Globals R) (builtins : List (Name × Name)) (roots : 
           if (g.declModule[T]?).getD "" != here then
             if let some v := d.impl <|> d.value then
               if sealOutsideMu (· == k) v then
-                throw (.other (s!"cannot compile {n}: {T} has a native representation (it is a sealed type), so generic " ++
-                  s!"code over types or descriptions cannot be used at it: {T}'s seal is passed as an argument here"))
+                throw (.other (s!"cannot compile {n}: {T} has a native representation (found by its brand), so generic " ++
+                  s!"code over types or descriptions cannot be used at it: {T}'s brand is passed as an argument here"))
     let r ← match raw.get? n with
       | some r => pure r
       | none => do let r := eraseOne n; raw := raw.insert n r; pure r
     let some (e, err) := r | continue
     if let some err := err then
       -- (a refusal, not a gap: running on would give a wrong value)
-      if (err.splitOn abstractFieldMsg).length > 1 || (err.splitOn nativeHomeMsg).length > 1 then
+      if (err.splitOn abstractFieldMsg).length > 1 || (err.splitOn nativeHomeMsg).length > 1 ||
+          (err.splitOn nativeCastMsg).length > 1 then
         throw (.other s!"cannot erase {n}: {err}")
       failed := (n, err) :: failed
     -- classify the globals `e` mentions (each once), and those their bodies mention

@@ -1150,6 +1150,22 @@ def CommandState.endModule (inner outer : CommandState R) : CommandState R :=
     ppUser := keep (·.head) inner.ppUser pps }
   s'.refreshPP
 
+/-- (22m) Declare the brand of the type `T` about to be declared (`brandName`): an opaque
+constant `T.brand✝ : Type` with the witness `Unit`, so not an axiom. Every `inductive`,
+`coinductive`, `structure` and `class` (and so every `mutual` block, which becomes
+inductive types) does this first; the elaborator puts it in `T`'s singleton tail
+(`phantomTail`). Kept if `T` then fails to elaborate (nothing mentions it). -/
+def declareBrand (T : Name) : StateM (CommandState R) Unit := do
+  let s ← get
+  if s.globals.contains (brandName T) then return
+  let d : Decl R := { name := brandName T, levelParams := [], type := .sort 1, value := none,
+                      witness := some (.unit 1) }
+  match addPartialDecl s.globals d with
+  | .ok g => modify fun s => { s with globals := g }
+  | .error e =>
+    let m : Msg := { info := {}, severity := .error, text := s!"kernel rejected {brandName T}: {e}" }
+    modify fun s => { s with messages := s.messages.push m }
+
 /-- Elaborate one command, updating the state and adding messages. -/
 partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
   -- (13b) privacy is per module: the globals know which one is being elaborated
@@ -1302,28 +1318,15 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
       { s with globals := { s.globals with
           privates := added.foldl (fun m n => m.insert n s.module) s.globals.privates } }
   | "command.sealed" =>
-    -- (22k) `sealed inductive T …`: declare the seal, an axiom `T.seal✝ : Type` private to
-    -- this module; `elabInductive` then puts it in `T`'s index tail. Only this
-    -- declaration can write the name, and a constant is compared by name, so no other
-    -- declaration is convertible to `T`.
+    -- (22k, deprecated by 22m) `sealed inductive T …`: every declared type now has a brand
+    -- of its own (`declareBrand`), which is what the seal was, so `sealed` changes nothing
     let inner := cmd.getArg 1
     if !inner.isOfKind "command.inductive" then
       report .error cmd.info "`sealed` applies to an `inductive` declaration"
     else
-      let T := ((inner.getArg 1).getId?).getD "_"
-      if s.globals.contains T then
-        report .error (inner.getArg 1).info s!"'{T}' has already been declared"
-      else
-        match addDeclSorted s.globals { name := sealName T, levelParams := [], type := .sort 1, value := none } with
-        | .error e => report .error cmd.info s!"kernel rejected {sealName T}: {e}"
-        | .ok g =>
-          let g := { g with privates := g.privates.insert (sealName T) s.module,
-                            builtins := (sealKey T, sealName T) :: g.builtins }
-          modify fun s => { s with globals := g, builtins := (sealKey T, sealName T) :: s.builtins }
-          -- (`T.desc` is private when a constructor is, 13b: a native type's always is, so
-          -- `μ (T.desc …) i` written out elsewhere can't hand the seal to unification; a
-          -- sealed type with public constructors unfolds anyway)
-          elabCommand inner
+      -- (the deprecation warning comes with the self-hosted frontend's brands, B3: until
+      -- then `lib/Word.wiz` and the differential tests still say `sealed`)
+      elabCommand inner
   | "command.local" =>
     -- (13m) grammar that stays in this module: remember what the command adds
     let inner := cmd.getArg 1
@@ -1507,6 +1510,8 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     if s.globals.contains name then
       reportDup (cmd.getArg 1).info name
     else
+      declareBrand name
+      let s ← get
       match ← withTraces (runElabH (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) s.globals (elabCoinductive cmd levelParams) levelParams) with
       | .error e => report .error e.info e.msg
       | .ok (decls, obs) =>
@@ -1535,6 +1540,8 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     else if let some f := (cmd.getArg 6).args.find? fun f => !(f.getArg 0).args.isEmpty then
       report .error f.info "a class's methods can't be private (make the class private instead)"
     else
+      declareBrand name
+      let s ← get
       match runElab (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) s.globals
           (elabStructure cmd levelParams) levelParams with
       | .error e => report .error e.info e.msg
@@ -1631,6 +1638,8 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     else
       let elabCmd := if cmd.isOfKind "command.inductive" then elabInductive cmd levelParams
         else elabStructure cmd levelParams
+      declareBrand name
+      let s ← get
       match ← withTraces (runElabH (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) (termInfo := s.termInfo) s.globals elabCmd levelParams) with
       | .error e => report .error e.info e.msg
       | .ok decls =>
@@ -2277,10 +2286,10 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
             report .error getStx.info s!"{get} must take a value of {T} as its last argument"
           else if (reprOf? s.builtins T).isSome then
             report .error fStx.info s!"{T} already has a native representation"
-          -- (22k) found by the seal, so `T` has no look-alikes; and built only in its
+          -- (22m) found by the brand, so `T` has no look-alikes; and built only in its
           -- module (R5: the module keeps the invariant the natives rely on)
-          else if !s.builtins.any (·.1 == sealKey T) then
-            report .error fStx.info s!"a native representation needs `sealed inductive {T}`: a look-alike of an unsealed type is the same type"
+          else if !s.globals.contains (brandName T) then
+            report .error fStx.info s!"a native representation needs a declared inductive type with a brand: {T} has none"
           else if (s.globals.privates.get? f) != some s.module then
             report .error fStx.info s!"a native representation needs a private constructor (`| private {(f.splitOn ".").getLast!} …`): {T}'s module keeps the invariant its natives rely on"
           else
