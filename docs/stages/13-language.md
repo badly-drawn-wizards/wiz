@@ -538,3 +538,107 @@ equation writes `castRefl` themselves.
 Before, they checked only because unsolved holes kept the equation from computing.
 Research note: `wiz-notes/structure-eta.md`. Tests: group `elabfix`, "rfl at an equation
 that has computed"; group `optic`.
+
+## 13p: nested structure update `{ s with a.b := v }`, printed back ✅
+
+```
+structure In where
+  x : Nat
+  y : Nat
+structure Out where
+  i : In
+  n : Nat
+def f (o : Out) : Out := { o with i.x := 10, n := 4 }   -- i := { o.i with x := 10 }
+def g (o : Out) : Out := { o with i.x := 5, i.y := 6 }  -- one update of `i`
+```
+
+A field path `a.b := v` in a structure update (13i) updates field `b` of the structure
+held in field `a`: it is `a := { s.a with b := v }`, the inner update over the
+projection of `s` (bound once, like `s`). Paths into the same field are grouped, so
+`i.x := 5, i.y := 6` is one inner update; paths nest to any depth (`o.i.y := 0`).
+A field updated both directly and through a path, or one path given twice, is
+"field 'i' is updated twice" ("field 'i.x' …"); a path through a field that is not a
+structure is "field 'n' is not a structure (its type is Nat), so its fields can't be
+updated"; an unknown field in a path names the inner structure ("In has no field 'z'").
+A field updated through a path keeps its type, so the dependent-field rule of 13i
+applies to it as to a kept field.
+
+Updates work for every structure, since all of them are Σ types read through
+`StructLayout`: with parameters, with dependent fields, and for bundles, structures
+over a representation `structure Tx (r : HwTy → Type) where line : r Bit; …`
+(`lib/Hdl/Core.wiz`): `{ s with line := v }` at `Tx r` keeps `r` abstract.
+
+**Hover and go to definition.** The field name of an update is recorded as a use of
+the projection `S.f`: a hover shows its type in the updated structure, and go to
+definition jumps to the declaration of the structure that has the field (where the
+projections are declared). A path is recorded as its last field
+(`i.y` as `In.y`).
+
+**Printed back.** The printer shows `S.mk Δ a₁ … aₙ` as `{ s with fᵢ := aᵢ, … }` when
+some fields are the projections of one term `s` at their own components and the others
+are not (with every field replaced it is just `S.mk a₁ … aₙ`), `let x := e; S.mk …` (an update of a non-variable `e`) as `{ e with … }`, and a
+field updated with an update of its own old value as a path, so the three forms above
+print as written. The layout moved to `Wiz/Core/StructLayout.lean` so that the printer
+can read it (`structLayoutWith?`; `Elab/Struct.lean`'s `structLayout?` is the same
+function). `set_option pp.notation false` (or `--pp-all`) prints `S.mk` as it is.
+
+Tests: `language` ("13p: …"), `lsp` ("13p–q: an updated field's hover and definition …").
+
+## 13q: numeral and literal patterns ✅
+
+```
+def cls : Nat → Nat
+  | 0 => 10
+  | 1 => 11
+  | n+2 => n
+def sum : Nat → Nat
+  | 0 => 0
+  | n + 1 => n + 1 + sum n      -- structural: `n + 1` is `.succ n`
+def op (b : U8) : Nat := match b with
+  | 0x3F => 1
+  | 0 => 2
+  | _ => 3                      -- required: numerals don't cover U8
+```
+
+**At `Nat`** (the `builtin nat` type) a numeral pattern is its constructors, peeled one
+at a time as the match compiler splits (`natPatView`): `0` is `.zero`, `n` is
+`.succ (n - 1)`, and `p + k` (as `+` expands, `Add.add p k`, with a numeral `k`) is
+`.succ (p + (k - 1))`. So numeral patterns mix with constructor patterns, as-patterns
+and tuples, refine types like constructor patterns (`F : Nat → Type | 0 => Bool | _ =>
+Nat`), and `| n + 1 => … f n …` is structurally recursive. Recursion is still on the
+immediate predecessor only: `| n + 2 => f n` is "not structurally smaller" (the case
+tree splits twice, and only the first split has a hypothesis). The case tree grows with
+the numeral, so a numeral pattern at `Nat` is at most 256 ("the numeral pattern 300 is
+too large …; test with `Nat.beq` instead"). The self-hosted frontend already read
+numeral patterns this way (`patOf`, `selfhost/Frontend.wiz`).
+
+**At other types** a literal is an equality test. For a column of type `T` whose first
+row has a literal `l`, the column is compared with `T.beq x l`, where `T` is the first
+type in the chain of definitions the column's type unfolds through that has a `T.beq`
+(`BitVec 8`, then `UIntN 8`; `IntN w`; `String`, with `import Text`). The literal is
+elaborated at the column's type (numerals through `OfNat`, 7e). The test is a new
+`Bool` column in front of the column (`compileLitTest`): rows with `l` want `.true`
+(and `_` in the column), rows with another literal `.false` (keeping theirs for the next
+test), and catch-all rows `_`. The branches learn nothing about `x`. Literals don't
+cover a type, so the column needs a catch-all row: "a match on literals of type U8 needs
+a catch-all case (`_` or a variable) after them". In the same column only literals,
+`_` and variables are allowed; `n + k` is for `Nat` only; a literal on a data type
+without `T.beq` is "a literal pattern needs Nat, or a type T with literals and an
+equality test T.beq …". String literals are patterns by the same rule. A literal test
+can't be the split of a structural recursion (the first argument is split by its
+constructors).
+
+**Hexadecimal and binary numerals.** `0x3F` and `0b1010` are numerals everywhere (the
+tokenizer reads them as the decimal `num` token they denote, `Wiz/Parser/Token.lean`),
+so they need no change downstream; they print in decimal.
+
+Hover: a pattern variable under a numeral (`k` in `k + 1`) is a pattern variable like
+any other; a literal compared with `T.beq` is elaborated where it is written, so its
+`OfNat` instance shows in the hover as in a term. Tests: `language` ("13q: …"), `lsp`.
+
+**Self-hosted parity (follow-up).** The self-hosted frontend (`selfhost/Frontend.wiz`)
+has numeral patterns at `Nat` but not: literal patterns at other types (the `T.beq`
+test and its catch-all check in its match compiler), hex/binary numerals in
+`selfhost/Lex.wiz`, structure update at all (13i: the `term.structUpdate` grammar and
+its elaboration over the structure's layout), nor the printer's read-back. Its own
+sources use none of these, so the bootstrap is unaffected.
