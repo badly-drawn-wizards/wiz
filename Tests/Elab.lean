@@ -4929,6 +4929,34 @@ def languageGroup : Group where
   name := "language"
   exercise := "Stage 13"
   cases := [
+    -- (CoreSpec §6: proofs use nothing) a term at a proposition is checked erased, so a
+    -- variable at 0 may appear in a proof (wiz-cats G2/B2, wiz-reals B2)
+    { name := "a proof uses nothing: a 0-variable may appear in a proof, a linear one still must be used (both kernels)", run := fun _ => do
+        okLib "import Prelude\ndef lem (n : Nat) : n = n := refl n\ndef r {0 n : Nat} : n = n := lem n"
+        okLib "import Prelude\ndef p (k : Nat) (e : k = k) : k = k := e\ndef q {k : Nat} (e : k = k) : k = k := p k e"
+        okLib ("import Prelude\nstructure P where\n  a : Nat\n  b : Nat\n" ++
+          "def lem0 (0 n : Nat) : n = n := refl n\ndef ok {0 p : P} : p.b = p.b := lem0 p.b\ndef bad {0 p : P} : p.a = p.a := refl p.a")
+        -- controls: a 0-variable in a relevant position, and a linear one used only in a proof
+        failsLib "import Prelude\ndef badRel {0 n : Nat} : Nat := n" "quantity 0 but used 1"
+        failsLib "import Prelude\ndef lem (n : Nat) : n = n := refl n\ndef badLin (1 n : Nat) : Nat := let h : n = n := lem n; 0" "quantity 1 but used 0"
+        -- the Wiz kernel: `fun n => p n refl` at `(0 n : Unit) → n = n`, `p` a proof function
+        let kernel ← IO.FS.readFile "selfhost/Kernel.wiz"
+        let main := "def uPf : Tm := .lam (.lam (.var 0))\n" ++
+          "def uPTy : Tm := .pi (.unit 0) (.pi (.eq (.unit 0) (.var 0) (.var 0)) (.eq (.unit 0) (.var 1) (.var 1)))\n" ++
+          "def uQTy : Tm := .piq .qz (.unit 0) (.eq (.unit 0) (.var 0) (.var 0))\n" ++
+          "def uQV : Tm := .lam (.app (.app (.ann uPf uPTy) (.var 0)) (.eqRefl (.unit 0) (.var 0)))\n" ++
+          "def uRelTy : Tm := .piq .qz (.unit 0) (.unit 0)\n" ++
+          "def uOkD (ty v : Tm) : String := match checkDecl ty (.some (markClosed v ty)) with\n  | .ok _ _ => \"ok\"\n  | .err _ => \"error\"\n" ++
+          "def main : IO Unit := do\n  IO.println (uOkD uQTy uQV);\n  IO.println (uOkD uRelTy (.lam (.var 0)))\n"
+        ioRun (kernel ++ "\n" ++ main) "ok\nerror\n" },
+    -- a proof that uses a 0-variable is erased by compilation: the cast along it computes on
+    -- the types, and its `implemented_by` (a proof too) never runs
+    { name := "a proof that uses a 0-variable is erased when compiled (cast along it, implemented_by on it)", run := fun _ =>
+        cRun ("import Prelude\ndef T (n : Nat) : Type := Nat\n" ++
+          "def lemTy (n : Nat) : T n = Nat := rfl\ndef lemTyImpl (n : Nat) : T n = Nat := rfl\n" ++
+          "attribute [implemented_by lemTyImpl] lemTy\n" ++
+          "def useIt (0 n : Nat) (x : T n) : Nat := let h : T n = Nat := lemTy n; cast h x\n" ++
+          "def main : Nat := useIt 3 5") "5" },
     { name := "linear transport: Eq.subst, Eq.substBack and Eq.cast take a linear value (L4)", run := fun _ =>
         okLib ("import Prelude\naxiom Tok : Nat → Type\naxiom Tok.close : (1 t : Tok 0) → Unit\n" ++
           "def closeAt (0 n : Nat) (0 e : n = 0) (1 t : Tok n) : Unit := Tok.close (Eq.subst Tok e t)\n" ++

@@ -414,6 +414,10 @@ def Ctx.sortOf (ctx : Ctx R) (ty : VTy R) : TCM Level :=
   | some l => pure l
   | none => throw (.other s!"internal error: cannot compute the sort of {ctx.showVal ty}")
 
+/-- Is this type a proposition, its sort computed and `0` (whatever the proof mode: the
+usage rule "a proof uses nothing")? -/
+def Ctx.isPropTy (ctx : Ctx R) (ty : VTy R) : Bool := (ctx.sortOf? ty).any (·.isZero)
+
 /-- Is this type a proposition (its sort is computed, and is `0`)? -/
 def Ctx.isProofTy (ctx : Ctx R) (ty : VTy R) : Bool :=
   ctx.globals.lazyProofs && (ctx.sortOf? ty).any (·.isZero)
@@ -479,6 +483,16 @@ of the expected one.)
 
 **Exercise 4.7a** (stage 4b): the `pair` and `tt` rules. -/
 partial def check (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM (Usage R) := do
+  -- (given) a proof uses nothing: a term at a proposition is checked in an erased position
+  -- and its usage is `0`, at every level of a proof (CoreSpec §6: proofs are erased and
+  -- never run, so a variable at quantity `0` may appear in one)
+  if ctx.isPropTy ty then
+    let _ ← checkU { ctx with erased := true } t ty
+    return Usage.zeros ctx.lvl
+  checkU ctx t ty
+
+/-- `check` without the rule for proofs. -/
+partial def checkU (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM (Usage R) := do
   -- (given) P2: inside a proof, a term that is not a proof is a relevant term again. A
   -- sort that can't be computed is an error here as it is in relevant mode (`requireMarker`),
   -- for a term the requirement would apply to, not a silent "proof mode" (review F4)
@@ -588,7 +602,8 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) := do
   let (ty, u) ← inferCore (if ctx.marked then { ctx with marked := false } else ctx) t
   -- (given) P2: outside a proof, a proof is marked or neutral-shaped
   ctx.requireMarker t ty
-  pure (ty, u)
+  -- (given) a proof uses nothing (as in `check`)
+  pure (ty, if ctx.isPropTy ty then Usage.zeros ctx.lvl else u)
 
 /-- The rules of `infer` (which adds the proof marker's requirement). -/
 partial def inferCore (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
@@ -698,8 +713,9 @@ partial def inferCore (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     let (ty, u) ← infer ctx t
     match whnf ty with
     | .sigma x q A _ _ =>
-      -- in an erased position nothing is consumed: any field of any pair may be read
-      if ctx.erased then pure (A, u) else
+      -- in an erased position nothing is consumed: any field of any pair may be read; nor
+      -- by a projection of a proof (a proof uses nothing)
+      if ctx.erased || ctx.isPropTy ty then pure (A, u) else
       let q ← qtyPoly ctx q
       unless QPoly.le (QPoly.const 1) q do
         throw (.other s!"cannot project the field {x}, which has quantity {q}; use let (x, y) := ... instead")
@@ -711,7 +727,7 @@ partial def inferCore (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     match whnf pty with
     | .sigma _ _ _ B _ =>
       let ty := Closure.inst ctx.globals B (vFst (ctx.evalAt t pty))
-      if ctx.erased then pure (ty, u) else
+      if ctx.erased || ctx.isPropTy pty then pure (ty, u) else
       -- (R1) as for `t.1`. The first field's quantity doesn't matter: an unrestricted
       -- pair's field is at ω·q, which may always go unused
       pure (ty, ← projUsage ctx t pty ".2" u)

@@ -2581,7 +2581,10 @@ mutual
 -- (given) `infer`, with the proof marker's requirement
 def infer (c : TCtx) (t : Tm) : TyRes := match inferW (TCtx.belowMarked c) t with
   | .ok ty u => match requireMarker c t ty with
-    | .none => .ok ty u
+    -- (a proof uses nothing, as in `check`)
+    | .none => (match isPropTyU c ty with
+      | .true => .ok ty (uZeros (TCtx.lvl c))
+      | .false => .ok ty u)
     | .some m => .err m
   | r => r
 def inferW : TCtx → Tm → TyRes
@@ -2638,7 +2641,7 @@ def inferW : TCtx → Tm → TyRes
   -- at 1 can't be projected: this kernel has no `split`, so it can't be taken apart here)
   | c, .fst p => match infer c p with
     | .ok ty u => match whnf ty with
-      | .vsigma q a _ _ _ => match TCtx.erased c with
+      | .vsigma q a _ _ _ => match Bool.or (TCtx.erased c) (isPropTyU c ty) with
         | .true => .ok a u
         | .false => match qle .qo q with
           | .true => .ok a (uScale .qw u)
@@ -2993,9 +2996,20 @@ def checkLet : TCtx → Q → Tm → Tm → Tm → Val → TyRes
     | r => r
 -- (given) `check` matches on the type's shape (`whnf`), and answers with the type it got
 -- (and with the proof marker's requirement)
-def check (c0 : TCtx) (t : Tm) (ty : Val) : TyRes := match unknownSortInProof c0 t ty with
+def check (c0 : TCtx) (t : Tm) (ty : Val) : TyRes := match isPropTyU c0 ty with
+  -- a proof uses nothing: a term at a proposition is checked in an erased position, and its
+  -- usage is `0` (`check` in `Check.lean`)
+  | .true => (match checkE (TCtx.erase c0) t ty with
+    | .ok ty' _ => .ok ty' (uZeros (TCtx.lvl c0))
+    | r => r)
+  | .false => checkE c0 t ty
+def checkE (c0 : TCtx) (t : Tm) (ty : Val) : TyRes := match unknownSortInProof c0 t ty with
   | .some m => .err m
   | .none => checkM (modeAt c0 ty) t ty
+-- is this type a proposition (its sort computed, and `0`)? whatever the proof mode
+def isPropTyU (c : TCtx) (ty : Val) : Bool := match sortOf c ty with
+  | .some l => lvlIsZero l
+  | .none => .false
 -- inside a proof, a sort that can't be computed is an error as in relevant mode
 -- (`requireMarker`), for a term the requirement would apply to (review F4)
 def unknownSortInProof (c : TCtx) (t : Tm) (ty : Val) : Option String := match Nat.beq (TCtx.pm c) 1 with
