@@ -85,7 +85,7 @@ def group : Group where
     { name := "unknown identifier", run := fun _ =>
         fails "def bad : Type := Nope" "unknown identifier 'Nope'" },
     { name := "no recursion yet", run := fun _ =>
-        fails "def loop (A : Type) : A := loop A" "unknown identifier 'loop'" },
+        fails "def loop (A : Type) : A := loop A" "recursive call to loop in a definition without equations" },
     { name := "linearity is checked by the kernel", run := fun _ =>
         fails "def dup {A : Type} (f : A → A → A) (1 x : A) : A := f x x" "quantity" },
     { name := "erased implicit used at runtime", run := fun _ =>
