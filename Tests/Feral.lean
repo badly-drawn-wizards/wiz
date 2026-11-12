@@ -153,6 +153,38 @@ def group : Group where
         for n in ["forge_handle", "lengthen_borrow"] do
           let src ← IO.FS.readFile s!"drafts/feral/rejected/{n}.wiz"
           check (!(errorsOf (← frontend src) src).isEmpty) s!"{n} is accepted" },
+    { name := "examples/resources.wiz: Feral's swap on heap cells, verified with the x-tactics through lib/HeapBorrow.wiz", run := fun _ => do
+        let src ← IO.FS.readFile "examples/resources.wiz"
+        let s ← frontend src
+        checkEq "[]" (toString (errorsOf s src))
+        checkEq ("[.ok (2, 1), .some ((), .cons .none (.cons (.some (20, ())) (.cons (.some (10, ())) " ++
+          "(.cons (.some (30, ())) .nil))))]") (toString (infosOf s))
+        -- the heap specification of the identity is not one of swap's
+        let bad := src ++ "\ndef bad (p q : Nat) (a b : U64) :\n" ++
+          "    Triple ((p ↦ a) ⋆ (q ↦ b)) (swapCells p q) (fun _ => (p ↦ a) ⋆ (q ↦ b)) := by\n" ++
+          "  xgo\n"
+        let e ← firstError bad
+        check (((e.splitOn ":")[0]!).toNat! > 69) s!"the error is not in the added definition: {e}" },
+    { name := "spec items: a function's specification as a Wiz proposition (result, old, final)", run := fun _ => do
+        let fn := "  fn swap {'a 'b} (x : &'a mut U64) (y : &'b mut U64) : Unit := {\n    let t := *x;\n    *x := *y;\n    *y := t\n  }\n"
+        let s ← frontend (pre ++ "#lower feral\n" ++ fn ++ "  spec swap ensures (final x = old y) ensures (final y = old x)\nend\n")
+        check ((infosOf s).any (has · ("def swap.Spec {ρa ρb : Region} (x : (Uniq ρa U64)) (y : (Uniq ρb U64)) : Prop :=\n" ++
+          "  Result.Holds (fun (r : (Unit × ((Uniq ρa U64) × (Uniq ρb U64)))) => ((r.2.1.val) = (y.val)) × ((r.2.2.val) = (x.val))) ( swap x y)")))
+          s!"{infosOf s}"
+        -- a true specification is proved, a false one is not
+        let ok := pre ++ "feral\n" ++ fn ++ "  spec swap ensures (final x = old y) ensures (final y = old x)\nend\n" ++
+          "def swap_ok {ρa ρb : Region} (x : Uniq ρa U64) (y : Uniq ρb U64) : swap.Spec x y := (rfl, rfl)\n"
+        checkEq "[]" (toString (errorsOf (← frontend ok) ok))
+        let e ← firstError (pre ++ "feral\n" ++ fn ++ "  spec swap ensures (final x = old x)\nend\n" ++
+          "def swap_bad {ρa ρb : Region} (x : Uniq ρa U64) (y : Uniq ρb U64) : swap.Spec x y := rfl\n")
+        check (has e "rfl") e
+        -- requires, result
+        let r := pre ++ "feral\n  fn add1 (a : U64) : U64 := a + 1\n  spec add1 requires (Nat.lt a.val 10 = .true) ensures (result.val = Nat.succ a.val)\nend\n" ++
+          "#check @add1.Spec\n"
+        let rs ← frontend r
+        checkEq "[]" (toString (errorsOf rs r))
+        let e ← firstError (pre ++ "feral\n  spec nope ensures (True)\nend\n")
+        check (has e "no function `nope`") e },
     { name := "#lower shows the generated Wiz, item by item", run := fun _ => do
         let src := pre ++ "#lower feral\n  fn swap {'a 'b} (x : &'a mut U64) (y : &'b mut U64) : Unit := {\n" ++
           "    let t := *x;\n    *x := *y;\n    *y := t\n  }\nend\n"

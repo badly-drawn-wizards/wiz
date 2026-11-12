@@ -713,9 +713,14 @@ def serverGroup : Group where
     { name := "inside a feral block: hovers, go to definition and errors at the Feral source", run := fun _ => do
         -- the server's library: Prelude, Feral and the runtime of lowered code
         let mut libs := (← server).libs
+        -- plus whatever Optic/FeralCore import on this tree (Result, Logic, OpticDerive and
+        -- Deriving arrive with the cohesion stack); a module whose file is absent is skipped
         for (m, p) in [("Optic", "lib/Optic.wiz"), ("Region", "lib/Region.wiz"), ("Text", "lib/Text.wiz"),
-                       ("Feral", "lib/Feral.wiz"), ("FeralCore", "drafts/feral/lib/FeralCore.wiz")] do
-          libs := libs.insert m (p, ← IO.FS.readFile p)
+                       ("Feral", "lib/Feral.wiz"), ("FeralCore", "drafts/feral/lib/FeralCore.wiz"),
+                       ("Result", "lib/Result.wiz"), ("Logic", "lib/Logic.wiz"),
+                       ("OpticDerive", "lib/OpticDerive.wiz"), ("Deriving", "lib/Deriving.wiz")] do
+          if ← System.FilePath.pathExists p then
+            libs := libs.insert m (p, ← IO.FS.readFile p)
         let srv : LSP.Server := { (← server) with libs, trusted := ["Prelude", "Optic", "Region", "Text", "Feral"] }
         let (srv, _) := LSP.handle srv (req "{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"initialize\",\"params\":{}}")
         let src := "import FeralCore\nimport Feral\nferal\n  fn double (n : U64) : U64 := n + n\n" ++
