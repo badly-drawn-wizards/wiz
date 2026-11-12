@@ -22,7 +22,7 @@ def dblNoShare {r : HwTy → Type} [Hw r] : Nat → r u8 → r u8
 -- a saturating counter: the comparison and the increment share `s`
 def clampC : Circuit none0 u8 :=
   Circuit.mk u8 (BitVec.ofNat 8 250)
-    (fun s u => let n := Hw.mux (Hw.eq s (Hw.lit 8 255)) s (Hw.add s (Hw.lit 8 1)); Hw.pair n s)
+    (fun s u => let n := Hw.mux (Hw.eq s (Hw.lit 8 0xFF)) s (Hw.add s (Hw.lit 8 1)); Hw.pair n s)
 
 -- popcount by meta recursion over the bit index
 def bitAt {r : HwTy → Type} [Hw r] (x : r u8) (i : Nat) : r u8 :=

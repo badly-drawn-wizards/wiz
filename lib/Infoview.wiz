@@ -125,12 +125,12 @@ def TT.toString (t : TT) : String := match TT.flatten t "" .nil (.mk .nil 0 .nil
 -- columns a code point takes in a terminal: 0 for combining marks, 2 for wide (East
 -- Asian, emoji) characters, 1 otherwise
 def Infoview.charWidth (c : Nat) : Nat :=
-  match Bool.or (Json.between c 768 879) (Json.between c 8203 8207) with
+  match Bool.or (Json.between c 0x300 0x36F) (Json.between c 0x200B 0x200F) with
   | .true => 0
-  | .false => match Bool.or (Bool.or (Json.between c 4352 4447) (Json.between c 11904 42191))
-      (Bool.or (Bool.or (Json.between c 44032 55203) (Json.between c 63744 64255))
-        (Bool.or (Bool.or (Json.between c 65280 65376) (Json.between c 65504 65510))
-          (Bool.or (Json.between c 127744 129791) (Json.between c 131072 262141)))) with
+  | .false => match Bool.or (Bool.or (Json.between c 0x1100 0x115F) (Json.between c 0x2E80 0xA4CF))
+      (Bool.or (Bool.or (Json.between c 0xAC00 0xD7A3) (Json.between c 0xF900 0xFAFF))
+        (Bool.or (Bool.or (Json.between c 0xFF00 0xFF60) (Json.between c 0xFFE0 0xFFE6))
+          (Bool.or (Json.between c 0x1F300 0x1FAFF) (Json.between c 0x20000 0x3FFFD)))) with
     | .true => 2
     | .false => 1
 def Infoview.width : List Char → Nat
@@ -575,11 +575,11 @@ def Goals.toHtml (sel : Nat) (gs : List Goal) : String := match gs with
 -- ## JSON-RPC framing (`Content-Length: N\r\n\r\n` and N bytes of UTF-8)
 
 -- bytes of a code point in UTF-8
-def Infoview.utf8Len (c : Nat) : Nat := match Nat.lt c 128 with
+def Infoview.utf8Len (c : Nat) : Nat := match Nat.lt c 0x80 with
   | .true => 1
-  | .false => match Nat.lt c 2048 with
+  | .false => match Nat.lt c 0x800 with
     | .true => 2
-    | .false => match Nat.lt c 65536 with
+    | .false => match Nat.lt c 0x10000 with
       | .true => 3
       | .false => 4
 def Infoview.utf8Size : List Char → Nat
