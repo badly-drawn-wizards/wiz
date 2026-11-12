@@ -2572,6 +2572,9 @@ WIZ_API wiz_val wiz_mvar_read(wiz_val mv) { return wiz_mvar_take_(mv, 1); }
 WIZ_API wiz_val wiz_mvar_take_hole(wiz_val mv) { return wiz_pair(wiz_mvar_take_(mv, 0), WIZ_BOX(0)); }
 WIZ_API void wiz_mvar_fill(wiz_val mv, wiz_val hole, wiz_val a) { wiz_dec(hole); wiz_mvar_put(mv, a); }
 
+/* lib/Handle.wiz: the obligation to release a handle is an empty box (as an MVar hole) */
+WIZ_API wiz_val wiz_handle_own(void) { return WIZ_BOX(0); }
+WIZ_API void wiz_handle_disown(wiz_val tok) { wiz_dec(tok); }
 /* lib/Ref.wiz: a cell is an MVar that stays full; its ownership token is a box with
    nothing in it (as an MVar hole). The token's index (the cell's value) is a ghost: the
    types in Ref.wiz are trusted to keep it equal to what the cell holds. */

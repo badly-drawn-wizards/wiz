@@ -217,6 +217,36 @@ def within {α : Type} (secs mb : Nat) (act : Unit → IO α) : IO α := do
     throw (IO.userError s!"took {ms} ms and {peak} MB (bounds: {secs} s, {mb} MB)")
   pure a
 
+/-- A bundle `Bn` of `n` leaves, `deriving Bundle` alone. -/
+def plainBundle (n : Nat) : String :=
+  s!"structure B{n} (r : HwTy → Type) where\n" ++ String.join ((List.range n).map (s!"  l{·} : r (HwTy.bits 8)\n")) ++
+  "  deriving Bundle\n"
+
+/-- The number of instructions of an IR body, without the projections. (Reading field k
+of a structure, a right-nested Σ, is k projections in the IR wherever it is written: so
+`S.pack` still has a quadratic number of projections, the lowering's to remove.) -/
+partial def bodySize : IR.Body → Nat
+  | .vdecl _ (.proj _ _) b => bodySize b
+  | .vdecl _ _ b | .dup _ b | .drop _ b => bodySize b + 1
+  | .case _ alts => alts.foldl (fun n a => n + bodySize a) 1
+  | .jdecl _ _ body k => bodySize body + bodySize k + 1
+  | _ => 1
+
+/-- The lowered IR of the derived `pack` and `unpack` of bundles of `ns` leaves (each
+field: (size of `pack`, size of `unpack`)), with every library importable. -/
+def bundleIRSizes (ns : List Nat) : IO (List (Nat × Nat)) := do
+  let src := "import Hdl.Core\n" ++ String.join (ns.map plainBundle)
+  let st := runFrontend (R := ZeroOneMany) src { trustedModule := Tests.libModule, loader := ← Tests.Elab.libLoader }
+  let errs := (st.messages.filter (·.severity == .error)).map fun m => m.render src
+  unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
+  ns.mapM fun n => do
+    let size (f : String) : IO Nat := do
+      let ds ← loweredOf st [s!"B{n}.{f}"]
+      match ds.find? (·.name == s!"B{n}.{f}") with
+      | some d => pure (bodySize d.body)
+      | none => throw (IO.userError s!"no IR for B{n}.{f}")
+    pure (← size "pack", ← size "unpack")
+
 /-- A list of `n` numerals written out: `List.cons 0 (List.cons 1 (… List.nil))`. -/
 def listSource (n : Nat) : String :=
   String.join ((List.range n).map (s!"List.cons {·} (")) ++ "List.nil" ++ String.ofList (List.replicate n ')')
@@ -343,6 +373,21 @@ def group : Group where
         unless bad.isEmpty do throw (IO.userError "they differ on the projection chain") },
     { name := "the IR of a step over bundles of 8, 16 and 32 fields (reuse was exponential: 20 took 115 s)", run := fun _ =>
         checksLibsWithin 240 ("import Hdl.Core\n" ++ String.join ([8, 16, 32].map wideBundle)) },
+    -- `deriving Bundle` wrote field k of `S.unpack` as `Hw.fst (Hw.snd^k x)`, and each
+    -- `Hw.pair`/`Hw.snd` took the literal code of the rest of the product as an implicit
+    -- argument, which is relevant (`{ω a b : HwTy}`): quadratic code (cubic in `unpack`),
+    -- about n^2.7 to elaborate and compile (wiz-rv's 20-field core state: a 14k-line IR
+    -- function). Now `unpack` is a chain of `let`s and every tail of the code a definition:
+    -- linear (but for `pack`'s field projections: see `bodySize`). `#ir` before → after:
+    -- unpack, 32 fields 169k → 2.9k lines, 48 fields 567k → 4.4k; pack, 64 fields 39k → 9k.
+    { name := "deriving Bundle: pack and unpack of 32 and 64 fields are linear in the fields (unpack was cubic)", run := fun _ => do
+        let r ← within 240 3000 fun _ => bundleIRSizes [32, 64]
+        let [(p32, u32), (p64, u64)] := r | throw (IO.userError "two bundles expected")
+        -- twice the fields, at most 2.25 times the code (quadratic: 4, cubic: 8)
+        unless 4 * p64 ≤ 9 * p32 && 4 * u64 ≤ 9 * u32 do
+          throw (IO.userError s!"not linear: pack {p32} → {p64}, unpack {u32} → {u64}")
+        unless p64 ≤ 200 * 64 && u64 ≤ 200 * 64 do
+          throw (IO.userError s!"too large: pack {p64}, unpack {u64} at 64 fields") },
     -- `insertRC` recomputed the free variables of the rest of the body at each binding
     -- (and kept them while handling the rest): quadratic in time and space along a chain
     -- of bindings, the constant a literal becomes (6000 characters: 18 000 bindings, about

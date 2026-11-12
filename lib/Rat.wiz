@@ -1,0 +1,499 @@
+import IntOrder
+/-!
+# Rat
+
+Rational numbers as an ordered field, up to an equivalence (`import Rat`).
+
+A rational `Q` is a numerator and a positive denominator, **not reduced**, and `p ≈ q`
+(lib/Order.wiz) is the equality of fractions `p.num · q.den = q.num · p.den`: a setoid,
+not a quotient (Wiz has no quotient types). Reducing by gcd would keep the numbers
+small, but every law would then need facts about gcd; with unreduced fractions every law
+is an identity of integers. Every operation respects `≈` (`Q.add_congr`, …), and the
+laws hold up to `≈`.
+
+`q_ring! lhs ≈ rhs` proves identities of commutative rings at `Q`: the numerator and
+denominator of each side are integer expressions in the atoms' numerators and
+denominators, and `lhs ≈ rhs` is one integer identity, which `int_ring!`'s normaliser
+decides.
+
+Main definitions: `Q` with `+ - *`, `Q.inv`, `/` and numerals; `≈`, `≤`, `<`;
+`q_ring!`; the ring laws (`Q.add_comm`, …, `Q.mul_add`) and congruences; the order
+(`Q.le_trans`, `Q.le_total`, `Q.le_or_lt`, monotonicity of `+` and `*`); `Q.abs` and
+the triangle inequality (`Q.abs_add`, `Q.abs_sub_le`); the field law `Q.mul_inv`; and
+the archimedean property `Q.lt_ceil`.
+
+```
+import Rat
+
+def half : Q := Q.mk 1 2 rfl
+def ex : half + half ≈ 1 := rfl
+def sq (p q : Q) : (p + q) * (p + q) ≈ p * p + 2 * p * q + q * q :=
+  q_ring! (p + q) * (p + q) ≈ p * p + 2 * p * q + q * q
+```
+-/
+
+/-- A rational number `num / den`: an integer numerator and a positive integer
+denominator, not reduced. Compare rationals with `≈` (`Q.Eq`), not `=`: `1/2 ≈ 2/4`. -/
+structure Q where
+  num : Int
+  den : Int
+  pos : Int.Lt 0 den
+
+/-- `p ≈ q`: the fractions are equal, `p.num · q.den = q.num · p.den`. -/
+def Q.Eq (p q : Q) : Prop := p.num * q.den = q.num * p.den
+/-- `p ≤ q`: `p.num · q.den ≤ q.num · p.den`. -/
+def Q.Le (p q : Q) : Prop := Int.Le (p.num * q.den) (q.num * p.den)
+/-- `p < q`: `p.num · q.den < q.num · p.den`. -/
+def Q.Lt (p q : Q) : Prop := Int.Lt (p.num * q.den) (q.num * p.den)
+/-- `p ≈ q` is `Q.Eq p q`. -/
+instance : Equiv Q := Equiv.mk Q.Eq
+/-- `p ≤ q` is `Q.Le p q`. -/
+instance : LE Q := LE.mk Q.Le
+/-- `p < q` is `Q.Lt p q`. -/
+instance : LT Q := LT.mk Q.Lt
+
+/-- An integer as a rational, `a / 1`. -/
+def Q.ofInt (a : Int) : Q := Q.mk a 1 rfl
+/-- Numerals: a literal `n : Q` is `n / 1`. -/
+instance {ω n : Nat} : OfNat Q n := OfNat.mk (Q.ofInt (Int.ofNat n))
+
+/-- Addition: `a/b + c/d = (a·d + c·b) / (b·d)`. -/
+def Q.add (p q : Q) : Q :=
+  Q.mk (p.num * q.den + q.num * p.den) (p.den * q.den) (Int.mul_pos p.den q.den p.pos q.pos)
+/-- Negation, `-(a/b) = (-a)/b`. -/
+def Q.neg (p : Q) : Q := Q.mk (-p.num) p.den p.pos
+/-- Subtraction: adding the negation. -/
+def Q.sub (p q : Q) : Q := Q.add p (Q.neg q)
+/-- Multiplication: `(a/b)·(c/d) = (a·c) / (b·d)`. -/
+def Q.mul (p q : Q) : Q := Q.mk (p.num * q.num) (p.den * q.den) (Int.mul_pos p.den q.den p.pos q.pos)
+/-- `p + q` on rationals (`Q.add`). -/
+instance : Add Q := Add.mk Q.add
+/-- `-p` on rationals (`Q.neg`). -/
+instance : Neg Q := Neg.mk Q.neg
+/-- `p - q` on rationals (`Q.sub`). -/
+instance : Sub Q := Sub.mk Q.sub
+/-- `p * q` on rationals (`Q.mul`). -/
+instance : Mul Q := Mul.mk Q.mul
+
+
+/-- An expression of a commutative ring over atoms, for `q_ring!`. -/
+inductive QExpr where
+  | atom (i : Nat)
+  | lit (n : Nat)
+  | add (a b : QExpr)
+  | mul (a b : QExpr)
+  | neg (a : QExpr)
+  | sub (a b : QExpr)
+
+/-- The `i`-th atom of the environment (`0` past its end). -/
+def QExpr.get : List Q → Nat → Q
+  | .nil, _ => 0
+  | .cons x _, .zero => x
+  | .cons _ xs, .succ i => QExpr.get xs i
+
+/-- The value of an expression at `Q`, given the atoms. -/
+def QExpr.eval (ρ : List Q) : QExpr → Q
+  | .atom i => QExpr.get ρ i
+  | .lit n => Q.ofInt (Int.ofNat n)
+  | .add a b => QExpr.eval ρ a + QExpr.eval ρ b
+  | .mul a b => QExpr.eval ρ a * QExpr.eval ρ b
+  | .neg a => -(QExpr.eval ρ a)
+  | .sub a b => QExpr.eval ρ a - QExpr.eval ρ b
+
+/-- The environment of integers: atom `i` is `num / den`, with `num` at `2i` and
+`den` at `2i + 1`. -/
+def QExpr.env : List Q → List Int
+  | .nil => .nil
+  | .cons p ρ => .cons p.num (.cons p.den (QExpr.env ρ))
+
+/-- Every atom is below `n`. (An atom past the end of `ρ` is `0 / 1` for
+`QExpr.get` but `0 / 0` in `QExpr.env`, so `QExpr.prove` checks there is none.) -/
+def QExpr.wf (n : Nat) : QExpr → Bool
+  | .atom i => Nat.lt i n
+  | .lit _ => .true
+  | .add a b => Bool.and (QExpr.wf n a) (QExpr.wf n b)
+  | .mul a b => Bool.and (QExpr.wf n a) (QExpr.wf n b)
+  | .neg a => QExpr.wf n a
+  | .sub a b => Bool.and (QExpr.wf n a) (QExpr.wf n b)
+
+/-- The numerator and denominator of a sum. -/
+def QExpr.toFrac.add (x y : IntExpr × IntExpr) : IntExpr × IntExpr := (.add (.mul x.1 y.2) (.mul y.1 x.2), .mul x.2 y.2)
+/-- The numerator and denominator of a product. -/
+def QExpr.toFrac.mul (x y : IntExpr × IntExpr) : IntExpr × IntExpr := (.mul x.1 y.1, .mul x.2 y.2)
+/-- The numerator and denominator of a negation. -/
+def QExpr.toFrac.neg (x : IntExpr × IntExpr) : IntExpr × IntExpr := (.neg x.1, x.2)
+/-- The numerator and denominator of a difference. -/
+def QExpr.toFrac.sub (x y : IntExpr × IntExpr) : IntExpr × IntExpr := (.add (.mul x.1 y.2) (.mul (.neg y.1) x.2), .mul x.2 y.2)
+/-- The numerator and the denominator of an expression, as integer expressions in
+the atoms' numerators and denominators. -/
+def QExpr.toFrac : QExpr → IntExpr × IntExpr
+  | .atom i => (.atom (i + i), .atom (Nat.succ (i + i)))
+  | .lit n => (.lit n, .lit 1)
+  | .add a b => QExpr.toFrac.add (QExpr.toFrac a) (QExpr.toFrac b)
+  | .mul a b => QExpr.toFrac.mul (QExpr.toFrac a) (QExpr.toFrac b)
+  | .neg a => QExpr.toFrac.neg (QExpr.toFrac a)
+  | .sub a b => QExpr.toFrac.sub (QExpr.toFrac a) (QExpr.toFrac b)
+
+/-- The atoms `2i` and `2i+1` of `QExpr.env ρ` are the numerator and denominator
+of atom `i`. -/
+def QExpr.env_get : (ρ : List Q) → (i : Nat) → Nat.lt i (List.length ρ) = .true →
+    (IntExpr.get (QExpr.env ρ) (i + i) = (QExpr.get ρ i).num) ∧
+    (IntExpr.get (QExpr.env ρ) (Nat.succ (i + i)) = (QExpr.get ρ i).den)
+  | .nil, i, h => absurd (Bool.trueNeFalse (Eq.trans (Eq.symm h) (Nat.lt_zero i)))
+  | .cons p _, .zero, _ => (rfl, rfl)
+  | .cons p ρ, .succ i, h =>
+    let e : Nat.succ i + Nat.succ i = Nat.succ (Nat.succ (i + i)) := congrArg Nat.succ (Nat.add_succ i i);
+    let ih := QExpr.env_get ρ i h;
+    (Eq.trans (congrArg (IntExpr.get (QExpr.env (.cons p ρ))) e) ih.1,
+     Eq.trans (congrArg (fun j => IntExpr.get (QExpr.env (.cons p ρ)) (Nat.succ j)) e) ih.2)
+
+/-- The numerator and denominator of the value are those of `QExpr.toFrac`. -/
+def QExpr.sound (ρ : List Q) : (e : QExpr) → QExpr.wf (List.length ρ) e = .true →
+    ((QExpr.eval ρ e).num = IntExpr.eval (QExpr.env ρ) (QExpr.toFrac e).1) ∧
+    ((QExpr.eval ρ e).den = IntExpr.eval (QExpr.env ρ) (QExpr.toFrac e).2)
+  | .atom i, hw => let h := QExpr.env_get ρ i hw; (Eq.symm h.1, Eq.symm h.2)
+  | .lit n, _ => (rfl, rfl)
+  | .add a b, hw =>
+    let ha := QExpr.sound ρ a (Bool.and_left _ _ hw);
+    let hb := QExpr.sound ρ b (Bool.and_right _ _ hw);
+    (congrArg2 (fun x y => x + y) (congrArg2 (fun x y => x * y) ha.1 hb.2) (congrArg2 (fun x y => x * y) hb.1 ha.2),
+     congrArg2 (fun x y => x * y) ha.2 hb.2)
+  | .mul a b, hw =>
+    let ha := QExpr.sound ρ a (Bool.and_left _ _ hw);
+    let hb := QExpr.sound ρ b (Bool.and_right _ _ hw);
+    (congrArg2 (fun x y => x * y) ha.1 hb.1, congrArg2 (fun x y => x * y) ha.2 hb.2)
+  | .neg a, hw => let ha := QExpr.sound ρ a hw; (congrArg (fun x => -x) ha.1, ha.2)
+  | .sub a b, hw =>
+    let ha := QExpr.sound ρ a (Bool.and_left _ _ hw);
+    let hb := QExpr.sound ρ b (Bool.and_right _ _ hw);
+    (congrArg2 (fun x y => x + y) (congrArg2 (fun x y => x * y) ha.1 hb.2) (congrArg2 (fun x y => -x * y) hb.1 ha.2),
+     congrArg2 (fun x y => x * y) ha.2 hb.2)
+
+/-- Two expressions are equal up to `≈` when `num₁ · den₂ = num₂ · den₁` as
+integers, which `IntExpr.prove` decides; `h` checks both the atoms and the normal
+forms. -/
+def QExpr.prove (ρ : List Q) (a b : QExpr)
+    (h : Bool.and (Bool.and (QExpr.wf (List.length ρ) a) (QExpr.wf (List.length ρ) b))
+           (IntPoly.beq (IntExpr.norm (.mul (QExpr.toFrac a).1 (QExpr.toFrac b).2)) (IntExpr.norm (.mul (QExpr.toFrac b).1 (QExpr.toFrac a).2))) = .true) :
+    QExpr.eval ρ a ≈ QExpr.eval ρ b :=
+  let hw := Bool.and_left _ _ h;
+  let ha := QExpr.sound ρ a (Bool.and_left _ _ hw);
+  let hb := QExpr.sound ρ b (Bool.and_right _ _ hw);
+  Eq.trans (congrArg2 (fun x y => x * y) ha.1 hb.2)
+    (Eq.trans (IntExpr.prove (QExpr.env ρ) (.mul (QExpr.toFrac a).1 (QExpr.toFrac b).2) (.mul (QExpr.toFrac b).1 (QExpr.toFrac a).2) (Bool.and_right _ _ h))
+      (Eq.symm (congrArg2 (fun x y => x * y) hb.1 ha.2)))
+
+/-- `x ≈ y`, from expressions that evaluate to `x` and `y`. `q_ring!` expands to
+this. -/
+def QExpr.proveAt (x y : Q) (ρ : List Q) (a b : QExpr) (hx : QExpr.eval ρ a = x) (hy : QExpr.eval ρ b = y)
+    (h : Bool.and (Bool.and (QExpr.wf (List.length ρ) a) (QExpr.wf (List.length ρ) b))
+           (IntPoly.beq (IntExpr.norm (.mul (QExpr.toFrac a).1 (QExpr.toFrac b).2)) (IntExpr.norm (.mul (QExpr.toFrac b).1 (QExpr.toFrac a).2))) = .true) :
+    x ≈ y :=
+  @Eq.mp' Q (QExpr.eval ρ b) y (fun z => x ≈ z) hy (@Eq.mp' Q (QExpr.eval ρ a) x (fun z => z ≈ QExpr.eval ρ b) hx (QExpr.prove ρ a b h))
+
+/-- The macro behind `q_ring!`. -/
+def QRing.expand : Macro := fun stx => Ring.Reify.expand "QExpr" stx
+syntax:lead (name := qRing) "q_ring!" term : term
+attribute [macro term.qRing] QRing.expand
+
+-- ## `≈` is an equivalence
+
+/-- `≈` is reflexive. -/
+def Q.refl (p : Q) : p ≈ p := refl (p.num * p.den)
+/-- `≈` is symmetric. -/
+def Q.symm {ω p q : Q} (h : p ≈ q) : q ≈ p := Eq.symm h
+/-- `≈` is transitive. -/
+def Q.trans {ω p q r : Q} (h1 : p ≈ q) (h2 : q ≈ r) : p ≈ r :=
+  -- q.den * (p.num * r.den) = q.den * (r.num * p.den)
+  Int.eq_of_mul_eq_mul_left q.den (p.num * r.den) (r.num * p.den) q.pos
+    (Eq.via (p.num * q.den * r.den) (int_ring! q.den * (p.num * r.den) = p.num * q.den * r.den)
+      (Eq.via (q.num * p.den * r.den) (congrArg (fun z => z * r.den) h1)
+        (Eq.via (p.den * (q.num * r.den)) (int_ring! q.num * p.den * r.den = p.den * (q.num * r.den))
+          (Eq.via (p.den * (r.num * q.den)) (congrArg (fun z => p.den * z) h2)
+            (int_ring! p.den * (r.num * q.den) = q.den * (r.num * p.den))))))
+/-- Equal rationals are equivalent. -/
+def Q.ofEq {ω p q : Q} (e : p = q) : p ≈ q := Eq.mp' (fun (x : Q) => p ≈ x) e (Q.refl p)
+
+-- ## The operations respect `≈`
+
+/-- Addition respects `≈`. -/
+def Q.add_congr {ω p p' q q' : Q} (hp : p ≈ p') (hq : q ≈ q') : p + q ≈ p' + q' :=
+  Eq.via (p.num * p'.den * (q.den * q'.den) + q.num * q'.den * (p.den * p'.den))
+    (int_ring! (p.num * q.den + q.num * p.den) * (p'.den * q'.den)
+       = p.num * p'.den * (q.den * q'.den) + q.num * q'.den * (p.den * p'.den))
+    (Eq.via (p'.num * p.den * (q.den * q'.den) + q'.num * q.den * (p.den * p'.den))
+      (congrArg2 (fun x y => x * (q.den * q'.den) + y * (p.den * p'.den)) hp hq)
+      (int_ring! p'.num * p.den * (q.den * q'.den) + q'.num * q.den * (p.den * p'.den)
+         = (p'.num * q'.den + q'.num * p'.den) * (p.den * q.den)))
+/-- Negation respects `≈`. -/
+def Q.neg_congr {ω p p' : Q} (hp : p ≈ p') : -p ≈ -p' :=
+  Eq.via (-(p.num * p'.den)) (int_ring! -p.num * p'.den = -(p.num * p'.den))
+    (Eq.via (-(p'.num * p.den)) (congrArg (fun x => -x) hp) (int_ring! -(p'.num * p.den) = -p'.num * p.den))
+/-- Multiplication respects `≈`. -/
+def Q.mul_congr {ω p p' q q' : Q} (hp : p ≈ p') (hq : q ≈ q') : p * q ≈ p' * q' :=
+  Eq.via (p.num * p'.den * (q.num * q'.den))
+    (int_ring! p.num * q.num * (p'.den * q'.den) = p.num * p'.den * (q.num * q'.den))
+    (Eq.via (p'.num * p.den * (q'.num * q.den))
+      (congrArg2 (fun x y => x * y) hp hq)
+      (int_ring! p'.num * p.den * (q'.num * q.den) = p'.num * q'.num * (p.den * q.den)))
+/-- Subtraction respects `≈`. -/
+def Q.sub_congr {ω p p' q q' : Q} (hp : p ≈ p') (hq : q ≈ q') : p - q ≈ p' - q' :=
+  Q.add_congr hp (Q.neg_congr hq)
+
+-- ## Ring laws
+
+/-- Addition is commutative. -/
+def Q.add_comm (p q : Q) : p + q ≈ q + p := q_ring! p + q ≈ q + p
+/-- Addition is associative. -/
+def Q.add_assoc (p q r : Q) : p + q + r ≈ p + (q + r) := q_ring! p + q + r ≈ p + (q + r)
+/-- `p + 0 ≈ p`. -/
+def Q.add_zero (p : Q) : p + 0 ≈ p := q_ring! p + 0 ≈ p
+/-- `0 + p ≈ p`. -/
+def Q.zero_add (p : Q) : 0 + p ≈ p := q_ring! 0 + p ≈ p
+/-- `p + -p ≈ 0`. -/
+def Q.add_neg (p : Q) : p + -p ≈ 0 := q_ring! p + -p ≈ 0
+/-- `p - p ≈ 0`. -/
+def Q.sub_self (p : Q) : p - p ≈ 0 := q_ring! p - p ≈ 0
+/-- Multiplication is commutative. -/
+def Q.mul_comm (p q : Q) : p * q ≈ q * p := q_ring! p * q ≈ q * p
+/-- Multiplication is associative. -/
+def Q.mul_assoc (p q r : Q) : p * q * r ≈ p * (q * r) := q_ring! p * q * r ≈ p * (q * r)
+/-- `p * 1 ≈ p`. -/
+def Q.mul_one (p : Q) : p * 1 ≈ p := q_ring! p * 1 ≈ p
+/-- `1 * p ≈ p`. -/
+def Q.one_mul (p : Q) : 1 * p ≈ p := q_ring! 1 * p ≈ p
+/-- `p * 0 ≈ 0`. -/
+def Q.mul_zero (p : Q) : p * 0 ≈ 0 := q_ring! p * 0 ≈ 0
+/-- Multiplication distributes over addition on the left. -/
+def Q.mul_add (p q r : Q) : p * (q + r) ≈ p * q + p * r := q_ring! p * (q + r) ≈ p * q + p * r
+/-- Multiplication distributes over addition on the right. -/
+def Q.add_mul (p q r : Q) : (p + q) * r ≈ p * r + q * r := q_ring! (p + q) * r ≈ p * r + q * r
+
+-- ## Order, through the sign of the numerator
+
+/-- `p` is not negative: its numerator is not. -/
+def Q.NonNeg (p : Q) : Prop := Int.NonNeg p.num
+/-- `p` is positive: its numerator is. -/
+def Q.Pos (p : Q) : Prop := Int.Lt 0 p.num
+
+/-- `Q.NonNeg` respects `≈`. -/
+def Q.NonNeg.congr {ω p q : Q} (e : p ≈ q) (h : Q.NonNeg p) : Q.NonNeg q :=
+  Int.nonneg_of_mul_eq p.num p.den q.num q.den p.pos q.pos e h
+/-- `Q.Pos` respects `≈`. -/
+def Q.Pos.congr {ω p q : Q} (e : p ≈ q) (h : Q.Pos p) : Q.Pos q :=
+  Int.pos_of_mul_eq p.num p.den q.num q.den p.pos q.pos e h
+/-- A sum of non-negative rationals is non-negative. -/
+def Q.nonneg_add (p q : Q) (hp : Q.NonNeg p) (hq : Q.NonNeg q) : Q.NonNeg (p + q) :=
+  Int.nonneg_add _ _ (Int.nonneg_mul _ _ hp (Int.nonneg_of_pos q.den q.pos)) (Int.nonneg_mul _ _ hq (Int.nonneg_of_pos p.den p.pos))
+/-- A product of non-negative rationals is non-negative. -/
+def Q.nonneg_mul (p q : Q) (hp : Q.NonNeg p) (hq : Q.NonNeg q) : Q.NonNeg (p * q) := Int.nonneg_mul _ _ hp hq
+/-- A positive plus a non-negative rational is positive. -/
+def Q.pos_add (p q : Q) (hp : Q.Pos p) (hq : Q.NonNeg q) : Q.Pos (p + q) :=
+  Int.Lt.congr (int_ring! 0 + 0 = 0) (refl (p.num * q.den + q.num * p.den))
+    (Int.add_lt_add_of_lt_of_le 0 (p.num * q.den) 0 (q.num * p.den) (Int.mul_pos _ _ hp q.pos)
+      (Int.le_of_nonneg _ (Int.nonneg_mul _ _ hq (Int.nonneg_of_pos p.den p.pos))))
+/-- A product of positive rationals is positive. -/
+def Q.pos_mul (p q : Q) (hp : Q.Pos p) (hq : Q.Pos q) : Q.Pos (p * q) := Int.mul_pos _ _ hp hq
+/-- A positive rational is non-negative. -/
+def Q.nonneg_of_pos (p : Q) (h : Q.Pos p) : Q.NonNeg p := Int.nonneg_of_pos _ h
+
+/-- `p ≤ q → q - p ≥ 0`. -/
+def Q.le_iff_mp {ω p q : Q} (h : p ≤ q) : Q.NonNeg (q - p) :=
+  Int.NonNeg.congr (int_ring! q.num * p.den - p.num * q.den = q.num * p.den + -p.num * q.den) h
+/-- `q - p ≥ 0 → p ≤ q`. -/
+def Q.le_iff_mpr {ω p q : Q} (h : Q.NonNeg (q - p)) : p ≤ q :=
+  Int.NonNeg.congr (int_ring! q.num * p.den + -p.num * q.den = q.num * p.den - p.num * q.den) h
+/-- `p < q → q - p > 0`. -/
+def Q.lt_iff_mp {ω p q : Q} (h : p < q) : Q.Pos (q - p) :=
+  Int.NonNeg.congr (int_ring! q.num * p.den - (p.num * q.den + 1) = q.num * p.den + -p.num * q.den - (0 + 1)) h
+/-- `q - p > 0 → p < q`. -/
+def Q.lt_iff_mpr {ω p q : Q} (h : Q.Pos (q - p)) : p < q :=
+  Int.NonNeg.congr (int_ring! q.num * p.den + -p.num * q.den - (0 + 1) = q.num * p.den - (p.num * q.den + 1)) h
+/-- `0 ≤ p → Q.NonNeg p`. -/
+def Q.nonneg_of_le {ω p : Q} (h : 0 ≤ p) : Q.NonNeg p :=
+  Int.NonNeg.congr (int_ring! p.num * 1 - 0 * p.den = p.num) h
+/-- `Q.NonNeg p → 0 ≤ p`. -/
+def Q.le_of_nonneg {ω p : Q} (h : Q.NonNeg p) : 0 ≤ p :=
+  Int.NonNeg.congr (int_ring! p.num = p.num * 1 - 0 * p.den) h
+/-- `0 < p → Q.Pos p`. -/
+def Q.pos_of_lt {ω p : Q} (h : 0 < p) : Q.Pos p :=
+  Int.NonNeg.congr (int_ring! p.num * 1 - (0 * p.den + 1) = p.num - (0 + 1)) h
+/-- `Q.Pos p → 0 < p`. -/
+def Q.lt_of_pos {ω p : Q} (h : Q.Pos p) : 0 < p :=
+  Int.NonNeg.congr (int_ring! p.num - (0 + 1) = p.num * 1 - (0 * p.den + 1)) h
+
+/-- `≤` respects `≈`. -/
+def Q.le_congr {ω p p' q q' : Q} (hp : p ≈ p') (hq : q ≈ q') (h : p ≤ q) : p' ≤ q' :=
+  Q.le_iff_mpr (Q.NonNeg.congr (Q.sub_congr hq hp) (Q.le_iff_mp h))
+/-- `<` respects `≈`. -/
+def Q.lt_congr {ω p p' q q' : Q} (hp : p ≈ p') (hq : q ≈ q') (h : p < q) : p' < q' :=
+  Q.lt_iff_mpr (Q.Pos.congr (Q.sub_congr hq hp) (Q.lt_iff_mp h))
+/-- `≤` is reflexive. -/
+def Q.le_refl (p : Q) : p ≤ p := Int.le_refl _
+/-- `p ≈ q → p ≤ q`. -/
+def Q.le_of_eq {ω p q : Q} (e : p ≈ q) : p ≤ q := Q.le_congr (Q.refl p) e (Q.le_refl p)
+/-- `≤` is transitive. -/
+def Q.le_trans {ω p q r : Q} (h1 : p ≤ q) (h2 : q ≤ r) : p ≤ r :=
+  Q.le_iff_mpr (Q.NonNeg.congr (q_ring! r - q + (q - p) ≈ r - p) (Q.nonneg_add _ _ (Q.le_iff_mp h2) (Q.le_iff_mp h1)))
+/-- `p < q → q ≤ r → p < r`. -/
+def Q.lt_of_lt_of_le {ω p q r : Q} (h1 : p < q) (h2 : q ≤ r) : p < r :=
+  Q.lt_iff_mpr (Q.Pos.congr (q_ring! q - p + (r - q) ≈ r - p) (Q.pos_add _ _ (Q.lt_iff_mp h1) (Q.le_iff_mp h2)))
+/-- `p ≤ q → q < r → p < r`. -/
+def Q.lt_of_le_of_lt {ω p q r : Q} (h1 : p ≤ q) (h2 : q < r) : p < r :=
+  Q.lt_iff_mpr (Q.Pos.congr (q_ring! r - q + (q - p) ≈ r - p) (Q.pos_add _ _ (Q.lt_iff_mp h2) (Q.le_iff_mp h1)))
+/-- `p < q → p ≤ q`. -/
+def Q.le_of_lt {ω p q : Q} (h : p < q) : p ≤ q := Q.le_iff_mpr (Q.nonneg_of_pos _ (Q.lt_iff_mp h))
+/-- `<` is transitive. -/
+def Q.lt_trans {ω p q r : Q} (h1 : p < q) (h2 : q < r) : p < r := Q.lt_of_lt_of_le h1 (Q.le_of_lt h2)
+/-- `≤` is antisymmetric, up to `≈`. -/
+def Q.le_antisymm {ω p q : Q} (h1 : p ≤ q) (h2 : q ≤ p) : p ≈ q :=
+  Int.le_antisymm _ _ h1 h2
+/-- `≤` is total. -/
+def Q.le_total (p q : Q) : p ≤ q ∨ q ≤ p := Int.le_total _ _
+/-- `p ≤ q` or `q < p`: the order is decidable. -/
+def Q.le_or_lt (p q : Q) : p ≤ q ∨ q < p := Int.le_or_lt _ _
+/-- `<` is irreflexive. -/
+def Q.lt_irrefl (p : Q) (h : p < p) : False := Int.Lt.irrefl _ h
+/-- `p ≤ q` and `q < p` contradict each other. -/
+def Q.not_lt_of_le {ω p q : Q} (h1 : p ≤ q) (h2 : q < p) : False := Q.lt_irrefl p (Q.lt_of_le_of_lt h1 h2)
+/-- Adding on the left is monotone. -/
+def Q.add_le_add_left {ω q r : Q} (p : Q) (h : q ≤ r) : p + q ≤ p + r :=
+  Q.le_iff_mpr (Q.NonNeg.congr (q_ring! r - q ≈ p + r - (p + q)) (Q.le_iff_mp h))
+/-- Adding on the right is monotone. -/
+def Q.add_le_add_right {ω q r : Q} (p : Q) (h : q ≤ r) : q + p ≤ r + p :=
+  Q.le_iff_mpr (Q.NonNeg.congr (q_ring! r - q ≈ r + p - (q + p)) (Q.le_iff_mp h))
+/-- `p ≤ q → r ≤ s → p + r ≤ q + s`. -/
+def Q.add_le_add {ω p q r s : Q} (h1 : p ≤ q) (h2 : r ≤ s) : p + r ≤ q + s :=
+  Q.le_iff_mpr (Q.NonNeg.congr (q_ring! q - p + (s - r) ≈ q + s - (p + r)) (Q.nonneg_add _ _ (Q.le_iff_mp h1) (Q.le_iff_mp h2)))
+/-- Adding on the left is strictly monotone. -/
+def Q.add_lt_add_left {ω q r : Q} (p : Q) (h : q < r) : p + q < p + r :=
+  Q.lt_iff_mpr (Q.Pos.congr (q_ring! r - q ≈ p + r - (p + q)) (Q.lt_iff_mp h))
+/-- `p < q → r ≤ s → p + r < q + s`. -/
+def Q.add_lt_add_of_lt_of_le {ω p q r s : Q} (h1 : p < q) (h2 : r ≤ s) : p + r < q + s :=
+  Q.lt_iff_mpr (Q.Pos.congr (q_ring! q - p + (s - r) ≈ q + s - (p + r)) (Q.pos_add _ _ (Q.lt_iff_mp h1) (Q.le_iff_mp h2)))
+/-- Negation reverses `≤`. -/
+def Q.neg_le_neg {ω p q : Q} (h : p ≤ q) : -q ≤ -p :=
+  Q.le_iff_mpr (Q.NonNeg.congr (q_ring! q - p ≈ -p - -q) (Q.le_iff_mp h))
+/-- Multiplying by a non-negative rational on the left is monotone. -/
+def Q.mul_le_mul_of_nonneg_left {ω q r : Q} (p : Q) (hp : 0 ≤ p) (h : q ≤ r) : p * q ≤ p * r :=
+  Q.le_iff_mpr (Q.NonNeg.congr (q_ring! p * (r - q) ≈ p * r - p * q) (Q.nonneg_mul _ _ (Q.nonneg_of_le hp) (Q.le_iff_mp h)))
+/-- Multiplying by a non-negative rational on the right is monotone. -/
+def Q.mul_le_mul_of_nonneg_right {ω q r : Q} (p : Q) (hp : 0 ≤ p) (h : q ≤ r) : q * p ≤ r * p :=
+  Q.le_iff_mpr (Q.NonNeg.congr (q_ring! (r - q) * p ≈ r * p - q * p) (Q.nonneg_mul _ _ (Q.le_iff_mp h) (Q.nonneg_of_le hp)))
+/-- Multiplying by a positive rational on the left is strictly monotone. -/
+def Q.mul_lt_mul_of_pos_left {ω q r : Q} (p : Q) (hp : 0 < p) (h : q < r) : p * q < p * r :=
+  Q.lt_iff_mpr (Q.Pos.congr (q_ring! p * (r - q) ≈ p * r - p * q) (Q.pos_mul _ _ (Q.pos_of_lt hp) (Q.lt_iff_mp h)))
+/-- `0 ≤ p → 0 ≤ q → 0 ≤ p * q`. -/
+def Q.mul_nonneg {ω p q : Q} (hp : 0 ≤ p) (hq : 0 ≤ q) : 0 ≤ p * q :=
+  Q.le_of_nonneg (Q.nonneg_mul _ _ (Q.nonneg_of_le hp) (Q.nonneg_of_le hq))
+/-- `0 < p → 0 < q → 0 < p * q`. -/
+def Q.mul_pos {ω p q : Q} (hp : 0 < p) (hq : 0 < q) : 0 < p * q :=
+  Q.lt_of_pos (Q.pos_mul _ _ (Q.pos_of_lt hp) (Q.pos_of_lt hq))
+/-- `0 ≤ p → 0 ≤ q → 0 ≤ p + q`. -/
+def Q.add_nonneg {ω p q : Q} (hp : 0 ≤ p) (hq : 0 ≤ q) : 0 ≤ p + q :=
+  Q.le_of_nonneg (Q.nonneg_add _ _ (Q.nonneg_of_le hp) (Q.nonneg_of_le hq))
+
+-- ## Absolute value
+
+/-- The absolute value `|p|`. -/
+def Q.abs (p : Q) : Q := Q.mk (Int.abs p.num) p.den p.pos
+
+/-- `Q.abs` respects `≈`. -/
+def Q.abs_congr {ω p q : Q} (e : p ≈ q) : Q.abs p ≈ Q.abs q :=
+  Eq.trans (Int.abs_mul_pos p.num q.den q.pos)
+    (Eq.trans (congrArg Int.abs e) (Eq.symm (Int.abs_mul_pos q.num p.den p.pos)))
+/-- `0 ≤ |p|`. -/
+def Q.abs_nonneg (p : Q) : 0 ≤ Q.abs p := @Q.le_of_nonneg (Q.abs p) (Int.abs_nonneg p.num)
+/-- `p ≤ |p|`. -/
+def Q.le_abs (p : Q) : p ≤ Q.abs p :=
+  Int.mul_le_mul_of_nonneg_right p.den p.num (Int.abs p.num) (Int.nonneg_of_pos p.den p.pos) (Int.le_abs p.num)
+/-- `-p ≤ |p|`. -/
+def Q.neg_le_abs (p : Q) : -p ≤ Q.abs p :=
+  Int.mul_le_mul_of_nonneg_right p.den (-p.num) (Int.abs p.num) (Int.nonneg_of_pos p.den p.pos) (Int.neg_le_abs p.num)
+/-- `p ≤ r → -p ≤ r → |p| ≤ r`. -/
+def Q.abs_le {ω p r : Q} (h1 : p ≤ r) (h2 : -p ≤ r) : Q.abs p ≤ r :=
+  Int.Le.congr (Eq.symm (Int.abs_mul_pos p.num r.den r.pos)) (refl (r.num * p.den))
+    (Int.abs_le (p.num * r.den) (r.num * p.den) h1 (Int.Le.congr (int_ring! -p.num * r.den = -(p.num * r.den)) (refl _) h2))
+/-- `|p| ≤ r → p ≤ r`. -/
+def Q.le_of_abs_le {ω p r : Q} (h : Q.abs p ≤ r) : p ≤ r := Q.le_trans (Q.le_abs p) h
+/-- `|p| ≤ r → -p ≤ r`. -/
+def Q.neg_le_of_abs_le {ω p r : Q} (h : Q.abs p ≤ r) : -p ≤ r := Q.le_trans (Q.neg_le_abs p) h
+/-- `|p · q| ≈ |p| · |q|`. -/
+def Q.abs_mul (p q : Q) : Q.abs (p * q) ≈ Q.abs p * Q.abs q :=
+  congrArg (fun z => z * (p.den * q.den)) (Int.abs_mul p.num q.num)
+/-- `|-p| ≈ |p|`. -/
+def Q.abs_neg (p : Q) : Q.abs (-p) ≈ Q.abs p := congrArg (fun z => z * p.den) (Int.abs_neg p.num)
+/-- `|p - q| ≈ |q - p|`. -/
+def Q.abs_sub_comm (p q : Q) : Q.abs (p - q) ≈ Q.abs (q - p) :=
+  Q.trans (Q.abs_congr (q_ring! p - q ≈ -(q - p))) (Q.abs_neg (q - p))
+/-- The triangle inequality: `|p + q| ≤ |p| + |q|`. -/
+def Q.abs_add (p q : Q) : Q.abs (p + q) ≤ Q.abs p + Q.abs q :=
+  Q.abs_le (Q.add_le_add (Q.le_abs p) (Q.le_abs q))
+    (Q.le_congr (q_ring! -p + -q ≈ -(p + q)) (Q.refl _) (Q.add_le_add (Q.neg_le_abs p) (Q.neg_le_abs q)))
+/-- The triangle inequality for distances: `|p - r| ≤ |p - q| + |q - r|`. -/
+def Q.abs_sub_le (p q r : Q) : Q.abs (p - r) ≤ Q.abs (p - q) + Q.abs (q - r) :=
+  Q.le_congr (Q.abs_congr (q_ring! p - q + (q - r) ≈ p - r)) (Q.refl _) (Q.abs_add (p - q) (q - r))
+/-- `|p| ≈ p` for `0 ≤ p`. -/
+def Q.abs_of_nonneg {ω p : Q} (h : 0 ≤ p) : Q.abs p ≈ p :=
+  congrArg (fun z => z * p.den) (Int.abs_of_nonneg p.num (Q.nonneg_of_le h))
+/-- `-r ≤ p → p ≤ r → |p| ≤ r`. -/
+def Q.abs_le_of_bounds {ω p r : Q} (h1 : -r ≤ p) (h2 : p ≤ r) : Q.abs p ≤ r :=
+  Q.abs_le h2 (Q.le_congr (Q.refl _) (q_ring! -(-r) ≈ r) (Q.neg_le_neg h1))
+
+-- ## Inverse
+
+/-- The inverse of `a / d`, by cases on `a` (`0` for `a = 0`). -/
+def Q.invAux (d : Int) (hd : Int.Lt 0 d) : Int → Q
+  | .ofNat .zero => 0
+  | .ofNat (.succ n) => Q.mk d (Int.ofNat (.succ n)) (Int.ofNat_succ_pos n)
+  | .negSucc n => Q.mk (-d) (Int.ofNat (.succ n)) (Int.ofNat_succ_pos n)
+/-- The inverse `p⁻¹` (with `0⁻¹ = 0`). -/
+def Q.inv (p : Q) : Q := Q.invAux p.den p.pos p.num
+
+/-- The inverse is one: `(a/d) · (a/d)⁻¹ ≈ 1` for `a ≠ 0`. -/
+def Q.mul_invAux (d : Int) (hd : Int.Lt 0 d) : (a : Int) → ¬ (a = 0) → Q.mk a d hd * Q.invAux d hd a ≈ 1
+  | .ofNat .zero, h => absurd (h rfl)
+  | .ofNat (.succ n), _ => int_ring! Int.ofNat (Nat.succ n) * d * 1 = 1 * (d * Int.ofNat (Nat.succ n))
+  | .negSucc n, _ => int_ring! -(Int.ofNat (Nat.succ n)) * -d * 1 = 1 * (d * Int.ofNat (Nat.succ n))
+/-- `p · p⁻¹ ≈ 1` for `p.num ≠ 0`. -/
+def Q.mul_inv (p : Q) (h : ¬ (p.num = 0)) : p * Q.inv p ≈ 1 := Q.mul_invAux p.den p.pos p.num h
+/-- `p⁻¹ · p ≈ 1` for `p.num ≠ 0`. -/
+def Q.inv_mul (p : Q) (h : ¬ (p.num = 0)) : Q.inv p * p ≈ 1 := Q.trans (Q.mul_comm (Q.inv p) p) (Q.mul_inv p h)
+/-- A positive rational has a non-zero numerator. -/
+def Q.num_ne_zero_of_pos (p : Q) (h : 0 < p) (e : p.num = 0) : False :=
+  Int.Lt.irrefl 0 (Int.Lt.congr (refl 0) e (Q.pos_of_lt h))
+/-- The inverse of a positive fraction is positive. -/
+def Q.invAux_pos (d : Int) (hd : Int.Lt 0 d) : (a : Int) → Int.Lt 0 a → Q.Pos (Q.invAux d hd a)
+  | .ofNat .zero, h => absurd (Int.Lt.irrefl 0 h)
+  | .ofNat (.succ _), _ => hd
+  | .negSucc n, h => absurd (Int.not_nonneg_negSucc n (Int.nonneg_of_pos _ h))
+/-- `0 < p → 0 < p⁻¹`. -/
+def Q.inv_pos {ω p : Q} (h : 0 < p) : 0 < Q.inv p := Q.lt_of_pos (Q.invAux_pos p.den p.pos p.num (Q.pos_of_lt h))
+
+/-- Division: `p / q = p · q⁻¹`. -/
+def Q.div (p q : Q) : Q := Q.mul p (Q.inv q)
+/-- `p / q` on rationals (`Q.div`). -/
+instance : Div Q := Div.mk Q.div
+
+-- ## The archimedean property
+
+/-- A natural number as a rational. -/
+def Q.ofNat (n : Nat) : Q := Q.ofInt (Int.ofNat n)
+/-- A natural number above `p` (not the least). -/
+def Q.ceil (p : Q) : Nat := Nat.succ (Int.natAbs p.num)
+/-- `Q.ceil p` is `|p.num| + 1`. -/
+def Q.ceil_num (p : Q) : Int.ofNat (Q.ceil p) = Int.abs p.num + 1 :=
+  @Eq.trans Int (Int.ofNat (Q.ceil p)) (Int.ofNat (Int.natAbs p.num) + 1) (Int.abs p.num + 1)
+    (Int.ofNat_succ (Int.natAbs p.num)) (congrArg (fun z => z + 1) (Int.ofNat_natAbs p.num))
+/-- The archimedean property: `p < Q.ceil p`. -/
+def Q.lt_ceil (p : Q) : p < Q.ofNat (Q.ceil p) :=
+  -- a·1 ≤ |a| ≤ |a|·b < |a|·b + b = (|a| + 1)·b
+  Int.Lt.congr (int_ring! p.num = p.num * 1)
+    (Eq.trans (int_ring! Int.abs p.num * p.den + p.den = (Int.abs p.num + 1) * p.den)
+      (congrArg (fun z => z * p.den) (Eq.symm (Q.ceil_num p))))
+    (Int.lt_of_le_of_lt p.num (Int.abs p.num * p.den) (Int.abs p.num * p.den + p.den)
+      (Int.le_trans p.num (Int.abs p.num) (Int.abs p.num * p.den) (Int.le_abs p.num)
+        (Int.Le.congr (int_ring! Int.abs p.num * 1 = Int.abs p.num) (refl _)
+          (Int.mul_le_mul_of_nonneg_left (Int.abs p.num) 1 p.den (Int.abs_nonneg p.num) (Int.one_le_of_pos p.den p.pos))))
+      (Int.Lt.congr (int_ring! Int.abs p.num * p.den + 0 = Int.abs p.num * p.den) (refl _)
+        (Int.add_lt_add_left (Int.abs p.num * p.den) 0 p.den p.pos)))
