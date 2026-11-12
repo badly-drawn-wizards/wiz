@@ -375,8 +375,8 @@ def group : Group where
           match ds.find? (·.name == s!"sum{n}") with
           | some d => pure (projCount d.body)
           | none => throw (IO.userError s!"no IR for sum{n}")
-        -- one projection to each field and one to each tail
-        checkEq [64, 128] counts },
+        -- one projection to each field and one to each of the n - 1 tails reached
+        checkEq [63, 127] counts },
     -- `deriving Bundle` wrote field k of `S.unpack` as `Hw.fst (Hw.snd^k x)`, and each
     -- `Hw.pair`/`Hw.snd` took the literal code of the rest of the product as an implicit
     -- argument, which is relevant (`{ω a b : HwTy}`): quadratic code (cubic in `unpack`),
