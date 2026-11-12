@@ -3727,10 +3727,10 @@ def termCtor : Term ZeroOneMany → String
   | .out _ => "out" | .size => "size" | .szInf => "szInf" | .szSuc _ => "szSuc" | .sizeLt _ => "sizeLt"
   | .sfix .. => "sfix" | .scase .. => "scase" | .cocon _ => "cocon" | .scofix .. => "scofix"
   | .coit .. => "coit" | .natLit _ => "natLit" | .natOp .. => "natOp" | .ulift .. => "ulift"
-  | .up _ => "up" | .down _ => "down" | .prf .. => "prf"
+  | .up _ => "up" | .down _ => "down" | .prf .. => "prf" | .letUnit .. => "letUnit"
 
 /-- How many constructors `Term` has (the arms of `termCtor`). -/
-def termCtorCount : Nat := 55
+def termCtorCount : Nat := 56
 
 /-- One term per constructor of `Term`, with `c` in every term position and `w` in every
 level position, and how many of each there are. -/
@@ -3745,9 +3745,9 @@ def termSamples (c : Term ZeroOneMany) (w : Level) : List (Term ZeroOneMany × N
    (.dhrec c c c c, 4, 0), (.delim w c c c c c c, 6, 1), (.mu w c c c c (some ("h", [w], [c])), 5, 2),
    (.con c, 1, 0), (.ind w c c w c c c c, 6, 2), (.nu w c c c c (some ("h", [w], [c])), 5, 2), (.out c, 1, 0),
    (.size, 0, 0), (.szInf, 0, 0), (.szSuc c, 1, 0), (.sizeLt c, 1, 0), (.sfix w c c w c c c c c, 7, 2),
-   (.scase w c c w c c c c c, 7, 2), (.cocon c, 1, 0), (.scofix w c c c c c c c, 7, 1), (.coit w c c c c c c, 6, 1),
+   (.scase w c c c w c c c c c, 8, 2), (.cocon c, 1, 0), (.scofix w c c c c c c c, 7, 1), (.coit w c c c c c c, 6, 1),
    (.natLit 3, 0, 0), (.natOp "nat.add" #[c, c], 2, 0), (.ulift w c, 1, 1), (.up c, 1, 0), (.down c, 1, 0),
-   (.prf w c, 1, 1)]
+   (.prf w c, 1, 1), (.letUnit c c, 2, 0)]
 
 /-- The globals of the differential test, in the Lean kernel. (A function, so that it
 is computed in the test, not when the module starts.) -/
@@ -8575,6 +8575,9 @@ def linearCaseGroup : Group where
           "attribute [implemented_by relImpl] rel\n") "has no runtime content"
         failsLibs ("import IO\ndef Tk : Type := Unit\ndef rel (n : Nat) : Tk := ()\ndef relImpl (n : Nat) : Tk := ()\n" ++
           "attribute [implemented_by relImpl] rel\n") "has no runtime content"
+        -- an implementation at a proposition is a proof, erased too: allowed (externs are not)
+        okLibs ("import IO\ndef pf (n : Nat) : n = n := refl n\ndef pfImpl (n : Nat) : n = n := refl n\n" ++
+          "attribute [implemented_by pfImpl] pf\n")
         okLibs "import IO\nextern \"c_release\" cRelease : Nat → IO Unit\nextern \"c_sq\" cSq : Nat → Nat\n" },
     { name := "linear-review's erased-position stashes: with the release in IO there is no Unit to hide it in", run := fun _ => do
         -- (the same shapes, with the IO release: `t` must reach an IO action that is run;

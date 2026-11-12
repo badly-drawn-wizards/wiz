@@ -1726,7 +1726,8 @@ match, a 0 field used at run time).
   result).
 * **The checks that enforce what can be checked.** `extern` and `implemented_by` refuse a
   result type with no runtime content: `Unit`, a proposition, a type, an erased function
-  into such, or a Σ of such, after `whnf` (a named `def Tk := Unit` counts). The decision
+  into such, or a Σ of such, after `whnf` (a named `def Tk := Unit` counts); `implemented_by`
+  allows a proposition (the implementation is a proof, erased too). The decision
   uses the predicate erasure itself uses (`contentless`/`resultContentless`, Erase.lean,
   built on `erasable`), so the two can't drift. A foreign call is also kept where its
   type is erasable (`externCall`: defence in depth for polymorphic natives). Tested with
