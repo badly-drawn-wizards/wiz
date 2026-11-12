@@ -80,7 +80,7 @@ WORKDIR /home/runner/actions-runner
 RUN curl -L -o r.tgz https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-${RUNNER_ARCH}-${RUNNER_VERSION}.tar.gz \
     && tar xzf r.tgz && rm r.tgz
 # pre-fetch the dev shell's packages so each job starts warm (optional; re-run to refresh)
-RUN nix develop github:badly-drawn-wizards/wiz --command true || true
+RUN nix develop github:wiz-pl/wiz --command true || true
 COPY --chown=runner run-one.sh /home/runner/run-one.sh
 ENTRYPOINT ["/home/runner/run-one.sh"]
 ```
@@ -92,7 +92,7 @@ ENTRYPOINT ["/home/runner/run-one.sh"]
 set -euo pipefail
 cd ~/actions-runner
 ./config.sh --unattended --ephemeral --replace \
-  --url https://github.com/badly-drawn-wizards/wiz \
+  --url https://github.com/wiz-pl/wiz \
   --token "$RUNNER_TOKEN" \
   --name "wiz-heavy-$(hostname)" \
   --labels wiz-heavy \
@@ -113,7 +113,7 @@ asks for a new one for each container. It needs a GitHub token of a repository a
 kept on the host, never in the image:
 
 ```sh
-gh api -X POST repos/badly-drawn-wizards/wiz/actions/runners/registration-token --jq .token
+gh api -X POST repos/wiz-pl/wiz/actions/runners/registration-token --jq .token
 ```
 
 ### 4. The loop on the host
@@ -125,7 +125,7 @@ gh api -X POST repos/badly-drawn-wizards/wiz/actions/runners/registration-token 
 # one fresh container per job; the container is removed when its job ends
 export GH_TOKEN=$(cat /etc/wiz-runner/admin-token)   # chmod 600, owned by the service user
 while true; do
-  tok=$(gh api -X POST repos/badly-drawn-wizards/wiz/actions/runners/registration-token --jq .token) \
+  tok=$(gh api -X POST repos/wiz-pl/wiz/actions/runners/registration-token --jq .token) \
     || { sleep 60; continue; }
   podman run --rm --memory 20g --cpus "$(nproc)" -e RUNNER_TOKEN="$tok" wiz-runner || sleep 10
 done
@@ -147,20 +147,20 @@ WantedBy=multi-user.target
 
 ```sh
 sudo systemctl enable --now wiz-runner
-gh api repos/badly-drawn-wizards/wiz/actions/runners --jq '.runners[] | [.name, .status, (.labels | map(.name) | join(","))]'
+gh api repos/wiz-pl/wiz/actions/runners --jq '.runners[] | [.name, .status, (.labels | map(.name) | join(","))]'
 ```
 
 ### 5. Switch CI to it
 
 ```sh
-gh variable set WIZ_RUNNER_HEAVY -R badly-drawn-wizards/wiz -b wiz-heavy
+gh variable set WIZ_RUNNER_HEAVY -R wiz-pl/wiz -b wiz-heavy
 ```
 
 The next run's heavy shards queue for `wiz-heavy`. While the machine is off they wait in
 the queue (up to 24 hours, then fail), so switch back before switching it off for long:
 
 ```sh
-gh variable delete WIZ_RUNNER_HEAVY -R badly-drawn-wizards/wiz
+gh variable delete WIZ_RUNNER_HEAVY -R wiz-pl/wiz
 ```
 
 A label names one or more machines: run the loop on several hosts (or several loops on a
