@@ -649,7 +649,21 @@ def group : Group where
           "def s0t (s : S0) : Type := match s with\n  | .mk n m => Nat\n" ++
           "#eval s0mt (S0.mk 3 4)\n") ["4"]
         -- used at runtime it is an error (not a projection at ω behind the user's back)
-        failsLib (hdr ++ "def bad (s : S0) : Nat := match s with\n  | .mk n m => n\n") "n" }
+        failsLib (hdr ++ "def bad (s : S0) : Nat := match s with\n  | .mk n m => n\n") "n" },
+    { name := "#249: recursion over a family refines later arguments at non-variable indices", run := fun _ =>
+        okLib ("import Prelude\ninductive R : Nat → Nat → Type where\n  | done (s : Nat) : R s s\n" ++
+          "  | step (s t u : Nat) (r : R t u) : R s u\n" ++
+          "def v5 (P : Nat → Prop) (f : (a b : Nat) → P a → P b) : {s u : Nat} → R s u → P s → P u\n" ++
+          "  | _, _, .done x, h => h\n  | _, _, .step a b c r, h => v5 P f r (f a b h)\n" ++
+          "def v6 (P : Nat → Prop) (f : (a b : Nat) → P a → P b) : (s u : Nat) → R s u → P s → P u\n" ++
+          "  | _, _, .done x, h => h\n  | _, _, .step a b c r, h => v6 P f b c r (f a b h)\n" ++
+          "inductive Vec (A : Type) : Nat → Type where\n  | nil : Vec A 0\n" ++
+          "  | cons {n : Nat} (x : A) (xs : Vec A n) : Vec A (n + 1)\n" ++
+          "def map {A B : Type} (f : A → B) : {n : Nat} → Vec A n → Vec B n\n" ++
+          "  | _, .nil => .nil\n  | _, .cons x xs => .cons (f x) (map f xs)\n" ++
+          "def len {A : Type} : {n : Nat} → Vec A n → (k : Nat) → Nat\n" ++
+          "  | _, .nil, k => k\n  | _, .cons x xs, k => len xs (k + 1)\n" ++
+          "#eval len (map (fun n => n + 1) (Vec.cons 1 (Vec.cons 2 Vec.nil))) 10") ["12"] }
   ]
 
 /-- This module's test groups, which `Tests/Main.lean` runs: one per line, in sorted

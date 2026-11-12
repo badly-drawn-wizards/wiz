@@ -460,6 +460,12 @@ structure RecCtx where
   cols : Nat := 0
   /-- all the parameters, and whether each is explicit: `@f` passes them all -/
   allParams : List (Name × Bool) := []
+  /-- (#249) whether each matched argument is explicit (empty: all are), in the
+  definition's order: a call `f …` passes only the explicit ones -/
+  colExplicit : List Bool := []
+  /-- (#249) the matched arguments (in the definition's order) the hypothesis doesn't
+  take: index variables generalised by the motive -/
+  dropCols : List Nat := []
 
 partial def patView (g : Globals R) (stx : Syntax) : Except String PatView :=
   let ctorOf (n : Name) : Option (Name × Name) :=
@@ -635,13 +641,19 @@ partial def rewriteRecCalls (g : Globals R) (rc : RecCtx) (binds : List (Name ×
             (a.isOfKind "term.ident" && (a.getArg 0).getId? == some p) do
           throw s!"recursive call of {rc.fn} must pass the parameter {p} unchanged"
       args := kept ++ args.extract rc.allParams.length args.size
-    let np := if args.size ≤ rc.cols then 0 else rc.params.length
+    -- (#249) which columns the call passes: with `@f` all of them, else the explicit ones
+    let explicitCols : List Nat := (List.range rc.cols).filter fun i =>
+      isExplicitF (stx.getArg 0) || (rc.colExplicit[i]?.getD true)
+    let np := if args.size ≤ explicitCols.length then 0 else rc.params.length
     for p in rc.params.take np, i in [0:np] do
       let ok := match args[i]? with
         | some a => a.isOfKind "term.ident" && (a.getArg 0).getId? == some p
         | none => false
       unless ok do throw s!"recursive call of {rc.fn} must pass the parameter {p} unchanged"
-    let some a := args[np + rc.pos]? | throw s!"recursive call of {rc.fn} without its structural argument"
+    let colArgs := args.extract np args.size
+    let some posE := explicitCols.idxOf? rc.pos
+      | throw s!"recursive call of {rc.fn}: its structural argument is implicit; use @{rc.fn}"
+    let some a := colArgs[posE]? | throw s!"recursive call of {rc.fn} without its structural argument"
     let rec unparen (s : Syntax) : Syntax := if s.isOfKind "term.paren" then unparen (s.getArg 1) else s
     let a := unparen a
     -- `y`, or `k e…` for an infinitary field `k`
@@ -684,7 +696,18 @@ partial def rewriteRecCalls (g : Globals R) (rc : RecCtx) (binds : List (Name ×
     -- the definition is in scope, see `infer`)
     let ident : Syntax := .node a.info "term.recCall"
       #[.ident (stx.getArg 0).info rc.fn, .node a.info "term.ident" #[.ident a.info ihName]]
-    let others := args.extract np (np + rc.pos) ++ args.extract (np + rc.pos + 1) args.size
+    -- the other columns' arguments, in order: `_` for an implicit column, none for a
+    -- column the hypothesis doesn't take; then any further arguments
+    let mut others0 : Array Syntax := #[]
+    let mut done := false
+    for i in [0:rc.cols] do
+      if done || i == rc.pos then continue
+      match explicitCols.idxOf? i with
+      | some t => match colArgs[t]? with
+        | some arg => unless rc.dropCols.contains i do others0 := others0.push arg
+        | none => done := true
+      | none => unless rc.dropCols.contains i do others0 := others0.push holeStx
+    let others := if done then others0 else others0 ++ colArgs.extract explicitCols.length colArgs.size
     let rest ← (kargs ++ others).mapM (rewriteRecCalls g rc binds ihType lvl tys ·)
     let restStx := rest.map (·.1)
     let newBinds := [(ihName, ty, ihVal)] ++ rest.toList.flatMap (·.2)
@@ -2279,7 +2302,7 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
   if rc.isSome && top && k != 0 then
     throwAt cl.rhs.info "structural recursion: the first argument must be matched first"
   let x := vars[k]!
-  let rs := vars.drop (k + 1)
+  let rsAll := vars.drop (k + 1)
   let xty ← force (typeOf x)
   let .mu _ _ _ ξi xsz (some (T, us, args)) := xty
     | if let some (T, m) := g.opaqueHere? xty then
@@ -2296,8 +2319,14 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
   let ξLvls := ξ.filterMap fun v => match v with
     | .neutral (.local l) #[] => some l
     | _ => none
-  let modeA := ξLvls.length == ξ.length && ξLvls.eraseDups.length == ξLvls.length &&
-    !ξLvls.contains x && ξLvls.all (fun l => !rs.contains l)
+  -- (#249) indices that are distinct variables are generalised by the motive, also when
+  -- they are later columns (structural recursion puts its column first): they are then
+  -- not reverted, so that the reverted variables' types see them as the constructor's
+  -- indices (reverting them too would leave the index equation about the old ones)
+  let idxVars := ξLvls.length == ξ.length && ξLvls.eraseDups.length == ξLvls.length &&
+    !ξLvls.contains x
+  let rs := if idxVars then rsAll.filter (!ξLvls.contains ·) else rsAll
+  let modeA := idxVars && ξLvls.all (fun l => !rs.contains l)
   let useRec := rc.isSome && top
   -- a scrutinee of finite size is split with the sized eliminator, keeping field sizes
   let sized := !(xsz matches .szInf)
@@ -2496,7 +2525,15 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
         -- their types mention the fields being split
         let ihCols := if useRec then ihLvls.toList else []
         let cls2 := cls.map fun cl => { cl with pats := cl.pats ++ ihCols.map fun _ => holeStx }
-        let inner ← compileMatch ctx' (vars.take k ++ fieldLvls'.toList ++ rsLvls.toList ++ ihCols) cls2 mt rc' false
+        -- (a column that wasn't reverted, an index variable, stays the outer variable)
+        let restCols := rsAll.map fun l => ((rs.zip rsLvls.toList).lookup l).getD l
+        -- (#249) the recursive calls leave out the arguments of the columns not reverted
+        -- (the column's index in the definition's own order: the structural one was moved first)
+        let origCol (pos j : Nat) : Nat := if j == 0 then pos else if j - 1 < pos then j - 1 else j
+        let dropped (pos : Nat) : List Nat := rsAll.zipIdx.filterMap fun (l, i) =>
+          if rs.contains l then none else some (origCol pos (k + 1 + i))
+        let rc' := if useRec then rc'.map (fun r => { r with dropCols := dropped r.pos }) else rc'
+        let inner ← compileMatch ctx' (vars.take k ++ fieldLvls'.toList ++ restCols ++ ihCols) cls2 mt rc' false
         let body0 := (rs.map nameOf).foldr .lam inner
         match solution with
         | none => pure body0
