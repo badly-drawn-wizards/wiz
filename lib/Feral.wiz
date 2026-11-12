@@ -1,4 +1,4 @@
-import Prelude
+import OpticDerive
 -- Feral: a Rust-like language embedded in Wiz (docs/stages/22-numbers.md, 22j).
 --
 --   import FeralCore                 -- the runtime of lowered code (drafts/feral/lib, for now)
@@ -2309,10 +2309,7 @@ def Fe.fieldLines : List (String × Fe.Ty) → String
   | .nil => ""
   | .cons f fs => "\n  " +++ f.1 +++ " : " +++ Fe.tyStr f.2 +++ Fe.fieldLines fs
 -- field lenses, their laws and independence: `deriving Lens` (lib/OpticDerive.wiz), the
--- same names and statements (`S.fL`, `S.fL_lawful`, `S.f_g_indep`). The file using Feral
--- must import OpticDerive (drafts/feral/lib/FeralCore.wiz does). Feral itself doesn't:
--- with `import OpticDerive` here, running this macro panics in the interpreter
--- (`Wiz.runPrim … impossible case`; wishful/feral-import-deriving.md).
+-- same names and statements (`S.fL`, `S.fL_lawful`, `S.f_g_indep`)
 def Fe.ctorLines : List (String × List (String × Fe.Ty)) → String
   | .nil => ""
   | .cons c cs => "\n  | " +++ c.1 +++ Fe.unwords (Fe.map (fun (f : String × Fe.Ty) => "(" +++ f.1 +++ " : " +++ Fe.tyStr f.2 +++ ")") c.2) +++ Fe.ctorLines cs

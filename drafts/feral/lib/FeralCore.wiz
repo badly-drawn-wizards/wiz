@@ -1,7 +1,6 @@
 import Optic
 import Region
 import Text
-import OpticDerive
 -- The runtime of lowered DSL code, beyond `lib/Optic.wiz` (which has `Result`, `Error`
 -- and the optics). This file CHECKS today, but it holds stand-ins for work owned by other
 -- tracks, so it lives in drafts/ until they land:
