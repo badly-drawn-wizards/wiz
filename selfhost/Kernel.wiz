@@ -827,7 +827,7 @@ def toAbsurd : Spine → Spine
   | .sdelim sp _ _ _ _ _ _ => toAbsurd sp
   | .sind sp _ _ _ _ _ _ _ => toAbsurd sp
   | .ssfix sp _ _ _ _ _ _ _ _ => toAbsurd sp
-  | .sscase sp _ _ _ _ _ _ _ _ => toAbsurd sp
+  | .sscase sp _ _ _ _ _ _ _ _ _ => toAbsurd sp
   | .sout sp => toAbsurd sp
   | .sdown sp => toAbsurd sp
 -- (P2) is this head a proof (`proofHead` in `Eval.lean`)? A suspended proof, `refl`,
@@ -1005,7 +1005,7 @@ def forceSp : Val → Spine → Val
   | v, .sdelim sp k P a b c d => vDelim k P a b c d (forceSp v sp)
   | v, .sind sp l I D k P m i => vInd l I D k P m i (forceSp v sp)
   | v, .ssfix sp l I D k P f sz i => vSfix l I D k P f sz i (forceSp v sp)
-  | v, .sscase sp l I D k P m sz i => vScase l I D k P m sz i (forceSp v sp)
+  | v, .sscase sp l q I D k P m sz i => vScase l q I D k P m sz i (forceSp v sp)
   | v, .sout sp => vOut (forceSp v sp)
 -- (P2) the eliminations of a proof from its last `absurd` on (`.none`: there is none).
 -- Past an `absurd` the value need not be a proof (`exfalso M p : M`, for any `M`).
@@ -2025,7 +2025,7 @@ def proofSpine : Spine → Bool
   | .sdelim _ _ _ _ _ _ _ => .false
   | .sind _ _ _ _ _ _ _ _ => .false
   | .ssfix _ _ _ _ _ _ _ _ _ => .false
-  | .sscase _ _ _ _ _ _ _ _ _ => .false
+  | .sscase _ _ _ _ _ _ _ _ _ _ => .false
   | .sout _ => .false
 -- (P2) is the neutral `h · sp` a proof of `False`? Either it starts at a proof head and has
 -- passed through no `absurd` (then it is a proof, and it is being given to an `absurd`),
@@ -3387,6 +3387,10 @@ def markInferW : TCtx → Tm → MR
       | _ => .mk (.app f' a) .none
   | c, .letE ty v b => markLetIn c ty v b (fun ty' v' b' => .letE ty' v' b')
   | c, .letq q ty v b => markLetIn c ty v b (fun ty' v' b' => .letq q ty' v' b')
+  -- (linear-case stage 2) `let () := u; b`: the unit, then the body
+  | c, .letUnit u b => match markInfer c u with
+    | .mk u' _ => match markInfer c b with
+      | .mk b' tb => .mk (.letUnit u' b') tb
   | c, .ann t ty =>
     let ty' := markTy c ty;
     let tyv := eval (TCtx.env c) ty';
@@ -3504,7 +3508,7 @@ def markInferW : TCtx → Tm → MR
     let vi := eval (TCtx.env c) i';
     let x' := markCheck c x (.vmu l vI vD vi (eval (TCtx.env c) sz));
     .mk (.sfix l I' D' v P' f' sz i' x') (.some (vapp (vapp vP vi) (eval (TCtx.env c) x')))
-  | c, .scase l I D v P m sz i x =>
+  | c, .scase l q I D v P m sz i x =>
     let I' := markTy c I;
     let vI := eval (TCtx.env c) I';
     let D' := markCheck c D (.vdesc l vI);
@@ -3512,11 +3516,11 @@ def markInferW : TCtx → Tm → MR
     let P' := markCheck c P (indMotiveTy l v vI vD);
     let vP := eval (TCtx.env c) P';
     let vs := eval (TCtx.env c) sz;
-    let m' := markCheck c m (scaseMethodTy l vI vD vP vs);
+    let m' := markCheck c m (scaseMethodTy l q vI vD vP vs);
     let i' := markCheck c i vI;
     let vi := eval (TCtx.env c) i';
     let x' := markCheck c x (.vmu l vI vD vi vs);
-    .mk (.scase l I' D' v P' m' sz i' x') (.some (vapp (vapp vP vi) (eval (TCtx.env c) x')))
+    .mk (.scase l q I' D' v P' m' sz i' x') (.some (vapp (vapp vP vi) (eval (TCtx.env c) x')))
   | c, .out x => match markInfer c x with
     | .mk x' tx => .mk (.out x') (match knownW tx with
       | .vnu l I D i sz => (match sizePred sz with
