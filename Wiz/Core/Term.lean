@@ -422,6 +422,9 @@ the environment does so deterministically (never iterate the hash map directly).
 structure Globals (R : Type) where
   decls : Std.HashMap Name (Decl R) := {}
   order : Array Name := #[]
+  /-- each declaration's position in `order` (its definitional height, for lazy delta in
+  unification: `Globals.height`) -/
+  heights : Std.HashMap Name Nat := {}
   /-- `builtin key := name` registrations, such as `("nat", Nat)` and `("nat.add", Nat.add)` -/
   builtins : List (Name × Name) := []
   /-- the registrations made outside the toolchain's library, which nothing checks: each
@@ -490,11 +493,18 @@ def contains (g : Globals R) (n : Name) : Bool := g.decls.contains n
 def builtinKey? (g : Globals R) (n : Name) : Option Name :=
   (g.builtins.find? (·.2 == n)).map (·.1)
 
+/-- A declaration's position in `order` (later declarations are higher); 0 if unknown. -/
+def height (g : Globals R) (n : Name) : Nat :=
+  match g.heights[n]? with
+  | some h => h
+  | none => if g.heights.isEmpty then (g.order.idxOf? n).getD 0 else 0
+
 /-- Unchecked insertion. Use `Wiz.addDecl` to type check first. -/
 def insert (g : Globals R) (d : Decl R) : Globals R :=
   { g with
     decls := g.decls.insert d.name d
     order := if g.decls.contains d.name then g.order else g.order.push d.name
+    heights := if g.decls.contains d.name then g.heights else g.heights.insert d.name g.order.size
     declModule := if g.module == "" || g.decls.contains d.name then g.declModule
       else g.declModule.insert d.name g.module }
 
