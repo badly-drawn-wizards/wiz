@@ -1,4 +1,5 @@
 import Wiz.Core.Term
+import Wiz.Core.StructLayout
 import Wiz.Rig
 
 /-!
@@ -346,6 +347,46 @@ def effPrec (f : PPFormat) : Nat := match lastCatPrec f.p with
 def rawOf (f : PPFormat) (tok : String) : Option String :=
   f.raw.find? fun r => String.ofList ((r.toList.dropWhile (·.isWhitespace)).reverse.dropWhile (·.isWhitespace)).reverse == tok
 
+/-- (13p) `S.mk Δ a₁ … aₙ` read back as a structure update `{ s with fᵢ := aᵢ, … }`: some
+fields are the projections of one term `s` at their own components (`StructLayout`) and
+the others are not. `let x := e; S.mk …` (how `{ e with … }` elaborates when `e` is not a
+variable) is `{ e with … }` when `x` is only the subject; a field updated with an update
+of its own old value is a path (`{ s with a.b := v }`). -/
+partial def structUpdateView? (g : Globals R) (t : Term R) : Option (Term R × List (List Name × Term R)) := do
+  match t with
+  | .letE _ _ _ val body =>
+    let (s, fs) ← structUpdateView? g body
+    guard (s == .var 0 && fs.all fun (_, v) => !v.hasVar 0)
+    pure (val, fs.map fun (p, v) => (p, v.instantiateAt 0 val))
+  | _ =>
+    let (.const mk _, args) := Term.spine t | none
+    guard (mk.endsWith ".mk")
+    let L ← structLayoutWith? (fun _ => false) g (mk.dropEnd 3).toString
+    let n := L.fields.length
+    guard (n > 0 && args.length == L.nParams + n)
+    let fieldArgs := args.drop L.nParams
+    let rec unsnd : Nat → Term R → Option (Term R)
+      | 0, u => some u
+      | j + 1, .snd u => unsnd j u
+      | _, _ => none
+    -- the term whose projection field `i`'s argument is, if it is one
+    let subjectOf (i : Nat) (a : Term R) : Option (Term R) := do
+      let k ← L.fieldComp? i
+      if k + 1 == L.comps.length then unsnd k a
+      else match a with
+        | .fst u => unsnd k u
+        | _ => none
+    let subjs := fieldArgs.zipIdx.map fun (a, i) => subjectOf i a
+    let s ← subjs.findSome? id
+    let kept := subjs.map (· == some s)
+    guard (kept.any id && kept.any (!·))
+    let updates := (L.fields.zip (fieldArgs.zip kept)).filterMap fun (f, a, k) => if k then none else some (f, a)
+    pure (s, updates.flatMap fun (f, a) =>
+      let own := (L.fields.idxOf? f).bind L.fieldComp? |>.map (L.compTerm · s)
+      match structUpdateView? g a with
+      | some (s', fs') => if own == some s' then fs'.map fun (p, v) => (f :: p, v) else [([f], a)]
+      | none => [([f], a)])
+
 mutual
 
 /-- Print `t` at precedence `prec`. With `env`, applications print as notation (except at
@@ -374,6 +415,11 @@ partial def printNode (env : Option (Globals R)) (names : List Name) (tys : List
         | some s => fmt g s "term" prec
         | none => pure none : DM R (Option TT)).run #[]
       if let some tt := r then return tt
+    -- (13p) a structure update
+    if !noUnexp && g.pp.useNotation then
+      if let some (s, fs) := structUpdateView? g t then
+        let fields ← fs.mapM fun (p, v) => do pure (cat [txt (".".intercalate p ++ " := "), ← sub 0 v])
+        return cat [txt "{ ", ← sub 0 s, txt " with ", sep fields ", ", txt " }"]
   match t with
   | .var ix => pure (txt (names[ix]?.getD s!"#{ix}"))
   | .const n _ => pure (txt (Globals.privateBase n))
@@ -475,6 +521,8 @@ partial def printNode (env : Option (Globals R)) (names : List Name) (tys : List
   -- Q4: the elaborator lifts small fields; `up`/`down` are invisible
   | .ulift _ A => app (txt "ULift") [A]
   | .up a | .down a => printNode env names tys prec a noUnexp
+  -- (P2) the proof marker is invisible too
+  | .prf _ a => printNode env names tys prec a noUnexp
   | .natOp op args => app (txt s!"<{op}>") args.toList
   | .transp _ _ P p _ e =>
     pure (paren (prec > 1022) (cat [txt "transp ", ← sub 1023 P, txt " ", ← sub 1023 p, txt " ", ← sub 1023 e]))
@@ -521,6 +569,11 @@ partial def unexpand (g : Globals R) (names : List Name) (tys : List (Option (Te
   let u := (betaForNotation? g u).getD u
   let (f, args) := spine u #[]
   let .const c _ := f | return none
+  -- a numeral at a type other than `Nat` (7e): `OfNat.ofNat A n inst` with a literal `n`
+  -- prints as the numeral `n` (its type and instance are implicit; H14 S2)
+  if c == "OfNat.ofNat" && args.size == 3 then
+    if let .natLit n := args[1]! then
+      return some (.node {} "term.num" #[.node {} "num" #[.atom {} (toString n)]])
   let some entries := g.pp.unexpanders[c]? | return none
   if entries.isEmpty then return none
   let argStx ← (explicitArgs g c args).mapM (delab g names tys)

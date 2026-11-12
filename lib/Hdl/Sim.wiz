@@ -49,6 +49,10 @@ inductive FastNode where
   | slice (i a k m : Nat)
   | resetTo (i a b k : Nat)
   | hold (i a b c : Nat)
+  | shl (i a b w : Nat)        -- (H14 S4) `w`: the width (of the result; of the operands for slt)
+  | lshr (i a b w : Nat)
+  | ashr (i a b w : Nat)
+  | slt (i a b w : Nat)
   -- a read of memory `k` at address node `a`: the words below `size` live in the flat
   -- memory array from `base`, any others (an address beyond the memory's range, as an
   -- input port can give) in a trie keyed by (k, address)
@@ -154,6 +158,10 @@ def FastSim.node (lay : List FastMem) (i : Nat) (n : SimNode) (acc : FastProg) :
   | .slice lo => op (FastNode.slice i a lo m)
   | .resetTo v => op (FastNode.resetTo i a b v)
   | .hold => op (FastNode.hold i a b c)
+  | .shl => op (FastNode.shl i a b n.width)
+  | .lshr => op (FastNode.lshr i a b n.width)
+  | .ashr => op (FastNode.ashr i a b n.width)
+  | .slt => op (FastNode.slt i a b n.aux)
   | .memRead k => (match Hdl.nthD (FastMem.mk 0 0) lay k with
     | .mk base size => op (FastNode.memRead i a k base size))
 
@@ -236,6 +244,10 @@ def FastNode.exec (n : FastNode) (vals : Array Nat) : Array Nat := match n with
   | .hold i a b c => Array.set vals i (match FastSim.isZero (FastSim.get vals a) with
     | .true => FastSim.get vals c
     | .false => FastSim.get vals b)
+  | .shl i a b w => Array.set vals i (Hdl.shlN w (FastSim.get vals a) (FastSim.get vals b))
+  | .lshr i a b w => Array.set vals i (Hdl.lshrN w (FastSim.get vals a) (FastSim.get vals b))
+  | .ashr i a b w => Array.set vals i (Hdl.ashrN w (FastSim.get vals a) (FastSim.get vals b))
+  | .slt i a b w => Array.set vals i (Nat.ofBool (Hdl.sltN w (FastSim.get vals a) (FastSim.get vals b)))
   | .memRead _ _ _ _ _ => vals   -- run by `FastSim.run`, which has the memories
 
 -- a word of memory `k` (`Hdl.memGet`: absent words are 0)

@@ -30,6 +30,49 @@ def checksWithin (secs : Nat) (input : String) : IO Unit := do
   unless out.exitCode == 0 do
     throw (IO.userError s!"exit code {out.exitCode}: {(out.stdout ++ out.stderr).take 1500}")
 
+/-- The same with every library importable (`tests --check-libs`, in a child process). -/
+def checksLibsWithin (secs : Nat) (input : String) : IO Unit := do
+  let dir ← IO.FS.createTempDir
+  let file := dir / "input.wiz"
+  IO.FS.writeFile file input
+  let self ← IO.appPath
+  let out ← IO.Process.output { cmd := "sh", args := #["-c",
+    s!"ulimit -v 8000000; exec timeout {secs} \"$0\" --check-libs \"$1\"", self.toString, file.toString] }
+  IO.FS.removeDirAll dir
+  if out.exitCode == 124 then throw (IO.userError s!"took longer than {secs} s")
+  unless out.exitCode == 0 do
+    throw (IO.userError s!"exit code {out.exitCode}: {(out.stdout ++ out.stderr).take 1500}")
+
+/-- A bundle `Sn` of `n` leaves (`deriving Bundle`), a step function that reads every
+field and packs a new state, and the IR of the step (`#ir`: erasure, lowering and the
+backend's optimisations, of the step and of `Sn.pack`). -/
+def wideBundle (n : Nat) : String :=
+  let S := s!"S{n}"
+  let fs := List.range n
+  s!"structure {S} (r : HwTy → Type) where\n" ++ String.join (fs.map (s!"  l{·} : r (HwTy.bits 8)\n")) ++
+  "  deriving Bundle\n" ++
+  s!"def step{n} \{r : HwTy → Type} [Hw r] (s : {S} r) (x : r (HwTy.bits 1)) : r (HwTy.prod {S}.code (HwTy.bits 8)) :=\n" ++
+  String.join (fs.map fun i => s!"  let v{i} := Hw.mux x (Hw.add s.l{i} s.l{i - 1}) s.l{i};\n") ++
+  s!"  Hw.pair ({S}.pack ({S}.mk {" ".intercalate (fs.map (s!"v{·}"))})) v0\n#ir step{n}\n"
+
+/-- A function that reads all `n` fields of a right-nested chain of pairs `s₀`
+(`yₖ := proj 0 sₖ; sₖ₊₁ := proj 1 sₖ`) and passes them to a call, with nothing to rebuild:
+`pack`'s shape, in the IR. -/
+def projChain (n : Nat) : IR.Decl := Id.run do
+  let mut b : IR.Body := .vdecl (2 * n + 1) (.fap "g" ((List.range n).toArray.map (n + 1 + ·))) (.ret (2 * n + 1))
+  for k in (List.range n).reverse do
+    b := .vdecl (n + 1 + k) (.proj 0 k) (.vdecl (k + 1) (.proj 1 k) b)
+  pure { name := "f", params := #[0], body := b }
+
+/-- The `drop`s and `reset`s of a body. -/
+partial def dropsResets : IR.Body → Nat × Nat
+  | .vdecl _ (.reset _) b => let (d, r) := dropsResets b; (d, r + 1)
+  | .vdecl _ _ b | .dup _ b => dropsResets b
+  | .drop _ b => let (d, r) := dropsResets b; (d + 1, r)
+  | .case _ alts => alts.foldl (fun (d, r) a => let (d', r') := dropsResets a; (d + d', r + r')) (0, 0)
+  | .jdecl _ _ body k => let (d, r) := dropsResets body; let (d', r') := dropsResets k; (d + d', r + r')
+  | _ => (0, 0)
+
 /-- Unary numbers, so that the inputs need no library. -/
 def natDecl : String := "inductive N where\n  | z\n  | s (n : N)\n"
 
@@ -97,6 +140,74 @@ def rcMismatches (st : CommandState ZeroOneMany) (root : Name) : IO (List Name) 
     let σ : IR.BorrowSigs := { fns := bs.fns, jps := (bs.jps.get? d.name).getD {} }
     if (d.insertRC σ).toString == (d.insertRCSpec σ).toString then none else some d.name
 
+/-! `reuseAcross` as it was before it remembered the drops it could not pair (exponential
+along a chain of projections; see `Wiz.IR.pairDrop`): the specification it must agree
+with exactly. -/
+namespace ReuseSpec
+open IR
+
+mutual
+partial def pairDrop (size : Std.HashMap Var Nat) (parent : Std.HashMap Var Var) (x : Var)
+    (rest : Body) : Body × Bool :=
+  let rest := partsFirst size parent x rest
+  let tok := insertReuse.tokenBase + x
+  match size.get? x |>.bind (claimAcross tok · rest) with
+  | some rest' => (.vdecl tok (.reset x) rest', true)
+  | none => (rest, false)
+
+partial def partsFirst (size : Std.HashMap Var Nat) (parent : Std.HashMap Var Var) (x : Var) :
+    Body → Body
+  | .vdecl y e rest =>
+    let (size, parent) := noteBinding size parent y e
+    .vdecl y e (partsFirst size parent x rest)
+  | .dup y rest => .dup y (partsFirst size parent x rest)
+  | .drop y rest =>
+    if descends parent y x then
+      match pairDrop size parent y rest with
+      | (.vdecl tok e rest', true) => .vdecl tok e (partsFirst size parent x rest')
+      | (rest', _) => .drop y (partsFirst size parent x rest')
+    else .drop y (partsFirst size parent x rest)
+  | b => b
+end
+
+partial def reuseAcross (size : Std.HashMap Var Nat := {}) (parent : Std.HashMap Var Var := {}) :
+    Body → Body
+  | .vdecl x e rest =>
+    let (size, parent) := noteBinding size parent x e
+    .vdecl x e (reuseAcross size parent rest)
+  | .drop x rest =>
+    match pairDrop size parent x rest with
+    | (.vdecl tok e rest', true) => .vdecl tok e (reuseAcross size parent rest')
+    | (rest', _) => .drop x (reuseAcross size parent rest')
+  | .dup x rest => .dup x (reuseAcross size parent rest)
+  | .case x alts => .case x (alts.map (reuseAcross size parent))
+  | .jdecl j ps body k => .jdecl j ps (reuseAcross {} {} body) (reuseAcross size parent k)
+  | b => b
+
+end ReuseSpec
+
+/-- The declarations of a program (lowered, as `optimizeProgram` gets them) on which
+`reuseAcross` and its specification differ, after reference counting with the program's
+borrow signatures (as in `Decl.optimize`); and how many were compared. -/
+def reuseMismatches (decls : Array IR.Decl) : List Name × Nat :=
+  let decls := (IR.hoistConsts decls).map fun d => { d with body := (IR.elimDead d.body).1 }
+  let bs := IR.inferBorrow decls
+  let bad := decls.toList.filterMap fun d =>
+    let σ : IR.BorrowSigs := { fns := bs.fns, jps := (bs.jps.get? d.name).getD {} }
+    let b := IR.dropScalars (d.insertRC σ).body
+    if (IR.reuseAcross {} {} b).toString == (ReuseSpec.reuseAcross {} {} b).toString then none else some d.name
+  (bad, decls.size)
+
+/-- The lowered IR of everything reachable from `roots`. -/
+def loweredOf (st : CommandState ZeroOneMany) (roots : List Name) : IO (Array IR.Decl) := do
+  let code ← match compileReachable st.globals st.builtins roots with
+    | .ok c => pure c
+    | .error e => throw (IO.userError (toString e))
+  let extra := (roots.drop 1).toArray.map fun n => (n, ETerm.global n)
+  match IR.lowerProgram code (.global (roots.headD "_")) extra with
+    | .ok d => pure d
+    | .error e => throw (IO.userError e)
+
 /-- `act` within `secs` seconds and `mb` megabytes (peak RSS, reset first). -/
 def within {α : Type} (secs mb : Nat) (act : Unit → IO α) : IO α := do
   let start ← IO.monoMsNow
@@ -105,6 +216,36 @@ def within {α : Type} (secs mb : Nat) (act : Unit → IO α) : IO α := do
   unless ms ≤ secs * 1000 && peak ≤ mb do
     throw (IO.userError s!"took {ms} ms and {peak} MB (bounds: {secs} s, {mb} MB)")
   pure a
+
+/-- A bundle `Bn` of `n` leaves, `deriving Bundle` alone. -/
+def plainBundle (n : Nat) : String :=
+  s!"structure B{n} (r : HwTy → Type) where\n" ++ String.join ((List.range n).map (s!"  l{·} : r (HwTy.bits 8)\n")) ++
+  "  deriving Bundle\n"
+
+/-- The number of instructions of an IR body, without the projections. (Reading field k
+of a structure, a right-nested Σ, is k projections in the IR wherever it is written: so
+`S.pack` still has a quadratic number of projections, the lowering's to remove.) -/
+partial def bodySize : IR.Body → Nat
+  | .vdecl _ (.proj _ _) b => bodySize b
+  | .vdecl _ _ b | .dup _ b | .drop _ b => bodySize b + 1
+  | .case _ alts => alts.foldl (fun n a => n + bodySize a) 1
+  | .jdecl _ _ body k => bodySize body + bodySize k + 1
+  | _ => 1
+
+/-- The lowered IR of the derived `pack` and `unpack` of bundles of `ns` leaves (each
+field: (size of `pack`, size of `unpack`)), with every library importable. -/
+def bundleIRSizes (ns : List Nat) : IO (List (Nat × Nat)) := do
+  let src := "import Hdl.Core\n" ++ String.join (ns.map plainBundle)
+  let st := runFrontend (R := ZeroOneMany) src { trustedModule := Tests.libModule, loader := ← Tests.Elab.libLoader }
+  let errs := (st.messages.filter (·.severity == .error)).map fun m => m.render src
+  unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
+  ns.mapM fun n => do
+    let size (f : String) : IO Nat := do
+      let ds ← loweredOf st [s!"B{n}.{f}"]
+      match ds.find? (·.name == s!"B{n}.{f}") with
+      | some d => pure (bodySize d.body)
+      | none => throw (IO.userError s!"no IR for B{n}.{f}")
+    pure (← size "pack", ← size "unpack")
 
 /-- A list of `n` numerals written out: `List.cons 0 (List.cons 1 (… List.nil))`. -/
 def listSource (n : Nat) : String :=
@@ -164,6 +305,26 @@ def m : Nat := List.length (Netlist.simulate (Circuit.netlist \"c\" ctr) (Hdl.ma
 #eval m
 "
 
+/-- A RAM read every cycle for 50000 cycles, written in the first only: a disabled write is
+the memory itself (no extra function per cycle), so each read costs the number of enabled
+writes, and the run is linear (it was quadratic: artix-target, wiz-rv). -/
+def hdlMemScaleSrc : String := "import Hdl.Core
+def m4 : HwTy := HwTy.mem 4 8
+def ram : Circuit (HwTy.prod (HwTy.bits 1) (HwTy.bits 8)) (HwTy.bits 8) :=
+  Circuit.mk m4 (fun (a : BitVec 4) => BitVec.ofNat 8 0)
+    (fun s x => Hw.pair (Hw.memWrite s (Hw.fst x) (Hw.lit 4 5) (Hw.snd x)) (Hw.memRead s (Hw.lit 4 5)))
+def off (m : HwTy.El m4) (a : BitVec 4) (d : BitVec 8) : HwTy.El.memWrite m (BitVec.ofNat 1 0) a d = m := rfl
+def Rep.go : Nat → List (HwTy.El (HwTy.prod (HwTy.bits 1) (HwTy.bits 8))) → List (HwTy.El (HwTy.prod (HwTy.bits 1) (HwTy.bits 8)))
+  | .zero, acc => List.cons (BitVec.ofNat 1 1, BitVec.ofNat 8 42) acc
+  | .succ k, acc => Rep.go k (List.cons (BitVec.ofNat 1 0, BitVec.ofNat 8 7) acc)
+def last : List (HwTy.El (HwTy.bits 8)) → Nat
+  | .nil => 0
+  | .cons x .nil => BitVec.toNat x
+  | .cons _ xs => last xs
+def r : Nat := last (Circuit.run ram (Rep.go 50000 List.nil))
+#eval r
+"
+
 def group : Group where
   name := "scaling"
   exercise := "super-linear time and memory"
@@ -193,6 +354,40 @@ def group : Group where
           "def y : N := big.1\n") },
     { name := "a 20000-character string literal is checked and erased in linear time", run := fun _ =>
         longLiteral 20000 60 },
+    -- reuse across `case` (`reuseAcross`) tried a drop it could not pair again from each
+    -- enclosing search, and the drop's parts with it: along the chain of projections
+    -- that reads a structure's fields without rebuilding it (a bundle's `pack`),
+    -- exponential in the number of fields. The iCEstick IR blaster's 19-field state
+    -- (`#ir blasterStep` took over 5 min); here 16 leaves took 9 s, 20 leaves 115 s. The IR
+    -- of all three now takes well under a second: the bound is mostly elaboration.
+    { name := "reuse across case along a 200-step projection chain with nothing to reuse (was exponential)", run := fun _ => do
+        let d ← within 10 1000 fun _ => pure (projChain 200).optimize
+        -- the chain's 200 cells are dropped, none reset (there is nothing to reuse them for)
+        checkEq (200, 0) (dropsResets d.body) },
+    { name := "reuse across case, remembering the drops it failed to pair, agrees with its specification", run := fun _ => do
+        let examples ← ["examples/std.wiz", "examples/io.wiz", "examples/effects.wiz"].mapM (fun (f : String) => IO.FS.readFile f)
+        for p in examples do
+          let (bad, _) := reuseMismatches (← loweredOf (← elabOk p) ["main"])
+          unless bad.isEmpty do throw (IO.userError s!"they differ on {bad}")
+        let (bad, _) := reuseMismatches #[projChain 12]
+        unless bad.isEmpty do throw (IO.userError "they differ on the projection chain") },
+    { name := "the IR of a step over bundles of 8, 16 and 32 fields (reuse was exponential: 20 took 115 s)", run := fun _ =>
+        checksLibsWithin 240 ("import Hdl.Core\n" ++ String.join ([8, 16, 32].map wideBundle)) },
+    -- `deriving Bundle` wrote field k of `S.unpack` as `Hw.fst (Hw.snd^k x)`, and each
+    -- `Hw.pair`/`Hw.snd` took the literal code of the rest of the product as an implicit
+    -- argument, which is relevant (`{ω a b : HwTy}`): quadratic code (cubic in `unpack`),
+    -- about n^2.7 to elaborate and compile (wiz-rv's 20-field core state: a 14k-line IR
+    -- function). Now `unpack` is a chain of `let`s and every tail of the code a definition:
+    -- linear (but for `pack`'s field projections: see `bodySize`). `#ir` before → after:
+    -- unpack, 32 fields 169k → 2.9k lines, 48 fields 567k → 4.4k; pack, 64 fields 39k → 9k.
+    { name := "deriving Bundle: pack and unpack of 32 and 64 fields are linear in the fields (unpack was cubic)", run := fun _ => do
+        let r ← within 240 3000 fun _ => bundleIRSizes [32, 64]
+        let [(p32, u32), (p64, u64)] := r | throw (IO.userError "two bundles expected")
+        -- twice the fields, at most 2.25 times the code (quadratic: 4, cubic: 8)
+        unless 4 * p64 ≤ 9 * p32 && 4 * u64 ≤ 9 * u32 do
+          throw (IO.userError s!"not linear: pack {p32} → {p64}, unpack {u32} → {u64}")
+        unless p64 ≤ 200 * 64 && u64 ≤ 200 * 64 do
+          throw (IO.userError s!"too large: pack {p64}, unpack {u64} at 64 fields") },
     -- `insertRC` recomputed the free variables of the rest of the body at each binding
     -- (and kept them while handling the rest): quadratic in time and space along a chain
     -- of bindings, the constant a literal becomes (6000 characters: 18 000 bindings, about
@@ -259,7 +454,11 @@ def group : Group where
     -- cycles (the old interpreter: about 5·10⁸ list steps), compared with the values;
     -- then `Circuit.run` and `Netlist.simulate` on a 200000-cycle trace.
     { name := "the HDL's netlist simulation is O(n log n) per cycle; long traces run", run := fun _ =>
-        within 120 1500 fun _ => Tests.Elab.okLibs hdlScaleSrc ["(.true, 3258)", "200000", "200000"] }]
+        within 120 1500 fun _ => Tests.Elab.okLibs hdlScaleSrc ["(.true, 3258)", "200000", "200000"] },
+    -- a disabled memory write is the memory itself at values (`off` by `rfl`), so a RAM's
+    -- value simulation is linear in cycles: 50000 cycles of reads after one write
+    { name := "the HDL's value simulation of a memory is linear in cycles (a disabled write adds nothing)", run := fun _ =>
+        within 120 1500 fun _ => Tests.Elab.okLibs hdlMemScaleSrc ["42"] }]
 
 
 /-! ### A probe (`tests --probe-checker [unbox] [rc]`): where building the self-hosted checker spends
@@ -299,6 +498,37 @@ def probeChecker (opts : List String := []) : IO Unit := do
   if opts.contains "rc" then
     let bad ← rcMismatches st "main"
     say s!"reference counting: one pass and specification differ on {bad.length} declarations {bad.take 10}"
+
+/-- A probe (`tests --probe-reuse`): `reuseAcross` agrees with its specification on the IR
+of every definition of each `lib/` module, and of the self-hosted checker and compiler. -/
+def probeReuse : IO UInt32 := do
+  let loader ← Tests.Elab.libLoader
+  let mut failures := 0
+  let mut mods : Array String := #[]
+  for e in ← System.FilePath.readDir "lib" do
+    if e.path.extension == some "wiz" then mods := mods.push (e.path.fileStem.getD "")
+    else if ← e.path.isDir then
+      for f in ← System.FilePath.readDir e.path do
+        if f.path.extension == some "wiz" then mods := mods.push (e.fileName ++ "." ++ f.path.fileStem.getD "")
+  for m in mods.qsort (· < ·) do
+    let st := runFrontend (R := ZeroOneMany) s!"import {m}\n" { trustedModule := Tests.libModule, loader }
+    let mine := st.globals.order.toList.filter fun n =>
+      st.globals.declModule[n]? == some m && ((st.globals.find? n).bind (·.value)).isSome
+    if mine.isEmpty then continue
+    try
+      let (bad, k) := reuseMismatches (← loweredOf st mine)
+      IO.println s!"{m}: {k} declarations, {bad.length} differ {bad.take 5}"
+      unless bad.isEmpty do failures := failures + 1
+    catch e => IO.println s!"{m}: not compiled ({(toString e).take 120})"
+  let srcs ← Selfhost.compilerFiles.mapM (fun (f : String) => IO.FS.readFile f)
+  for (what, prog) in [("selfhost checker", Selfhost.checkerSource (srcs.take 4)), ("selfhost compiler", Selfhost.compilerSource srcs)] do
+    let st := runFrontend (R := ZeroOneMany) prog { trustedModule := Tests.libModule, loader }
+    let errs := (st.messages.filter (·.severity == .error)).map fun m => m.render prog
+    unless errs.isEmpty do throw (IO.userError s!"{what}: unexpected errors:\n{"\n".intercalate (errs.toList.take 5)}")
+    let (bad, k) := reuseMismatches (← loweredOf st ["main"])
+    IO.println s!"{what}: {k} declarations, {bad.length} differ {bad.take 5}"
+    unless bad.isEmpty do failures := failures + 1
+  pure (if failures == 0 then 0 else 1)
 
 /-- This module's test groups, which `Tests/Main.lean` runs: one per line, in sorted
 order, so that branches adding groups rarely touch the same lines. A new group also
