@@ -2789,6 +2789,23 @@ partial def runTac (code : Code) (info : SourceInfo) (st : TacState R) (v : RVal
   -- the rest are about a goal, the first field
   let gl ← goalOf (fld 0)
   let lvl := gl.ctx.lvl
+  if tag == TacTag.nativeDecide then
+    -- (28e) `X.satK.native✝ : e = .true`, decided by running `e` (as `native_refl` does)
+    let s ← get
+    unless s.smt.trustNative do
+      throwAt info "native evaluation is not enabled: deciding by running compiled code is trusted, not checked by the kernel; run with --trust-native to allow it"
+    if s.smtDecl.isEmpty then throwAt info "tactic: an axiom can only be added in the body of a definition"
+    let e ← zonk lvl (← reify st.handles (fld 1) lvl)
+    let some e := (List.range lvl).foldlM (fun t _ => t.strengthen? 0) e
+      | throwAt info "native evaluation: the term mentions the goal's variables (it must be closed)"
+    let boolT : Term R := .const "Bool" []
+    let trueT : Term R := .const "Bool.true" []
+    -- (the command decides it, by `Native.decideNative`, before it adds the axiom)
+    let ax := s!"{s.smtDecl}.sat{s.sideDecls.size + 1}.native✝"
+    let d : Decl R := { name := ax, levelParams := [], type := .eq boolT e trueT, value := none }
+    modify fun s => { s with globals := s.globals.insert d, sideDecls := s.sideDecls.push d, unifyFails := {} }
+    let (r, st) ← refl st gl (Term.const ax [])
+    return ← runTac code info st (apply code (fld 2) r)
   if tag == TacTag.define then
     -- (28c) `X.def✝k := fun ctx => val : Π ctx, ty`, checked by the kernel with `X`
     let s ← get

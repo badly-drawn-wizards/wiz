@@ -346,6 +346,9 @@ inductive Tac where
   -- elaborated (checked by the kernel; not an axiom), and the term that uses it: a big
   -- value a proof mentions many times is then one constant
   | define (g : Nat) (ty : Expr) (val : Expr) (k : Expr → Tac)
+  -- (28e) decide the closed `e = .true` by running it (native_refl's evaluator, trusted:
+  -- --trust-native); the axiom that says so
+  | nativeDecide (g : Nat) (e : Expr) (k : Expr → Tac)
 
 -- The metaprogramming monad: requests in continuation-passing style, so `bind` is just
 -- composition. Macros and tactics both use it.
@@ -411,6 +414,7 @@ def TacticM.smt (g : Nat) : TacticM Unit := fun k => Tac.smt g (k ())
 def TacticM.satSolve (nvars : Nat) (clauses : List (List Nat)) : TacticM SatAnswer := fun k => Tac.satSolve nvars clauses k
 def TacticM.eqView (g : Nat) (e : Expr) : TacticM (Option (Expr × Expr × Expr)) := fun k => Tac.eqView g e k
 def TacticM.define (g : Nat) (ty val : Expr) : TacticM Expr := fun k => Tac.define g ty val k
+def TacticM.nativeDecide (g : Nat) (e : Expr) : TacticM Expr := fun k => Tac.nativeDecide g e k
 def TacticM.tryCatch (t : TacticM Unit) (h : String → TacticM Unit) : TacticM Unit :=
   fun k => Tac.catch (TacticM.run t) (fun e => TacticM.run (h e)) (k ())
 

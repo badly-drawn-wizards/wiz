@@ -76,6 +76,7 @@ def satSolve := 33
 def eqView := 34
 def smt := 35
 def define := 36
+def nativeDecide := 37
 end TacTag
 
 structure Goal (R : Type) where

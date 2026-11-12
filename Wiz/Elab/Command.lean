@@ -1429,7 +1429,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
                 modify fun s => { s with globals := g'.insert d }
                 report .warning nr.info s!"{name} is accepted on the strength of native evaluation (--trust-native, {v.steps} steps), not checked by the kernel: its proof is the axiom {ax}, which `#print axioms` lists for everything that uses {name}"
         | _ => report .error nr.info "native_refl proves an equation `a = b`; this type is not one"
-    else match runElabS (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) (termInfo := s.termInfo) (smt := s.smt) (smtDecl := name) s.globals (elabDeclTerms binders typeStx valStx cmd.info (declName? := some (name, (cmd.getArg 1).info, declInsertAt cmd))) levelParams with
+    else match runElabS (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) (termInfo := s.termInfo) (smt := { s.smt with trustNative := s.trustNative, nativeFuel := s.nativeFuel }) (smtDecl := name) s.globals (elabDeclTerms binders typeStx valStx cmd.info (declName? := some (name, (cmd.getArg 1).info, declInsertAt cmd))) levelParams with
       | (.ok ((ty, val), sides), hv) =>
         addInfos hv
         if sides.isEmpty then addDeclChecked name levelParams ty val
@@ -1440,6 +1440,14 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
           let mut g := s.globals
           let mut ok := true
           for d in sides do
+            -- (28e) an axiom `….native✝` a tactic asked for is decided here, by running it
+            if d.value.isNone && d.name.endsWith ".native✝" then
+              match d.type with
+              | .eq A a b =>
+                match Native.decideNative g s.builtins A a b s.nativeFuel with
+                | .ok _ => pure ()
+                | .error e => report .error cmd.info s!"{d.name}: native evaluation: {e}"; ok := false; break
+              | _ => report .error cmd.info s!"{d.name}: not an equation"; ok := false; break
             let r : Except String (Globals R) := if d.value.isSome then
                 (addDeclSorted g d).mapError toString
               else
