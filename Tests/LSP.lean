@@ -653,6 +653,29 @@ def serverGroup : Group where
         let (_, r) := ask srv "wiz/interactiveInfo" src (offAfter src "2 *" (-1))
         checkEq ["Mul Nat"] ((item r "instance").map fun i => flatten (LSP.get? i ["type"]).get!)
         check ((item r "syntax").length == 1 && (item r "expansion").length == 1) s!"syntax items: {r.compress}" },
+    { name := "code action: fill a hole from its expected type", run := fun _ => do
+        let src := "import Prelude\nstructure Point where\n  px : Nat\n  py : Nat\n" ++
+          "inductive T where\n  | a\n  | b (t : T)\n  | c (x y : Nat)\n" ++
+          "def p : Point := _\ndef q (f : T → Nat) : Nat := f ?t\ndef r : Nat → Bool := ?f\n"
+        let (srv, _) ← openDoc src
+        let fill (srv : LSP.Server) (at_ : Nat) (title : String) : IO String := do
+          let (_, as) := codeActions srv src at_
+          let some a := titled as title | throw (IO.userError s!"no {title}: {as.map (·.compress)}")
+          pure (applyEdit src (LSP.get? a ["edit"]).get!)
+        let e ← fill srv (offAfter src "Point := _" (-1)) "Fill with an anonymous constructor"
+        check ((e.splitOn "def p : Point := ⟨?px, ?py⟩\n").length > 1) s!"edited:\n{e}"
+        -- an argument: in parentheses
+        let e ← fill srv (offAfter src "f ?t" (-1)) "Fill with '.c'"
+        check ((e.splitOn "f (.c ?x ?y)\n").length > 1) s!"edited:\n{e}"
+        let e ← fill srv (offAfter src "f ?t" (-1)) "Fill with '.a'"
+        check ((e.splitOn "f .a\n").length > 1) s!"edited:\n{e}"
+        let e ← fill srv (offAfter src ":= ?f" (-1)) "Fill with 'fun x => ?body'"
+        check ((e.splitOn ":= fun x => ?body\n").length > 1) s!"edited:\n{e}"
+        -- what the fillings leave is only holes
+        let (_, out) ← openDoc e
+        let some (.arr ds) := LSP.get? out[0]! ["params", "diagnostics"] | throw (IO.userError "no diagnostics")
+        for d in ds do
+          check ((LSP.getStr d ["message"]).startsWith "could not infer") s!"diagnostic: {d.compress}" },
     { name := "references, document highlights and rename, across the package's modules (11y)", run := fun _ => do
         let lib := "import Prelude\ndef helper (n : Nat) : Nat := Nat.succ n\ndef useHelper : Nat := helper 1\n"
         let src := "import Prelude\nimport Lib\ndef double (n : Nat) : Nat := Nat.add n n\ndef four : Nat := double 2\n" ++

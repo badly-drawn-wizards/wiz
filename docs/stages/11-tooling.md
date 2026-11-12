@@ -393,6 +393,19 @@ package's `lib` targets with its module roots (dependencies included), into
   the editor's cursor (`wiz/infoview/cursor`, §8.2). `wiz lsp` now always runs the
   multi-connection loop (`serveWith`), so this works without `--ws`.
 
+## 11t: filling holes, and completion that knows the context
+
+* **Fill a hole** (code action, `refactor.rewrite`, `Wiz/Actions.lean`): a hole `_` or
+  `?x` whose expected type is known becomes a skeleton of it: one action per constructor
+  of an inductive type (`(.c ?x ?y)`, in parentheses where it is an argument), the
+  anonymous constructor of a structure or Σ type with a named hole per field
+  (`⟨?px, ?py⟩`), or `fun x => ?body` for a function type. The new holes' names avoid
+  the locals.
+
+```
+def p : Point := _          -- [Fill with an anonymous constructor] ⟨?px, ?py⟩
+def q (f : T → Nat) : Nat := f ?t   -- [Fill with '.c'] f (.c ?x ?y)
+```
 ## 11v: the outline, workspace symbols and folding
 
 * **Document symbols** (`textDocument/documentSymbol`, `Wiz/Symbols.lean`): one symbol per

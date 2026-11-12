@@ -14,6 +14,10 @@ and its replacement).
   indented like the first alternative.
 * **Add type ascription**: `def f binders := v` becomes `def f binders : T := v`, with the
   type the elaborator inferred.
+* **Fill a hole** (`_` or `?x`) from its expected type: an inductive type's constructor
+  (one action per constructor, `(.c ?x ?y)`), a structure's or Σ type's anonymous
+  constructor with one named hole per field (`⟨?px, ?py⟩`), a function type's
+  `fun x => ?_`-style lambda.
 -/
 
 namespace Wiz.Actions
@@ -62,6 +66,93 @@ def constructors (g : Globals R) (T : Name) : List (Name × List Name) :=
         | none => []
       (c, fields)
     | _ => []
+
+/-- The field names of a Σ telescope. -/
+partial def sigmaFields : Term R → List Name
+  | .sigma x _ _ snd _ => x :: sigmaFields snd
+  | _ => []
+
+/-- The head constant of a type (applied). -/
+def typeHead : Term R → Option Name
+  | .const n _ => some n
+  | .app f _ => typeHead f
+  | _ => none
+
+/-- The fields of the type `ty`: of a Σ, or of a definition unfolding to one (a structure). -/
+def fieldsOf (g : Globals R) (ty : Term R) : List Name :=
+  match ty with
+  | .sigma .. => sigmaFields ty
+  | _ => match typeHead ty with
+    | some T => match g.find? T with
+      | some { value := some v, .. } =>
+        let rec body : Nat → Term R → Term R
+          | 0, t => t
+          | k + 1, .lam _ b => body k b
+          | _, t => t
+        sigmaFields (body 64 v)
+      | _ => []
+    | none => []
+
+/-- The fields of the type `ty` with their types (printed). -/
+def fieldTypes (g : Globals R) (ty : Term R) : List (Name × String) :=
+  let rec go (names : List Name) : Nat → Term R → List (Name × String)
+    | 0, _ => []
+    | k + 1, .sigma x _ A B _ => (x, A.pretty names) :: go (x :: names) k B
+    | _, _ => []
+  match ty with
+  | .sigma .. => go [] 64 ty
+  | _ => match typeHead ty with
+    | some T => match g.find? T with
+      | some { value := some v, .. } =>
+        -- (under the structure's parameters)
+        let rec body : Nat → List Name → Term R → List Name × Term R
+          | 0, ns, t => (ns, t)
+          | k + 1, ns, .lam x b => body k (x :: ns) b
+          | _, ns, t => (ns, t)
+        let (ns, b) := body 64 [] v
+        go ns 64 b
+      | _ => []
+    | none => []
+
+/-- A name usable for a named hole: `x` for an anonymous or inaccessible one. -/
+def holeName (x : Name) : Name :=
+  if x == "_" || x.contains '✝' || x.isEmpty then "x" else x
+
+/-- Make the names of a list distinct (`x`, `x₂`, …), avoiding `taken`. -/
+def distinct (xs : List Name) (taken : List Name := []) : List Name :=
+  let sub (k : Nat) : String := String.ofList ((toString k).toList.map fun c => Char.ofNat (c.toNat - '0'.toNat + '₀'.toNat))
+  let (out, _) := xs.foldl (fun (out, seen) x =>
+    let rec pick (k : Nat) (fuel : Nat) : Name :=
+      let c := if k ≤ 1 then x else x ++ sub k
+      match fuel with
+      | 0 => c
+      | f + 1 => if seen.contains c then pick (k + 1) f else c
+    let c := pick 1 100
+    (out ++ [c], c :: seen)) ([], taken)
+  out
+
+/-- The ways to fill a hole of type `ty` (titles and replacement texts). `paren`: the hole
+is an argument, so an application needs parentheses. -/
+def holeFillings (g : Globals R) (names : List Name) (ty : Term R) (paren : Bool) : List (String × String) :=
+  let wrap (t : String) := if paren then s!"({t})" else t
+  match ty with
+  | .pi x _ _ _ _ _ =>
+    let x := holeName x
+    [(s!"Fill with 'fun {x} => ?body'", wrap s!"fun {x} => ?body")]
+  | _ =>
+    let ctors := match typeHead ty with
+      | some T => constructors g T
+      | none => []
+    if !ctors.isEmpty && ctors.length ≤ 12 then
+      ctors.map fun (c, fs) =>
+        let hs := distinct (fs.map holeName) names
+        if hs.isEmpty then (s!"Fill with '.{c}'", s!".{c}")
+        else (s!"Fill with '.{c}'", wrap s!".{c} {" ".intercalate (hs.map ("?" ++ ·))}")
+    else match fieldsOf g ty with
+      | [] => []
+      | fs =>
+        let hs := distinct (fs.map holeName) names
+        [("Fill with an anonymous constructor", s!"⟨{", ".intercalate (hs.map ("?" ++ ·))}⟩")]
 
 /-- The innermost entry of the info tree around a range. -/
 def around (s : CommandState R) (info : SourceInfo) (p : Info R → Bool) : Option (Info R) :=
@@ -118,6 +209,26 @@ def actionsAt (s : CommandState R) (text : String) (start stop : Nat) : Array Ac
         out := out.push { title := "Add missing cases", kind := "quickfix", fixes := some k,
                           edits := #[{ start := mi.lastAlt.stop, stop := mi.lastAlt.stop, text := String.join alts }] }
     | _ => pure ()
+  -- a hole in the range: fill it from its expected type
+  let holes := s.infos.filter fun i => match i with
+    | .term r _ true => r.start ≤ stop && start ≤ r.stop && !r.synthetic
+    | _ => false
+  -- (the innermost one)
+  let hole : Option (Info R) := holes.foldl (fun acc i => match acc with
+    | some j => if i.info.stop - i.info.start < j.info.stop - j.info.start then some i else acc
+    | none => some i) none
+  if let some (.term r gv _) := hole then
+    let ty := gv.target
+    if ty.mvars.isEmpty then
+      let chars := text.toList.toArray
+      -- an argument (right after a term), where an application needs parentheses
+      let prev := Id.run do
+        let mut i := r.start
+        while i > 0 && (chars[i - 1]! == ' ' || chars[i - 1]! == '\t') do i := i - 1
+        pure (if i == 0 then ' ' else chars[i - 1]!)
+      let paren := isIdRest prev || prev == ')' || prev == '⟩' || prev == '}'
+      for (title, t) in holeFillings s.globals gv.names ty paren do
+        out := out.push { title, kind := "refactor.rewrite", edits := #[{ start := r.start, stop := r.stop, text := t }] }
   -- a definition without a type, whose name is in the range
   for i in s.infos do
     if let .decl r _ names ty false at_ := i then
