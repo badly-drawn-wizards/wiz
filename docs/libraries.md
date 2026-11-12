@@ -95,7 +95,11 @@ def top : Circuit In.code Out.code := Circuit.bundled Tx.bundle In.bundle Out.bu
   and unique. `Hw` gained `const`, `tag`/`untag`, `label`, `resetTo`, `hold`.
 * **Bundles.** A structure parameterised by `r : HwTy → Type` with fields `r T` or nested
   bundles; `deriving Bundle` defines its code (a product of `named` fields) and the
-  conversions. A bundle is a *value* (`S.bundle`), not an instance: structures are
+  conversions. The code's tails are definitions too (`S.code := HwTy.prod (named "f₀" T₀)
+  S.code.tail1`, …), `pack` ascribes each rest its tail's name and `unpack` walks the
+  product with one `let` per field, so the code of both is linear in the number of fields
+  (it was quadratic and cubic). (Reading field k of a structure is still k projections in
+  the IR, so `pack` of a wide bundle has a quadratic number of projections.) A bundle is a *value* (`S.bundle`), not an instance: structures are
   structural types, so two structures with the same field types are one type and
   instance resolution could not tell their bundles apart (instances once declared types get
   kernel-level brands).
