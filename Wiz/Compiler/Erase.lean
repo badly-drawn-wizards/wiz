@@ -384,7 +384,9 @@ partial def brandIx? (g : Globals R) (I : Val R) (lvl : Nat := 2000000) : Option
     let here : Option Name := match whnf dom with
       | .neutral (.global k _) sp => if sp.isEmpty then brandOf? k else none
       | _ => none
-    here <|> brandIx? g (Closure.inst g cod (.var lvl)) (lvl + 1)
+    -- (the last brand-named domain: the brand's place is last in the tail, and an earlier,
+    -- phantom domain could be another type's brand)
+    brandIx? g (Closure.inst g cod (.var lvl)) (lvl + 1) <|> here
   | _ => none
 
 /-- The type with a native representation that `ty` is, with the representation: found

@@ -7374,6 +7374,16 @@ def reprGroup : Group where
         check (!(← sealErrors "import Prelude\ndef k : Type := Nat.brand✝\n").isEmpty) "Nat.brand✝ was named"
         reprAll ("import Prelude\ninductive M where\n  | z\n  | s (n : M)\ndef M.len : M → Nat\n  | .z => 0\n  | .s n => M.len n + 1\n" ++
           "def M.of : Nat → M\n  | .zero => .z\n  | .succ n => .s (M.of n)\ndef main : Nat := M.len (M.of 40) + Nat.mul 2 1\n") "42" },
+    { name := "22m: a tactic names neither another module's private declaration nor a brand (review F2)", run := fun _ => do
+        let tac (e : String) := "syntax (name := mk1) \"mk1\" : tactic\ndef Tactic.mk1 : Tactic := fun _ => do\n" ++
+          "  g ← TacticM.mainGoal;\n  TacticM.assign g (" ++ e ++ ");\n  TacticM.replaceMainGoal .nil\n" ++
+          "attribute [tactic tactic.mk1] Tactic.mk1\n"
+        failsLibs ("import Word\n" ++ tac "Expr.app (.app (.const \"UIntN.mk\") (.lit 8)) (.lit 300)" ++
+          "def big : UIntN 8 := by\n  mk1\n") "'UIntN.mk' is private to module Word"
+        failsLibs ("import Prelude\nstructure Pt where\n  x : Nat\n" ++ tac "Expr.const \"Pt.brand✝\"" ++
+          "def PB : Type := by\n  mk1\n") "is a brand"
+        -- (a public constant is still fine)
+        okLibs ("import Prelude\n" ++ tac "Expr.const \"Nat.zero\"" ++ "def z : Nat := by\n  mk1\n") },
     { name := "22m: erasure refuses a cast between a native type and another type (layer 3)", run := fun _ => do
         let src := "import Nat8\ninductive L where\n  | mk (toNat : Nat)\naxiom e : L = W\ndef forge : W := cast e (L.mk 300)\ndef main : Nat := W.get forge\n"
         let loader ← preludeLoader
