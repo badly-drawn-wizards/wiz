@@ -4266,6 +4266,17 @@ def selfHostGroup : Group where
         selfhostAgrees linearMatchHeader linearMatchDecls },
     { name := "the additive match (T.casesOnA) runs, compiled by the Lean compiler (21v)", run := fun _ =>
         ioRun linearMatchProgram "3\n5\n6\n" },
+    { name := "Kernel.wiz quantity terms: the same variable is the same quantity, and a Σ at a stuck non-variable quantity is rejected, as in the Lean kernel (21w, review probes 7a, 15b)", run := fun _ => do
+        -- (`MTm` has no `Qty` terms; the Lean kernel's verdicts are in
+        -- wiz-notes/fieldq-review-probes: 7a accepted, 15b rejected by `qtyPoly`)
+        let kernel ← IO.FS.readFile "selfhost/Kernel.wiz"
+        let verdict := "def verdict (t : Tm) : String := match infer empty t with\n  | .ok _ _ => \"ok\"\n  | .err _ => \"error\"\n"
+        let dq := "(.ann (.darg (.var 0) (.unit 0) (.lam (.dret .star))) (.descr 0 (.unit 0)))"
+        let p7a := s!"(.ann (.lam (.lam (.letq .qz (.eqTy (.unit 0) (.unit 0)) (.fst (.var 0)) .star))) (.pi .qty (.pi (.eq (.descr 0 (.unit 0)) {dq} {dq}) (.unit 0))))"
+        let p15b := "(.ann (.lam (.con (.pair .star (.pair .star .star)))) (.pi (.pi (.unit 0) .qty) (.mu 0 (.unit 0) " ++
+          "(.app (.ann (.lam (.darg (.var 0) (.unit 0) (.lam (.dret .star)))) (.pi .qty (.descr 0 (.unit 0)))) (.app (.var 0) .star)) .star)))"
+        ioRun (kernel ++ "\n" ++ verdict ++ s!"def main : IO Unit := do\n  IO.println (verdict {p7a});\n  IO.println (verdict {p15b})\n")
+          "ok\nerror\n" },
     { name := "the self-hosted frontend: constructor field quantities (0, 1, ω) and implicit fields, as in the Lean frontend (21w)", run := fun _ =>
         selfhostAgrees fieldQtyHeader fieldQtyDecls },
     { name := "constructor field quantities and implicit fields: the Lean and the self-hosted compilers agree (21w)", run := fun _ => do

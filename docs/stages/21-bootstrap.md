@@ -432,13 +432,14 @@ field's quantity as the Lean kernel's do (`Desc.arg q S D`, CoreSpec §9.1):
   is a type in `U l` (`typeOfNe`, `propSort`) and is compared part by part (`convSpine`).
   The Lean kernel builds a Σ at a polynomial quantity there; this kernel has no
   quantity variables on binders, so such a Σ stays stuck, with the rules of a Σ at an
-  unknown quantity: its projections in erased positions (`fst` at run time is rejected,
+  unknown quantity (at a bare variable only, as `qtyPoly` allows; `cast`, `eqTy` and `eq`
+  at it stay stuck, where the Lean kernel computes them): its projections in erased positions (`fst` at run time is rejected,
   as `1 ≤ q` fails at `q = 0`), `snd` at ω, η in conversion, and a pair's first part
   counted ω times. This is not hypothetical: the frontend's `match` hands the kernel
   normal forms of `All`/`⟦D⟧` at a description stuck on a tag, whose `Desc.elim` methods
   project such a Σ (in a type).
 * `vEqDesc` (equal quantities ↦ on, two different literals ↦ `False`, else stuck:
-  `qtySame`, as `sameQty`/`qtyApart`), conversion (`conv` at `Qty`, and the quantities of
+  `qtySame`, as `sameQty`/`qtyApart`: the same variable is equal to itself), conversion (`conv` at `Qty`, and the quantities of
   two descriptions), `castDesc`, `groundEqDesc`, `eqPayload`, `quote` and `show`
   (`arg(0 Nat, …)`; nothing is printed at ω) follow the Lean kernel.
 
@@ -467,4 +468,6 @@ the quantity first; new `Tm.qty`, `Tm.qlit`, `Tm.sigmaQ`, `Val.vqty`, `Val.vqlit
 **Tests** (group `selfhost`): field quantities 0/1/ω and implicit fields, the same verdicts
 in both frontends (`fieldQtyDecls`); a program with them, compiled by the Lean compiler and
 by the self-hosted one (both collectors); the differential test's `MTm` descriptions carry
-a quantity (ω in the existing terms).
+a quantity (ω in the existing terms); two core terms from the review of this stage
+(/workspace/wiz-notes/fieldq-review.md, probes 7a and 15b) checked by Kernel.wiz with the
+Lean kernel's verdicts.

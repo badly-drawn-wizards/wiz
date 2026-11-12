@@ -607,12 +607,18 @@ def canonical : Val → Bool
   | .vnu _ _ _ _ _ => .true
   | .vulift _ _ => .true
   | _ => .false
--- (21w) two quantity values: equal or not when both are literals (`sameQty` in
--- `Eval.lean`), `.none` otherwise (a stuck quantity, which a substitution could make
--- either); `qtyIs a b r`: they are known to be equal (`r = .true`) or different
+-- (21w) two quantity values: equal or not when both are literals, equal when they are
+-- the same variable (`sameQty` in `Eval.lean`, on polynomials), `.none` otherwise (a
+-- substitution could make them either); `qtyIs a b r`: they are known to be equal
+-- (`r = .true`) or different
 def qtySame (a b : Val) : Option Bool := match whnf a with
   | .vqlit q => match whnf b with
     | .vqlit q' => .some (qEq q q')
+    | _ => .none
+  | .vne (.hvar x) .snil => match whnf b with
+    | .vne (.hvar y) .snil => match Nat.beq x y with
+      | .true => .some .true
+      | .false => .none
     | _ => .none
   | _ => .none
 def qtyIs (a b : Val) (r : Bool) : Bool := match qtySame a b with
@@ -2488,7 +2494,7 @@ def infer : TCtx → Tm → TyRes
           | .false => .err "cannot project an erased field"
       -- (21w) at a stuck quantity (a template's `Σ` under `Desc.elim`): erased positions
       -- only (`1 ≤ q` fails at `q = 0`, as for the Lean kernel's polynomials)
-      | .vne _ (.ssigq _ _ a _ _) => match TCtx.erased c with
+      | .vne (.hvar _) (.ssigq .snil _ a _ _) => match TCtx.erased c with
         | .true => .ok a u
         | .false => .err "cannot project a field whose quantity is a variable"
       | ty => .err (String.append "not a pair: its type is " (showVal c ty))
@@ -2498,7 +2504,7 @@ def infer : TCtx → Tm → TyRes
       | .vsigma _ _ env b _ => match TCtx.erased c with
         | .true => .ok (eval (.cons (vfst (eval (TCtx.env c) p)) env) b) u
         | .false => .ok (eval (.cons (vfst (eval (TCtx.env c) p)) env) b) (uScale .qw u)
-      | .vne _ (.ssigq _ _ _ env b) => match TCtx.erased c with
+      | .vne (.hvar _) (.ssigq .snil _ _ env b) => match TCtx.erased c with
         | .true => .ok (eval (.cons (vfst (eval (TCtx.env c) p)) env) b) u
         | .false => .ok (eval (.cons (vfst (eval (TCtx.env c) p)) env) b) (uScale .qw u)
       | ty => .err (String.append "not a pair: its type is " (showVal c ty))
@@ -2850,11 +2856,12 @@ def checkW : TCtx → Tm → Val → TyRes
       | .ok _ ub => .ok (.vsigma q ta env tb .none) (uAdd (uScale q ua) ub)
       | r => r
     | r => r
-  -- (21w) at a stuck quantity: the first part's usage counts ω times (at least as much as
-  -- at any value of the quantity)
-  | c, .pair a b, .vne h (.ssigq sp l ta env tb) => match check c a ta with
+  -- (21w) at a quantity variable: the first part's usage counts ω times (at least as much
+  -- as at any value of the quantity). Only a variable, as the Lean kernel's `qtyPoly`
+  -- allows (a quantity that is another stuck term is rejected there)
+  | c, .pair a b, .vne (.hvar x) (.ssigq .snil l ta env tb) => match check c a ta with
     | .ok _ ua => match check c b (eval (.cons (eval (TCtx.env c) a) env) tb) with
-      | .ok _ ub => .ok (.vne h (.ssigq sp l ta env tb)) (uAdd (uScale .qw ua) ub)
+      | .ok _ ub => .ok (.vne (.hvar x) (.ssigq .snil l ta env tb)) (uAdd (uScale .qw ua) ub)
       | r => r
     | r => r
   | c, .dret i, .vdesc l I => match check c i I with
