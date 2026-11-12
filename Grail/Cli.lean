@@ -28,6 +28,10 @@ def usage : String := "usage:
                           module roots (its lib targets' and its dependencies') and
                           its toolchain; --wiz PATH picks the wiz (default: the one
                           beside grail, else wiz on PATH)
+  grail doc [TARGET…] [-o OUT] [--source-url URL] [--title T]
+                          documentation of the package's lib targets (all by
+                          default): `wiz doc` with the package's module roots, into
+                          .grail/doc (see `wiz doc`)
   grail targets           list the targets
   grail config            print the toolchain grail would use
   grail --version         print the version
@@ -79,7 +83,9 @@ def findStd (opt : Option String) : IO System.FilePath := do
   pure "lib"
 
 def cliMain (args : List String) : IO UInt32 := do
-  if args == ["--version"] then IO.println (← Wiz.versionLine "grail"); return 0
+  -- (after the toolchain flags: tower's wrapper puts its flags before the user's arguments)
+  if ((({} : Toolchain).parseFlags args).2) == ["--version"] then
+    IO.println (← Wiz.versionLine "grail"); return 0
   -- (23k) the supervisor of a job process
   if let "--grail-exec" :: rest := args then return ← execMain rest
   -- a `panic!` (a kernel-internal failure) ends the build, as it ends `wiz check`
@@ -134,6 +140,45 @@ def cliMain (args : List String) : IO UInt32 := do
         | .ok rs => rs.mapM absolute
         | .error e => do IO.eprintln s!"grail lsp: {e} (the dependencies' modules are not found)"; pure []
       runLsp wiz (lspArgs tc ([dirAbs] ++ libRootsOf dirAbs pkg.targets ++ deps) lspOpts) dirAbs
+  -- (11s) the documentation of the lib targets: `wiz doc` with the package's roots
+  | "doc" :: docOpts =>
+    let wiz ← wizExe opts.wiz
+    let dirAbs ← absolute dir
+    let (pkg, localSettings) ← match ← readConfig flagged binId std dir with
+      | .ok r => pure r
+      | .error e => do IO.eprintln e; return 1
+    let mut tc := defaults
+    for (k, v) in pkg.settings ++ localSettings do
+      match tc.set k v with
+      | some t => tc := t
+      | none => IO.eprintln s!"unknown setting {k}"; return 1
+    tc := (tc.parseFlags raw).1
+    let readPkg (d : System.FilePath) : IO (Except String Package) := do
+      pure ((← readConfig tc binId std d).map (·.1))
+    let deps ← match ← lockedRoots readPkg dir pkg IO.eprint with
+      | .ok rs => rs.mapM absolute
+      | .error e => do IO.eprintln e; return 1
+    -- TARGET… (lib targets) and wiz doc's own options
+    let rec split : List String → List String × List String
+      | o :: v :: rest => if ["-o", "--source-url", "--title", "--web"].contains o then
+          let (ts, os) := split rest; (ts, o :: v :: os) else
+          let (ts, os) := split (v :: rest); (o :: ts, os)
+      | [o] => if o.startsWith "-" then ([], [o]) else ([o], [])
+      | [] => ([], [])
+    let (wanted, wizOpts) := split docOpts
+    let libs := pkg.targets.filterMap fun | .lib n r => some (n, r) | _ => none
+    for w in wanted do
+      unless libs.any (·.1 == w) do IO.eprintln s!"no lib target {w}"; return 1
+    let chosen := if wanted.isEmpty then libs else libs.filter (wanted.contains ·.1)
+    if chosen.isEmpty then IO.eprintln "grail doc: the package has no lib targets"; return 1
+    let wizOpts := if wizOpts.contains "-o" then wizOpts else wizOpts ++ ["-o", (dirAbs / ".grail" / "doc").toString]
+    let wizOpts := if wizOpts.contains "--title" then wizOpts else wizOpts ++ ["--title", pkg.name]
+    let roots := libRootsOf dirAbs pkg.targets ++ deps
+    let rest := tc.searchPath.filter (!roots.contains ·)
+    let args := ({ tc with searchPath := roots ++ rest }.toFlags ++ "doc" :: (chosen.map fun (_, r) => (dirAbs / r).toString) ++ wizOpts).toArray
+    let child ← try IO.Process.spawn { cmd := wiz, args, cwd := dirAbs }
+      catch e => IO.eprintln s!"grail doc: {wiz}: {e}"; return 127
+    child.wait
   | "build" :: _ | "test" :: _ | ["targets"] | ["config"] | ["update"] | ["run", _] =>
     let (pkg, localSettings) ← match ← readConfig flagged binId std dir with
       | .ok r => pure r

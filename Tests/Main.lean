@@ -13,6 +13,7 @@ import Tests.Scaling
 import Tests.Feral
 import Tests.Tower
 import Tests.Native
+import Tests.Doc
 
 -- Closed terms are normally evaluated at program start-up; that would execute
 -- unimplemented `sorry`s before any test runs.
@@ -24,6 +25,7 @@ open Tests
 new group touches only its module (and `.github/test-shards.json`). -/
 def groups : List Group :=
   Check.groups ++
+  Doc.groups ++
   Elab.groups ++
   ElabFix.groups ++
   Feral.groups ++

@@ -90,6 +90,18 @@ def group : Group where
         let ms ← msgs (lcg ++ s!"def it : iter 20000 (UIntN.ofNat 16 1) = UIntN.ofNat 16 {lcgValue 20000} := native_refl\n#print axioms it\n")
         noErrors ms
         expect ms "'it' depends on axioms: [it.native✝" },
+    { name := "a word read back with its range proof, marked (#145 × #128)", run := fun _ => do
+        -- a word carries an erased proof `toNat < 2^w`: the read-back builds it, and the
+        -- marking pass marks it (`prf`) before the kernel checks the value
+        let ms ← msgs ("import Prelude\nimport Word\n" ++
+          "def w : UIntN.add (UIntN.ofNat 8 200) (UIntN.ofNat 8 100) = UIntN.ofNat 8 44 := native_refl\n" ++
+          "def p : (UIntN.mul (UIntN.ofNat 8 16) (UIntN.ofNat 8 16), UIntN.ofNat 4 15) = (UIntN.ofNat 8 0, UIntN.max 4) := native_refl\n" ++
+          "#print axioms w\n")
+        noErrors ms
+        expect ms "'w' depends on axioms: [w.native✝"
+        let ms ← msgs ("import Prelude\nimport Word\n" ++
+          "def w : UIntN.add (UIntN.ofNat 8 200) (UIntN.ofNat 8 100) = UIntN.ofNat 8 45 := native_refl\n")
+        expect ms "native evaluation refutes it" },
     { name := "rejected without --trust-native", run := fun _ => do
         let ms ← msgs (sumTo ++ "def s : sumTo 4 = 10 := native_refl\n") (trust := false)
         expect ms "error: native evaluation is not enabled"
