@@ -311,6 +311,40 @@ def RCtx.typeOf? (rc : RCtx R) (t : Term R) : ElabM R (Option (VTy R)) := do
     | _ => return none
   pure ty?
 
+/-- `typeOf?`, unifying each argument's type (when it has one this way) with the
+function's domain on the way. Reflected constants come back with fresh universe levels
+(`reify`), and this is what solves them: `F.map_comp f g` reified is `Fun.map_comp.{?a, …}
+F f g`, and only the types of `F`, `f` and `g` fix `?a`, … (wiz-cats B6). A mismatch is
+left for the kernel to report. -/
+partial def RCtx.typeOfUnifying? (rc : RCtx R) (t : Term R) : ElabM R (Option (VTy R)) := do
+  let g ← getGlobals
+  let (h, args) := Term.spine t
+  -- (a field of a structure: the type of what is projected, projected)
+  let mut ty? ← match h with
+    | .fst p => do
+      let some pty ← rc.typeOfUnifying? p | pure none
+      match ← force pty with
+      | .sigma _ _ A _ _ => pure (some A)
+      | _ => pure none
+    | .snd p => do
+      let some pty ← rc.typeOfUnifying? p | pure none
+      match ← force pty with
+      | .sigma _ _ _ B _ => pure (some (← instM B (vFst (eval g rc.env p))))
+      | _ => pure none
+    | h => pure (rc.headType? g h)
+  for a in args do
+    -- (the arguments' own constants, whatever this application's type)
+    let aty ← rc.typeOfUnifying? a
+    let some ty := ty? | continue
+    match ← force ty with
+    | .pi _ _ _ dom cod _ =>
+      if let some aty := aty then
+        let s ← get
+        try unify rc.lvl dom aty catch _ => set s
+      ty? := some (rc.instArg g cod a)
+    | _ => ty? := none
+  pure ty?
+
 mutual
 
 /-- Reflect `t` of type `ty?` (when it is known). As `reflect`, but type-directed. -/

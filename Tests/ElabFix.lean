@@ -535,7 +535,106 @@ def group : Group where
         -- without an expected type the motives can't be inferred: an error, not a panic
         -- (since agent/elab-bugs the inner `Ex.intro` waits for nothing better and no
         -- ill-typed guess is made: `rfl` meets the unsolved motive `?P ?w`)
-        failsLibs "import Logic\ndef t := Ex.intro _ 3 (Ex.intro _ 3 rfl)" "rfl: the expected type is not an equation" }
+        failsLibs "import Logic\ndef t := Ex.intro _ 3 (Ex.intro _ 3 rfl)" "rfl: the expected type is not an equation" },
+    { name := "a universe level fixed only by an implicit argument's type is solved (wiz-cats B1)", run := fun _ =>
+        -- `eqSymm.{?u}` under a binder in a constructor argument: `?A := B.R x x` is solved,
+        -- and `?u` comes from its type (the binder's type was a hole when `?A` was made)
+        okLib ("import Logic\n" ++
+          "def eqSymm.{u} {A : Type u} {a b : A} (0 e : a = b) : b = a := transp (fun b _ => b = a) (refl a) e\n" ++
+          "structure Box.{u, v} where\n  T : Type u\n  R : T → T → Type v\n  r : (x : T) → R x x\n" ++
+          "structure S2.{u, v} (B : Box.{u, v}) where\n  law : (x : B.T) → B.r x = B.r x\n" ++
+          "def bad.{u, v} (B : Box.{u, v}) (s : S2 B) : S2 B := S2.mk (fun x => eqSymm (s.law x))\n" ++
+          "def bad2.{u, v} (B : Box.{u, v}) (s : S2 B) : S2 B := S2.mk.{u, v} (fun x => eqSymm (s.law x))\n" ++
+          -- the levels of the implicit argument `{B : Box.{?u, ?v}}` of `S2.mk`, which only
+          -- the type of `B` fixes (no expected type)
+          "def e.{u, v} (B : Box.{u, v}) (s : S2 B) : Nat := (fun _ => 0) (S2.mk s.law)\n") },
+    { name := "an unsolved universe level is reported at the constant it belongs to", run := fun _ => do
+        let msgs ← msgsLib "import Prelude\ndef k.{u} : Nat := 0\ndef bad : Nat :=\n  Nat.succ k\n"
+        unless msgs.any (fun m => (m.splitOn "the universe level u of k").length > 1) do
+          throw (IO.userError s!"no 'the universe level u of k' in {msgs}") },
+    { name := "a recursive call in equations inserts the implicit arguments (wiz-reals B1)", run := fun _ =>
+        okLib ("import Logic\n" ++
+          "def f : (k : Nat) → {m : Nat} → m = m → Nat\n  | .zero, _, _ => 0\n  | .succ k, _, e => f k e\n" ++
+          -- the old form, every matched argument with `_` at the implicit ones, still works
+          "def g : (k : Nat) → {m : Nat} → m = m → Nat\n  | .zero, _, _ => 0\n  | .succ k, _, e => g k _ e\n" ++
+          "def h (n : Nat) : (k : Nat) → {m : Nat} → m = m → Nat\n  | .zero, _, _ => n\n  | .succ k, _, e => h n k e\n" ++
+          "#eval f 3 (refl 2)\n#eval h 7 3 (refl 2)") ["0", "7"] },
+    { name := "a structure-valued hole under a projection is solved from the projection (wiz-cats B5)", run := fun _ =>
+        -- `(?C).2.2.1 ?X ?Y ?Z ?f ?g =?= C.2.2.1 X Y Z f g`: `?C := C`, then the arguments
+        -- (a first-order guess, like Lean's for `Category.comp ?C`: the kernel rechecks)
+        okLib ("import Logic\n" ++
+          "structure Cat where\n  Obj : Type\n  Hom : Obj → Obj → Type\n  comp : {X Y Z : Obj} → Hom X Y → Hom Y Z → Hom X Z\n" ++
+          "def lem {ω C : Cat} {X Y Z : C.Obj} (0 f : C.Hom X Y) (0 g : C.Hom Y Z) (0 h : C.Hom X Z) (0 e : C.comp f g = h) : h = C.comp f g :=\n" ++
+          "  transp (fun x _ => x = C.comp f g) (refl (C.comp f g)) e\n" ++
+          "def use {ω C : Cat} {X Y Z : C.Obj} (0 f : C.Hom X Y) (0 g : C.Hom Y Z) (0 h : C.Hom X Z) (0 e : C.comp f g = h) : h = C.comp f g :=\n" ++
+          "  lem _ _ _ e\n") },
+    { name := "a failing unification under a binder fails fast (wiz-reals S1: one unfolding order per layer)", run := fun _ =>
+        -- each `Int.ofPair` is `Nat.sub` five definitions deep; trying both unfolding orders
+        -- at every layer took 17 s
+        failsLibsWithin 8 ("import Int\nimport Logic\n" ++
+          "def Int.ofPair (a b : Nat) : Int := Int.subNatNat a b\n" ++
+          "axiom ofPair_negate (a b : Nat) : -(Int.ofPair a b) = Int.ofPair b a\n" ++
+          "axiom ofPair_add (a b c d : Nat) : Int.ofPair a b + Int.ofPair c d = Int.ofPair (a + c) (b + d)\n" ++
+          "def r (a b c d : Nat) : Int.ofPair a b + -(Int.ofPair c d) = Int.ofPair (a + d) (b + c) :=\n" ++
+          "  Eq.trans (Eq.congrArg (fun y => Int.ofPair _ _ + y) (ofPair_negate _ _)) (ofPair_add _ _ _ _)\n")
+          "outside the pattern fragment" },
+    { name := "a recursive call may pass the parameters and only the structural argument (wiz-reals P12)", run := fun _ =>
+        okLib ("import Prelude\n" ++
+          "def go (n : Nat) : Nat → Nat → Nat\n  | .zero, lo => Nat.add lo n\n" ++
+          "  | .succ f, lo => (fun (g : Nat → Nat) => g (Nat.succ lo)) (go n f)\n#eval go 3 2 1") ["6"] },
+    { name := "a binder's type with a hole solved later computes when applied (wiz-cats B7)", run := fun _ =>
+        -- `α : NT F G` with the codomain category a hole when `α` is bound: the naturality
+        -- equation is stuck on it, and is evaluated again (a Π, by funext) when applied
+        okLib (
+          "import Logic\n" ++
+          "structure Cat.{u, v} where\n" ++
+          "  Obj : Type u\n" ++
+          "  Hom : Obj → Obj → Type v\n" ++
+          "def Types : Cat.{1, 0} := Cat.mk Type (fun A B => A → B)\n" ++
+          "structure Fn.{a, b, c, d} (C : Cat.{a, b}) (D : Cat.{c, d}) where\n" ++
+          "  obj : C.Obj → D.Obj\n" ++
+          "structure NT.{a, b, c, d} {C : Cat.{a, b}} {D : Cat.{c, d}} (F G : Fn C D) where\n" ++
+          "  app : (X : C.Obj) → D.Hom (F.obj X) (G.obj X)\n" ++
+          "  nat : (X : C.Obj) → app X = app X\n" ++
+          "def use.{a, b} {C : Cat.{a, b}} {F G : Fn C Types} (α : NT F G) (X : C.Obj) (x : F.obj X) : α.app X x = α.app X x :=\n" ++
+          "  α.nat X x\n") },
+    { name := "`|>` at any universe, so on proofs too (wiz-reals P8)", run := fun _ =>
+        okLib "import Logic\ndef p (a b : Nat) (h : a = b) : b = a := h |> Eq.symm\n" },
+    { name := "Nat.toString of numbers of 2^64 and above (wiz-reals B3)", run := fun _ =>
+        ioRun ("import IO\ndef main : IO Unit := do\n  IO.println (Nat.toString (Nat.pow 10 30));\n" ++
+          "  IO.println (Nat.toString (Nat.add (Nat.pow 10 36) 7));\n  IO.println (Nat.toString 1000000000000000000);\n" ++
+          "  IO.println (Nat.toString 42)")
+          "1000000000000000000000000000000\n1000000000000000000000000000000000007\n1000000000000000000\n42\n" },
+    { name := "rw in a context whose variables' types had holes when bound (wiz-cats B6)", run := fun _ =>
+        -- the kernel takes a hole in a variable's type as rigid ("expected: Cat, inferred:
+        -- Cat"); the rewrite's equation is inferred again with the variables' types zonked
+        okLib (
+          "import Logic\n" ++
+          "structure Cat.{u, v} where\n" ++
+          "  Obj : Type u\n" ++
+          "  Hom : Obj → Obj → Type v\n" ++
+          "def Types : Cat.{1, 0} := Cat.mk Type (fun A B => A → B)\n" ++
+          "structure Fn.{a, b, c, d} (C : Cat.{a, b}) (D : Cat.{c, d}) where\n" ++
+          "  obj : C.Obj → D.Obj\n" ++
+          "structure NT.{a, b, c, d} {C : Cat.{a, b}} {D : Cat.{c, d}} (F G : Fn C D) where\n" ++
+          "  app : (X : C.Obj) → D.Hom (F.obj X) (G.obj X)\n" ++
+          "  nat : (X : C.Obj) → app X = app X\n" ++
+          "axiom natEq.{a, b} {C : Cat.{a, b}} {F G : Fn C Types} (α : NT F G) (X : C.Obj) (x : F.obj X) : α.app X x = α.app X x\n" ++
+          "def use.{a, b} {C : Cat.{a, b}} {F G : Fn C Types} (α : NT F G) (X : C.Obj) (x : F.obj X) : α.app X x = α.app X x := by\n" ++
+          "  rw (natEq α X x)\n" ++
+          "  exact rfl\n") },
+    { name := "a broken module's errors are reported once, not nested in every importer (wiz-reals P9)", run := fun _ => do
+        let prelude ← IO.FS.readFile "lib/Prelude.wiz"
+        let mods : List (String × String) := [("Prelude", prelude),
+          ("A", "import Prelude\ndef a : Nat := Bool.true\n"), ("B", "import A\ndef b : Nat := 0\n")]
+        let s := runFrontend (R := ZeroOneMany) "import B\ndef c : Nat := 0\n"
+          { trustedModule := Tests.libModule, loader := fun m => mods.lookup m }
+        let errs := s.messages.filter (·.severity == .error)
+        unless errs.size == 1 do throw (IO.userError s!"expected one error, got {errs.map (·.text)}")
+        let t := errs[0]!.text
+        unless (t.splitOn "imported module B → module A has errors:").length == 2 && (t.splitOn "type mismatch").length == 2 &&
+            (t.splitOn "A:2:16: error").length == 2 do
+          throw (IO.userError s!"unexpected message:\n{t}") }
   ]
 
 /-- This module's test groups, which `Tests/Main.lean` runs: one per line, in sorted

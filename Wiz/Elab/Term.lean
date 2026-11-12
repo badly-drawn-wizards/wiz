@@ -633,7 +633,21 @@ partial def rewriteRecCalls (g : Globals R) (rc : RecCtx) (binds : List (Name ×
       let given := args.extract np args.size
       given.size ≥ rc.cols &&
         (rc.colExplicit.zip (given.extract 0 rc.cols).toList).all fun (e, a) => e || a.isOfKind "term.hole"
-    let np := if args.size ≤ nExpl || (explicitCols && args.size ≤ rc.cols && allGiven 0) then 0
+    -- (a partial application `f n y` passes the parameters and only some of the matched
+    -- arguments: the parameters are there when they are the parameters' names and the
+    -- structural argument after them is a recursive field)
+    let isParamsAt0 : Bool := !rc.params.isEmpty && args.size > rc.params.length &&
+      (rc.params.zip (args.extract 0 rc.params.length).toList).all (fun (p, a) =>
+        a.isOfKind "term.ident" && (a.getArg 0).getId? == some p) &&
+      (match args[rc.params.length + rc.pos]? with
+        | some a => a.isOfKind "term.ident" && match (a.getArg 0).getId? with
+          | some y => match binds.find? (·.1 == y) with
+            | some (_, _, .neutral (.local fl) #[]) => rc.ihs.any (·.1 == fl)
+            | _ => false
+          | none => false
+        | none => false)
+    let np := if isParamsAt0 then rc.params.length
+      else if args.size ≤ nExpl || (explicitCols && args.size ≤ rc.cols && allGiven 0) then 0
       else rc.params.length
     -- (not `@f`) the implicit matched arguments: holes, as `insertImplicits` would make
     -- them (before each explicit one, and the trailing ones once all explicit ones are given)
@@ -1844,6 +1858,15 @@ partial def inferApp (ctx : LocalCtx R) (stx : Syntax) (postpone : Bool := true)
         unifyAt ctx fStx ty pi
         pure pi
       | ty => do
+        -- a type evaluated while its holes were unsolved (an equation stuck on a hole
+        -- that is solved now, as in the type of a binder `α : NatTrans F P` whose
+        -- category is a hole when `α` is bound): evaluated again, it may be a Π
+        if let some ty' ← reevalSolved? ctx ty then
+          if let .pi .. ← force ty' then
+            pure ty'
+          else
+            throwAt (ctx.withInfo fStx).info s!"function expected\n  {showTerm ctx f} : {← showVal ctx ty'}"
+        else
         let msg := s!"function expected\n  {showTerm ctx f} : {← showVal ctx ty}"
         throwAt (ctx.withInfo fStx).info msg
     match fty' with
@@ -2872,9 +2895,19 @@ partial def runTac (code : Code) (info : SourceInfo) (st : TacState R) (v : RVal
     let h ← zonk lvl (← reify st.handles (fld 1) lvl)
     let rtl := decodeBool (fld 2) == some true
     unless h.mvars.isEmpty do throwAt info "rewrite: the equation has holes"
+    -- the universe levels of its constants (fresh after reflection), from the arguments' types
+    let h ← if h.hasLevelMVar then do
+        let _ ← (RCtx.ofLocal gl.ctx).typeOfUnifying? h
+        zonk lvl h
+      else pure h
+    -- (the variables' types with the holes solved since they were bound, as the kernel
+    -- takes a hole as rigid: `U : UnitCounit F G` with `F`'s categories holes then)
     let hty ← match (← get).kernelInfer (gl.kernelCtx g) h with
       | .ok ty => pure ty
-      | .error e => throwAt info s!"rewrite: {e}"
+      | .error e =>
+        match (← get).kernelInfer { gl.kernelCtx g with types := (← zonkedTypes gl.ctx).toList.reverse } h with
+        | .ok ty => pure ty
+        | .error _ => throwAt info s!"rewrite: {e}"
     let (A, a, b) ← match ← force hty with
       | .neutral (.eq A a b) #[] => pure (quote g lvl A, quote g lvl a, quote g lvl b)
       | v => throwAt info s!"rewrite: not an equation between two terms: {← showVal gl.ctx v}"

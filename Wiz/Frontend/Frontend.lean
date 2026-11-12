@@ -181,8 +181,8 @@ where
           -- (a declaration this file already has is reported as it is, at the import)
           let msg : Msg := match errs.find? (·.code == "duplicate-declaration") with
             | some d => { info := cmd.info, severity := .error, text := d.text, code := d.code }
-            | none => { info := cmd.info, severity := .error,
-                        text := s!"module {m} has errors: {errs.toList.map (·.render src)}" }
+            | none => { info := cmd.info, severity := .error, code := "module-errors",
+                        text := importErrorsText m src errs }
           let msgs := if errs.isEmpty then s.messages else s.messages.push msg
           -- (a module's warnings, such as an unchecked `builtin`, are shown at the import)
           let msgs := msgs ++ (inner.messages.filter (·.severity == .warning)).map fun w =>

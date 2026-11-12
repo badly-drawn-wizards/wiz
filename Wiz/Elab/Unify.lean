@@ -588,8 +588,11 @@ partial def unifyGlued (l : Lvl) (t u : Val R) : ElabM R Bool := do
       -- confluent, so unfolding the other side first meets the same normal forms; trying
       -- both orders at every glued layer is exponential in the number of layers (a wrong
       -- proof about `⋆`, each four definitions deep, took minutes to be rejected; a
-      -- wrong proof about `Int.ofPair`, a `Nat.sub` five layers deep, 20 s). A failure
-      -- that met no metavariable is also remembered (`recordFail`).
+      -- wrong proof about `Int.ofPair`, a `Nat.sub` five layers deep, 17 s, wiz-reals S1).
+      -- (Trying the other order once per path, when the failure met a metavariable, made
+      -- no file of lib/, examples/, selfhost/ or two dogfooding projects check that
+      -- doesn't check without it, and was slower.) A failure that met no metavariable is
+      -- also remembered (`recordFail`).
       unless sawMeta do
         if let some key := key? then recordFail key err.msg
       -- (with the state as it is now, which has what was learnt)

@@ -53,6 +53,19 @@ def Msg.render (input : String) (m : Msg) : String :=
   let sev := match m.severity with | .error => "error" | .warning => "warning" | .info => "info"
   s!"{l + 1}:{c + 1}: {sev}: {m.text}"
 
+/-- The error at an `import` of a module `m` (text `src`) whose own check reported
+`errs`. Its own errors are listed once, one per line with their positions in `m`; an
+error that is itself about a module `m` imports (code `module-errors`) is passed on as
+it is, named through `m`, instead of nested inside another list. So a broken module's
+errors appear once in every importer, however deep. -/
+def importErrorsText (m : String) (src : String) (errs : Array Msg) : String :=
+  let own := errs.filter (·.code != "module-errors")
+  let through := errs.filter (·.code == "module-errors")
+  let ownTxt := if own.isEmpty then "" else
+    s!"module {m} has errors:" ++ String.join (own.toList.map fun e => s!"\n  {m}:{e.render src}")
+  let throughTxt := through.toList.map fun e => s!"imported module {m} → {e.text}"
+  "\n".intercalate ((if ownTxt.isEmpty then [] else [ownTxt]) ++ throughTxt)
+
 structure CommandState (R : Type) where
   globals : Globals R := {}
   tables : ParserTables := Builtin.tables
@@ -241,10 +254,13 @@ def solveSortConstraints : ElabM R Unit := do
     if !t.mvars.isEmpty then return none
     let kctx : Ctx R := { globals := ← getGlobals, env := ctx.env, names := ctx.names,
                           qtys := ctx.names.map fun _ => QPoly.const QuantitySyntax.explicitDefault,
-                          types := (← zonkedTypes ctx).toList.reverse, lvl := ctx.lvl }
+                          types := ctx.types, lvl := ctx.lvl }
     match Wiz.infer kctx t with
     | .ok (ty, _) => return some ty
-    | .error _ => return none
+    | .error _ =>
+      match Wiz.infer { kctx with types := (← zonkedTypes ctx).toList.reverse } t with
+      | .ok (ty, _) => return some ty
+      | .error _ => return none
   let solvedLevels : ElabM R Nat := do
     return (← get).levelMetas.foldl (fun n l => if l.isSome then n + 1 else n) 0
   let mut doneSort : Std.HashSet Nat := {}

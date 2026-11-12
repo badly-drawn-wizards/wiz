@@ -668,8 +668,8 @@ where
               let (inner, h) ← importModule keys base stack s m src
               hits := hits + h
               let errs := inner.messages.filter (·.severity == .error)
-              let msg : Msg := { info := cmd.info, severity := .error,
-                                 text := s!"module {m} has errors: {errs.toList.map (·.render src)}" }
+              let msg : Msg := { info := cmd.info, severity := .error, code := "module-errors",
+                                 text := importErrorsText m src errs }
               -- (a module's warnings, such as an unchecked `builtin`, are shown at the import)
               let warns := (inner.messages.filter (·.severity == .warning)).map fun w =>
                 ({ info := cmd.info, severity := .warning, text := s!"module {m}: {w.render src}" } : Msg)
