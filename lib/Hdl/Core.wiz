@@ -2030,3 +2030,71 @@ def Design.runPacked (d : Design) (xs : List Nat) : List Nat :=
   Hdl.map (HwTy.pack d.o) (Design.run d (Hdl.map (HwTy.unpack d.i) xs))
 def Design.runLeaves (d : Design) (xs : List (List Nat)) : List (List Nat) :=
   Hdl.map (HwTy.leaves d.o) (Design.run d (Hdl.map (HwTy.ofLeaves d.i) xs))
+
+------------------------------------------------------------------------------------
+-- Operators on signals (docs/libraries.md, H14 S2). At any representation `r` with
+-- `[Hw r]`, on `r (HwTy.bits n)`:
+--
+--   numeral `k`                         `Hw.lit n k`, the width from the type
+--   `a + b`  `a - b`  `a * b`  `-a`     `Hw.add`, `Hw.sub`, `Hw.mul`, `0 - a`   (65, 65, 70, 75)
+--   `a &&& b`  `a ||| b`  `a ^^^ b`     `Hw.and`, `Hw.or`, `Hw.xor`             (60, 55, 58)
+--   `~~~a`                              `Hw.not`                                (max)
+--   `a <<< k`  `a >>> k`  (`k : Nat`)   logical shifts by `k` places: wiring    (75)
+--   `a <ᵤ b`  `a ≤ᵤ b`  `a >ᵤ b`  `a ≥ᵤ b`   unsigned comparisons: 1 bit      (62)
+--   `a === b`  `a =/= b`                equality, inequality: a 1-bit signal   (61)
+--   `if c then a else b`, `c : r HwTy.bit`   `Hw.mux c a b`, at any type `r t`
+--
+-- They are the `Hw` operations, so circuits written with them have the same netlists and
+-- the same Verilog as with `Hw.add` …, and print back as written. `Hw.ofNat k` is a
+-- constant whose width comes from the expected type (`x === Hw.ofNat (n - 1)` for a
+-- meta-level `n`). The comparisons are the HDL's own symbols (as in Chisel), not `==`/`<`:
+-- they return a signal, not a `Bool`, and are unsigned (`ᵤ`). As in Verilog they bind
+-- tighter than the bitwise operations, so `x === 0 &&& y <ᵤ k` needs no parentheses.
+
+instance {r : HwTy → Type} [Hw r] {ω n k : Nat} : OfNat (r (HwTy.bits n)) k := OfNat.mk (Hw.lit n k)
+def Hw.ofNat {r : HwTy → Type} [Hw r] {ω n : Nat} (k : Nat) : r (HwTy.bits n) := Hw.lit n k
+
+instance {r : HwTy → Type} [Hw r] {ω n : Nat} : Add (r (HwTy.bits n)) := Add.mk (fun a b => Hw.add a b)
+instance {r : HwTy → Type} [Hw r] {ω n : Nat} : Sub (r (HwTy.bits n)) := Sub.mk (fun a b => Hw.sub a b)
+instance {r : HwTy → Type} [Hw r] {ω n : Nat} : Mul (r (HwTy.bits n)) := Mul.mk (fun a b => Hw.mul a b)
+instance {r : HwTy → Type} [Hw r] {ω n : Nat} : Neg (r (HwTy.bits n)) := Neg.mk (fun a => Hw.sub (Hw.lit n 0) a)
+instance {r : HwTy → Type} [Hw r] {ω n : Nat} : AndOp (r (HwTy.bits n)) := AndOp.mk (fun a b => Hw.and a b)
+instance {r : HwTy → Type} [Hw r] {ω n : Nat} : OrOp (r (HwTy.bits n)) := OrOp.mk (fun a b => Hw.or a b)
+instance {r : HwTy → Type} [Hw r] {ω n : Nat} : XorOp (r (HwTy.bits n)) := XorOp.mk (fun a b => Hw.xor a b)
+instance {r : HwTy → Type} [Hw r] {ω n : Nat} : Complement (r (HwTy.bits n)) := Complement.mk (fun a => Hw.not a)
+
+-- Shifts by a fixed number of places are wiring: `a <<< k` is the low `n` bits of `a`
+-- with `k` zeros below it, `a >>> k` the high `n` bits of `k` zeros above `a` (a
+-- concatenation and a slice: no shifter). By 0 places, `a`; by `n` or more, `0`.
+def Hw.shl {r : HwTy → Type} [Hw r] {ω n : Nat} (a : r (HwTy.bits n)) (k : Nat) : r (HwTy.bits n) :=
+  match Nat.beq k 0 with
+  | .true => a
+  | .false => (match Nat.lt k n with
+    | .true => Hw.slice 0 n (Hw.cat a (Hw.lit k 0))
+    | .false => Hw.lit n 0)
+def Hw.lshr {r : HwTy → Type} [Hw r] {ω n : Nat} (a : r (HwTy.bits n)) (k : Nat) : r (HwTy.bits n) :=
+  match Nat.beq k 0 with
+  | .true => a
+  | .false => (match Nat.lt k n with
+    | .true => Hw.slice k n (Hw.cat (Hw.lit k 0) a)
+    | .false => Hw.lit n 0)
+instance {r : HwTy → Type} [Hw r] {ω n : Nat} : ShiftLeft (r (HwTy.bits n)) := ShiftLeft.mk (fun a k => Hw.shl a k)
+instance {r : HwTy → Type} [Hw r] {ω n : Nat} : ShiftRight (r (HwTy.bits n)) := ShiftRight.mk (fun a k => Hw.lshr a k)
+
+-- comparisons: one bit
+def Hw.neq {r : HwTy → Type} [Hw r] {ω n : Nat} (a b : r (HwTy.bits n)) : r HwTy.bit := Hw.not (Hw.eq a b)
+def Hw.ule {r : HwTy → Type} [Hw r] {ω n : Nat} (a b : r (HwTy.bits n)) : r HwTy.bit := Hw.not (Hw.ult b a)
+def Hw.ugt {r : HwTy → Type} [Hw r] {ω n : Nat} (a b : r (HwTy.bits n)) : r HwTy.bit := Hw.ult b a
+def Hw.uge {r : HwTy → Type} [Hw r] {ω n : Nat} (a b : r (HwTy.bits n)) : r HwTy.bit := Hw.not (Hw.ult a b)
+infix:61 " === " => Hw.eq
+infix:61 " =/= " => Hw.neq
+infix:62 " <ᵤ " => Hw.ult
+infix:62 " ≤ᵤ " => Hw.ule
+infix:62 " >ᵤ " => Hw.ugt
+infix:62 " ≥ᵤ " => Hw.uge
+
+-- `if` on a one-bit signal (lib/Prelude.wiz, `Mux`): a multiplexer at any type
+instance {r : HwTy → Type} [Hw r] {ω t : HwTy} : Mux (r HwTy.bit) (r t) := Mux.mk (fun c a b => Hw.mux c a b)
+-- and `Hw.mux c a b` prints as that `if`
+app_unexpander Hw.mux
+  | `(term| $f $c $a $b) => `(term| if $c then $a else $b)

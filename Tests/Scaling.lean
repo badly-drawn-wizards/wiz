@@ -30,6 +30,49 @@ def checksWithin (secs : Nat) (input : String) : IO Unit := do
   unless out.exitCode == 0 do
     throw (IO.userError s!"exit code {out.exitCode}: {(out.stdout ++ out.stderr).take 1500}")
 
+/-- The same with every library importable (`tests --check-libs`, in a child process). -/
+def checksLibsWithin (secs : Nat) (input : String) : IO Unit := do
+  let dir ← IO.FS.createTempDir
+  let file := dir / "input.wiz"
+  IO.FS.writeFile file input
+  let self ← IO.appPath
+  let out ← IO.Process.output { cmd := "sh", args := #["-c",
+    s!"ulimit -v 8000000; exec timeout {secs} \"$0\" --check-libs \"$1\"", self.toString, file.toString] }
+  IO.FS.removeDirAll dir
+  if out.exitCode == 124 then throw (IO.userError s!"took longer than {secs} s")
+  unless out.exitCode == 0 do
+    throw (IO.userError s!"exit code {out.exitCode}: {(out.stdout ++ out.stderr).take 1500}")
+
+/-- A bundle `Sn` of `n` leaves (`deriving Bundle`), a step function that reads every
+field and packs a new state, and the IR of the step (`#ir`: erasure, lowering and the
+backend's optimisations, of the step and of `Sn.pack`). -/
+def wideBundle (n : Nat) : String :=
+  let S := s!"S{n}"
+  let fs := List.range n
+  s!"structure {S} (r : HwTy → Type) where\n" ++ String.join (fs.map (s!"  l{·} : r (HwTy.bits 8)\n")) ++
+  "  deriving Bundle\n" ++
+  s!"def step{n} \{r : HwTy → Type} [Hw r] (s : {S} r) (x : r (HwTy.bits 1)) : r (HwTy.prod {S}.code (HwTy.bits 8)) :=\n" ++
+  String.join (fs.map fun i => s!"  let v{i} := Hw.mux x (Hw.add s.l{i} s.l{i - 1}) s.l{i};\n") ++
+  s!"  Hw.pair ({S}.pack ({S}.mk {" ".intercalate (fs.map (s!"v{·}"))})) v0\n#ir step{n}\n"
+
+/-- A function that reads all `n` fields of a right-nested chain of pairs `s₀`
+(`yₖ := proj 0 sₖ; sₖ₊₁ := proj 1 sₖ`) and passes them to a call, with nothing to rebuild:
+`pack`'s shape, in the IR. -/
+def projChain (n : Nat) : IR.Decl := Id.run do
+  let mut b : IR.Body := .vdecl (2 * n + 1) (.fap "g" ((List.range n).toArray.map (n + 1 + ·))) (.ret (2 * n + 1))
+  for k in (List.range n).reverse do
+    b := .vdecl (n + 1 + k) (.proj 0 k) (.vdecl (k + 1) (.proj 1 k) b)
+  pure { name := "f", params := #[0], body := b }
+
+/-- The `drop`s and `reset`s of a body. -/
+partial def dropsResets : IR.Body → Nat × Nat
+  | .vdecl _ (.reset _) b => let (d, r) := dropsResets b; (d, r + 1)
+  | .vdecl _ _ b | .dup _ b => dropsResets b
+  | .drop _ b => let (d, r) := dropsResets b; (d + 1, r)
+  | .case _ alts => alts.foldl (fun (d, r) a => let (d', r') := dropsResets a; (d + d', r + r')) (0, 0)
+  | .jdecl _ _ body k => let (d, r) := dropsResets body; let (d', r') := dropsResets k; (d + d', r + r')
+  | _ => (0, 0)
+
 /-- Unary numbers, so that the inputs need no library. -/
 def natDecl : String := "inductive N where\n  | z\n  | s (n : N)\n"
 
@@ -96,6 +139,74 @@ def rcMismatches (st : CommandState ZeroOneMany) (root : Name) : IO (List Name) 
   pure <| decls.toList.filterMap fun d =>
     let σ : IR.BorrowSigs := { fns := bs.fns, jps := (bs.jps.get? d.name).getD {} }
     if (d.insertRC σ).toString == (d.insertRCSpec σ).toString then none else some d.name
+
+/-! `reuseAcross` as it was before it remembered the drops it could not pair (exponential
+along a chain of projections; see `Wiz.IR.pairDrop`): the specification it must agree
+with exactly. -/
+namespace ReuseSpec
+open IR
+
+mutual
+partial def pairDrop (size : Std.HashMap Var Nat) (parent : Std.HashMap Var Var) (x : Var)
+    (rest : Body) : Body × Bool :=
+  let rest := partsFirst size parent x rest
+  let tok := insertReuse.tokenBase + x
+  match size.get? x |>.bind (claimAcross tok · rest) with
+  | some rest' => (.vdecl tok (.reset x) rest', true)
+  | none => (rest, false)
+
+partial def partsFirst (size : Std.HashMap Var Nat) (parent : Std.HashMap Var Var) (x : Var) :
+    Body → Body
+  | .vdecl y e rest =>
+    let (size, parent) := noteBinding size parent y e
+    .vdecl y e (partsFirst size parent x rest)
+  | .dup y rest => .dup y (partsFirst size parent x rest)
+  | .drop y rest =>
+    if descends parent y x then
+      match pairDrop size parent y rest with
+      | (.vdecl tok e rest', true) => .vdecl tok e (partsFirst size parent x rest')
+      | (rest', _) => .drop y (partsFirst size parent x rest')
+    else .drop y (partsFirst size parent x rest)
+  | b => b
+end
+
+partial def reuseAcross (size : Std.HashMap Var Nat := {}) (parent : Std.HashMap Var Var := {}) :
+    Body → Body
+  | .vdecl x e rest =>
+    let (size, parent) := noteBinding size parent x e
+    .vdecl x e (reuseAcross size parent rest)
+  | .drop x rest =>
+    match pairDrop size parent x rest with
+    | (.vdecl tok e rest', true) => .vdecl tok e (reuseAcross size parent rest')
+    | (rest', _) => .drop x (reuseAcross size parent rest')
+  | .dup x rest => .dup x (reuseAcross size parent rest)
+  | .case x alts => .case x (alts.map (reuseAcross size parent))
+  | .jdecl j ps body k => .jdecl j ps (reuseAcross {} {} body) (reuseAcross size parent k)
+  | b => b
+
+end ReuseSpec
+
+/-- The declarations of a program (lowered, as `optimizeProgram` gets them) on which
+`reuseAcross` and its specification differ, after reference counting with the program's
+borrow signatures (as in `Decl.optimize`); and how many were compared. -/
+def reuseMismatches (decls : Array IR.Decl) : List Name × Nat :=
+  let decls := (IR.hoistConsts decls).map fun d => { d with body := (IR.elimDead d.body).1 }
+  let bs := IR.inferBorrow decls
+  let bad := decls.toList.filterMap fun d =>
+    let σ : IR.BorrowSigs := { fns := bs.fns, jps := (bs.jps.get? d.name).getD {} }
+    let b := IR.dropScalars (d.insertRC σ).body
+    if (IR.reuseAcross {} {} b).toString == (ReuseSpec.reuseAcross {} {} b).toString then none else some d.name
+  (bad, decls.size)
+
+/-- The lowered IR of everything reachable from `roots`. -/
+def loweredOf (st : CommandState ZeroOneMany) (roots : List Name) : IO (Array IR.Decl) := do
+  let code ← match compileReachable st.globals st.builtins roots with
+    | .ok c => pure c
+    | .error e => throw (IO.userError (toString e))
+  let extra := (roots.drop 1).toArray.map fun n => (n, ETerm.global n)
+  match IR.lowerProgram code (.global (roots.headD "_")) extra with
+    | .ok d => pure d
+    | .error e => throw (IO.userError e)
 
 /-- `act` within `secs` seconds and `mb` megabytes (peak RSS, reset first). -/
 def within {α : Type} (secs mb : Nat) (act : Unit → IO α) : IO α := do
@@ -213,6 +324,25 @@ def group : Group where
           "def y : N := big.1\n") },
     { name := "a 20000-character string literal is checked and erased in linear time", run := fun _ =>
         longLiteral 20000 60 },
+    -- reuse across `case` (`reuseAcross`) tried a drop it could not pair again from each
+    -- enclosing search, and the drop's parts with it: along the chain of projections
+    -- that reads a structure's fields without rebuilding it (a bundle's `pack`),
+    -- exponential in the number of fields. The iCEstick IR blaster's 19-field state
+    -- (`#ir blasterStep` took over 5 min); here 16 leaves took 9 s, 20 leaves 115 s. The IR
+    -- of all three now takes well under a second: the bound is mostly elaboration.
+    { name := "reuse across case along a 200-step projection chain with nothing to reuse (was exponential)", run := fun _ => do
+        let d ← within 10 1000 fun _ => pure (projChain 200).optimize
+        -- the chain's 200 cells are dropped, none reset (there is nothing to reuse them for)
+        checkEq (200, 0) (dropsResets d.body) },
+    { name := "reuse across case, remembering the drops it failed to pair, agrees with its specification", run := fun _ => do
+        let examples ← ["examples/std.wiz", "examples/io.wiz", "examples/effects.wiz"].mapM (fun (f : String) => IO.FS.readFile f)
+        for p in examples do
+          let (bad, _) := reuseMismatches (← loweredOf (← elabOk p) ["main"])
+          unless bad.isEmpty do throw (IO.userError s!"they differ on {bad}")
+        let (bad, _) := reuseMismatches #[projChain 12]
+        unless bad.isEmpty do throw (IO.userError "they differ on the projection chain") },
+    { name := "the IR of a step over bundles of 8, 16 and 32 fields (reuse was exponential: 20 took 115 s)", run := fun _ =>
+        checksLibsWithin 240 ("import Hdl.Core\n" ++ String.join ([8, 16, 32].map wideBundle)) },
     -- `insertRC` recomputed the free variables of the rest of the body at each binding
     -- (and kept them while handling the rest): quadratic in time and space along a chain
     -- of bindings, the constant a literal becomes (6000 characters: 18 000 bindings, about
@@ -323,6 +453,37 @@ def probeChecker (opts : List String := []) : IO Unit := do
   if opts.contains "rc" then
     let bad ← rcMismatches st "main"
     say s!"reference counting: one pass and specification differ on {bad.length} declarations {bad.take 10}"
+
+/-- A probe (`tests --probe-reuse`): `reuseAcross` agrees with its specification on the IR
+of every definition of each `lib/` module, and of the self-hosted checker and compiler. -/
+def probeReuse : IO UInt32 := do
+  let loader ← Tests.Elab.libLoader
+  let mut failures := 0
+  let mut mods : Array String := #[]
+  for e in ← System.FilePath.readDir "lib" do
+    if e.path.extension == some "wiz" then mods := mods.push (e.path.fileStem.getD "")
+    else if ← e.path.isDir then
+      for f in ← System.FilePath.readDir e.path do
+        if f.path.extension == some "wiz" then mods := mods.push (e.fileName ++ "." ++ f.path.fileStem.getD "")
+  for m in mods.qsort (· < ·) do
+    let st := runFrontend (R := ZeroOneMany) s!"import {m}\n" { trustedModule := Tests.libModule, loader }
+    let mine := st.globals.order.toList.filter fun n =>
+      st.globals.declModule[n]? == some m && ((st.globals.find? n).bind (·.value)).isSome
+    if mine.isEmpty then continue
+    try
+      let (bad, k) := reuseMismatches (← loweredOf st mine)
+      IO.println s!"{m}: {k} declarations, {bad.length} differ {bad.take 5}"
+      unless bad.isEmpty do failures := failures + 1
+    catch e => IO.println s!"{m}: not compiled ({(toString e).take 120})"
+  let srcs ← Selfhost.compilerFiles.mapM (fun (f : String) => IO.FS.readFile f)
+  for (what, prog) in [("selfhost checker", Selfhost.checkerSource (srcs.take 4)), ("selfhost compiler", Selfhost.compilerSource srcs)] do
+    let st := runFrontend (R := ZeroOneMany) prog { trustedModule := Tests.libModule, loader }
+    let errs := (st.messages.filter (·.severity == .error)).map fun m => m.render prog
+    unless errs.isEmpty do throw (IO.userError s!"{what}: unexpected errors:\n{"\n".intercalate (errs.toList.take 5)}")
+    let (bad, k) := reuseMismatches (← loweredOf st ["main"])
+    IO.println s!"{what}: {k} declarations, {bad.length} differ {bad.take 5}"
+    unless bad.isEmpty do failures := failures + 1
+  pure (if failures == 0 then 0 else 1)
 
 /-- This module's test groups, which `Tests/Main.lean` runs: one per line, in sorted
 order, so that branches adding groups rarely touch the same lines. A new group also
