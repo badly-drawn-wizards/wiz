@@ -981,6 +981,7 @@ def globalsState : List (String × String) := [
   ("quoteErasesProofs", "set by the kernel's own comparisons, inside one call, never on a state"),
   ("privates", "made by the module's private declarations"),
   ("opaques", "made by the module's private constructors"),
+  ("hidden", "the definitions `elabView` hides, made from the declarations, never on a base state"),
   ("module", "the module being elaborated, set per module"),
   ("instCache", "derived from the declarations by `insert`"),
   ("budget", "the budget of a read-back in progress, set inside one call, never on a state"),

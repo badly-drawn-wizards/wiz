@@ -355,6 +355,16 @@ partial def conv (g : Globals R) (tys : Array (VTy R)) (ty : VTy R) (a b : Val R
         conv g tys I j j' && conv g tys (vApp g S j) s s'
     | _, _ => (convNe g tys a b).isSome
   | .sort _ => convTy g tys a b
+  -- (13b) a type that is opaque here (another module's, with private parts: `elabView`
+  -- hid its definition): two values of it are compared at its real definition, so that
+  -- η and proof irrelevance apply to its fields (two `P.mk 4 h` with different proofs
+  -- `h` are equal), as the kernel, which sees the definition, decides
+  | .neutral (.global T us) sp => (convNe g tys a b).isSome ||
+    match g.hidden[T]? with
+    | some { value := some v, levelParams, .. } =>
+      let full := g.fullView
+      conv full tys (vElims full (eval full [] (v.instLevels levelParams us)) sp) a b
+    | _ => false
   | _ => (convNe g tys a b).isSome
   --|ex
   --| sorry
