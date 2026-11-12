@@ -195,6 +195,10 @@ structure ElabState (R : Type) where
   levelMetas : Array (Option Level) := #[]
   /-- the universe level parameters of the declaration being elaborated -/
   levelParams : List Name := []
+  /-- the definition `def f … := …` whose body is being elaborated: `f` is not a global
+  yet, and a recursive call needs equations (an error that says so, not "unknown
+  identifier") -/
+  defining : Option Name := none
   /-- "the solution of this hole has type `Sort l`". Metas are untyped, so these are
   checked after elaboration to solve level metavariables (see `solveSortConstraints`). -/
   sortConstraints : Array (LocalCtx R × Term R × Level) := #[]
