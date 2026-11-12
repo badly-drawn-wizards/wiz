@@ -48,12 +48,22 @@ inductive Outcome where
   | disagree (what : String)
   deriving Repr, BEq
 
+/-- The Lean kernel on a raw term, with the proof markers it requires (P2) from the
+marking pass, as the elaborator gives them and as the differential tests do (`leanVerdict`):
+the term is marked only if it is well typed without the requirement (the pass checks
+nothing), else the kernel's answer is that check's. The reference checker needs no
+markers: it does not evaluate terms through the kernel's evaluator. -/
+def kernelInfer (g : Globals ZeroOneMany) (t : Term ZeroOneMany) : TCM (VTy ZeroOneMany × Usage ZeroOneMany) :=
+  match infer (R := ZeroOneMany) { globals := { g with lazyProofs := false } } t with
+  | .error e => .error e
+  | .ok _ => infer (R := ZeroOneMany) { globals := g } (Mark.infer (R := ZeroOneMany) { globals := g } t).1
+
 /-- One term: the Lean kernel's verdict against the reference checker's. -/
 def vote (g : Globals ZeroOneMany) (sg : Sig) (t : MTm) (opts : Opts := kernelOpts) : Outcome :=
   match WizMeta.ofTerm [] t.toTerm with
   | none => .outside
   | some tm =>
-    let k := infer (R := ZeroOneMany) { globals := g } t.toTerm
+    let k := kernelInfer g t.toTerm
     let r := WizMeta.inferClosed sg tm opts
     match k, r with
     | _, .error .fuel => .fuel
@@ -120,7 +130,7 @@ def tally (terms : Array MTm) (opts : Opts := kernelOpts) : Except String Tally 
 open Tests.Elab.MTm
 
 def kernelAccepts (t : MTm) (g : Globals ZeroOneMany := leanGlobals ()) : Bool :=
-  (infer (R := ZeroOneMany) { globals := g } t.toTerm).isOk
+  (kernelInfer g t.toTerm).isOk
 
 /-- The reference checker's verdict on a term: `ok`, `fuel`, `outside`, or the rejection. -/
 def refVerdict (t : MTm) (opts : Opts := kernelOpts) (sg : Option Sig := none) : String :=
@@ -213,6 +223,79 @@ def terms : List (String × MTm × Bool) := [
 ]
 end DescEq
 
+-- PR #123 (CoreSpec §8.2, wiz-notes/nu-transp.md): an equation at a proposition is `True`;
+-- the Σ rule at a proof first component proves `B a.1 ≡ B b.1` by `reflTy`, not `transp`
+namespace NuTransp
+/-- `(x : Enum 2) × x = x` (closed): a proof second component -/
+def sub (_ : Nat) : MTm := sigma (enum 2) (eq (enum 2) (var 0) (var 0))
+/-- `(0 _ : True) × B` in a context of `k` variables, `B` the outermost: a proof first component -/
+def prf (k : Nat) : MTm := sigmaq .zero ptrue (var k)
+/-- `fun pres… p q (h : p = q) => let h2 : T := h.2; ()`, with `p q : S k` (`S k` the Σ in a
+context of `k` variables); `T` is over `pres, p, q, h`. The elaborator let-binds `h.2` at the
+type the kernel inferred, quoted, and the kernel checks it again: this is that path. -/
+def letSnd (pres : List MTm) (S : Nat → MTm) (T : MTm) : MTm :=
+  let n := pres.length
+  let body := lam (lam (lam (letE T (snd (var 0)) star)))
+  let ty := pi (S n) (pi (S (n + 1)) (pi (eq (S (n + 2)) (var 1) (var 0)) ptrue))
+  ann (pres.foldr (fun _ t => lam t) body) (pres.foldr (fun A t => pi A t) ty)
+/-- f1 of #123's test: `h.2 : True` at a subtype (the kernel's type, quoted) -/
+def f1 : MTm := letSnd [] sub ptrue
+/-- f2 of #123's test: `h.2 : cast (reflTy B) p.2 = q.2` at `(0 k : True) × B` (the kernel's type, quoted) -/
+def f2 : MTm := letSnd [univ 0] prf (eq (var 3) (cast (var 3) (var 3) (reflTy (var 3)) (snd (var 2))) (snd (var 1)))
+/-- f2 at the type the kernel quoted before #123: `transp` along `True` -/
+def f2old : MTm := letSnd [univ 0] prf
+  (eq (var 3) (cast (var 3) (var 3)
+    (transp ptrue (fst (var 2)) (lam (lam (eqTy (var 5) (var 5)))) (reflTy (var 3)) (fst (var 1)) (fst (var 0)))
+    (snd (var 2))) (snd (var 1)))
+/-- f1 at the type before #123: an equation at the proposition `q.1 = q.1` -/
+def f1old : MTm :=
+  let x1 (i : Nat) : MTm := eq (enum 2) (fst (var i)) (fst (var i))
+  letSnd [] sub
+    (eq (x1 1) (cast (x1 2) (x1 1)
+      (transp (enum 2) (fst (var 2)) (lam (lam (eqTy (x1 4) (eq (enum 2) (var 1) (var 1))))) (reflTy (x1 2)) (fst (var 1)) (fst (var 0)))
+      (snd (var 2))) (snd (var 1)))
+/-- `Unit × True` -/
+def UT : MTm := sigma (unit 0) ptrue
+/-- `((), f ()) = ((), ())` at `Unit × True`, `f : Unit → True` the variable 0 -/
+def pfEq : MTm := eq UT (ann (pair star (app (var 0) star)) UT) (ann (pair star star) UT)
+/-- `(name, term, the kernel and the reference checker both accept)` -/
+def terms : List (String × MTm × Bool) := [
+  ("f1: an equation at a subtype, h.2 : True", f1, true),
+  ("f2: an equation at (0 k : True) × B, h.2 : cast (reflTy B) p.2 = q.2", f2, true),
+  ("f2 at the type quoted before #123 (transp along True): rejected", f2old, false),
+  ("f1 at the type quoted before #123 (an equation at q.1 = q.1): rejected", f1old, false),
+  ("an equation at a proposition is True: ((), f ()) = ((), ()) at Unit × True is proved by ((), ())",
+    ann (lam (pair star star)) (pi (pi (unit 0) ptrue) pfEq), true),
+  ("… and is not False",
+    ann (lam (lam (snd (var 0)))) (pi (pi (unit 0) ptrue) (pi pfEq pfalse)), false)
+]
+/-- A context of the reference checker from types written outermost first. -/
+def ctxOf (tys : List MTm) : Except String WizMeta.Ctx :=
+  tys.foldlM (init := []) fun Γ A => do
+    let some A' := WizMeta.ofTerm [] A.toTerm | throw s!"outside the fragment: {A.pretty 0}"
+    pure (A' :: Γ)
+/-- The context `pres, p q : S, h : p = q` of `letSnd`. -/
+def letSndCtx (pres : List MTm) (S : Nat → MTm) : List MTm :=
+  let n := pres.length
+  pres ++ [S n, S (n + 1), eq (S (n + 2)) (var 1) (var 0)]
+def run {α : Type} (r : WizMeta.M α) : Except String α :=
+  match r with
+  | .ok a => pure a
+  | .error e => throw (toString e)
+/-- The reference checker's own type of `h.2` in `f1`/`f2` (in the context of `letSnd`), in
+weak-head normal form, is well formed under the kernels' formation rules (`kernelOpts`):
+what the elaborator path above asks of the third voter. -/
+def sndTyWellFormed (sg : Sig) (pres : List MTm) (S : Nat → MTm) : Except String Unit := do
+  let Γ ← ctxOf (letSndCtx pres S)
+  let E : WizMeta.Env := { sig := sg, opts := kernelOpts }
+  let F := WizMeta.defaultFuel
+  run do
+    let T ← WizMeta.infer E F Γ (.snd (.var 0))
+    let T' ← WizMeta.whnf E F Γ T
+    let _ ← WizMeta.inferSort E F Γ T'
+    pure ()
+end NuTransp
+
 /-! ## The second reading (meta-review): defects found, and presupposition properties
 
 Terms here are written in the spec's own syntax (`WizMeta.Tm`), most of them in a context. -/
@@ -293,6 +376,42 @@ def group : Group where
           for p in [WizMeta.PayloadRule.kernel, .stuck, .uniform] do
             let r := refVerdict t { kernelOpts with payload := p }
             check ((r == "ok") == ok) s!"{what}, payload {repr p}: {r}" },
+    { name := "PR #123 (CoreSpec 8.2): equations at propositions are True, the Σ rule at a proof component uses reflTy: the reference checker agrees with the Lean kernel", run := fun _ => do
+        let sg ← match refSig with | .ok sg => pure sg | .error e => throw (IO.userError e)
+        let g := leanGlobals ()
+        for (what, t, ok) in NuTransp.terms do
+          check (kernelAccepts t g == ok) s!"{what}: the kernel {if ok then "rejects" else "accepts"} {t.pretty 0}"
+          match vote g sg t with
+          | .accept | .acceptUncompared => check ok s!"{what}: both accept"
+          | .reject => check (!ok) s!"{what}: both reject"
+          | o => throw (IO.userError s!"{what}: {repr o}\n    {t.pretty 0}")
+        -- the checker's own type of `h.2`, as the elaborator would quote it, is well formed
+        -- for the kernels (before #123 it was a `transp` along `True`)
+        for (what, pres, S) in [("f1", ([] : List MTm), NuTransp.sub), ("f2", [univ 0], NuTransp.prf)] do
+          match NuTransp.sndTyWellFormed sg pres S with
+          | .ok () => pure ()
+          | .error e => throw (IO.userError s!"{what}: the type of h.2 is not well formed for the kernels: {e}")
+        -- the rule before #123: its proof, in the context of f2 and `e : p.1 = q.1`, is
+        -- `transp` along `True`, which the kernels' formation rules reject
+        let Γ ← match NuTransp.ctxOf ([univ 0, NuTransp.prf 1, NuTransp.prf 2]) with
+          | .ok Γ => pure Γ | .error e => throw (IO.userError e)
+        let Γe := Tm.eq Tm.True' (.fst (.var 1)) (.fst (.var 0)) :: Γ
+        let E : WizMeta.Env := { sig := sg, opts := kernelOpts }
+        check (match WizMeta.infer E WizMeta.defaultFuel Γe (Tm.eqSigmaTransport Tm.True' (.var 3) (.var 1) (.var 0)) with
+          | .error (.fail m) => has m "may be a proposition" | _ => false)
+          "transp along True is formed by the kernels' rules"
+        -- the new reduct is well formed by the spec's rules (its first component is an
+        -- equation at `True`, which only the spec forms; the kernels compute it to `True`)
+        check (match WizMeta.infer { E with opts := { kernelOpts with kernelEqFormation := false } } WizMeta.defaultFuel Γ (Tm.eqSigmaProof Tm.True' (.var 3) (.var 1) (.var 0)) with
+          | .ok _ => true | _ => false)
+          "the reduct of Sigma.eqProof is not well formed"
+        -- known gap of both kernels (pinned in 'observational equality'): at a neutral
+        -- proposition `P q.1` the kernels do not see a proposition, the reference checker
+        -- (which computes sorts) does: it accepts `h.2 : True`, the kernel rejects it.
+        -- Mandatory sorts closes the gap; then this flips to agreement.
+        let g1 := NuTransp.letSnd [univ 0, pi (var 0) prop] (fun k => sigma (var (k - 1)) (app (var (k - 1)) (var 0))) ptrue
+        check (!kernelAccepts g1 g) "the kernel accepts g1 (the neutral-proposition gap is closed): make it a corpus term"
+        check (refVerdict g1 == "ok") "the reference checker rejects g1" },
     { name := "declarations at symbolic levels: the reference checker agrees with the Lean kernel (216)", run := fun _ => do
         let sg ← match refSig with | .ok sg => pure sg | .error e => throw (IO.userError e)
         let decls := MTm.declSamples ++ MTm.levelPuzzles 200
@@ -376,7 +495,7 @@ def group : Group where
         -- W1: `d.{0}` and `d.{1}` under a stuck case are different
         rejects (w1 0 1) kernelOpts (some sg1)
         accepts (w1 1 1) kernelOpts (some sg1)
-        let g1 ← match addDecl (leanGlobals ()) w1Decl with | .ok g => pure g | .error e => throw (IO.userError s!"{e}")
+        let g1 ← match addDecl (leanGlobals ()) (Decl.withMarks (leanGlobals ()) w1Decl) with | .ok g => pure g | .error e => throw (IO.userError s!"{e}")
         check (!kernelAccepts (w1 0 1) g1 && kernelAccepts (w1 1 1) g1) "the Lean kernel's verdicts on W1 changed" },
     { name := "E5b: a payload equation at a neutral field type, in the three variants (the kernels' rule is not stable under substitution)", run := fun _ => do
         let stuck := { kernelOpts with payload := .stuck }
