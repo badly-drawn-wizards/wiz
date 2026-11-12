@@ -324,22 +324,36 @@ macro_rules
 -- operand's type; a fixed amount is what hardware shifts by wiring). Precedences as in
 -- Lean: `|||` 55, `^^^` 58, `&&&` 60 (below `+`), shifts 75, `~~~` max. Instances: `Nat`
 -- here, words in lib/Word.wiz, HDL signals in lib/Hdl/Core.wiz.
+/-- Types with a bitwise and, written `a &&& b` (precedence 60). -/
 class AndOp (A : Type) where
   and : A → A → A
+/-- Types with a bitwise or, written `a ||| b` (precedence 55). -/
 class OrOp (A : Type) where
   or : A → A → A
+/-- Types with a bitwise exclusive or, written `a ^^^ b` (precedence 58). -/
 class XorOp (A : Type) where
   xor : A → A → A
+/-- Types with a bitwise complement, written `~~~a`. `Nat` has none (it has no width);
+words do (lib/Word.wiz). -/
 class Complement (A : Type) where
   complement : A → A
+/-- Types with a left shift by a number of places, written `a <<< k` (`k : Nat`,
+precedence 75): `5 <<< 2 = 20` at `Nat`. -/
 class ShiftLeft (A : Type) where
   shiftLeft : A → Nat → A
+/-- Types with a right shift by a number of places, written `a >>> k` (`k : Nat`,
+precedence 75): `20 >>> 2 = 5` at `Nat`. -/
 class ShiftRight (A : Type) where
   shiftRight : A → Nat → A
+/-- `a &&& b` at `Nat` is `Nat.land a b`, bit by bit. -/
 instance : AndOp Nat := AndOp.mk Nat.land
+/-- `a ||| b` at `Nat` is `Nat.lor a b`, bit by bit. -/
 instance : OrOp Nat := OrOp.mk Nat.lor
+/-- `a ^^^ b` at `Nat` is `Nat.xor a b`, bit by bit. -/
 instance : XorOp Nat := XorOp.mk Nat.xor
+/-- `a <<< k` at `Nat` is `Nat.shiftLeft a k`, `a * 2 ^ k`. -/
 instance : ShiftLeft Nat := ShiftLeft.mk Nat.shiftLeft
+/-- `a >>> k` at `Nat` is `Nat.shiftRight a k`, `a / 2 ^ k`. -/
 instance : ShiftRight Nat := ShiftRight.mk Nat.shiftRight
 infixl:55 " ||| " => OrOp.or
 infixl:58 " ^^^ " => XorOp.xor
@@ -381,6 +395,8 @@ app_unexpander Bool.casesOn
 -- has an instance `Mux C C` (an HDL signal, lib/Hdl/Core.wiz), `if c then a else b` is
 -- `Mux.mux c a b`, a multiplexer, at an instance `Mux C A` for the branches' type `A`.
 -- Any other condition is the `match` above (and its messages).
+/-- Multiplexers: `Mux.mux c a b` chooses `a` or `b` by a condition `c : C` that is not a
+`Bool` (an HDL signal). `if c then a else b` with such a `c` is `Mux.mux c a b`. -/
 class Mux (C A : Type) where
   mux : C → A → A → A
 app_unexpander Mux.mux
