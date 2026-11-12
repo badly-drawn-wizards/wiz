@@ -63,7 +63,11 @@ such a structure is also **opaque** to the elaborator: its definition doesn't un
 projection function `S.val` (`p.1` doesn't work). Within the module nothing changes.
 Like Lean's, privacy is enforced by the elaborator: the kernel checks every declaration
 against the full environment, where an opaque structure is its Σ again (which is sound:
-whatever converts with the definition hidden converts with it unfolded).
+whatever converts with the definition hidden converts with it unfolded). Two *values* of an
+opaque type are compared at its real definition (`Globals.hidden`, kept by `elabView`
+for `conv` only), so that its proof fields are irrelevant and η applies, as in the
+kernel: `P.mk 4 (lt_s 4) = P.mk 4 rfl` holds by `rfl` in any module. Only a yes or no
+comes out of that comparison, and the kernel's own environment never has `hidden`.
 
 **The elaborator never leaves a comparison to the kernel.** The other direction is not
 sound for privacy: the kernel accepts what converts with the definition *unfolded*, so a

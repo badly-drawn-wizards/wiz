@@ -1305,6 +1305,56 @@ def caseShapeRest : String :=
 
 def caseShapeExpected : String := s!".cons 1 ({caseShapeRest})"
 
+/-- (15i) Closed top-level definitions (CAFs): a table read in a loop, a definition that
+diverges but is used only in a branch never taken, a memoised suspension, a big number, a
+proof and a type (erased), one whose evaluation fails (an axiom) in the same branch, a function value, an alias of another constant, and codata
+that refers to itself. -/
+def cafSrc : String := "import Prelude
+def range : Nat → List Nat → List Nat
+  | .zero, acc => acc
+  | .succ n, acc => range n (.cons n acc)
+def sum : List Nat → Nat
+  | .nil => 0
+  | .cons x xs => x + sum xs
+def table : List Nat := range 1000 .nil
+partial def forever (n : Nat) : Nat := forever (n + 1)
+def diverge : Nat := forever 0
+axiom bad : Nat
+def failing : Nat := bad + 1
+def pick : Bool → Nat
+  | .true => diverge + failing
+  | .false => 1
+def addTen : Nat → Nat := Nat.add 10
+def lazySum : Unit → Nat := memo (fun _ => sum table)
+def big : Nat := Nat.pow 3 100
+def four : 2 + 2 = 4 := refl 4
+def Tab : Type := List Nat
+def len : List Nat → Nat
+  | .nil => 0
+  | .cons _ ys => len ys + 1
+def tab : Tab := table
+coinductive Stream (A : Type) where
+  head : A
+  tail : Stream A
+def ones : Stream Nat
+  | .head => 1
+  | .tail => ones
+def loop : Nat → Nat → Nat
+  | .zero, acc => acc
+  | .succ n, acc => loop n (acc + sum table + lazySum () + addTen 0 + pick .false + ones.tail.tail.head)
+def main : List Nat := .cons (loop 2000 (Nat.mod big 7)) (.cons (len tab) (.cons big .nil))
+"
+
+def cafExpected : String :=
+  ".cons 1998024004 (.cons 1000 (.cons 515377520732011331036461129765621272702107522001 .nil))"
+
+/-- (15i) An `IO` action as a closed definition: a description, run at each use. -/
+def cafIOSrc : String := "import IO
+def hello : IO Unit := IO.println \"hello\"
+def twice : IO Unit := IO.bind hello (fun _ => hello)
+def main : IO Unit := IO.bind twice (fun _ => twice)
+"
+
 def backendGroup : Group where
   name := "backend"
   exercise := "Exercise 8.1"
@@ -1405,7 +1455,18 @@ def backendGroup : Group where
         -- the default of `orElse` is not computed for `some`; and (HD9's inlining) `pick`
         -- and `orElse` are inlined into `s4`, whose `case` on the known `.some 4` then
         -- picks its branch, so the `.some` cell isn't built either
-        checkEq [151, 100] [← allocs "s4" false, ← allocs "s4" true] }
+        checkEq [151, 100] [← allocs "s4" false, ← allocs "s4" true] },
+    { name := "closed definitions that do work are cached (CAFs, 15i); aliases, erased ones and the entry are not", run := fun _ => do
+        let s := runFrontend (R := ZeroOneMany) cafSrc { loader := ← preludeLoader }
+        let (decls, _) ← match Build.irProgram s "main" with
+          | .ok r => pure r
+          | .error e => throw (IO.userError e)
+        let cafs := IR.cafs decls
+        for n in ["table", "diverge", "failing", "lazySum", "big", "ones"] do
+          check (cafs.contains n) s!"{n} is not cached"
+        -- `tab` is `table` again, `four` and `Tab` are erased, `addTen` is a function
+        for n in ["tab", "four", "Tab", "addTen", "wiz.entry", "range", "loop"] do
+          check (!cafs.contains n) s!"{n} is cached" }
   ]
 
 /-- Programs for the reuse tests: functions that take a cell apart and rebuild it after one
@@ -4745,6 +4806,12 @@ def languageGroup : Group where
     { name := "... an importer may define the same notation at another meaning", run := fun _ =>
         okLoc locMod "import Loc\ninfixr:67 \" & \" => List.append\n#eval [1] & [2]\nsyntax (name := shout) \"shout\" term : term\nmacro_rules\n  | `(term| shout $x) => `(term| [$x])\n#eval shout 1"
           [".cons 1 (.cons 2 .nil)", ".cons 1 .nil"] },
+    { name := "local instance: found in its module, not by importers (11w)", run := fun _ => do
+        let m := "import Prelude\nclass Dflt (A : Type) where\n  dflt : A\nlocal instance : Dflt Nat := Dflt.mk 7\ndef seven : Nat := Dflt.dflt\n"
+        okLoc m "import Loc\n#eval seven" ["7"]
+        failsLoc m "import Loc\ndef x : Nat := Dflt.dflt" "failed to synthesize an instance of Dflt Nat"
+        -- the importer may give its own
+        okLoc m "import Loc\ninstance : Dflt Nat := Dflt.mk 3\n#eval (Dflt.dflt : Nat)" ["3"] },
     { name := "... in the main file it is ordinary notation; only grammar commands can be local", run := fun _ => do
         okLib "import Prelude\nlocal infixl:65 \" +! \" => Nat.add\n#eval 1 +! 2" ["3"]
         failsLib "import Prelude\nlocal def x : Nat := 1" "can be `local`" },
@@ -5093,9 +5160,25 @@ def toolingGroup : Group where
         check ((out[0]!.compress.splitOn "Nat : Type").length > 1) s!"no hover: {out[0]!.compress}" }
   ]
 
+/-- Build and run `main` with the whole library (`IO` …), through C or LLVM. -/
+def cRunIO (src : String) (expected : String) (llvm : Bool := false) : IO Unit := do
+  let s := runFrontend (R := ZeroOneMany) src { trustedModule := Tests.libModule, loader := ← libLoader }
+  let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
+  unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
+  let dir ← IO.FS.createTempDir
+  match ← Build.runGlobal (← toolchain) s "main" dir llvm with
+  | .ok v => checkEq expected v
+  | .error e =>
+    let missing := ["gmp.h", "llc:", "No such file"].any fun m => (e.splitOn m).length > 1
+    if missing then skip "no toolchain" else throw (IO.userError e)
+
 /-- Programs for the native backends (C, or LLVM). -/
 def nativeCases (llvm : Bool) : List Case :=
 [
+    { name := "closed definitions (CAFs, 15i): computed once, on first use (a diverging one never), no leaks", run := fun _ =>
+        cRun (llvm := llvm) cafSrc cafExpected },
+    { name := "a closed IO action is a description: cached, run at each use (15i)", run := fun _ =>
+        cRunIO (llvm := llvm) cafIOSrc "hello\nhello\nhello\nhello\n" },
     { name := "memoised codata: no leaks, also when dropped part-way", run := fun _ =>
         cRun (llvm := llvm) memoStreamSrc "14946" },
     { name := "numbers, with GMP for big ones", run := fun _ =>
@@ -6080,6 +6163,13 @@ def seplogicGroup : Group where
            "Prog.incrAll.spec : (L : List Nat) → (f : Nat) → Nat.lt (List.length Nat L) f = .true → (p : Nat) → Triple Nat Unit (MList L p) (Prog.incrAll f p) (fun _ => MList (List.incr L) p)",
            "Prog.freeAll.spec : (L : List Nat) → (f : Nat) → Nat.lt (List.length Nat L) f = .true → (p : Nat) → Triple Nat Unit (MList L p) (Prog.freeAll f p) (fun _ => emp Nat)",
            ".some (1, .cons (.some 1) .nil)", ".some (3, .nil)"] },
+    { name := "xgo steps through values computed through private structures (Region's Uniq, as Feral lowers)", run := fun _ => do
+        let src := "import HoareTactics\nimport Region\n" ++
+          "def incrU {ρ : Region} (r : Uniq ρ Nat) : Result (Unit × Uniq ρ Nat) := .ok ((), Uniq.set r (Nat.succ r.val))\n" ++
+          "def back (p : Nat) : Result (Unit × Nat) → Prog Nat Unit\n  | .ok x => .set p x.2 (.ret ())\n  | .err e => .fail\n" ++
+          "def bumpCell (p : Nat) : Prog Nat Unit :=\n  .get p (fun a => back p (Uniq.borrow Region.static a (fun ρ h l r => incrU r)))\n"
+        okLibs (src ++ "def bumpCell_spec (p a : Nat) : Triple (p ↦ a) (bumpCell p) (fun _ => p ↦ Nat.succ a) := by xgo")
+        failsLibs (src ++ "def bad (p a : Nat) : Triple (p ↦ a) (bumpCell p) (fun _ => p ↦ a) := by xgo") "unsolved goals" },
     { name := "a wrong specification is not proved by the x-tactics", run := fun _ =>
         failsLibs "import HoareExamples\ndef bad (p n : Nat) : Triple (p ↦ n) (Prog.incr p) (fun _ => p ↦ n) := by xgo" "unsolved goals" }
   ]
@@ -7222,6 +7312,37 @@ def main : IO Unit := IO.bind (MVar.new (A := Nat)) (fun r =>
       IO.println (Nat.toString (a + sumN 2000 s))))))
 "
 
+/-- (15i) Closed definitions first used by several threads at once: each may build the
+table (the first to publish wins), and the memoised suspension inside the constant is
+forced under the lock. -/
+def concCaf : String := "import IO
+import Session
+import MVar
+def range : Nat → List Nat → List Nat
+  | .zero, acc => acc
+  | .succ n, acc => range n (.cons n acc)
+def sum : List Nat → Nat
+  | .nil => 0
+  | .cons x xs => x + sum xs
+def table : List Nat := range 2000 .nil
+def lazySum : Unit → Nat := memo (fun _ => sum table)
+def work : Nat → Nat → Nat
+  | .zero, acc => acc
+  | .succ k, acc => work k (acc + sum table + lazySum ())
+def spawnN (done : MVar Nat) : Nat → IO Unit
+  | .zero => IO.pure ()
+  | .succ k => Chan.fork Proto.done (fun c => Chan.close c (MVar.put done (work 100 0)))
+      (fun c => Chan.close c (spawnN done k))
+def waitN (done : MVar Nat) : Nat → Nat → IO Nat
+  | .zero, acc => IO.pure acc
+  | .succ k, acc => IO.bind (MVar.take done) (fun n => waitN done k (acc + n))
+def main : IO Unit := do1
+  done ← MVar.new (A := Nat);
+  spawnN done 8;
+  n ← waitN done 8 0;
+  IO.println (Nat.toString n)
+"
+
 def concGroup : Group where
   name := "conc"
   exercise := "lib/Session.wiz, lib/MVar.wiz, runtime threads (stage 25)"
@@ -7245,6 +7366,8 @@ def concGroup : Group where
         cRunLibs concCounter "8000\n" },
     { name := "a lazy stream shared between threads", run := fun _ =>
         cRunLibs concStream "3998000\n" },
+    { name := "closed definitions (CAFs, 15i) used by eight threads at once: a table and a memoised suspension in it", run := fun _ =>
+        cRunLibs concCaf "3198400000\n" },
     { name := "an endpoint can't be used twice, dropped, or closed twice", run := fun _ => do
         failsLibs (concSum ++ "def twice (1 c : Chan sumProto) : IO Nat :=\n" ++
           "  Chan.send c 1 (fun c' => runClient 1 c)") "quantity 1"
@@ -7353,6 +7476,21 @@ def infoviewGroup : Group where
           [r#".cons "Tactic state" (.cons "A : Type" (.cons "f : Nat → Nat → Nat → Nat" (.cons "⊢ Nat → A" (.cons "" (.cons "Messages" (.cons "hello" (.cons "" (.cons "n : Nat" (.cons "⊢ Nat" .nil)))))))))"#,
            r#""<h3>Tactic state</h3><div class=\"no-goals\">No goals</div><h3>Messages</h3><pre class=\"message\">a&lt;b</pre>""#,
            r#".cons "one" (.cons "two" .nil)"#] },
+    { name := "11w: what else is at the cursor (wiz/interactiveInfo): sections, as text and HTML", run := fun _ =>
+        okInfoview (goalPrelude ++ r#"def items : List InfoItem := .cons (.mk "syntax" "syntax term.twice" "syntax \"twice\" term : term" .none)
+  (.cons (.mk "expansion" "expanded by macro rule" "Nat.add a\nb" .none)
+  (.cons (.mk "instance" "instance i" "i" (.some (nat 1)))
+  (.cons (.mk "declaration" "four" "" (.some (nat 2))) .nil)))
+#eval Infoview.plainLines (View.lines (View.ofInfo 40 .none .none items))
+#eval Infoview.plainLines (View.lines (View.ofInfo 40 (.some (.mk .nil .nil)) .none (.cons (.mk "message" "info" "3" .none) .nil)))
+#eval Infoview.htmlInfo 0 .none .none (.cons (.mk "declaration" "x<y" "" (.some (nat 1))) .nil)
+#eval match Json.parse "{\"items\": [{\"kind\": \"import\", \"title\": \"import M\", \"text\": \"lib/M.wiz\", \"type\": null}], \"session\": 1}" with
+  | .ok j => List.length (Items.ofJson j)
+  | .error _ => 0"#)
+          [r#".cons "Syntax" (.cons "syntax term.twice" (.cons "  syntax \"twice\" term : term" (.cons "expanded by macro rule" (.cons "  Nat.add a" (.cons "  b" (.cons "" (.cons "Instances" (.cons "i : Nat" (.cons "" (.cons "Declarations" (.cons "four : Nat" .nil)))))))))))"#,
+           r#".cons "Tactic state" (.cons "No goals" (.cons "" (.cons "Messages" (.cons "info" (.cons "  3" .nil)))))"#,
+           r#""<h3>Declarations</h3><div class=\"item\"><span class=\"names\">x&lt;y</span> : <span class=\"tt k-const\" data-ref=\"1\" data-idx=\"0\" title=\"Nat\">Nat</span></div>""#,
+           "1"] },
     { name := "terminal lines: SGR colours by kind, the selection in reverse video", run := fun _ =>
         okInfoview (goalPrelude ++ "#eval Infoview.ansiLines 3 (View.lines (View.ofState 80 (.some .nil) (.some (.mk \"h\" .nil (arrow 1 (nat 2) (nat 3))))))")
           [r#".cons "\x1b[0;1;4mTactic state\x1b[0m" (.cons "\x1b[0;1;32mNo goals\x1b[0m" (.cons "\x1b[0m" (.cons "\x1b[0;1;4mExpected type\x1b[0m" (.cons "\x1b[0;1;4mcase h\x1b[0m" (.cons "\x1b[0;1;35m⊢\x1b[0m \x1b[0;34mNat\x1b[0m \x1b[0m→\x1b[0m \x1b[0;34;7mNat\x1b[0m" .nil)))))"#] },
