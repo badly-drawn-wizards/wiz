@@ -117,6 +117,39 @@ def mkGenerator (ctx : LocalCtx R) (key : String) (goal : Term R) (goalTy : VTy 
     | none => pure #[]
   pure { key, goal, goalTy, state := ← get, candidates := cands }
 
+/-- (Given) Does each complete solution of an instance's non-instance argument have the
+type the instance's binder gives it? Unification is untyped, so matching the instance's
+conclusion can pick an ill-kinded solution: `ShareLet (r a) (r b)` against `S T.El`
+(first order: `r := S`, `a := T.El`) although `r : T → Type` and `S : (T → Type) → Type`.
+Such an instance doesn't apply. (Arguments still holes, or whose types are, are left to
+the rest of elaboration and the kernel.) -/
+def instArgsWellTyped (ctx : LocalCtx R) (args : Array (Term R × VTy R)) : ElabM R Bool := do
+  let g ← getGlobals
+  let mut checks : Array (Term R × Term R) := #[]
+  for (m, dom) in args do
+    let t ← zonk ctx.lvl m
+    if !t.mvars.isEmpty || t.hasLevelMVar then continue
+    let A ← zonk ctx.lvl (quote g ctx.lvl (← forceMeta dom))
+    if !A.mvars.isEmpty || A.hasLevelMVar then continue
+    checks := checks.push (t, A)
+  if checks.isEmpty then return true
+  -- the variables' types with the holes solved since they were bound
+  let mut tys : Array (VTy R) := #[]
+  for v in ctx.types.reverse do
+    let j := tys.size
+    let t ← zonk j (quote g j (← forceMeta v))
+    tys := tys.push (eval g (ctx.env.drop (ctx.lvl - j)) t)
+  let kctx : Ctx R := { globals := g, env := ctx.env, names := ctx.names,
+                        qtys := ctx.names.map fun _ => QPoly.const QuantitySyntax.explicitDefault,
+                        types := tys.toList.reverse, lvl := ctx.lvl }
+  let infer := (← get).kernelInfer
+  for (t, A) in checks do
+    match infer kctx t with
+    | .ok ty => unless convTy g tys (eval g ctx.env A) ty do return false
+    -- (ill-typed; unless there is no kernel to ask, outside a command)
+    | .error e => if e != noKernelMsg then return false
+  return true
+
 /-- **Exercise 7.1.** Apply an instance (`e : ty`) to the goal: fill each of its leading
 Π binders with a fresh hole (the instance-implicit ones are the subgoals, in order),
 then unify the conclusion with the goal type and the goal with the application.
@@ -128,15 +161,17 @@ partial def applyInstance (ctx : LocalCtx R) (goal : Term R) (goalTy : VTy R) (e
   let mut t := e
   let mut ty := ty
   let mut subgoals := #[]
+  let mut args := #[]
   repeat
     match ← forceMeta ty with
     | .pi x bi _ dom cod _ =>
       let m ← freshMeta ctx s!"instance argument {x}"
-      if bi == .instImplicit then subgoals := subgoals.push (m, dom)
+      if bi == .instImplicit then subgoals := subgoals.push (m, dom) else args := args.push (m, dom)
       t := .app t m
       ty ← instM cod (← evalIn ctx m)
     | _ => break
   unify ctx.lvl goalTy ty
+  unless ← instArgsWellTyped ctx args do throwAt {} "instance does not apply: an ill-typed argument"
   unify ctx.lvl (← evalIn ctx goal) (← evalIn ctx t)
   pure subgoals.toList
   --|ex
