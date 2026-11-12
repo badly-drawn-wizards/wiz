@@ -2,8 +2,8 @@
 #
 # Runs on `master` (the integration branch, with the solutions in it) and on pull
 # requests into it: the full suite, split into shards (.github/test-shards.json). The
-# exercise tree is not a branch: the `exercises` job generates it with
-# scripts/mkexercises.py and checks that it builds.
+# exercise tree (scripts/mkexercises.py) is checked only when a release is tagged:
+# release.yml's `exercise tree` job, which must pass before anything is published.
 name: CI
 
 on:
@@ -24,16 +24,16 @@ on:
         type: boolean
         default: false
 
-# A newer push to a pull request supersedes its running check (saves minutes). Runs on
-# the branches themselves (push events) are never cancelled: pull requests are merged
-# on green without being up to date, so the run of each merge commit is what tells
-# which merge broke something. They get a group per commit, since a shared group with
-# cancel-in-progress off would still drop a queued run when a newer one arrives. A merge
-# queue entry has a ref of its own (gh-readonly-queue/master/pr-N-SHA) and is never
-# cancelled by this rule (the queue cancels it when the entry leaves the queue).
+# A newer push supersedes an older run of the same ref (saves runners): on a pull
+# request, and on master too, where merges come in quick succession and every run
+# tests everything merged so far (the newest run covers the older commits' changes;
+# nightly.yml then moves to the newest green commit; release.yml has its own rule). A
+# merge queue entry has a ref of its own (gh-readonly-queue/master/pr-N-SHA) and is
+# never cancelled by this rule (the queue cancels it when the entry leaves the queue);
+# a manual run has a group of its own.
 concurrency:
-  group: ci-${{ github.ref }}-${{ github.event_name == 'schedule' && 'fixpoint' || 'checks' }}${{ github.event_name == 'push' && format('-{0}', github.sha) || '' }}
-  cancel-in-progress: ${{ github.event_name != 'push' && github.event_name != 'merge_group' }}
+  group: ci-${{ github.ref }}-${{ github.event_name == 'schedule' && 'fixpoint' || 'checks' }}${{ github.event_name == 'workflow_dispatch' && format('-dispatch-{0}', github.run_id) || '' }}
+  cancel-in-progress: ${{ github.event_name != 'merge_group' }}
 
 permissions:
   contents: read
@@ -314,7 +314,7 @@ jobs:
   # One check for branch protection, and the whole suite's summary.
   result:
     name: CI result
-    needs: [changes, build, test, exercises, package]
+    needs: [changes, build, test, package]
     if: always() && github.event_name != 'schedule'
     runs-on: ubuntu-latest
     permissions:
@@ -398,7 +398,7 @@ jobs:
         shell: bash
         run: |
           echo "changes: ${{ needs.changes.result }} (code: ${{ needs.changes.outputs.code }}, shards: ${{ needs.changes.outputs.shards }})"
-          echo "build: ${{ needs.build.result }}, test: ${{ needs.test.result }}, exercises: ${{ needs.exercises.result }}, package: ${{ needs.package.result }}"
+          echo "build: ${{ needs.build.result }}, test: ${{ needs.test.result }}, package: ${{ needs.package.result }}"
           # the path filter must have run; a job it skipped is not a failure, but outside
           # pull requests (and whenever the filter wants them) every job must succeed
           [ "${{ needs.changes.result }}" = success ] || exit 1
@@ -410,38 +410,7 @@ jobs:
           }
           check build "${{ needs.build.result }}" "$code"
           check test "${{ needs.test.result }}" "$want_tests"
-          check exercises "${{ needs.exercises.result }}" "$code"
           check package "${{ needs.package.result }}" "$code"
-
-  # The exercise tree, generated from this one (docs/exercises.md): it must build. It runs
-  # beside the test shards, with its own Lake cache (most modules differ from this tree's).
-  exercises:
-    name: exercise tree
-    needs: changes
-    if: github.event_name != 'schedule' && needs.changes.outputs.code == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v5
-      - uses: ./.github/actions/setup
-        with:
-          cachix-name: ${{ env.CACHIX_NAME }}
-          cachix-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
-      - name: Generate the exercise tree
-        run: python3 scripts/mkexercises.py . "$RUNNER_TEMP/exercises"
-      - name: Cache its Lake build
-        uses: actions/cache@v4
-        with:
-          path: ${{ runner.temp }}/exercises/.lake
-          key: exercises-${{ runner.os }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-${{ hashFiles('lakefile.toml', '**/*.lean') }}
-          restore-keys: exercises-${{ runner.os }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-
-      - name: lake build (exercise tree)
-        env:
-          LAKE_CACHE_DIR: ${{ runner.temp }}/exercises/.lake/cache
-        run: |
-          # (the dev shell comes from this checkout's flake; the build runs in the copy)
-          cd "$RUNNER_TEMP/exercises"
-          lake build wiz grail tests
 
   # Stage-1 C of the toolchain = stage-2 C (scripts/fixpoint.sh). Scheduled runs use the
   # default branch (master).
