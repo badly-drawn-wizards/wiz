@@ -14,7 +14,8 @@ Reading a token at offset `i`:
 1. An identifier-start character reads an identifier. If the identifier is in the
    token table, it is a keyword. If a symbol token from the table matches a strictly
    *longer* prefix, the symbol wins.
-2. A digit reads a decimal number.
+2. A digit reads a number: decimal, or hexadecimal `0x3F` / binary `0b101`, which
+   become the decimal `num` token they denote.
 3. `"` reads a string literal.
 4. Anything else is the **longest** token in the table that is a prefix of the input.
 -/
@@ -143,6 +144,25 @@ def readToken (tokens : Array String) (input : Array Char) (i : Nat) :
     | none => pure ()
     return ⟨.ident id, i, j⟩
   if c.isDigit then
+    -- `0x3F`, `0b1010`: hexadecimal and binary numerals, read as the decimal `num`
+    -- they denote (everything after the tokenizer sees decimal digits only)
+    if c == '0' then
+      let radix? : Option (Nat × (Char → Option Nat)) := match input[i + 1]? with
+        | some 'x' | some 'X' => some (16, fun d =>
+            if d.isDigit then some (d.toNat - '0'.toNat)
+            else if 'a' ≤ d && d ≤ 'f' then some (d.toNat - 'a'.toNat + 10)
+            else if 'A' ≤ d && d ≤ 'F' then some (d.toNat - 'A'.toNat + 10) else none)
+        | some 'b' | some 'B' => some (2, fun d => if d == '0' || d == '1' then some (d.toNat - '0'.toNat) else none)
+        | _ => none
+      if let some (radix, digit) := radix? then
+        if (input[i + 2]?.bind digit).isSome then
+          let mut j := i + 2
+          let mut n := 0
+          while true do
+            let some d := input[j]?.bind digit | break
+            n := n * radix + d
+            j := j + 1
+          return ⟨.num (toString n), i, j⟩
     let mut j := i
     let mut digits := ""
     while (input[j]?.map Char.isDigit).getD false do
