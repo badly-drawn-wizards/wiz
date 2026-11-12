@@ -25,11 +25,20 @@ runs:
     - name: Dev shell
       shell: bash
       run: nix develop --command bash -c 'cat grail.local.wiz; cc --version | head -1; elan --version'
-    - name: Cache the Lean toolchain
-      uses: actions/cache@v4
+    # Restored everywhere, saved only by master (a 770 MB entry per pull request would
+    # crowd the repository's 10 GB Actions cache; pull requests read master's entry).
+    - name: Restore the Lean toolchain
+      id: elan-cache
+      uses: actions/cache/restore@v4
       with:
         path: ~/.elan
         key: elan-${{ runner.os }}${{ runner.arch != 'X64' && format('-{0}', runner.arch) || '' }}-${{ hashFiles('lean-toolchain') }}
     - name: Lean toolchain
       shell: bash
       run: nix develop --command bash -c 'lake --version'
+    - name: Save the Lean toolchain (master)
+      if: steps.elan-cache.outputs.cache-hit != 'true' && github.event_name == 'push' && github.ref == 'refs/heads/master'
+      uses: actions/cache/save@v4
+      with:
+        path: ~/.elan
+        key: elan-${{ runner.os }}${{ runner.arch != 'X64' && format('-{0}', runner.arch) || '' }}-${{ hashFiles('lean-toolchain') }}
