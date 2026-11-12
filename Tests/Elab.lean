@@ -4119,15 +4119,54 @@ def quantityDecls : List (String × Bool) := [
   ("def linTwice (1 z : Nat) : Nat := lin z (fun y => Nat.add y y)\n", false)]
 
 /-- (stage 21m) The pinned differences, `(declaration, Lean accepts, self-hosted accepts)`
-(docs/CoreSpec.md §15): a branch of a `match` is an argument of `T.casesOn` for the Lean
-elaborator, so a linear variable used in two branches is used ω times, while the
-self-hosted frontend compiles the match to the kernel's case, whose branches are
-alternatives (each uses it once; sound); and the self-hosted kernel's descriptions have
-no quantities, so a constructor field written with one is an error there. -/
+(docs/CoreSpec.md §15): the self-hosted kernel's descriptions have no quantities, so a
+constructor field written with one is an error there. (A linear variable used once in
+each branch of a `match` was one until 21v: `linearMatchDecls`.) -/
 def quantityDiffs : List (String × Bool × Bool) := [
-  ("def m1 (1 x : Nat) (b : Bool) : Nat := match b with\n  | .true => x\n  | .false => x\n", false, true),
   ("structure P1 where\n  1 a : Nat\n", true, false),
   ("inductive V0 where\n  | mk (0 n : Nat)\n", true, false)]
+
+/-- (stage 21v) A variable at quantity 1 used once in each branch of a `match`: the Lean
+frontend compiles the match to the additive `T.casesOnA` (its branches are alternatives,
+as the self-hosted frontend's `scase`/`ecase` are), so both accept it; a branch that
+drops it or uses it twice is rejected by both. -/
+def linearMatchHeader : String :=
+  "axiom Tok : Type\naxiom use : (1 t : Tok) → Nat\naxiom use2 : (1 t : Tok) → Nat\n" ++
+  "inductive V (A : Type) : Nat → Type where\n  | nil : V A Nat.zero\n  | cons (n : Nat) (a : A) (rest : V A n) : V A (Nat.succ n)\n"
+def linearMatchDecls : List (String × Bool) := [
+  ("def m1 (1 x : Nat) (b : Bool) : Nat := match b with\n  | .true => x\n  | .false => x\n", true),
+  ("def f (b : Bool) (1 t : Tok) : Nat := match b with\n  | .true => use t\n  | .false => use2 t\n", true),
+  ("def g (n : Nat) (1 t : Tok) : Nat := match n with\n  | .zero => use t\n  | .succ _ => use2 t\n", true),
+  ("def h (o : Option Nat) (1 t : Tok) : Nat := match o with\n  | .none => use t\n  | .some _ => use t\n", true),
+  ("def l (xs : List Nat) (1 t : Tok) : Nat := match xs with\n  | .nil => use t\n  | .cons _ _ => use t\n", true),
+  ("def nested (b c : Bool) (1 t : Tok) : Nat := match b, c with\n  | .true, .true => use t\n  | .true, .false => use2 t\n  | .false, _ => use t\n", true),
+  ("def lt (b : Bool) (x : Tok) : Nat := let 1 t := x; match b with\n  | .true => use t\n  | .false => use2 t\n", true),
+  ("def vec {n : Nat} (v : V Nat n) (1 t : Tok) : Nat := match v with\n  | .nil => use t\n  | .cons _ _ _ => use2 t\n", true),
+  ("def bad1 (b : Bool) (1 t : Tok) : Nat := match b with\n  | .true => use t\n  | .false => 0\n", false),
+  ("def bad2 (b : Bool) (1 t : Tok) : Nat := match b with\n  | .true => Nat.add (use t) (use t)\n  | .false => use t\n", false),
+  ("def bad3 (b : Bool) (1 t : Tok) : Nat := match b with\n  | .true => use t\n  | .false => Nat.add (use t) 1\n", false),
+  ("def bad4 (n : Nat) (1 t : Tok) : Nat := match n with\n  | .zero => use t\n  | .succ k => Nat.add k (use t)\n", false)]
+
+/-- (stage 21v) The additive match computes, compiled by the Lean compiler. -/
+def linearMatchProgram : String :=
+  "import IO\ndef m1 (1 x : Nat) (b : Bool) : Nat := match b with\n  | .true => x\n  | .false => x\n" ++
+  "def pick (1 x : Nat) (o : Option Nat) : Nat := match o with\n  | .none => x\n  | .some _ => x\n" ++
+  "def main : IO Unit := do\n  IO.println (Nat.toString (m1 3 .true));\n  IO.println (Nat.toString (pick 5 .none));\n" ++
+  "  IO.println (Nat.toString (pick 6 (.some 7)))\n"
+
+/-- (stage 21u) Σ types, pairs, projections and `∀` in both frontends. -/
+def sigmaDecls : List (String × Bool) := [
+  ("def mkP (n : Nat) : Nat × Bool := (n, .true)\ndef fstP (p : Nat × Bool) : Nat := p.1\ndef sndP (p : Nat × Bool) : Bool := p.2\n", true),
+  ("def t3 : Nat × Bool × Nat := (1, .false, 2)\ndef t3c : Nat := t3.2.2\ndef t3b : Bool := t3.2.1\n", true),
+  ("def D : Type := (n : Nat) × List Nat\ndef d : (n : Nat) × List Nat := (3, .nil)\ndef DQ : Type := (0 n : Nat) × Nat\n", true),
+  ("def F : Type := ∀ (n : Nat) (b : Bool), Nat\ndef F2 : Type 1 := ∀ {A : Type} (x : A), A\n" ++
+    "def idF : ∀ {A : Type} (x : A), A := fun {A} x => x\ndef F3 : Type := ∀ (n m : Nat) (b : Bool), Nat\n", true),
+  ("def tup : Nat × Bool := (1, Bool.true)\ndef swap (p : Nat × Bool) : Bool × Nat := (p.2, p.1)\n", true),
+  ("def bad : Nat × Bool := (1, 2)\n", false),
+  ("def bad : Nat := (1, 2).3\n", false),
+  ("def bad (p : Nat × Bool) : Nat := p.2\n", false),
+  ("def bad : Type := (n : Nat) × n\n", false),
+  ("def bad : Type := ∀ (n : Nat), n\n", false)]
 
 /-- (stage 21m) A program with quantities, compiled by the self-hosted compiler: the
 0-quantity arguments are erased, a `let 1` runs. -/
@@ -4704,14 +4743,26 @@ def selfHostGroup : Group where
         selfhostAgrees quantityHeader quantityDecls },
     { name := "the self-hosted frontend: quantities, the pinned differences (21m)", run := fun _ =>
         selfhostVerdicts quantityHeader quantityDiffs },
+    { name := "a linear variable used once in each branch of a match: both frontends accept it (21v)", run := fun _ =>
+        selfhostAgrees linearMatchHeader linearMatchDecls },
+    { name := "the additive match (T.casesOnA) runs, compiled by the Lean compiler (21v)", run := fun _ =>
+        ioRun linearMatchProgram "3\n5\n6\n" },
+    { name := "the self-hosted frontend: Σ types, pairs, projections and ∀, as in the Lean frontend (21u)", run := fun _ =>
+        selfhostAgrees "" sigmaDecls },
     { name := "the self-hosted backend: quantities erase and run, with either collector (21m)", run := fun _ => do
         selfhostCompileRun quantityProgram "6\n5\n9\n"
         selfhostCompileRun quantityProgram "6\n5\n9\n" (flags := #["--rc"]) },
     { name := "the self-hosted frontend: private declarations, constructors and fields, as in one Lean module (21n)", run := fun _ =>
         selfhostAgrees "" privateDecls },
     { name := "the self-hosted frontend: an unknown command is an error naming it (21n)", run := fun _ =>
-        selfhostCheckFile "import Prelude\ndef f : Nat := 1\n#eval f\nattribute [inline] f\ndef g : Nat := f\n"
-          "f : Nat\nerror: unsupported command command.eval\nerror: unsupported command command.attrInline\ng : Nat\n" },
+        selfhostCheckFile "import Prelude\ndef f : Nat := 1\nattribute [macro f] f\nattribute [tactic f] f\ndef g : Nat := f\n"
+          "f : Nat\nerror: unsupported command command.attrMacro\nerror: unsupported command command.attrTactic\ng : Nat\n" },
+    { name := "the self-hosted frontend: #eval and attribute [inline], as in the Lean frontend (21u)", run := fun _ => do
+        selfhostCheckFile "import Prelude\ndef f : Nat := 1\n#eval Nat.add f f\nattribute [inline] f\ndef g : Nat := f\n"
+          "f : Nat\ncon((#1, (con((#1, (con((#0, (tt, tt))), (tt, tt)))), (tt, tt))))\ng : Nat\n"
+        selfhostAgrees "def f : Nat := 1\naxiom a : Nat\n" [
+          ("attribute [inline] f\n", true), ("attribute [inline] a\n", false), ("attribute [inline] nope\n", false),
+          ("#eval Nat.add f f\n", true), ("#eval nope\n", false)] },
     { name := "the self-hosted frontend: export and link_lib are checked as in the Lean frontend (21o)", run := fun _ =>
         selfhostAgrees exportHeader exportDecls },
     { name := "export, link_c and link_lib: the Lean and the self-hosted compilers agree (21o)", run := fun _ => do

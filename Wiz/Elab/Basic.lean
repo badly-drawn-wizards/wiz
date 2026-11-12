@@ -68,6 +68,10 @@ structure LocalCtx (R : Type) where
   /-- variables known to be erased (constructor fields of quantity 0): a `match` that
   reverts one binds it at quantity 0 again -/
   erasedLvls : List Lvl := []
+  /-- (21v) variables bound at a literal quantity other than 0 and ω (`(1 x : A)`): a
+  `match` with one in scope uses the additive case `T.casesOnA`, so that each branch may
+  use it once -/
+  linearLvls : List Lvl := []
 
 /-! ## The info tree (for the language server)
 
@@ -270,6 +274,14 @@ def define (ctx : LocalCtx R) (x : Name) (ty : VTy R) (val : Val R) : LocalCtx R
   { ctx with
     env := val :: ctx.env, names := x :: ctx.names, types := ty :: ctx.types
     bound := false :: ctx.bound, lvl := ctx.lvl + 1 }
+
+/-- (21v) `bind`, remembering a variable bound at a literal quantity other than 0 and ω
+(`linearLvls`). -/
+def bindQ (ctx : LocalCtx R) (x : Name) (ty : VTy R) (q : Option R) : LocalCtx R :=
+  let c := ctx.bind x ty
+  match q with
+  | some r => if r != 0 && QRig.many? != some r then { c with linearLvls := ctx.lvl :: c.linearLvls } else c
+  | none => c
 
 def withInfo (ctx : LocalCtx R) (stx : Syntax) : LocalCtx R :=
   -- (11q) a macro's output keeps the range of the nearest syntax the user wrote

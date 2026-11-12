@@ -676,7 +676,7 @@ partial def unifyGlued (l : Lvl) (t u : Val R) : ElabM R Bool := do
     -- and compare again
     let g ← getGlobals
     -- (recursors compute: unfold them first; otherwise the later definition)
-    let isRec (x : Name) : Bool := x.endsWith ".rec" || x.endsWith ".casesOn" || x.endsWith ".scasesOn"
+    let isRec (x : Name) : Bool := x.endsWith ".rec" || x.endsWith ".casesOn" || x.endsWith ".casesOnA" || x.endsWith ".scasesOn"
     let first := isRec n || (!isRec n' && g.height n ≥ g.height n')
     let step := if n == n' then unify l v.get v'.get
       else if first then unify l v.get u else unify l t v'.get
