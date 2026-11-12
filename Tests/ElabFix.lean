@@ -198,7 +198,7 @@ def group : Group where
           [".cons 2 .nil", ".cons 3 .nil"] },
     { name := "erased fields get no projection function", run := fun _ =>
         failsLib ("import Prelude\nstructure BV (n : Nat) where\n  toNat : Nat\n  0 ok : Nat.lt toNat 100 = .true\n" ++
-          "def g := BV.ok") "no field" },
+          "def g := BV.ok") "unknown identifier 'BV.ok'" },
     { name := "trailing instance arguments are inserted (trailing-instance-args)", run := fun _ =>
         okLib ("import Prelude\nclass BitPack (A : Type) where\n  width : Nat\ninstance : BitPack Bool := BitPack.mk 1\n" ++
           "def bitWidth (0 A : Type) [BitPack A] : Nat := @BitPack.width A _\n" ++
@@ -655,7 +655,12 @@ def group : Group where
           "def s0t (s : S0) : Type := match s with\n  | .mk n m => Nat\n" ++
           "#eval s0mt (S0.mk 3 4)\n") ["4"]
         -- used at runtime it is an error (not a projection at ω behind the user's back)
-        failsLib (hdr ++ "def bad (s : S0) : Nat := match s with\n  | .mk n m => n\n") "n" }
+        failsLib (hdr ++ "def bad (s : S0) : Nat := match s with\n  | .mk n m => n\n") "n" },
+    { name := "#266: an unknown qualified name is an unknown identifier, not a field access", run := fun _ => do
+        failsLibW "import Prelude\ndef x : Option Nat := Option.bind (.some 1) (fun n => .some n)\n" "unknown identifier 'Option.bind'"
+        failsLibW "import Prelude\ndef x : Nat := Nat.nope 3\n" "unknown identifier 'Nat.nope'"
+        -- a field of a value is still a field
+        failsLibW "import Prelude\nstructure P where\n  a : Nat\ndef p : P := P.mk 1\ndef x : Nat := p.b\n" "no field 'b'" }
   ]
 
 /-- This module's test groups, which `Tests/Main.lean` runs: one per line, in sorted
