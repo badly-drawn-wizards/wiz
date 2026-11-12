@@ -393,7 +393,9 @@ def recordExpected (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : ElabM 
     let userName := if stx.isOfKind "term.syntheticHole" then (stx.getArg 1).getId? else none
     pushInfo (.term stx.info ctx expected hole userName)
 
-def getGlobals : ElabM R (Globals R) := return (← get).globals
+/-- The globals, for the elaborator's own evaluation and read-back: with `quoteEqs`, so a
+computed equation reads back as the equation (13n). -/
+def getGlobals : ElabM R (Globals R) := return { (← get).globals with quoteEqs := true }
 
 def evalIn (ctx : LocalCtx R) (t : Term R) : ElabM R (Val R) :=
   return eval (← getGlobals) ctx.env t

@@ -1,0 +1,165 @@
+-- Hardware in Wiz, end to end (docs/hardware.md): a traffic light controller written as a
+-- circuit, its specification as an abstract state machine, a temporal property of every
+-- run proved by refinement, and the same circuit simulated and emitted as Verilog.
+-- Checked by the `hdl` test group.
+import Hdl.Optic
+
+def Bit : HwTy := HwTy.bits 1
+def B2 : HwTy := HwTy.bits 2
+
+------------------------------------------------------------------------------------
+-- 1. The circuit. State: the light (0 green, 1 yellow, 2 red) and whether a car waits.
+-- Input: a car sensor and a timer tick. Green turns yellow on a tick when a car has
+-- been seen, yellow turns red on the next tick, red turns green on the one after.
+
+structure Light (r : HwTy → Type) where
+  phase : r B2
+  waiting : r Bit
+  deriving Bundle, Lens
+
+structure Sensors (r : HwTy → Type) where
+  car : r Bit
+  tick : r Bit
+  deriving Bundle
+
+-- the next phase, written with gates and operators as a designer would (`advance`: a
+-- tick and, when green, a car); `if` on a signal is a multiplexer
+def nextPhase {r : HwTy → Type} [Hw r] (p : r B2) (waiting tick : r Bit) : r B2 :=
+  let advance := tick &&& (waiting ||| ~~~(p === 0));
+  if advance then (if p === 2 then 0 else p + 1) else p
+
+def lightStep {r : HwTy → Type} [Hw r] (s : Light r) (x : Sensors r) : r (HwTy.prod Light.code B2) :=
+  let p := nextPhase s.phase s.waiting x.tick;
+  -- a car is remembered until the light leaves green
+  let w := (s.waiting ||| x.car) &&& (p === 0);
+  Hw.pair (Light.pack (Lens.set Light.waitingL (Lens.set Light.phaseL s p) w)) s.phase
+
+def Light.start : Light HwTy.El := Light.mk (BitVec.ofNat 2 2) (BitVec.ofNat 1 0)
+def lightC : Circuit Sensors.code B2 :=
+  Circuit.bundled Light.bundle Sensors.bundle (Bundle.mk B2 (fun x => x) (fun x => x)) Light.start lightStep
+
+------------------------------------------------------------------------------------
+-- 2. The specification: an abstract machine over an enumeration, inputs as Booleans.
+
+inductive Color where
+  | green
+  | yellow
+  | red
+
+structure Abs where
+  color : Color
+  waiting : Bool
+
+def Color.next : Color → Color
+  | .green => .yellow
+  | .yellow => .red
+  | .red => .green
+def Color.advance (c : Color) (waiting : Bool) : Bool := match c with
+  | .green => waiting
+  | _ => .true
+
+def specStep (s : Abs) (x : Bool × Bool) : Abs × Color :=
+  let c := match Bool.and x.2 (Color.advance s.color s.waiting) with
+    | .true => Color.next s.color
+    | .false => s.color;
+  let w := match c with
+    | .green => Bool.or s.waiting x.1
+    | _ => .false;
+  (Abs.mk c w, s.color)
+
+------------------------------------------------------------------------------------
+-- 3. The representation map and the refinement: one step, for every abstract state and
+-- input (24 cases, each closed: `rfl`). No case needs the circuit to be written with
+-- multiplexers only: the gates evaluate because every bit is known in each case.
+
+def Color.code : Color → BitVec 2
+  | .green => BitVec.ofNat 2 0
+  | .yellow => BitVec.ofNat 2 1
+  | .red => BitVec.ofNat 2 2
+def embS (s : Abs) : HwTy.El lightC.st := Bundle.toEl Light.bundle (Light.mk (Color.code s.color) (Bool.toBits s.waiting))
+def embI (x : Bool × Bool) : HwTy.El Sensors.code := Bundle.toEl Sensors.bundle (Sensors.mk (Bool.toBits x.1) (Bool.toBits x.2))
+
+def step_cases : (c : Color) → (w car tick : Bool) →
+    Circuit.stepEl lightC (embS (Abs.mk c w)) (embI (car, tick)) =
+      (embS (specStep (Abs.mk c w) (car, tick)).1, Color.code (specStep (Abs.mk c w) (car, tick)).2)
+  | .green, .true, .true, .true => rfl
+  | .green, .true, .true, .false => rfl
+  | .green, .true, .false, .true => rfl
+  | .green, .true, .false, .false => rfl
+  | .green, .false, .true, .true => rfl
+  | .green, .false, .true, .false => rfl
+  | .green, .false, .false, .true => rfl
+  | .green, .false, .false, .false => rfl
+  | .yellow, .true, .true, .true => rfl
+  | .yellow, .true, .true, .false => rfl
+  | .yellow, .true, .false, .true => rfl
+  | .yellow, .true, .false, .false => rfl
+  | .yellow, .false, .true, .true => rfl
+  | .yellow, .false, .true, .false => rfl
+  | .yellow, .false, .false, .true => rfl
+  | .yellow, .false, .false, .false => rfl
+  | .red, .true, .true, .true => rfl
+  | .red, .true, .true, .false => rfl
+  | .red, .true, .false, .true => rfl
+  | .red, .true, .false, .false => rfl
+  | .red, .false, .true, .true => rfl
+  | .red, .false, .true, .false => rfl
+  | .red, .false, .false, .true => rfl
+  | .red, .false, .false, .false => rfl
+def step_ok (s : Abs) (x : Bool × Bool) :
+    Circuit.stepEl lightC (embS s) (embI x) = (embS (specStep s x).1, Color.code (specStep s x).2) :=
+  step_cases s.color s.waiting x.1 x.2
+
+-- the circuit's state at every cycle is the image of the specification's
+def Abs.start : Abs := Abs.mk .red .false
+def refines (xs : Trace (Bool × Bool)) (t : Nat) :
+    Circuit.stateAt lightC (Trace.map embI xs) t = embS (Mealy.stateAt specStep Abs.start xs t) :=
+  Mealy.simulates (Circuit.mealy lightC) specStep embS embI Color.code step_ok Abs.start xs t
+
+------------------------------------------------------------------------------------
+-- 4. A temporal property, proved for every input trace: the light never goes from green
+-- straight to red (□ (green → ○ ¬red); with lib/Hdl/Temporal.wiz,
+-- `TL.always (TL.imp (TL.now isGreen) (TL.next (TL.not (TL.now isRed))))`).
+
+def Color.isGreen : Color → Bool
+  | .green => .true
+  | _ => .false
+def Color.isRed : Color → Bool
+  | .red => .true
+  | _ => .false
+
+-- at the specification: one step from green is never red (case analysis, `rfl`)
+def spec_safe_cases : (c : Color) → (w car tick : Bool) → Color.isGreen c = .true →
+    Color.isRed (specStep (Abs.mk c w) (car, tick)).1.color = .false
+  | .green, .true, car, .true, h => rfl
+  | .green, .false, car, .true, h => rfl
+  | .green, w, car, .false, h => rfl
+  | .yellow, w, car, tick, h => absurd h.1
+  | .red, w, car, tick, h => absurd h.1
+def spec_safe (s : Abs) (x : Bool × Bool) (h : Color.isGreen s.color = .true) : Color.isRed (specStep s x).1.color = .false :=
+  spec_safe_cases s.color s.waiting x.1 x.2 h
+
+-- on the circuit's outputs: the phase it shows at `t` is green, then at `t + 1` it is
+-- not red; for every input trace and every `t`
+def light_safe (xs : Trace (Bool × Bool)) (t : Nat)
+    (h : Color.isGreen (Mealy.stateAt specStep Abs.start xs t).color = .true) :
+    Color.isRed (Mealy.stateAt specStep Abs.start xs (Nat.succ t)).color = .false :=
+  spec_safe (Mealy.stateAt specStep Abs.start xs t) (xs t) h
+
+-- and the circuit's phase register holds the code of that color (refinement)
+def light_phase (xs : Trace (Bool × Bool)) (t : Nat) :
+    (Bundle.ofEl Light.bundle (Circuit.stateAt lightC (Trace.map embI xs) t)).phase =
+      Color.code (Mealy.stateAt specStep Abs.start xs t).color :=
+  Eq.congrArg (fun (s : HwTy.El lightC.st) => (Bundle.ofEl Light.bundle s).phase) (refines xs t)
+
+------------------------------------------------------------------------------------
+-- 5. Simulation, the netlist and Verilog: what a simulation shows is what the theorems
+-- are about (`Circuit.run_take`).
+
+def sensors (car tick : Nat) : HwTy.El Sensors.code := embI (Nat.beq car 1, Nat.beq tick 1)
+def demo : List (HwTy.El Sensors.code) :=
+  .cons (sensors 0 1) (.cons (sensors 1 0) (.cons (sensors 0 1) (.cons (sensors 0 1) (.cons (sensors 0 1) (.cons (sensors 0 1) .nil)))))
+def shown : List Nat := Hdl.map (HwTy.pack B2) (Circuit.run lightC demo)
+def agree : Bool := Hdl.natsEq shown (Circuit.simNet .true lightC (Hdl.map (HwTy.pack Sensors.code) demo))
+def tour : List Nat × Bool := (shown, agree)
+#eval tour
