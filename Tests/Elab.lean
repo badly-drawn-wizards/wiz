@@ -112,7 +112,7 @@ def group : Group where
         checkEq 2 msgs.size
         check ((msgs[1]!.splitOn "b : Type 1").length > 1) s!"{msgs}" },
     { name := "user syntax without an elaborator is reported", run := fun _ =>
-        fails "syntax \"magic\" : term\ndef x : Type := magic" "no elaborator" },
+        fails "syntax \"magic\" : term\ndef x : Type := magic" "the syntax term.magic has no meaning" },
     { name := "duplicate definition", run := fun _ =>
         fails "def a : Type 1 := Type\ndef a : Type 1 := Type" "already been declared" }
   ]
@@ -1018,7 +1018,7 @@ def tacticGroup : Group where
         failsLib "import Prelude\ndef k : Nat → Nat := by\n  intros\n  rename_i a, b\n  exact a" "rename_i: more names than inaccessible hypotheses" },
     { name := "an inaccessible name cannot be written", run := fun _ => do
         let ms ← msgsLib "import Prelude\ndef bad : (n : Nat) → Nat := by\n  intros\n  exact n"
-        checkEq ["error: unknown identifier 'n'"] ms },
+        checkEq ["error: unknown identifier 'n'; the hypothesis n✝ is inaccessible: name it with `intro n` or `rename_i n`"] ms },
     { name := "TacticM.introFresh: the binder's name, made fresh, and returned", run := fun _ =>
         okLib ("import Prelude\nsyntax (name := in3) \"in3\" : tactic\n" ++
           "def in3Tac : Tactic := fun _ => do\n  g ← TacticM.mainGoal;\n  p ← TacticM.introFresh g \"\";\n  q ← TacticM.introFresh p.2 \"\";\n  r ← TacticM.introFresh q.2 \"\";\n  s ← TacticM.introFresh r.2 \"n\";\n" ++
@@ -1904,7 +1904,7 @@ def ffiGroup : Group where
           "def seq2 (1 t : Tok) : IO Nat := IO.then1 (Tok.close t) (IO.pure 3)\n" ++
           "def seq3 (1 t : Tok) : IO Nat := IO.bind (IO.println \"x\") (fun _ => IO.bind (Tok.close t) (fun _ => IO.pure 3))\n" ++
           "def bad (1 t : Tok) : IO Nat := do\n  IO.println \"closing\";\n  Tok.close t;\n  IO.pure 3")
-          "kernel rejected bad: variable t declared with quantity 1 but used ω"
+          "variable t declared with quantity 1 but used ω"
         ioRun ("import IO\ndef main : IO Unit := do1\n  IO.println \"one\";\n  n ← IO.pure 2;\n  let m := n + n;\n  IO.println (Nat.toString m)") "one\n4\n" },
     { name := "... and a linear value is still used exactly once", run := fun _ =>
         ioFails ("import IO\naxiom Tok : Type\naxiom Tok.close : (1 t : Tok) → IO Unit\n" ++ "def bad (1 t : Tok) : IO Unit := do1\n  Tok.close t;\n  Tok.close t")
@@ -5505,7 +5505,7 @@ def languageGroup : Group where
     { name := "as-patterns: the name must be a variable; not a term", run := fun _ => do
         failsLib "import Prelude\ndef f : Nat → Nat\n  | (.succ k)@n => n\n  | _ => 0" "an as-pattern is `x@p` with a variable"
         failsLib "import Prelude\ndef f (n : Nat) : Nat := n@n" "only allowed in a pattern"
-        failsLib "import Prelude\ndef f : List Nat → Nat\n  | l@(.cons x) => x\n  | _ => 0" "cons expects 2 explicit arguments" },
+        failsLib "import Prelude\ndef f : List Nat → Nat\n  | l@(.cons x) => x\n  | _ => 0" "the constructor cons has 2 explicit fields, but the pattern gives it 1 argument" },
     -- 13h
     { name := "structure patterns: .mk, S.mk and ⟨…⟩ bind the fields; nested and with parameters", run := fun _ =>
         okLib ("import Prelude\nstructure Stats where\n  hits : Nat\n  misses : Nat\n" ++
@@ -7419,7 +7419,7 @@ def phantomGroup : Group where
     { name := "UIntN 8 and UIntN 16 are different types", run := fun _ =>
         failsLib "import Prelude\ninductive UIntN (w : Nat) where\n  | mk (toNat : Nat)\ndef f (x : UIntN 8) : UIntN 16 := x" "mismatch" },
     { name := "so rfl can't prove UIntN 8 = UIntN 16", run := fun _ =>
-        failsLib "import Prelude\ninductive UIntN (w : Nat) where\n  | mk (toNat : Nat)\ndef e : UIntN 8 = UIntN 16 := rfl" "mismatch" },
+        failsLib "import Prelude\ninductive UIntN (w : Nat) where\n  | mk (toNat : Nat)\ndef e : UIntN 8 = UIntN 16 := rfl" "not definitionally equal" },
     { name := "μ equality: UIntN 8 = UIntN 8 holds, UIntN 8 = UIntN 16 is refutable (4g)", run := fun _ => do
         -- equality of μ types compares the codes (4g): the phantom is in the index type,
         -- whose equation is `e.1`, and at the phantom it is `(x = 16) ↔ (x = 8)`
