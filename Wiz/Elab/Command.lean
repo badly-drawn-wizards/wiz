@@ -53,6 +53,20 @@ def Msg.render (input : String) (m : Msg) : String :=
   let sev := match m.severity with | .error => "error" | .warning => "warning" | .info => "info"
   s!"{l + 1}:{c + 1}: {sev}: {m.text}"
 
+/-- (11s) A declaration, for documentation: what made it (`def`, `inductive`,
+`structure`, `class`, `instance`, `axiom`, `coinductive`, `extern`, …, or `constructor`
+and `field` for those of a type, `auxiliary` for what the elaborator adds for its own
+use), its doc comment (`/-- … -/`, Markdown, delimiters and indentation removed), and,
+for a constructor or field, its type. -/
+structure DeclDoc where
+  kind : String
+  doc : Option String := none
+  parent : Option Name := none
+  /-- where it is declared (its command, constructor or field; an offset in its module):
+  a `mutual` block's definitions each have their own -/
+  start : Nat := 0
+  deriving Inhabited, Repr, BEq
+
 structure CommandState (R : Type) where
   globals : Globals R := {}
   tables : ParserTables := Builtin.tables
@@ -103,6 +117,9 @@ structure CommandState (R : Type) where
   /-- record the expected type of every checked term (the language server turns it on) -/
   termInfo : Bool := false
   declSites : Std.HashMap Name (SourceInfo × String) := {}
+  /-- (11s) what each declaration is and its doc comment (`/-- … -/`), for `wiz doc` and
+  hovers: filled by the frontend (`runFrontend.step`), replayed by the cache -/
+  declDocs : Std.HashMap Name DeclDoc := {}
   /-- the module being elaborated (`""` for the main file) -/
   module : String := ""
   /-- the modules whose `builtin` registrations are trusted: the toolchain's library
@@ -129,6 +146,9 @@ structure CommandState (R : Type) where
   localCats : List Name := []
   localRules : List Nat := []
   localProcs : List Nat := []
+  /-- (11w) `local instance`s: their positions in `instances` (numbered from the oldest) -/
+  localInsts : List Nat := []
+
   /-- (11r) unexpanders declared with `app_unexpander c` and `attribute [app_unexpander c] f`,
   latest first, and which of them are `local` (numbered from the oldest) -/
   ppUser : List UnexpanderEntry := []
@@ -136,6 +156,10 @@ structure CommandState (R : Type) where
   /-- (11r) the atoms of `syntax`/`notation` rules as declared, whitespace included, by
   node kind: they decide the spacing of printed notation -/
   rawAtoms : Std.HashMap Name (Array String) := {}
+
+/-- (11s) The doc comment of a declaration, if it has one. -/
+def CommandState.docOf? (s : CommandState R) (n : Name) : Option String :=
+  (s.declDocs.get? n).bind (·.doc)
 
 /-- "'n' has already been declared", naming the module that declared it if that is not
 the one being elaborated (two modules, or a module and the file importing it). -/
@@ -191,6 +215,9 @@ def privacyCheck (g : Globals R) (d : Decl R) (kind : Globals R → Decl R → T
 /-- `addDecl` with the sorts of the elaborator's `Π`/`Σ` filled in first (`Sorts`), and then
 the privacy check. -/
 def addDeclSorted (g : Globals R) (d : Decl R) : TCM (Globals R) := do
+  -- the kernel's own check is against the full environment: never the elaborator's view,
+  -- whose `hidden` definitions (13b) `conv` would consult
+  unless g.hidden.isEmpty do throw (.other s!"internal error: {d.name} checked against the elaborator's view")
   let d := d.withSorts g
   let g' ← addDecl g d
   privacyCheck g d
@@ -250,7 +277,9 @@ def elabDeclTerms (binders : Array Syntax) (typeStx : Option Syntax) (valStx : O
     | some s => pure (← Elab.checkType ctx s).1
     | none => freshMeta ctx "the type of this definition"
   -- (for the language server) the type after the binders, and where ` : T` would go
-  if let some (n, ni, at_) := declName? then pushInfo (.decl ni n ctx ty typeStx.isSome at_)
+  if let some (n, ni, at_) := declName? then
+    pushInfo (.decl ni n ctx ty typeStx.isSome at_)
+    modify fun s => { s with defining := some n }
   -- the type's instance problems that are already determined, solved before the body is
   -- checked: an equation stuck on such a hole then computes when it meets the body's type
   -- (`unifyAt`). (The type isn't zonked here: an equation that stays as written lets
@@ -599,6 +628,86 @@ def elabDefEqns (name : Name) (cmd : Syntax) (isPartial : Bool := false) :
 /-- Does the identifier `n` occur anywhere in `stx`? -/
 partial def mentionsIdent (n : Name) (stx : Syntax) : Bool :=
   (stx.isOfKind "term.ident" && (stx.getArg 0).getId? == some n) || stx.args.any (mentionsIdent n)
+
+/-- The names a `fun`'s binders bind, and its body under any nested `fun`s; `none` for an
+implicit or instance binder. -/
+partial def peelFunBinders (t : Syntax) (acc : Array Name := #[]) : Option (Array Name × Syntax) :=
+  if t.isOfKind "term.fun" then do
+    let mut acc := acc
+    for b in (t.getArg 1).args do
+      match b with
+      | .ident _ n => acc := acc.push n
+      | _ =>
+        if b.isOfKind "term.hole" then acc := acc.push "_"
+        else if b.isOfKind "binder.explicit" then
+          for n in (b.getArg 2).args do
+            acc := acc.push (match n with | .ident _ m => m | _ => "_")
+        else none
+    peelFunBinders (t.getArg 3) acc
+  else some (acc, t)
+
+/-- A recursive `def f bs : T := fun ys => match x₁, …, xₖ with | p… => rhs …` whose
+scrutinees are parameters (of `bs` or `ys`), as the equations it means:
+`def f bs₀ : (bs₁) → T | q… => rhs …`, where `bs₁` are the parameters from the first
+scrutinee on (moved into the type; explicit, with a type) and the columns `q` are the
+alternative's pattern for a scrutinee (`x@p` if the right-hand side mentions `x`) and the
+variable itself for any other parameter. A plain `def` can't call itself (it is no
+global yet); its equations are structurally recursive. `none` if the body has another
+shape: it is then elaborated as it is. -/
+def defMatchAsEqns? (name : Name) (cmd : Syntax) : Option Syntax := do
+  let val := cmd.getArg 6
+  guard (syntaxMentions name val)
+  let tyStx ← (cmd.getArg 4).args[1]?
+  -- the def's binders, one per name: (name, the binder for it alone, explicit with a type)
+  let mut items : Array (Name × Option Syntax × Bool) := #[]
+  for b in (cmd.getArg 3).args do
+    if b.isOfKind "binder.explicit" || b.isOfKind "binder.implicit" then
+      for n in (b.getArg 2).args do
+        let single : Syntax := .node b.info b.kind #[b.getArg 0, b.getArg 1, .node {} "null" #[n], b.getArg 3, b.getArg 4]
+        let nm := match n with | .ident _ m => m | _ => "_"
+        items := items.push (nm, some single, b.isOfKind "binder.explicit" && (b.getArg 3).args.size > 0)
+    else items := items.push ("inst✝", some b, false)
+  let (funNames, body) ← peelFunBinders val
+  guard (body.isOfKind "term.match")
+  let nDef := items.size
+  for n in funNames do items := items.push (n, none, true)
+  let scruts := (body.getArg 1).args.filter (!· matches .atom ..)
+  let scrutNames ← scruts.toList.mapM fun t =>
+    if t.isOfKind "term.ident" then (t.getArg 0).getId? else none
+  guard (scrutNames.eraseDups.length == scrutNames.length)
+  -- each scrutinee is exactly one parameter (not `_`, not shadowed)
+  for x in scrutNames do
+    guard (x != "_" && (items.filter (·.1 == x)).size == 1)
+  let i0 ← items.findIdx? fun (n, _, _) => scrutNames.contains n
+  let moved := items.extract i0 items.size
+  guard (moved.all (·.2.2))
+  let info := cmd.info
+  let ident (n : Name) : Syntax := .node {} "term.ident" #[.ident {} n]
+  let hole : Syntax := .node {} "term.hole" #[.atom {} "_"]
+  -- the type: the moved binders of the def, then `T`
+  let movedDef := (items.extract i0 nDef).toList
+  let ty := movedDef.foldr (fun (_, b, _) acc => match b with
+    | some b => Syntax.node info "term.depArrow" #[b, .atom {} "→", acc]
+    | none => acc) tyStx
+  let kept := (items.extract 0 (min i0 nDef)).filterMap (·.2.1)
+  let alts ← (body.getArg 3).args.mapM fun a => do
+    guard (a.isOfKind "match.alt")
+    let ps := (a.getArg 1).args.filter (!· matches .atom ..)
+    guard (ps.size == scrutNames.length)
+    let rhs := a.getArg 3
+    let cols := moved.toList.map fun (n, _, _) =>
+      match scrutNames.idxOf? n with
+      | some k =>
+        let p := ps[k]!
+        let simple := p.isOfKind "term.ident" && (p.getArg 0).getId? == some n
+        if !simple && mentionsIdent n rhs then
+          Syntax.node p.info "term.asPat" #[ident n, .atom {} "@", p]
+        else p
+      | none => if n == "_" then hole else ident n
+    let sep := (cols.flatMap fun c => [Syntax.atom {} ",", c]).drop 1
+    pure (Syntax.node a.info "match.alt" #[a.getArg 0, .node {} "null" sep.toArray, a.getArg 2, rhs])
+  pure (.node info "command.defEqns" #[cmd.getArg 0, cmd.getArg 1, cmd.getArg 2, .node {} "null" kept,
+    .node {} "null" #[.atom {} ":", ty], .node {} "null" alts])
 
 /-- How the fields of the coinductive type `T` sit in its payload (Q4: a small field is
 lifted, `descFieldLifts`), read off `T.desc`. -/
@@ -1099,12 +1208,16 @@ def CommandState.endModule (inner outer : CommandState R) : CommandState R :=
   let cats := inner.localCats.take (inner.localCats.length - outer.localCats.length)
   let rules := inner.localRules.take (inner.localRules.length - outer.localRules.length)
   let procs := inner.localProcs.take (inner.localProcs.length - outer.localProcs.length)
+  let insts := inner.localInsts.take (inner.localInsts.length - outer.localInsts.length)
   let pps := inner.localPP.take (inner.localPP.length - outer.localPP.length)
   -- (11r) `set_option pp.…` is the module's own
   let reset := { inner with localKinds := outer.localKinds, localCats := outer.localCats,
                             localRules := outer.localRules, localProcs := outer.localProcs,
-                            localPP := outer.localPP,
+                            localInsts := outer.localInsts, localPP := outer.localPP,
                             globals := { inner.globals with pp := { inner.globals.pp with useNotation := outer.globals.pp.useNotation } } }
+  -- (11w) a `local instance` is found only in its module (its definition stays: a name)
+  let reset := if insts.isEmpty then reset else
+    { reset with instances := (reset.instances.zipIdx.filter fun (_, i) => !insts.contains i).map (·.1) }
   if kinds.isEmpty && cats.isEmpty && rules.isEmpty && procs.isEmpty && pps.isEmpty then reset else
   let t := inner.tables
   let cats' := t.cats.fold (init := ({} : Std.HashMap Name Category)) fun acc c cat =>
@@ -1305,8 +1418,8 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     -- (13m) grammar that stays in this module: remember what the command adds
     let inner := cmd.getArg 1
     unless ["command.syntax", "command.declareSyntaxCat", "command.notation", "command.infix",
-            "command.macroRules", "command.attrMacro", "command.appUnexpander", "command.attrUnexpander"].contains inner.kind do
-      report .error cmd.info "only `syntax`, `declare_syntax_cat`, `notation`, `infixl`/`infixr`/`infix`, `macro_rules`, `attribute [macro …]` and unexpanders can be `local`"
+            "command.macroRules", "command.attrMacro", "command.instance", "command.appUnexpander", "command.attrUnexpander"].contains inner.kind do
+      report .error cmd.info "only `syntax`, `declare_syntax_cat`, `notation`, `infixl`/`infixr`/`infix`, `macro_rules`, `attribute [macro …]`, `instance` and unexpanders can be `local`"
       return
     let before ← get
     elabCommand inner
@@ -1316,6 +1429,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
       { s with localKinds := kinds ++ s.localKinds, localCats := cats ++ s.localCats
                localRules := (List.range' before.macros.length (s.macros.length - before.macros.length)).reverse ++ s.localRules
                localProcs := (List.range' before.procMacros.length (s.procMacros.length - before.procMacros.length)).reverse ++ s.localProcs
+               localInsts := (List.range' before.instances.size (s.instances.size - before.instances.size)).reverse ++ s.localInsts
                localPP := (List.range' before.ppUser.length (s.ppUser.length - before.ppUser.length)).reverse ++ s.localPP }
   | "command.def" | "command.axiom" =>
     let name := ((cmd.getArg 1).getId?).getD "_"
@@ -1323,6 +1437,10 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     let binders := (cmd.getArg 3).args
     let typeStx := (cmd.getArg 4).args[1]?
     let valStx := if cmd.isOfKind "command.def" then some (cmd.getArg 6) else none
+    -- a recursive `:= match` on the parameters: the equations it means
+    if let some eqns := (if cmd.isOfKind "command.def" && !s.globals.contains name then defMatchAsEqns? name cmd else none) then
+      elabCommand eqns
+      return
     if s.globals.contains name then
       reportDup (cmd.getArg 1).info name
     else match runElabH (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) (termInfo := s.termInfo) s.globals (elabDeclTerms binders typeStx valStx cmd.info (declName? := some (name, (cmd.getArg 1).info, declInsertAt cmd))) levelParams with
@@ -1377,7 +1495,9 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
             return
           | .error e => report .error e.info e.msg; return
         let pd := Decl.withSorts g { name, levelParams, type := ty, value := none, witness := some w }
-        match (do let g' ← addPartialDecl g pd; privacyCheck g pd addPartialDecl; pure g' : TCM (Globals R)) with
+        match (do
+            unless g.hidden.isEmpty do throw (.other s!"internal error: {pd.name} checked against the elaborator's view")
+            let g' ← addPartialDecl g pd; privacyCheck g pd addPartialDecl; pure g' : TCM (Globals R)) with
         | .ok g' => g := g'
         | .error e => report .error (d.getArg 1).info s!"kernel rejected {name}: {e}"; return
         sigs := sigs.push (d, name, levelParams)
