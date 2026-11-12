@@ -116,12 +116,14 @@ require('wiz').setup {
 |---|---|
 | `:WizInfoviewToggle`, `:WizInfoviewOpen`, `:WizInfoviewClose` | the infoview window |
 | `:WizInfoviewRefresh` | ask the server again |
+| `:WizInfoviewBrowser` | open the infoview in a browser (`vim.ui.open`): the buffer's `wiz lsp` starts listening on a WebSocket on 127.0.0.1 and serves the web infoview's page on the same port; the page follows this editor's cursor. Needs the page built: a release toolchain has it (`share/wiz/web`), in a checkout run `web/build.sh` |
 | `:WizAbbrev [x]` | how to type `x` (`:WizAbbrev λ` → `\lam \la \fun …`), what an abbreviation types (`:WizAbbrev lam`), or with no argument how to type the character under the cursor |
 | `:WizAbbrevList` | every abbreviation, in a scratch buffer |
 | `:WizLspRestart` | restart the language server (`wiz lsp` or `grail lsp`) |
 
 In Wiz buffers (normal mode): `<LocalLeader>i` toggles the infoview, `<LocalLeader>r`
-refreshes it, `<LocalLeader>\` is `:WizAbbrev`. The usual LSP keymaps (`K` hover,
+refreshes it, `<LocalLeader>b` is `:WizInfoviewBrowser`, `<LocalLeader>\` is
+`:WizAbbrev` (each with a `desc`, which which-key shows). The usual LSP keymaps (`K` hover,
 `gd`, `grn`, `gra`, `]d`, …) are Neovim's own.
 
 In the infoview: `K` or `<CR>` shows what the subterm under the cursor is (its text,
