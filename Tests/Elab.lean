@@ -6822,7 +6822,7 @@ def hdlPrimCheck : IO Unit := do
     let v := hdlUnq texts[0]!
     for frag in ["module serial_core(input clk, input [0:0] sys4x, input [7:0] d, output [0:0] ck, output [0:0] q, inout [0:0] dq, output [0:0] back);",
         "OSERDESE2 #(.DATA_RATE_OQ(\"DDR\"), .DATA_RATE_TQ(\"BUF\"), .DATA_WIDTH(8), .TRISTATE_WIDTH(1), .SERDES_MODE(\"MASTER\"))",
-        ".CLK(sys4x), .CLKDIV(clk), .D1(", "IOBUF u", ".IO(dq));", "ODDR #(.DDR_CLK_EDGE(\"SAME_EDGE\"), .INIT(1'b0), .SRTYPE(\"SYNC\"))", ".O(ck));",
+        ".CLK(sys4x), .CLKDIV(clk), .D1(", ".OCE(1'd1), .RST(1'd0), .T1(r), .TCE(1'd1), .OQ(", "IOBUF u", ".IO(dq));", "ODDR #(.DDR_CLK_EDGE(\"SAME_EDGE\"), .INIT(1'b0), .SRTYPE(\"SYNC\"))", ".O(ck));",
         "module serial(input clk, input [7:0] d, output [0:0] ck, output [0:0] q, inout [0:0] dq, output [0:0] back);",
         "PLLE2_BASE #(.CLKIN1_PERIOD(10.0), .CLKFBOUT_MULT(8), .DIVCLK_DIVIDE(1), .CLKOUT0_DIVIDE(8), .CLKOUT0_PHASE(0.0), .CLKOUT1_DIVIDE(2), .CLKOUT1_PHASE(0.0)) clocking (.CLKIN1(clk), .RST(1'b0), .PWRDWN(1'b0), .CLKFBOUT(ck_CLKFBOUT), .CLKFBIN(ck_CLKFBOUT), .CLKOUT0(ck_CLKOUT0), .CLKOUT1(ck_CLKOUT1));",
         "BUFG bufg_CLKOUT0 (.I(ck_CLKOUT0), .O(ck_CLKOUT0_g));",

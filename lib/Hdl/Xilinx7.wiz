@@ -86,7 +86,7 @@ def X7.oddr {r : HwTy → Type} [Hw r] (c : r HwTy.clock) (d1 d2 : r X7.B1) : r 
 -- CLKDIV cycle (TRISTATE_WIDTH 1, DATA_RATE_TQ BUF). Inputs CLK, CLKDIV, D1 … D8, OCE,
 -- RST, T1, TCE; outputs OQ, TQ.
 
-def X7.oserdesIn : HwTy := HwTy.prod HwTy.clock (HwTy.prod HwTy.clock (X7.bitsT 11))
+def X7.oserdesIn : HwTy := HwTy.prod HwTy.clock (HwTy.prod HwTy.clock (HwTy.prod (X7.bitsT 7) (X7.bitsT 3)))
 def X7.oserdesP : Prim X7.oserdesIn (HwTy.prod X7.B1 X7.B1) :=
   Prim.decl "OSERDESE2" (.cons ("DATA_RATE_OQ", PrimParam.str "DDR") (.cons ("DATA_RATE_TQ", PrimParam.str "BUF")
       (.cons ("DATA_WIDTH", PrimParam.int 8) (.cons ("TRISTATE_WIDTH", PrimParam.int 1)
@@ -96,7 +96,10 @@ def X7.oserdesP : Prim X7.oserdesIn (HwTy.prod X7.B1 X7.B1) :=
 -- (OQ, TQ)
 def X7.oserdes {r : HwTy → Type} [Hw r] (clk clkdiv : r HwTy.clock) (rst : r X7.B1) (d : r (HwTy.bits 8)) (t : r X7.B1) :
     r (HwTy.prod X7.B1 X7.B1) :=
-  Hw.prim X7.oserdesP (Hw.pair clk (Hw.pair clkdiv (X7.spread (Hw.cat (Hw.cat (Hw.cat (Hw.cat t rst) (Hw.lit 1 1)) (Hw.lit 1 1)) d) 0 11)))
+  -- leaves D1 … D8 (bits 0 … 7 of `d`), then OCE = 1, RST, T1, TCE = 1, each its own leaf
+  -- (a bus `cat`ed together once put them in the wrong order and held RST high)
+  Hw.prim X7.oserdesP (Hw.pair clk (Hw.pair clkdiv (Hw.pair (X7.spread d 0 7)
+    (Hw.pair (Hw.lit 1 1) (Hw.pair rst (Hw.pair t (Hw.lit 1 1)))))))
 
 ------------------------------------------------------------------------------------
 -- ISERDESE2, NETWORKING, 8:1 DDR, master, from the IDELAYE2 (IOBDELAY IFD: DDLY): Q1 …
