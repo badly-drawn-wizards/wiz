@@ -1558,25 +1558,28 @@ match, a 0 field used at run time).
   uses is counted, and `u` is used up by being evaluated.
 * **Run time.** In the kernel's evaluator (types, conversion) it computes to `b` by η.
   Erasure compiles it to `let _ := u'; b'`, a strict `let` that dead-code elimination
-  keeps when `u'` is a call (it drops only pure values). What this guarantees, and no
-  more: **an effect is never lost by erasure**, because no effect can live in an
-  erasable-typed term (the next point: foreign functions can't return `Unit` or another
-  erasable type outside `IO`, and their calls are kept even at an erasable type). It does
-  *not* promise that every unit-valued computation is evaluated: a pure one may be
-  skipped, which is unobservable. Tested with a lock released in `IO` through a linear
-  ticket (C and LLVM: a skipped release would hang the second acquire, a doubled one
-  would show in the count).
-* **Side effects live in `IO`, never in an erasable or contentless value.** Erasure drops
-  whatever has an erasable type (a proof, a type, an erased function into `Unit`), and an
-  erased head applied computes nothing, so a consumer hidden there (`(fun (0 k) =>
-  release t) 0`, or a definition whose result type is `(0 k : Nat) → Unit`) would not
-  run, though the kernel rightly counts `t` once (linear-review, second round). So:
-  `extern` refuses a pure function whose result is `Unit` ("must be in IO"), and
-  `implemented_by` refuses a function whose result is `Unit` or a type. Every effect then
-  goes through a `World`, which is linear and must reach `main`'s result. As defence in
-  depth, erasure keeps the call of a foreign function even where its type is erasable
-  (a polymorphic native instantiated at an erasable type): `let _ := call; ◾`
-  (`externCall`, Erase.lean).
+  keeps when `u'` is a call (it drops only pure values). The linearity guarantee is about
+  counting, in the kernel; at run time it rests on a **trust assumption about foreign
+  code**:
+* **Trust assumption: effects live in `IO`.** A foreign function or implementation
+  outside `IO` (`extern f : Nat → Nat`, `attribute [implemented_by g] f`) must be pure:
+  no observable effect. Erasure and dead-code elimination may drop or duplicate such a
+  call (in an erased position, in an erased closure, a dead `let`), so an effect there can
+  be lost. linear-review's b4 is a pure `Nat → Nat` extern with an effect, applied inside
+  `(fun (0 k : Nat) => (fun (x : Nat) => ()) (cRel n)) 0`: its call is dropped. b5, a
+  polymorphic `{0 A : Type} → Nat → A` instantiated at `Unit`, is the same. Effects belong
+  in `IO`, whose `World` is linear. **What holds without trusting anything more**: an
+  `IO` effect can't sit in an erasable term, because running it needs a `World`, and a
+  `World` can't escape into a value with no runtime content (it must reach `main`'s
+  result).
+* **The checks that enforce what can be checked.** `extern` and `implemented_by` refuse a
+  result type with no runtime content: `Unit`, a proposition, a type, an erased function
+  into such, or a Σ of such, after `whnf` (a named `def Tk := Unit` counts). The decision
+  uses the predicate erasure itself uses (`contentless`/`resultContentless`, Erase.lean,
+  built on `erasable`), so the two can't drift. A foreign call is also kept where its
+  type is erasable (`externCall`: defence in depth for polymorphic natives). Tested with
+  a lock released in `IO` through a linear ticket (C and LLVM: a skipped release would
+  hang the second acquire, and a doubled one would show in the count).
 * **Tokens must not be named units.** `let () := t` consumes any `t` whose type reduces
   to `Unit`, so a library must not use a named unit type (`def Tk : Type := Unit`, or anything
   that reduces to `Unit`) as a linear token: anyone can discard one. Linear tokens are
