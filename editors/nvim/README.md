@@ -25,7 +25,7 @@ notes are in `docs/stages/11-tooling.md` (11p).
 ## Installing
 
 `wiz` must be on `PATH` (or set `lsp.cmd`), and `grail` too for grail packages (or set
-`lsp.grail.cmd`), e.g. from `nix profile install github:badly-drawn-wizards/wiz`, tower's
+`lsp.grail.cmd`), e.g. from `nix profile install github:wiz-pl/wiz`, tower's
 shims, or a checkout's `.lake/build/bin`. Without `grail`, the plugin warns once and
 starts `wiz lsp`.
 
@@ -33,7 +33,7 @@ starts `wiz lsp`.
 and the packaged `wiz` on `PATH`):
 
 ```sh
-nix run github:badly-drawn-wizards/wiz#nvim-wiz -- examples/tactics.wiz
+nix run github:wiz-pl/wiz#nvim-wiz -- examples/tactics.wiz
 ```
 
 (The Cachix cache of docs/building.md saves building wiz.)
@@ -42,7 +42,7 @@ nix run github:badly-drawn-wizards/wiz#nvim-wiz -- examples/tactics.wiz
 
 ```lua
 {
-  'badly-drawn-wizards/wiz',
+  'wiz-pl/wiz',
   ft = 'wiz',
   config = function(plugin)
     vim.opt.rtp:append(plugin.dir .. '/editors/nvim')
@@ -61,7 +61,7 @@ Or with a local checkout: `{ dir = '/path/to/wiz/editors/nvim', opts = {} }`.
 **packer.nvim**:
 
 ```lua
-use { 'badly-drawn-wizards/wiz', rtp = 'editors/nvim', config = function() require('wiz').setup {} end }
+use { 'wiz-pl/wiz', rtp = 'editors/nvim', config = function() require('wiz').setup {} end }
 ```
 
 **Nix** (home-manager or a NixOS Neovim): the flake's `packages.<system>.wiz-nvim` is a

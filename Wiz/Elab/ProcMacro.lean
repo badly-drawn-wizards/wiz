@@ -36,7 +36,7 @@ def mkCon (tag : Nat) (fields : List RVal) : RVal := .obj tag fields.toArray
 def encodeString (s : String) : RVal :=
   mkCon 0 [s.toList.foldr (fun c t => mkCon 1 [mkCon 0 [.nat c.toNat], t]) (mkCon 0 [])]
 
-/-- (11r) The range of syntax the user wrote, as two hidden trailing fields of its
+/-- (11w) The range of syntax the user wrote, as two hidden trailing fields of its
 constructor value (`start`, `stop`). Wiz code never reads them (its `SyntaxF` has no such
 fields), so they survive exactly as long as a macro or tactic hands back the very value
 it was given (`exact $t` passes the user's `t` through), and are gone from anything it
@@ -76,7 +76,7 @@ where
   --| sorry
   --sol>
 
-/-- (11r) Give a decoded syntax tree the ranges its value carries (`rangeFields`): the
+/-- (11w) Give a decoded syntax tree the ranges its value carries (`rangeFields`): the
 user's syntax that a macro or tactic passed through gets its own ranges back, and
 everything else gets `fallback` (the call's range, synthetic). `s` is `decodeSyntax`'s
 result for `v`, so the two have the same shape. -/
@@ -127,7 +127,7 @@ partial def runMacroTac (code : Code) (env : MacroEnv) (what : String) (info : S
   let str (r : RVal) := (r.toString?).getD ""
   match v.tag? with
   | some 1 => -- result
-    -- (11q, 11r) the macro's output: synthetic at the call's range, except what it passed through
+    -- (11q, 11w) the macro's output: synthetic at the call's range, except what it passed through
     match decodeLocated info (v.conField 0) with
     | some out => (traces, pure (scopeQuoted scope out, next))
     | none => (traces, throw s!"{what} returned a malformed syntax tree")

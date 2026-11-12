@@ -1,8 +1,12 @@
 [
-  {"name": "selfhost", "split": 4, "heavy": true, "select": [
+  {"name": "selfhost", "split": 4, "heavy": true,
+   "inputs": ["selfhost/*", "lib/Prelude.wiz", "lib/IO.wiz", "lib/Std.wiz"],
+   "select": [
     "=selfhost"
   ]},
-  {"name": "grail-selfhost", "heavy": true, "select": [
+  {"name": "grail-selfhost", "heavy": true,
+   "inputs": ["selfhost/*", "lib/Prelude.wiz", "lib/IO.wiz", "lib/Std.wiz", "lib/Grail.wiz"],
+   "select": [
     "=grail-selfhost"
   ]},
   {"name": "backends", "select": [
@@ -53,7 +57,10 @@
     "vec",
     "word"
   ]},
-  {"name": "core", "select": [
+  {"name": "core",
+   "inputs": ["selfhost/Kernel.wiz", "examples/*", "lib/Prelude.wiz", "lib/IO.wiz", "lib/Std.wiz",
+              "lib/Eff.wiz", "lib/BitVec.wiz", "lib/Logic.wiz", "lib/Hdl/*"],
+   "select": [
     "check",
     "conv",
     "copatterns",

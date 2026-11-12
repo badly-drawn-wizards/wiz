@@ -146,7 +146,7 @@ structure CommandState (R : Type) where
   localCats : List Name := []
   localRules : List Nat := []
   localProcs : List Nat := []
-  /-- (11r) `local instance`s: their positions in `instances` (numbered from the oldest) -/
+  /-- (11w) `local instance`s: their positions in `instances` (numbered from the oldest) -/
   localInsts : List Nat := []
 
   /-- (11r) unexpanders declared with `app_unexpander c` and `attribute [app_unexpander c] f`,
@@ -215,6 +215,9 @@ def privacyCheck (g : Globals R) (d : Decl R) (kind : Globals R → Decl R → T
 /-- `addDecl` with the sorts of the elaborator's `Π`/`Σ` filled in first (`Sorts`), and then
 the privacy check. -/
 def addDeclSorted (g : Globals R) (d : Decl R) : TCM (Globals R) := do
+  -- the kernel's own check is against the full environment: never the elaborator's view,
+  -- whose `hidden` definitions (13b) `conv` would consult
+  unless g.hidden.isEmpty do throw (.other s!"internal error: {d.name} checked against the elaborator's view")
   let d := d.withSorts g
   let g' ← addDecl g d
   privacyCheck g d
@@ -1130,7 +1133,7 @@ def CommandState.endModule (inner outer : CommandState R) : CommandState R :=
                             localRules := outer.localRules, localProcs := outer.localProcs,
                             localInsts := outer.localInsts, localPP := outer.localPP,
                             globals := { inner.globals with pp := { inner.globals.pp with useNotation := outer.globals.pp.useNotation } } }
-  -- (11r) a `local instance` is found only in its module (its definition stays: a name)
+  -- (11w) a `local instance` is found only in its module (its definition stays: a name)
   let reset := if insts.isEmpty then reset else
     { reset with instances := (reset.instances.zipIdx.filter fun (_, i) => !insts.contains i).map (·.1) }
   if kinds.isEmpty && cats.isEmpty && rules.isEmpty && procs.isEmpty && pps.isEmpty then reset else
@@ -1406,7 +1409,9 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
             return
           | .error e => report .error e.info e.msg; return
         let pd := Decl.withSorts g { name, levelParams, type := ty, value := none, witness := some w }
-        match (do let g' ← addPartialDecl g pd; privacyCheck g pd addPartialDecl; pure g' : TCM (Globals R)) with
+        match (do
+            unless g.hidden.isEmpty do throw (.other s!"internal error: {pd.name} checked against the elaborator's view")
+            let g' ← addPartialDecl g pd; privacyCheck g pd addPartialDecl; pure g' : TCM (Globals R)) with
         | .ok g' => g := g'
         | .error e => report .error (d.getArg 1).info s!"kernel rejected {name}: {e}"; return
         sigs := sigs.push (d, name, levelParams)

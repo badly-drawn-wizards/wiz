@@ -66,7 +66,7 @@ END
 head -4 "$TMP/e2e.txt" > "$TMP/e2e.cut"
 check "end to end: wiz lsp --infoview, the goals after intro x" "$TMP/e2e.exp" "$TMP/e2e.cut"
 
-# (11r) a notation: its syntax, expansion and instance, and the command's declaration
+# (11w) a notation: its syntax, expansion and instance, and the command's declaration
 cat > "$TMP/n.wiz" <<'END'
 import Prelude
 def three : Nat := 1 + 2
