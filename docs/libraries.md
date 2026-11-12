@@ -312,13 +312,17 @@ faster (an allocation per node in its random-access list).
 meta-level work is done once, and the netlist is hash-consed), and the netlist is turned
 once into a flat program (a constructor per node with exactly its operands, constants
 written once, input ports and register outputs as slots) that runs over native arrays
-updated in place (`Array`, lib/Std.wiz).
+updated in place (`Array`, lib/Std.wiz). Memories (`NetMem`, H14 C3) are one flat native array (each
+memory's words from its base) plus a trie for addresses beyond a memory's range (as raw
+port values can give); `memRead` nodes read it during the cycle and the writes are applied
+at the clock edge in order (a later write wins), exactly as `Netlist.simulate` does (a read
+in the same cycle sees the old contents; the netlist's bypass nodes give the new word).
 
 * `Netlist.simFast n xs` computes exactly what `Netlist.simulate n xs` computes (the same
   formulas on the same numbers, node by node) for every well-formed netlist
   (`Netlist.wellFormed`: arguments refer to earlier nodes, register reads to registers,
-  register inputs and outputs to nodes, and no memories, H14 C3; every netlist without
-  memories that `Circuit.netlist` builds), and is `Netlist.simulate` on any other.
+  register inputs and outputs to nodes; every netlist `Circuit.netlist` builds), and is
+  `Netlist.simulate` on any other.
 * `Circuit.simFast c xs` = `Circuit.runLeaves c xs`, `Design.simFast d xs` =
   `Design.runLeaves d xs`, by the netlist's agreement with the values (which the `hdl`
   group and a design's own check, such as `oled gen`'s, establish).
