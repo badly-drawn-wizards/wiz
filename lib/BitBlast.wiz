@@ -361,10 +361,14 @@ def Bits.ndecomp (n : Nat) : Bits.cons (Nat.isOdd n) (Nat.div n 2) = n :=
   transp (fun t _ => Bits.cons t (Nat.div n 2) = n)
     (transp (fun t _ => Bits.cons (Bits.odd n) t = n) (Bits.decomp n) (Eq.symm (Bits.div2 n)))
     (Eq.symm (Bits.isOdd n))
-def Bits.pos_succ : (m : Nat) → Nat.lt 0 m = .true → m = Nat.succ (Nat.pred m)
+-- (the predecessor, by a `match`: the builtin `Nat.pred` of a stuck number stays glued)
+def Bits.dec : Nat → Nat
+  | .zero => .zero
+  | .succ n => n
+def Bits.pos_succ : (m : Nat) → Nat.lt 0 m = .true → m = Nat.succ (Bits.dec m)
   | .zero, h => absurd h.1
   | .succ _, _ => rfl
-def Bits.sub_one : (x : Nat) → Nat.sub x 1 = Nat.pred x
+def Bits.sub_one : (x : Nat) → Nat.sub x 1 = Bits.dec x
   | .zero => rfl
   | .succ _ => rfl
 -- `div` and `mod` of `m q + r` by `m`, for `r < m`
@@ -415,8 +419,141 @@ def Bits.low_bit : (w n i : Nat) → Nat.lt i w = .true → Bits.bit (Bits.low w
 def Bits.mod_pow (w n : Nat) : Nat.mod n (Nat.pow 2 w) = Bits.low w n :=
   let P := Nat.pow 2 w;
   let e := Bits.pos_succ P (Word.pow_pos w);
-  let r : Nat.mod (Nat.add (Nat.mul (Nat.succ (Nat.pred P)) (Bits.high w n)) (Bits.low w n)) (Nat.succ (Nat.pred P)) = Bits.low w n :=
-    Bits.mod_mq (Nat.pred P) (Bits.high w n) (Bits.low w n) (transp (fun t _ => Nat.lt (Bits.low w n) t = .true) (Bits.low_lt w n) e);
+  let r : Nat.mod (Nat.add (Nat.mul (Nat.succ (Bits.dec P)) (Bits.high w n)) (Bits.low w n)) (Nat.succ (Bits.dec P)) = Bits.low w n :=
+    Bits.mod_mq (Bits.dec P) (Bits.high w n) (Bits.low w n) (transp (fun t _ => Nat.lt (Bits.low w n) t = .true) (Bits.low_lt w n) e);
   let r2 : Nat.mod (Nat.add (Nat.mul P (Bits.high w n)) (Bits.low w n)) P = Bits.low w n :=
     transp (fun t _ => Nat.mod (Nat.add (Nat.mul t (Bits.high w n)) (Bits.low w n)) t = Bits.low w n) r (Eq.symm e);
   transp (fun t _ => Nat.mod t P = Bits.low w n) r2 (Eq.symm (Bits.split w n))
+
+-- ## `ofNat` keeps the low bits
+def Bits.lt_le_pred : (x P : Nat) → Nat.lt x P = .true → Nat.le x (Bits.dec P) = .true
+  | x, .zero, h => absurd (Sat.contra (Nat.lt x 0) h (Bits.ltz x))
+  | _, .succ _, h => h
+def Bits.wofNat_val (w n : Nat) : UIntN.toNat (UIntN.ofNat w n) = Bits.low w n :=
+  Eq.trans (Bits.congr2 Word.min (Bits.mod_pow w n) (Bits.sub_one (Nat.pow 2 w)))
+    (Bits.min_of_le (Bits.low w n) (Bits.dec (Nat.pow 2 w)) (Bits.lt_le_pred (Bits.low w n) (Nat.pow 2 w) (Bits.low_lt w n)))
+def Bits.wofNat_bit (w n i : Nat) (hi : Nat.lt i w = .true) : Bits.bit (UIntN.toNat (UIntN.ofNat w n)) i = Bits.bit n i :=
+  Eq.trans (Bits.congr (fun t => Bits.bit t i) (Bits.wofNat_val w n)) (Bits.low_bit w n i hi)
+
+-- ## Addition: a ripple of carries
+def Bits.maj (a b c : Bool) : Bool := Bool.or (Bool.and a b) (Bool.and c (Bool.or a b))
+def Bits.bv : Bool → Nat
+  | .true => 1
+  | .false => 0
+-- the carry into bit `i` of `a + b + c`
+def Bits.carry : Nat → Bool → Nat → Nat → Bool
+  | .zero, c, _, _ => c
+  | .succ i, c, a, b => Bits.carry i (Bits.maj (Nat.isOdd a) (Nat.isOdd b) c) (Nat.div a 2) (Nat.div b 2)
+def Bits.carry_step : (i : Nat) → (c : Bool) → (a b : Nat) →
+    Bits.carry (Nat.succ i) c a b = Bits.maj (Bits.bit a i) (Bits.bit b i) (Bits.carry i c a b)
+  | .zero, _, _, _ => rfl
+  | .succ i, c, a, b => Bits.carry_step i (Bits.maj (Nat.isOdd a) (Nat.isOdd b) c) (Nat.div a 2) (Nat.div b 2)
+def Bits.sc_fff (ha hb : Nat) : 2 * ha + 2 * hb + 0 = 2 * (ha + hb + 0) := nat_ring! 2 * ha + 2 * hb + 0 = 2 * (ha + hb + 0)
+def Bits.sc_fft (ha hb : Nat) : 2 * ha + 2 * hb + 1 = Nat.succ (2 * (ha + hb + 0)) := nat_ring! 2 * ha + 2 * hb + 1 = Nat.succ (2 * (ha + hb + 0))
+def Bits.sc_ftf (ha hb : Nat) : 2 * ha + Nat.succ (2 * hb) + 0 = Nat.succ (2 * (ha + hb + 0)) := nat_ring! 2 * ha + Nat.succ (2 * hb) + 0 = Nat.succ (2 * (ha + hb + 0))
+def Bits.sc_ftt (ha hb : Nat) : 2 * ha + Nat.succ (2 * hb) + 1 = 2 * (ha + hb + 1) := nat_ring! 2 * ha + Nat.succ (2 * hb) + 1 = 2 * (ha + hb + 1)
+def Bits.sc_tff (ha hb : Nat) : Nat.succ (2 * ha) + 2 * hb + 0 = Nat.succ (2 * (ha + hb + 0)) := nat_ring! Nat.succ (2 * ha) + 2 * hb + 0 = Nat.succ (2 * (ha + hb + 0))
+def Bits.sc_tft (ha hb : Nat) : Nat.succ (2 * ha) + 2 * hb + 1 = 2 * (ha + hb + 1) := nat_ring! Nat.succ (2 * ha) + 2 * hb + 1 = 2 * (ha + hb + 1)
+def Bits.sc_ttf (ha hb : Nat) : Nat.succ (2 * ha) + Nat.succ (2 * hb) + 0 = 2 * (ha + hb + 1) := nat_ring! Nat.succ (2 * ha) + Nat.succ (2 * hb) + 0 = 2 * (ha + hb + 1)
+def Bits.sc_ttt (ha hb : Nat) : Nat.succ (2 * ha) + Nat.succ (2 * hb) + 1 = Nat.succ (2 * (ha + hb + 1)) := nat_ring! Nat.succ (2 * ha) + Nat.succ (2 * hb) + 1 = Nat.succ (2 * (ha + hb + 1))
+def Bits.sum_cons : (ca cb c : Bool) → (ha hb : Nat) →
+    Nat.add (Nat.add (Bits.cons ca ha) (Bits.cons cb hb)) (Bits.bv c) =
+      Bits.cons (Bool.xor (Bool.xor ca cb) c) (Nat.add (Nat.add ha hb) (Bits.bv (Bits.maj ca cb c)))
+  | .false, .false, .false, ha, hb => Bits.sc_fff ha hb
+  | .false, .false, .true, ha, hb => Bits.sc_fft ha hb
+  | .false, .true, .false, ha, hb => Bits.sc_ftf ha hb
+  | .false, .true, .true, ha, hb => Bits.sc_ftt ha hb
+  | .true, .false, .false, ha, hb => Bits.sc_tff ha hb
+  | .true, .false, .true, ha, hb => Bits.sc_tft ha hb
+  | .true, .true, .false, ha, hb => Bits.sc_ttf ha hb
+  | .true, .true, .true, ha, hb => Bits.sc_ttt ha hb
+-- the carry over two numbers in `cons` form
+def Bits.carry_cons (i : Nat) (c ca cb : Bool) (ha hb : Nat) :
+    Bits.carry (Nat.succ i) c (Bits.cons ca ha) (Bits.cons cb hb) = Bits.carry i (Bits.maj ca cb c) ha hb :=
+  Eq.trans (Bits.congr2 (fun x y => Bits.carry i (Bits.maj x y c) (Nat.div (Bits.cons ca ha) 2) (Nat.div (Bits.cons cb hb) 2))
+      (Bits.isOdd_cons ca ha) (Bits.isOdd_cons cb hb))
+    (Bits.congr2 (fun x y => Bits.carry i (Bits.maj ca cb c) x y) (Bits.div_cons ca ha) (Bits.div_cons cb hb))
+def Bits.addStmt (i : Nat) (c : Bool) (a b : Nat) : Prop :=
+  Bits.bit (Nat.add (Nat.add a b) (Bits.bv c)) i = Bool.xor (Bool.xor (Bits.bit a i) (Bits.bit b i)) (Bits.carry i c a b)
+def Bits.add_bit_cons0 (c ca cb : Bool) (ha hb : Nat) : Bits.addStmt 0 c (Bits.cons ca ha) (Bits.cons cb hb) :=
+  Eq.trans (Bits.congr (fun t => Bits.bit t 0) (Bits.sum_cons ca cb c ha hb))
+    (Eq.trans (Bits.bit_cons0 (Bool.xor (Bool.xor ca cb) c) (Nat.add (Nat.add ha hb) (Bits.bv (Bits.maj ca cb c))))
+      (Eq.symm (Bits.congr2 (fun x y => Bool.xor (Bool.xor x y) c) (Bits.bit_cons0 ca ha) (Bits.bit_cons0 cb hb))))
+def Bits.add_bit_consS (i : Nat) (ih : (c : Bool) → (a b : Nat) → Bits.addStmt i c a b) (c ca cb : Bool) (ha hb : Nat) :
+    Bits.addStmt (Nat.succ i) c (Bits.cons ca ha) (Bits.cons cb hb) :=
+  Eq.trans (Bits.congr (fun t => Bits.bit t (Nat.succ i)) (Bits.sum_cons ca cb c ha hb))
+    (Eq.trans (Bits.bit_consS (Bool.xor (Bool.xor ca cb) c) (Nat.add (Nat.add ha hb) (Bits.bv (Bits.maj ca cb c))) i)
+      (Eq.trans (ih (Bits.maj ca cb c) ha hb)
+        (Eq.symm (Bits.congr2 (fun x y => Bool.xor x y)
+          (Bits.congr2 (fun x y => Bool.xor x y) (Bits.bit_consS ca ha i) (Bits.bit_consS cb hb i))
+          (Bits.carry_cons i c ca cb ha hb)))))
+-- (any `a`, `b`: through their `cons` forms)
+def Bits.add_bit_of (i : Nat) (c : Bool) (a b : Nat)
+    (canon : Bits.addStmt i c (Bits.cons (Nat.isOdd a) (Nat.div a 2)) (Bits.cons (Nat.isOdd b) (Nat.div b 2))) : Bits.addStmt i c a b :=
+  Eq.substProp (fun (t : Nat) => Bits.addStmt i c a t) (Bits.ndecomp b)
+    (Eq.substProp (fun (t : Nat) => Bits.addStmt i c t (Bits.cons (Nat.isOdd b) (Nat.div b 2))) (Bits.ndecomp a) canon)
+-- the bits of `a + b + c`
+def Bits.add_bit : (i : Nat) → (c : Bool) → (a b : Nat) → Bits.addStmt i c a b
+  | .zero, c, a, b =>
+    Bits.add_bit_of 0 c a b (Bits.add_bit_cons0 c (Nat.isOdd a) (Nat.isOdd b) (Nat.div a 2) (Nat.div b 2))
+  | .succ i, c, a, b =>
+    Bits.add_bit_of (Nat.succ i) c a b
+      (Bits.add_bit_consS i (fun c' x y => Bits.add_bit i c' x y) c (Nat.isOdd a) (Nat.isOdd b) (Nat.div a 2) (Nat.div b 2))
+def Bits.wadd_bit {ω w : Nat} (x y : UIntN w) (i : Nat) (hi : Nat.lt i w = .true) :
+    Bits.bit (UIntN.toNat (UIntN.add x y)) i =
+      Bool.xor (Bool.xor (Bits.bit (UIntN.toNat x) i) (Bits.bit (UIntN.toNat y) i)) (Bits.carry i .false (UIntN.toNat x) (UIntN.toNat y)) :=
+  Eq.trans (Bits.wofNat_bit w (Nat.add (UIntN.toNat x) (UIntN.toNat y)) i hi)
+    (Eq.trans (Bits.congr (fun t => Bits.bit t i) (Eq.symm (Bits.add_zero (Nat.add (UIntN.toNat x) (UIntN.toNat y)))))
+      (Bits.add_bit i .false (UIntN.toNat x) (UIntN.toNat y)))
+
+-- ## Complement: `2^w - 1 - a` flips the low `w` bits
+def Bits.cc_t (h D : Nat) : Nat.succ (2 * h) + 2 * D = Nat.succ (2 * (h + D)) := nat_ring! Nat.succ (2 * h) + 2 * D = Nat.succ (2 * (h + D))
+def Bits.cc_f (h D : Nat) : 2 * h + Nat.succ (2 * D) = Nat.succ (2 * (h + D)) := nat_ring! 2 * h + Nat.succ (2 * D) = Nat.succ (2 * (h + D))
+def Bits.compl_cons (c : Bool) (h D : Nat) : Nat.add (Bits.cons c h) (Bits.cons (Bool.not c) D) = Nat.succ (Nat.mul 2 (Nat.add h D)) :=
+  match c with
+  | .true => Bits.cc_t h D
+  | .false => Bits.cc_f h D
+-- `pred (2 (E + 1)) - cons c h = cons (not c) (E - h)`, for `h ≤ E`
+def Bits.compl_step (c : Bool) (h E : Nat) (hle : Nat.le h E = .true) :
+    Nat.sub (Bits.dec (Nat.mul 2 (Nat.succ E))) (Bits.cons c h) = Bits.cons (Bool.not c) (Nat.sub E h) :=
+  let D := Nat.sub E h;
+  let eE : Nat.add h D = E := Nat.add_sub_of_le h E hle;
+  -- pred (2 (E + 1)) = succ (2 E) = succ (2 (h + D)) = cons c h + cons (not c) D
+  let e0 : Bits.dec (Nat.mul 2 (Nat.succ E)) = Nat.succ (Nat.mul 2 E) :=
+    @Bits.congr Nat Nat Bits.dec (Nat.mul 2 (Nat.succ E)) (Nat.succ (Nat.succ (Nat.mul 2 E))) (Bits.mul2_succ E);
+  let e2 : Nat.succ (Nat.mul 2 E) = Nat.succ (Nat.mul 2 (Nat.add h D)) :=
+    @Bits.congr Nat Nat (fun t => Nat.succ (Nat.mul 2 t)) E (Nat.add h D) (Eq.symm eE);
+  let e1 : Bits.dec (Nat.mul 2 (Nat.succ E)) = Nat.add (Bits.cons c h) (Bits.cons (Bool.not c) D) :=
+    @Eq.trans Nat (Bits.dec (Nat.mul 2 (Nat.succ E))) (Nat.succ (Nat.mul 2 E)) (Nat.add (Bits.cons c h) (Bits.cons (Bool.not c) D)) e0
+      (@Eq.trans Nat (Nat.succ (Nat.mul 2 E)) (Nat.succ (Nat.mul 2 (Nat.add h D))) (Nat.add (Bits.cons c h) (Bits.cons (Bool.not c) D)) e2
+        (Eq.symm (Bits.compl_cons c h D)));
+  Eq.trans (Bits.congr (fun t => Nat.sub t (Bits.cons c h)) e1) (Nat.add_sub_cancel_left (Bits.cons c h) (Bits.cons (Bool.not c) D))
+def Bits.notStmt (w a i : Nat) : Prop := Bits.bit (Nat.sub (Bits.dec (Nat.pow 2 w)) a) i = Bool.not (Bits.bit a i)
+def Bits.not_bits_at (w : Nat) (ih : (a i : Nat) → Nat.lt a (Nat.pow 2 w) = .true → Nat.lt i w = .true → Bits.notStmt w a i)
+    (c : Bool) (h : Nat) : (i : Nat) → Nat.lt h (Nat.pow 2 w) = .true → Nat.lt i (Nat.succ w) = .true →
+    Bits.bit (Bits.cons (Bool.not c) (Nat.sub (Bits.dec (Nat.pow 2 w)) h)) i = Bool.not (Bits.bit (Bits.cons c h) i)
+  | .zero, _, _ =>
+    Eq.trans (Bits.bit_cons0 (Bool.not c) (Nat.sub (Bits.dec (Nat.pow 2 w)) h)) (Bits.congr Bool.not (Eq.symm (Bits.bit_cons0 c h)))
+  | .succ i, hh, hi =>
+    Eq.trans (Bits.bit_consS (Bool.not c) (Nat.sub (Bits.dec (Nat.pow 2 w)) h) i)
+      (Eq.trans (ih h i hh hi) (Bits.congr Bool.not (Eq.symm (Bits.bit_consS c h i))))
+def Bits.not_bits_cons (w : Nat) (ih : (a i : Nat) → Nat.lt a (Nat.pow 2 w) = .true → Nat.lt i w = .true → Bits.notStmt w a i)
+    (c : Bool) (h i : Nat) (hh : Nat.lt h (Nat.pow 2 w) = .true) (hi : Nat.lt i (Nat.succ w) = .true) :
+    Bits.notStmt (Nat.succ w) (Bits.cons c h) i :=
+  let P := Nat.pow 2 w;
+  let eP := Bits.pos_succ P (Word.pow_pos w);
+  -- `pred (2 P) - cons c h = cons (not c) (pred P - h)`
+  let step : Nat.sub (Bits.dec (Nat.mul 2 P)) (Bits.cons c h) = Bits.cons (Bool.not c) (Nat.sub (Bits.dec P) h) :=
+    Eq.substProp (fun (t : Nat) => Nat.sub (Bits.dec (Nat.mul 2 t)) (Bits.cons c h) = Bits.cons (Bool.not c) (Nat.sub (Bits.dec t) h))
+      (Eq.symm eP)
+      (Bits.compl_step c h (Bits.dec P) (Bits.lt_le_pred h P hh));
+  Eq.trans (Bits.congr (fun t => Bits.bit t i) step) (Bits.not_bits_at w ih c h i hh hi)
+-- **the complement's bits**: for `a < 2^w` and `i < w`
+def Bits.not_bits : (w a i : Nat) → Nat.lt a (Nat.pow 2 w) = .true → Nat.lt i w = .true → Bits.notStmt w a i
+  | .zero, _, i, _, hi => absurd (Sat.contra (Nat.lt i 0) hi (Bits.ltz i))
+  | .succ w, a, i, ha, hi =>
+    let h := Nat.div a 2;
+    let hh : Nat.lt h (Nat.pow 2 w) = .true :=
+      transp (fun t _ => Nat.lt t (Nat.pow 2 w) = .true) (Bits.half_lt a (Nat.pow 2 w) ha) (Eq.symm (Bits.div2 a));
+    Eq.substProp (fun (t : Nat) => Bits.notStmt (Nat.succ w) t i) (Bits.ndecomp a)
+      (Bits.not_bits_cons w (fun a' i' ha' hi' => Bits.not_bits w a' i' ha' hi') (Nat.isOdd a) h i hh hi)
