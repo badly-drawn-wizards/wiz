@@ -4949,6 +4949,18 @@ def languageGroup : Group where
           "def uOkD (ty v : Tm) : String := match checkDecl ty (.some (markClosed v ty)) with\n  | .ok _ _ => \"ok\"\n  | .err _ => \"error\"\n" ++
           "def main : IO Unit := do\n  IO.println (uOkD uQTy uQV);\n  IO.println (uOkD uRelTy (.lam (.var 0)))\n"
         ioRun (kernel ++ "\n" ++ main) "ok\nerror\n" },
+    -- (prf-review L1) a binder whose type is a proposition takes any usage: a linear proof
+    -- can be used once, never or twice, and a linear pair with a proof field taken apart
+    { name := "a binder whose type is a proposition takes any usage (L1, both kernels)", run := fun _ => do
+        okLib ("import Prelude\ndef lh (1 h : True) : True := h\n" ++
+          "def sp {A : Type} {P : A → Prop} (1 p : (1 x : A) × P x) : A := let 1 (a, h) := p; a\n" ++
+          "def twice (1 h : True) : True × True := (h, h)")
+        failsLib "import Prelude\ndef drop (1 n : Nat) : Nat := 0" "quantity 1 but used 0"
+        let kernel ← IO.FS.readFile "selfhost/Kernel.wiz"
+        let main := "def lOk (ty v : Tm) : String := match checkDecl ty (.some (markClosed v ty)) with\n  | .ok _ _ => \"ok\"\n  | .err _ => \"error\"\n" ++
+          "def main : IO Unit := do\n  IO.println (lOk (.piq .qo .ptrue .ptrue) (.lam (.var 0)));\n" ++
+          "  IO.println (lOk (.piq .qo (.unit 0) (.unit 0)) (.lam .star))\n"
+        ioRun (kernel ++ "\n" ++ main) "ok\nerror\n" },
     -- a proof that uses a 0-variable is erased by compilation: the cast along it computes on
     -- the types, and its `implemented_by` (a proof too) never runs
     { name := "a proof that uses a 0-variable is erased when compiled (cast along it, implemented_by on it)", run := fun _ =>

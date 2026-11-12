@@ -306,7 +306,10 @@ The judgments output usage vectors with these operations [std: Atkey18; McBride1
   is a rule of `check` and `infer` (both kernels): a term whose type is a proposition (its
   sort computed and `0`) is checked in an erased position and its usage is `0`, at every
   level of the proof. So a variable at `0` may appear in a proof, and a linear one must
-  still be used in relevant code. (Proofs are erased by compilation and never run.)
+  still be used in relevant code. (Proofs are erased by compilation and never run.) For
+  the same reason a **binder whose type is a proposition takes any usage** (`popUsageAt`):
+  a linear proof may be used once, never or twice, and `let 1 (a, h) := p` at
+  `(1 x : A) × P x` is fine.
 * **branches** of an `ecase` combine by the **join** `⊔` (least upper bound in `≤`) of
   their usages (`QPoly.join?`, `QPoly.lean:105`); `0 ⊔ 1 = ω` in `{0,1,ω}`, and if
   there is no join the case is rejected [wiz: Atkey's QTT has no case analysis on

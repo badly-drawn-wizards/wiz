@@ -418,6 +418,17 @@ def Ctx.sortOf (ctx : Ctx R) (ty : VTy R) : TCM Level :=
 usage rule "a proof uses nothing")? -/
 def Ctx.isPropTy (ctx : Ctx R) (ty : VTy R) : Bool := (ctx.sortOf? ty).any (·.isZero)
 
+/-- Leave a binder of quantity `q` and type `ty`: as `popUsage`, except that a binder
+whose type is a proposition takes any usage. Its variable is a proof, erased and never
+run (CoreSpec §6), so a linear proof that is used zero times or several times consumes
+nothing (prf-review L1: `(1 h : True) → True`, `let 1 (a, h) := p` at `(1 x : A) × P x`). -/
+def Ctx.popUsageAt (ctx : Ctx R) (x : Name) (q : QPoly R) (ty : VTy R) (u : Usage R) : TCM (Usage R) :=
+  if ctx.isPropTy ty then
+    match u with
+    | _ :: rest => pure rest
+    | [] => throw (.other "internal error: usage vector underflow")
+  else popUsage x q u
+
 /-- Is this type a proposition (its sort is computed, and is `0`)? -/
 def Ctx.isProofTy (ctx : Ctx R) (ty : VTy R) : Bool :=
   ctx.globals.lazyProofs && (ctx.sortOf? ty).any (·.isZero)
@@ -518,14 +529,14 @@ partial def checkCore (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM (Usage R) :=
   | .lam x body, .pi _ _ q dom cod _ => do
     let q ← qtyPoly ctx q
     let u ← check (ctx.bind x q dom) body (Closure.inst ctx.globals cod (Val.var ctx.lvl))
-    popUsage x q u
+    ctx.popUsageAt x q dom u
   | .letE x q tty val body, _ => do
     let q ← checkQty ctx q
     let _ ← checkType ctx tty
     let vty := ctx.eval tty
     let uv ← check (ctx.erasedAt q) val vty
     let ub ← check (ctx.define x q vty (ctx.evalAt val vty)) body ty
-    let ub ← popUsage x q ub
+    let ub ← ctx.popUsageAt x q vty ub
     pure (q • uv + ub)
   | .pair a b, .sigma _ q A B _ => do
     let q ← qtyPoly ctx q
@@ -691,12 +702,12 @@ partial def inferCore (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
       -- evaluated, and its value with it: the value is then checked as in relevant mode
       let (bty, ub) ← infer (ctx.define x q vty (suspend ctx.globals ctx.env val)) body
       let uv ← check ((if ctx.isProofTy bty then ctx else { ctx with proof := false }).erasedAt q) val vty
-      let ub ← popUsage x q ub
+      let ub ← ctx.popUsageAt x q vty ub
       pure (bty, q • uv + ub)
     else
     let uv ← check (ctx.erasedAt q) val vty
     let (bty, ub) ← infer (ctx.define x q vty (ctx.eval val)) body
-    let ub ← popUsage x q ub
+    let ub ← ctx.popUsageAt x q vty ub
     pure (bty, q • uv + ub)
   | .ann tm tty => do
     let _ ← checkType ctx tty
@@ -747,8 +758,8 @@ partial def inferCore (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
       let vy : Val R := Val.var (ctx.lvl + 1)
       let ctx₂ := (ctx.bind x (q * p) A).bind y q (Closure.inst ctx.globals B vx)
       let ub ← check ctx₂ b (Closure.inst ctx.globals mc (.pair vx vy))
-      let ub ← popUsage y q ub
-      let ub ← popUsage x (q * p) ub
+      let ub ← (ctx.bind x (q * p) A).popUsageAt y q (Closure.inst ctx.globals B vx) ub
+      let ub ← ctx.popUsageAt x (q * p) A ub
       pure (Closure.inst ctx.globals mc (ctx.evalAt s sty), q • us + ub)
     | _ => throw (.other s!"not a pair: {ctx.showTerm s}\n  has type: {ctx.showVal sty}")
   | .unit l => pure (.sort l, Usage.zeros ctx.lvl)
