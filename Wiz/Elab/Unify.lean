@@ -233,7 +233,21 @@ partial def rename (m : Nat) (p : PRen) (v : Val R) : ElabM R (Term R) := do
   | .neutral (.prf _ _ _ pv) sp => do rename m p (vElims (← getGlobals) pv.get sp)
   | .neutral (.mvar m') sp =>
     if m == m' then throwAt {} s!"occurs check: ?m{m} would have to contain itself"
-    else goSp (.mvar m') sp
+    else
+      -- **pruning**: another hole applied to distinct variables, some of them out of the
+      -- solution's scope (`?A n x` in a `match` branch, solving `?T n`): it can't depend
+      -- on those, so it becomes a new hole over the others
+      match ← pruneArgs? p sp with
+      | some keep =>
+        let m'' := (← get).metas.size
+        let info := (← lookupMeta m').info
+        modify fun s => { s with metas := s.metas.push { info, desc := "a pruned hole", arity := keep.size } }
+        let n := sp.size
+        let body : Term R := keep.foldl (fun t i => .app t (.var (n - i - 1))) (.mvar m'')
+        let sol := (List.range n).foldl (fun t i => Term.lam s!"x{n - i - 1}" t) body
+        solveMeta m' (eval (← getGlobals) [] sol)
+        goSp (.mvar m'') (keep.filterMap fun i => sp[i]?)
+      | none => goSp (.mvar m') sp
   | .sort l => pure (.sort l)
   | .pi x bi q a b s =>
     return .pi x bi (← rename m p q) (← rename m p a) (← rename m p.lift (← instM b (Val.var p.cod))) s
@@ -271,6 +285,20 @@ partial def rename (m : Nat) (p : PRen) (v : Val R) : ElabM R (Term R) := do
   | .coit l I D S st i s =>
     return .coit l (← rename m p I) (← rename m p D) (← rename m p S) (← rename m p st) (← rename m p i) (← rename m p s)
 where
+  /-- For a spine of distinct variables of which some are out of `p`'s scope: the
+  positions of those in scope. `none` if nothing is to be pruned (or it isn't such a
+  spine). -/
+  pruneArgs? (p : PRen) (sp : Array (Elim R)) : ElabM R (Option (Array Nat)) := do
+    let mut keep : Array Nat := #[]
+    let mut seen : Std.HashSet Lvl := {}
+    for e in sp, i in [0:sp.size] do
+      let .app a := e | return none
+      let .neutral (.local x) #[] ← force a | return none
+      if seen.contains x then return none
+      seen := seen.insert x
+      if p.ren.contains x || p.downs.contains x then keep := keep.push i
+    if keep.size == sp.size then return none
+    return some keep
   renameHint : Option (Name × List Level × List (Val R)) → ElabM R (Option (Name × List Level × List (Term R)))
     | some (n, us, as) => return some (n, us, ← as.mapM (rename m p))
     | none => pure none

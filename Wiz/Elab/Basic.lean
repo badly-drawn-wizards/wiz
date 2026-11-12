@@ -199,6 +199,10 @@ structure ElabState (R : Type) where
   levelMetas : Array (Option Level) := #[]
   /-- the universe level parameters of the declaration being elaborated -/
   levelParams : List Name := []
+  /-- the definition `def f … := …` whose body is being elaborated: `f` is not a global
+  yet, and a recursive call needs equations (an error that says so, not "unknown
+  identifier") -/
+  defining : Option Name := none
   /-- "the solution of this hole has type `Sort l`". Metas are untyped, so these are
   checked after elaboration to solve level metavariables (see `solveSortConstraints`). -/
   sortConstraints : Array (LocalCtx R × Term R × Level) := #[]
@@ -446,8 +450,9 @@ def instLevel (l : Level) : ElabM R Level := do
 
 def showTerm (ctx : LocalCtx R) (t : Term R) : String := elideLong (t.pretty ctx.names)
 
-def showVal (ctx : LocalCtx R) (v : Val R) : ElabM R String :=
-  return elideLong ((quote (← getGlobals) ctx.lvl v).pretty ctx.names)
+def showVal (ctx : LocalCtx R) (v : Val R) : ElabM R String := do
+  let g ← getGlobals
+  return elideLong ((quote g ctx.lvl v).pretty ctx.names (some g))
 
 /-- Run `x` with the unification heuristics `a` (`Approx`); the previous setting comes
 back afterwards (on failure too: `ElabM` drops a failed computation's state). -/
