@@ -3855,6 +3855,37 @@ def selfhostCompileRun (file expected : String) (flags : Array String := #[]) (p
     unless run.exitCode == 0 do throw (IO.userError s!"the program failed ({run.exitCode}): {run.stderr}")
     checkEq expected run.stdout
 
+/-- (15j) Reads of a wide structure's fields for the self-hosted backend: every field
+(`sumW`), the root consumed before the last read through a prefix (`early`), the root's
+cell reused by a rebuild while fields read through the prefix are live (`upd`), reads in
+branches and after them (`br`); prints `21 17 43 22 23`. -/
+def selfhostProjShare : String :=
+  "import Prelude\nstructure W where\n  a : Nat\n  b : Nat\n  c : Nat\n  d : Nat\n  e : Nat\n  f : Nat\n" ++
+  "def mkW (n : Nat) : W := W.mk n (n + 1) (n + 2) (n + 3) (n + 4) (n + 5)\n" ++
+  "def sumW (w : W) : Nat := match w with\n  | .mk a b c d e f => a + b + c + d + e + f\n" ++
+  "def keepW (w : W) : List W := .cons w .nil\n" ++
+  "def lenL : List W → Nat\n  | .nil => 0\n  | .cons _ r => lenL r + 1\n" ++
+  "def early (w : W) : Nat := match w with\n  | .mk _ b _ _ e f => b + lenL (keepW w) + e + f\n" ++
+  "def upd (w : W) : W := match w with\n  | .mk _ b c d e f => W.mk (d + e) b c d e f\n" ++
+  "def br (w : W) (k : Nat) : Nat := match w with\n  | .mk _ _ c d e f => (match k with\n    | .zero => d\n    | .succ _ => e) + f + c\n" ++
+  "def main : IO Unit := do\n  IO.println (Nat.toString (sumW (mkW 1)));\n  IO.println (Nat.toString (early (mkW 2)));\n" ++
+  "  IO.println (Nat.toString (sumW (upd (mkW 3))));\n  IO.println (Nat.toString (br (mkW 4) 0));\n  IO.println (Nat.toString (br (mkW 4) 5))\n"
+
+/-- (15j) The C the self-hosted compiler prints for a program (`none`: no toolchain). -/
+def selfhostC (file : String) (flags : Array String := #[]) : IO (Option String) := do
+  match ← selfhostCompiler with
+  | .error e =>
+    if (e.splitOn "gmp.h").length > 1 then
+      skip "no toolchain"
+      return none
+    else throw (IO.userError e)
+  | .ok exe =>
+    let dir ← IO.FS.createTempDir
+    IO.FS.writeFile (dir / "input.wiz") file
+    let out ← IO.Process.output { cmd := "timeout", args := #["300", exe.toString] ++ flags, cwd := dir }
+    unless out.exitCode == 0 do throw (IO.userError s!"the compiler failed ({out.exitCode}): {out.stderr}")
+    return some out.stdout
+
 /-- The self-hosted compiler rejects a program: exit code 1, the errors on standard
 error, and no C (15g). -/
 def selfhostCompileFails (file : String) (errors : String) : IO Unit := do
@@ -4695,6 +4726,16 @@ def selfHostGroup : Group where
           "width : (x0 : Nat) → (x1 : (UIntN x0)) → Nat\nu8 : (UIntN (Nat.succ (Nat.succ (Nat.succ (Nat.succ (Nat.succ (Nat.succ (Nat.succ (Nat.succ Nat.zero)))))))))\n" ++
           "con((#1, (tt, tt)))\ncon((#1, (tt, tt)))\nN.toNat : (x0 :0 Nat) → (x1 : (N x0)) → Nat\ncon((#1, (tt, tt)))\n" ++
           "error: a parameter that no constructor mentions (a phantom parameter) of an indexed family is not supported by the self-hosted frontend\n") },
+    { name := "the self-hosted backend: shared projection prefixes, with the collector and with reference counting (15j)", run := fun _ => do
+        selfhostCompileRun selfhostProjShare "21\n17\n43\n22\n23\n"
+        selfhostCompileRun selfhostProjShare "21\n17\n43\n22\n23\n" (flags := #["--rc"])
+        -- (the prefixes of `sumW`'s parameter are locals, read once each)
+        for flags in [#[], #["--rc"]] do
+          if let some c ← selfhostC selfhostProjShare flags then
+            let fn := (((c.splitOn "V d_sumW(V p0) {").getD 1 "").takeWhile (· != '\n')).toString
+            -- (`p0.2` read once, into `qp0_1`)
+            check ((fn.splitOn "fld(p0, 1)").length == 2 && (fn.splitOn "V qp0_1 = ").length == 2)
+              s!"no shared prefixes ({flags}):\n{fn.take 2000}" },
     { name := "the self-hosted backend: phantom parameters are erased (21i)", run := fun _ =>
         selfhostCompileRun ("import Prelude\ninductive Box (w : Nat) where\n  | mk (n : Nat)\nstructure Pt (w : Nat) where\n  x : Nat\n  y : Nat\n" ++
           "def get {w : Nat} : Box w → Nat\n  | .mk n => n\ndef sum {w : Nat} (p : Pt w) : Nat := p.x + p.y\n" ++
@@ -6104,6 +6145,47 @@ def cRunIO (src : String) (expected : String) (llvm : Bool := false) : IO Unit :
     let missing := ["gmp.h", "llc:", "No such file"].any fun m => (e.splitOn m).length > 1
     if missing then skip "no toolchain" else throw (IO.userError e)
 
+/-- Reads of a wide structure's fields through shared projection prefixes (15j), where
+reference counting could go wrong: the root consumed (`keepW`) before the last read
+through a prefix (`early`), the root's cell reused by an update while fields read through
+the prefix are still to be used (`upd`), reads before and after a join point (`joinW`),
+and fields of codata between observations, which overwrite lazy cells (`obs`). -/
+def projShareSrc : String := "import Prelude\n" ++
+  "structure W where\n" ++
+  "  a : Nat\n" ++
+  "  b : Nat\n" ++
+  "  c : Nat\n" ++
+  "  d : Nat\n" ++
+  "  e : Nat\n" ++
+  "  f : Nat\n" ++
+  "def mkW (n : Nat) : W := W.mk n (n + 1) (n + 2) (n + 3) (n + 4) (n + 5)\n" ++
+  "def sumW (w : W) : Nat := w.a + w.b + w.c + w.d + w.e + w.f\n" ++
+  "def keepW (w : W) : List W := .cons w .nil\n" ++
+  "def lenL {A : Type} : List A → Nat\n" ++
+  "  | .nil => 0\n" ++
+  "  | .cons _ r => lenL r + 1\n" ++
+  "-- the root's last direct use (consumed) before the shared prefix's last use\n" ++
+  "def early (w : W) : Nat := w.b + lenL (keepW w) + w.e + w.f\n" ++
+  "-- an in-place update of the root's cell while a field read through the prefix is live\n" ++
+  "def upd (w : W) : W × Nat := ({ w with c := w.d + w.e }, w.f)\n" ++
+  "-- branches, then a join point after them\n" ++
+  "def joinW (w : W) (k : Nat) : Nat := (match k with\n" ++
+  "  | .zero => w.d\n" ++
+  "  | .succ _ => w.e) + w.f + w.c\n" ++
+  "coinductive Str where\n" ++
+  "  hd : W\n" ++
+  "  tl : Str\n" ++
+  "def from (n : Nat) : Str\n" ++
+  "  | .hd => mkW n\n" ++
+  "  | .tl => from (n + 10)\n" ++
+  "-- observing a lazy cell (lazySet) between reads of its fields\n" ++
+  "def obs (s : Str) : Nat := s.hd.e + s.tl.hd.f + s.hd.f + s.tl.tl.hd.b\n" ++
+  "def main : List Nat := .cons (sumW (mkW 1)) (.cons (early (mkW 2)) (.cons (sumW (upd (mkW 3)).1) (.cons (upd (mkW 3)).2\n" ++
+  "  (.cons (joinW (mkW 4) 0) (.cons (joinW (mkW 4) 5) (.cons (obs (from 0)) .nil))))))\n" ++
+  ""
+
+def projShareExpected : String := ".cons 21 (.cons 17 (.cons 41 (.cons 8 (.cons 22 (.cons 23 (.cons 45 .nil))))))"
+
 /-- Programs for the native backends (C, or LLVM). -/
 def nativeCases (llvm : Bool) : List Case :=
 [
@@ -6157,6 +6239,10 @@ def nativeCases (llvm : Bool) : List Case :=
         cRun (llvm := llvm) bigLitSrc bigLitExpected },
     { name := "Bool.and/Bool.or don't compute an argument they don't need: one that never returns, 10M steps on a 1 MB stack at -O0 (15h)", run := fun _ =>
         cRunSmallStack (llvm := llvm) caseShapeSrc caseShapeExpected },
+    { name := "shared projection prefixes: a root consumed before the last read through its prefix, an in-place update, a join point, codata (15j)", run := fun _ => do
+        -- (the IR interpreter checks every reference: no use after free, no leak)
+        unless llvm do okLib (projShareSrc ++ "#run main") [projShareExpected]
+        cRun (llvm := llvm) projShareSrc projShareExpected },
     { name := "memoised suspensions (memo)", run := fun _ =>
         cRun (llvm := llvm) ("import Prelude\ndef twice (t : Unit → Nat) : Nat := t () + t ()\n" ++
           "def lazyAdd (m n : Nat) : Unit → Nat := memo (fun _ => m + n)\n" ++
