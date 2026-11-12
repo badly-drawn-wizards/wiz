@@ -205,6 +205,16 @@ result (`Prog.handBack_ok`, `Prog.handBack2_ok`, for `xapp`). How it fits with r
 optics and quantities: [Resources in Wiz](resources.md); the example is
 `examples/resources.wiz`.
 
+`lib/Ref.wiz` puts mutable cells in `IO` under linear points-to tokens (plan CS7b). A
+location `l : Loc V` is an ordinary value. Owning the cell is a separate token `Pts l v`
+at quantity 1, so one owner per cell, no leak, no double free and no use after free are
+all type errors. The token's ghost index is the cell's value, so a function's type is its
+Hoare triple: `swap : (1 tp : Pts p a) → (1 tq : Pts q b) → (1 k : (1 tp : Pts p b) →
+(1 tq : Pts q a) → IO B) → IO B`. `Ref.get` hands back the value with an erased proof
+that it is the index. The trusted part is the four natives `wiz_ref_*` (runtime/wiz.c,
+over MVar cells) and their types, kept true by an invariant the API maintains; the header
+of lib/Ref.wiz has the argument. Compiled code only.
+
 ## Functors and Booleans
 
 `lib/Functor.wiz` (`import Functor`): `Functor`, `Applicative`, `<$>`, `<*>`; every `Monad`

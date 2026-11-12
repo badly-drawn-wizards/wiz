@@ -244,7 +244,7 @@ jobs:
 
   # The Nix package (flake.nix: wiz and grail, wrapped with the toolchain), pushed to
   # Cachix when the token is there (pushes, and pull requests from this repository), so
-  # that `nix run github:badly-drawn-wizards/wiz` downloads it. It is a pure Nix build
+  # that `nix run github:wiz-pl/wiz` downloads it. It is a pure Nix build
   # without Lake's artifact cache, so it rebuilds every module when a .lean file changes;
   # the tests keep using Lake (incremental) and don't wait for it.
   package:
@@ -274,6 +274,42 @@ jobs:
           nix run "$GITHUB_WORKSPACE#wiz" -- build io.wiz -o io
           ./io | head -3
           nix run "$GITHUB_WORKSPACE#grail" -- 2>&1 | head -2
+
+  # (11s) The standard library's documentation (`wiz doc`, scroll), with the Wasm module
+  # that makes its signatures interactive, as the artifact `wiz-docs`: on master only (a
+  # push), kept 3 days (artifact storage). Not a required check (not in `result`);
+  # publishing it to GitHub Pages is a proposal (docs/stages/11-tooling.md, 11s).
+  docs:
+    name: docs (wiz doc --lib)
+    needs: build
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup
+        with:
+          cachix-name: ${{ env.CACHIX_NAME }}
+          cachix-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      - name: Restore the Lake build
+        uses: actions/cache/restore@v4
+        with:
+          path: .lake
+          key: lake-${{ runner.os }}${{ runner.arch != 'X64' && format('-{0}', runner.arch) || '' }}-${{ needs.build.outputs.lake-hash }}
+      - name: The Wasm module (web/build.sh)
+        run: |
+          lake build wiz
+          sh web/build.sh web/out
+      - name: wiz doc --lib
+        run: |
+          .lake/build/bin/wiz doc --lib -o doc-site --web web/out \
+            --source-url "https://github.com/${{ github.repository }}/blob/${{ github.sha }}/lib/"
+          ls doc-site | head -50
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wiz-docs
+          path: doc-site
+          retention-days: 3
 
   # One check for branch protection, and the whole suite's summary.
   result:

@@ -13,7 +13,7 @@ holds one tree with the solutions in it; the exercise tree is generated from it 
   your own from a checkout:
 
   ```sh
-  git clone https://github.com/badly-drawn-wizards/wiz && cd wiz
+  git clone https://github.com/wiz-pl/wiz && cd wiz
   scripts/mkexercises.py . ../wiz-exercises   # a new or empty directory
   cd ../wiz-exercises && git init && git add -A && git commit -qm "Exercises"
   nix develop -c lake build                   # then work through `lake test`
