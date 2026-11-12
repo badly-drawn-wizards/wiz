@@ -655,7 +655,13 @@ def group : Group where
           "def s0t (s : S0) : Type := match s with\n  | .mk n m => Nat\n" ++
           "#eval s0mt (S0.mk 3 4)\n") ["4"]
         -- used at runtime it is an error (not a projection at ω behind the user's back)
-        failsLib (hdr ++ "def bad (s : S0) : Nat := match s with\n  | .mk n m => n\n") "n" }
+        failsLib (hdr ++ "def bad (s : S0) : Nat := match s with\n  | .mk n m => n\n") "n" },
+    { name := "#261: refl is a contextual keyword: a constructor may be called refl", run := fun _ =>
+        okLib ("import Prelude\ninductive R : Nat → Type where\n  | refl (n : Nat) : R n\n" ++
+          "def r : R 3 := R.refl 3\ndef r2 : R 4 := .refl 4\n" ++
+          "def f : R 3 → Nat\n  | .refl n => n\n" ++
+          "def e : f r = 3 := refl 3\ndef refl2 (n : Nat) : n = n := refl n\n#eval f r") ["3"] }
+
   ]
 
 /-- This module's test groups, which `Tests/Main.lean` runs: one per line, in sorted
