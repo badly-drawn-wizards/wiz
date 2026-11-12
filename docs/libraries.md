@@ -95,7 +95,11 @@ def top : Circuit In.code Out.code := Circuit.bundled Tx.bundle In.bundle Out.bu
   and unique. `Hw` gained `const`, `tag`/`untag`, `label`, `resetTo`, `hold`.
 * **Bundles.** A structure parameterised by `r : HwTy → Type` with fields `r T` or nested
   bundles; `deriving Bundle` defines its code (a product of `named` fields) and the
-  conversions. A bundle is a *value* (`S.bundle`), not an instance: structures are
+  conversions. The code's tails are definitions too (`S.code := HwTy.prod (named "f₀" T₀)
+  S.code.tail1`, …), `pack` ascribes each rest its tail's name and `unpack` walks the
+  product with one `let` per field, so the code of both is linear in the number of fields
+  (it was quadratic and cubic). (Reading field k of a structure is still k projections in
+  the IR, so `pack` of a wide bundle has a quadratic number of projections.) A bundle is a *value* (`S.bundle`), not an instance: structures are
   structural types, so two structures with the same field types are one type and
   instance resolution could not tell their bundles apart (instances once declared types get
   kernel-level brands).
@@ -131,10 +135,61 @@ def top : Circuit In.code Out.code := Circuit.bundled Tx.bundle In.bundle Out.bu
   (importers keep `List.map` and the like); the netlist types are `NetOp`, `NetNode`,
   `NetReg`, `NetPort`. (`<+>` stays.)
 
-Not done: module hierarchy in the Verilog, enumerations at `HwTy`, numerals and operators
-at `r (bits n)` (instances of the numeric classes, when they land: `Add`, `Sub`, `Mul`,
-`Neg`, `OfNat` at `r (HwTy.bits n)` through `Hw`), wire names from `let` binders (an
-elaborator hook, wishful `hdl-let-names`), asynchronous reset, several clocks.
+Not done: module hierarchy in the Verilog, enumerations at `HwTy`, wire names from `let`
+binders (an elaborator hook, wishful `hdl-let-names`), asynchronous reset, several clocks.
+(Numerals and operators: H14 S2.)
+
+## H14 S2: operator notation for signals ✅
+
+Signals are written with operators: `c + 1`, `x &&& ~~~y`, `s.left === 0`,
+`if go then 10 else if tick then s.left - 1 else s.left`, instead of
+`Hw.add c (Hw.lit 7 1)` …, `Hw.mux go (Hw.lit 4 10) (Hw.mux tick …)`.
+`examples/hdl-operators.wiz` shows each design both ways.
+
+| notation (at `r (HwTy.bits n)`, `[Hw r]`) | meaning | precedence |
+|---|---|---|
+| numeral `k` | `Hw.lit n k`: the width from the type | |
+| `a + b`, `a - b`, `a * b`, `-a` | `Hw.add`, `Hw.sub`, `Hw.mul`, `0 - a` | 65, 65, 70, 75 |
+| `a &&& b`, `a ^^^ b`, `a \|\|\| b`, `~~~a` | `Hw.and`, `Hw.xor`, `Hw.or`, `Hw.not` | 60, 58, 55, max |
+| `a <<< k`, `a >>> k` (`k : Nat`) | logical shifts by a fixed number of places: wiring (`Hw.shl`, `Hw.lshr`) | 75 |
+| `a <ᵤ b`, `a ≤ᵤ b`, `a >ᵤ b`, `a ≥ᵤ b` | unsigned comparisons, one bit (`Hw.ult`, `Hw.ule`, `Hw.ugt`, `Hw.uge`) | 62 |
+| `a === b`, `a =/= b` | equality, inequality, one bit (`Hw.eq`, `Hw.neq`) | 61 |
+| `if c then a else b` (`c : r HwTy.bit`) | `Hw.mux c a b`, at any `r t` | |
+
+* **Classes.** `+ - * -x` and numerals are the numeric classes (`Add` … `OfNat`, HD9).
+  The bitwise operators are new classes in the prelude, as in Lean: `AndOp`, `OrOp`,
+  `XorOp`, `Complement`, `ShiftLeft`, `ShiftRight`, with instances for `Nat`, `UIntN w`
+  (and so `BitVec n`) and signals. The shifts take the amount as a `Nat`: a fixed amount
+  is what hardware shifts by wiring (a concatenation with `k` zeros and a slice; no
+  shifter; by `n` or more places, `0`).
+* **Comparisons are the HDL's own.** They return a 1-bit signal, not a `Bool`, so they are
+  not `==`/`<` (Chisel makes the same choice: `===`, `=/=`), and they are unsigned (`ᵤ`,
+  leaving room for signed ones). As in Verilog they bind tighter than the bitwise
+  operators: `idle &&& s.cnt === 9` needs no parentheses.
+* **`if` on a signal.** `if c then a else b` is a `match` on a `Bool` (13c). When the
+  condition's type is not a data type and has an instance `Mux C C` (the prelude's class
+  `Mux C A`, whose HDL instance is `Mux (r HwTy.bit) (r t)`), the elaborator makes it
+  `Mux.mux c a b` instead (`ifMux?` in `Wiz/Elab/Term.lean`), at an instance `Mux C A`
+  for the branches' type `A`. Every other condition (a `Bool`, an unsolved type, `Nat`, a
+  type without a `Mux` instance) takes the ordinary path, with its messages, and
+  `if b then rfl else rfl` still refines the goal. A branch that is a numeral (or an `if`
+  of numerals) is elaborated after the other, so `if t then 0 else c + 1` gets its width
+  from `c`.
+* **Constants of the expected width.** A numeral is a literal; a meta-level `Nat`
+  expression is `Hw.ofNat e` (`c === Hw.ofNat (n - 1)`), whose width comes from the type.
+* **Same circuits.** The instances are the `Hw` operations, so a circuit written with the
+  operators has the netlist and the Verilog of the one written with `Hw.add` …, byte for
+  byte (`examples/hdl-operators.wiz`; also the iCEstick UART's `txStep` and `rxStep`
+  rewritten). Associativity matters for that: `a &&& b &&& c` is `(a &&& b) &&& c`, a
+  different (equivalent) netlist from `Hw.and a (Hw.and b c)`.
+* **Printing.** The operators print back as written (11r): `fun x y => if x === y then
+  x + 1 else x <<< 2 &&& ~~~y`. `Mux.mux` and `Hw.mux` print as `if`; and a numeral at any
+  type other than `Nat` (`OfNat.ofNat A n _`) now prints as the numeral, for `Int` and
+  words too (`fun x => x + 1 : Int → Int`).
+
+Not done: shifts by a signal (a barrel shifter needs a `NetOp`), signed comparisons and
+arithmetic shift, ASCII spellings of `≤ᵤ` …, `&&`/`||` on signals (they are `if`s whose
+other branch is a `Bool`).
 
 ## Logic, heap predicates and Hoare triples ✅
 
@@ -145,6 +200,31 @@ laws), `lib/Hoare.wiz` (`wp`, triples, the frame rule, adequacy for an interpret
 `lib/HoareTactics.wiz` (SLF-style automation: `xsimpl`, `xpull`, `xstep`, `xapp`, …) and
 `lib/HoareExamples.wiz` (verified swap, list reversal, counter, list length, in-place map,
 freeing a list). See [stage 24](stages/24-separation-logic.md).
+
+`lib/Ref.wiz` puts mutable cells in `IO` under linear points-to tokens (plan CS7b). A
+location `l : Loc V` is an ordinary value. Owning the cell is a separate token `Pts l v`
+at quantity 1, so one owner per cell, no leak, no double free and no use after free are
+all type errors. The token's ghost index is the cell's value, so a function's type is its
+Hoare triple: `swap : (1 tp : Pts p a) → (1 tq : Pts q b) → (1 k : (1 tp : Pts p b) →
+(1 tq : Pts q a) → IO B) → IO B`. `Ref.get` hands back the value with an erased proof
+that it is the index. The trusted part is the four natives `wiz_ref_*` (runtime/wiz.c,
+over MVar cells) and their types, kept true by an invariant the API maintains; the header
+of lib/Ref.wiz has the argument. Compiled code only.
+
+## Owned handles (`lib/Handle.wiz`) ✅
+
+`Owned h` is the obligation to release the handle `h`: a token at quantity 1 indexed by
+the handle, as `MVar.Hole m` and `Lock.Guard l` are ([25d](stages/25-concurrency.md)).
+The owned constructors `File.withOwned`, `Fd.withOwned` and `Process.spawnOwned` open a
+fresh handle and mint its one token; nothing else can mint one. `Handle.use` passes the
+token in and hands it back, and `File.releaseOwned`, `Fd.releaseOwned` and
+`Child.releaseOwned` (close, close, wait) use it up. **For handles obtained through the
+owned constructors**, the release happens exactly once on every path, and there is no use
+after release through this API. Handles from lib/Sys.wiz's ω API (`File.open`, …) have no
+token and are not covered; the handles stay ω values, so direct calls to lib/Sys.wiz on an
+owned handle are not checked either. Making the handles themselves linear (direct style,
+with lib/Sys.wiz and lib/Serial.wiz moved onto this module) waits for linear Σ fields
+(linear-case stage 2). Trusted: two natives (`wiz_handle_own`/`wiz_handle_disown`).
 
 ## Functors and Booleans
 
@@ -204,10 +284,54 @@ numeric type:
   instead of `.negSucc 9` (a printing hint, not an axiom: `#print axioms` lists nothing
   for it). Division truncates (`-7 / 2 = -3`, `-7 % 2 = -1`), like `IntN` and C. Also
   `Int.natAbs`, `Int.toNat` (negatives to 0), `Int.lt`/`le`/`beq`, and lemmas
-  `Int.neg_neg`, `Int.add_zero`, `Int.zero_add`, `Int.natAbs_neg`, `Int.lt_irrefl`.
+  `Int.neg_neg`, `Int.add_zero`, `Int.zero_add`, `Int.natAbs_neg`, `Int.lt_irrefl`, `Int.abs` with `Int.abs_mul`, `Int.abs_neg`. The ring laws, `int_ring!` and the order
+  are in lib/IntRing.wiz and lib/IntOrder.wiz ("Arithmetic", below).
 * **Words.** One set of instances at `UIntN w` serves `U8 … U64` and `BitVec n` (aliases
   are seen through). `UIntN w` and `IntN w` have the same shape but are sealed, different
   types (22k), so `-7 / 2 : I32` is signed division and `x / 2 : U32` unsigned. Their
   constructors are private to `lib/Word.wiz`: build a word with `ofNat` (or, when the
   value is known to be in range, `UIntN.ofBitsTrusted`) and read it with `toNat`. Compiled, `a + b : U32` is the native `wiz_word_add` (the dictionary is
   inlined away), as `UIntN.add a b` was.
+
+## Arithmetic: laws, orders and ring normalisers ✅
+
+Moved from the dogfooding package wiz-reals (its finding G2: lib/ had no arithmetic
+library, so it proved everything from `0` and `succ`). Each module has a module doc
+and doc comments; std's tests check one example of each.
+
+| module | contents |
+|--------|----------|
+| `lib/Order.wiz` | the classes `LE`, `LT`, `Equiv`: notation `a ≤ b`, `a < b`, `a ≈ b` (propositions) |
+| `lib/Nat.wiz` | `congrArg`, `congrArg2`, `Eq.mp'`, `Eq.via`; the commutative semiring laws of `Nat`, cancellation, truncated subtraction; `Nat.Le`/`Nat.Lt` (`Nat.le m n = .true`, so many facts are `rfl`) with `≤`/`<` instances; `Ordering`, `Nat.cmp` |
+| `lib/Ring.wiz` | `nat_ring! lhs = rhs`: identities of commutative semirings at `Nat`, by reflection |
+| `lib/IntRing.wiz` | `int_ring! lhs = rhs` at `Int`; the ring laws `Int.add_comm` … `Int.neg_mul`; the pair representation `Int.ofPair a b = a - b` |
+| `lib/IntOrder.wiz` | `Int.Le`/`Int.Lt` (`b - a` not negative) with `≤`/`<`; monotonicity, cancellation, `Int.abs` and the triangle inequality |
+| `lib/Rat.wiz` | `Q`: unreduced fractions with `≈`, an ordered field up to `≈` (`Q.inv`, `Q.mul_inv`, `Q.abs_add`, `Q.lt_ceil`); `q_ring! lhs ≈ rhs` |
+
+```
+import Rat
+
+def t (a b c : Nat) : (a + b) * c = c * b + a * c := nat_ring! (a + b) * c = c * b + a * c
+def u (a b : Int) : (a - b) * (a + b) = a * a - b * b := int_ring! (a - b) * (a + b) = a * a - b * b
+def v (p q : Q) : (p + q) * (p + q) ≈ p * p + 2 * p * q + q * q :=
+  q_ring! (p + q) * (p + q) ≈ p * p + 2 * p * q + q * q
+```
+
+* **The normalisers** read the syntax of the equation (`+`, `*`, `-`, parentheses,
+  ascriptions, numerals, and `Nat.succ` at `Nat`); every other subterm is an atom,
+  compared by its syntax. Each side is reified as an expression over atoms
+  (`NatExpr`, `IntExpr`, `QExpr`), normalised to a sorted list of monomials, and the
+  macro expands to `X.proveAt lhs rhs ρ e₁ e₂ rfl rfl rfl`: the kernel checks that the
+  expressions evaluate to the sides and that their normal forms agree (with a Boolean
+  comparison: an `rfl` at a list type computes through OTT's Σ of equations and is much
+  slower). Soundness is proved once (`NatExpr.eval_norm`, …), so no axiom is involved.
+* **They are term macros**, so the equation is written twice (statement and proof): a
+  term macro sees only its own syntax, and a tactic could not look inside an equation
+  goal (wiz-reals G1).
+* **`int_ring!` is bootstrapped.** Its soundness needs the ring laws of `Int`, proved by
+  `int_pair_ring!`, which maps an integer identity through `Int.ofPair` to a `nat_ring!`
+  identity (slower; use `int_ring!`).
+* **`Q` is not reduced**: `p ≈ q` is `p.num · q.den = q.num · p.den`, so every law is an
+  integer identity and `q_ring!` is `int_ring!` on numerators and denominators. Use the
+  congruences (`Q.add_congr`, `Q.le_congr`, …) to rewrite under `≈`.
+* `Vec.wiz` and `Hoare.wiz` import `Nat` for the lemmas they used to define themselves.
