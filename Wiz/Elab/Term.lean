@@ -2248,13 +2248,19 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
   -- a pair pattern: match the components, as two new (defined) variables
   if views[k]! matches .tuple .. then
     let x := vars[k]!
-    let .sigma _ _ A B _ ← force (typeOf x)
+    let .sigma _ sq A B _ ← force (typeOf x)
       | throwAt (cl.pats[k]!).info s!"a tuple pattern needs a pair, not {← showVal ctx (typeOf x)}"
     let xv ← evalIn ctx (varTm x)
     let v1 := vFst xv
     let ty2 := Closure.inst g B v1
     let v2 := vSnd xv
-    let ctx2 := (ctx.define "fst✝" A v1).define "snd✝" ty2 v2
+    -- a first component at quantity 0 (a structure's erased field, `0 n : Nat`) is bound
+    -- at 0: its projection is then in an erased position, and the component may only be
+    -- used there (as by a constructor pattern on a data type, and the self-hosted frontend)
+    let erased1 := ((Val.toPoly? sq).bind (·.isConst?)) == some 0
+    let ctx1 := ctx.define "fst✝" A v1
+    let ctx1 := if erased1 then { ctx1 with erasedLvls := ctx.lvl :: ctx1.erasedLvls } else ctx1
+    let ctx2 := ctx1.define "snd✝" ty2 v2
     let vars' := vars.take k ++ [ctx.lvl, ctx.lvl + 1] ++ vars.drop (k + 1)
     let clauses' ← clauses.mapM fun c => do
       let p := c.pats[k]!
@@ -2268,7 +2274,8 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
       pure { c with pats := c.pats.take k ++ ps ++ c.pats.drop (k + 1), binds := binds ++ asBinds }
     let body ← compileMatch ctx2 vars' clauses' goal rc top
     let w : Term R := .qlit QuantitySyntax.explicitDefault
-    return .letE "fst✝" w (q A) (q v1) (.letE "snd✝" w (quote g (ctx.lvl + 1) ty2) (quote g (ctx.lvl + 1) v2) body)
+    let w1 : Term R := if erased1 then .qlit 0 else w
+    return .letE "fst✝" w1 (q A) (q v1) (.letE "snd✝" w (quote g (ctx.lvl + 1) ty2) (quote g (ctx.lvl + 1) v2) body)
   if rc.isSome && top && k != 0 then
     throwAt cl.rhs.info "structural recursion: the first argument must be matched first"
   let x := vars[k]!
@@ -2707,6 +2714,11 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
       | "Unit", none | "True", none => return (.unit builtinLevel.get!, .sort builtinLevel.get!)
       | "Empty", none | "False", none => return (.empty builtinLevel.get!, .sort builtinLevel.get!)
       | _, _ =>
+      -- the definition being elaborated (`def f … := … f …`): recursion needs equations
+      if (← get).defining == some x then
+        throwAt ctx.info (s!"recursive call to {x} in a definition without equations; write it as equations " ++
+          s!"(`def {x} … : T | p => …`), or as `:= match y with | p => …` on its own parameters, " ++
+          "or make it `partial`") "recursive-without-equations"
       -- field access: `p.x.y`
       match x.splitOn "." with
       | base :: f :: fs =>

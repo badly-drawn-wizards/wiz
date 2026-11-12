@@ -220,11 +220,17 @@ instance {ω w : Nat} : Div (IntN w) := Div.mk IntN.div
 /-- `a % b` on `IntN w` (signed: `IntN.rem`). -/
 instance {ω w : Nat} : Mod (IntN w) := Mod.mk IntN.rem
 -- bitwise (H14 S2): `&&& ||| ^^^ ~~~ <<< >>>` on unsigned words
+/-- `a &&& b` on `UIntN w`, bit by bit. -/
 instance {ω w : Nat} : AndOp (UIntN w) := AndOp.mk UIntN.land
+/-- `a ||| b` on `UIntN w`, bit by bit. -/
 instance {ω w : Nat} : OrOp (UIntN w) := OrOp.mk UIntN.lor
+/-- `a ^^^ b` on `UIntN w`, bit by bit. -/
 instance {ω w : Nat} : XorOp (UIntN w) := XorOp.mk UIntN.xor
+/-- `~~~a` on `UIntN w`: every one of the `w` bits flipped (`UIntN.not`). -/
 instance {ω w : Nat} : Complement (UIntN w) := Complement.mk UIntN.not
+/-- `a <<< k` on `UIntN w`: shifted left, the bits past `w` dropped. -/
 instance {ω w : Nat} : ShiftLeft (UIntN w) := ShiftLeft.mk UIntN.shiftLeft
+/-- `a >>> k` on `UIntN w`: shifted right (logical: zeros come in). -/
 instance {ω w : Nat} : ShiftRight (UIntN w) := ShiftRight.mk UIntN.shiftRight
 
 -- Rust's fixed widths. Operations come from the width-indexed types (`x.add y`).

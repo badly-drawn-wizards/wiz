@@ -370,7 +370,6 @@ package's `lib` targets with its module roots (dependencies included), into
   (what it is for, its main definitions, an example) and a `/-- … -/` doc comment on each
   public declaration; `--` comments are left for implementation notes. `wiz doc --lib -o
   OUT` builds the pages (CI's `wiz-docs` artifact).
-  run natively on a page's JSON (hover, click, keys).
 
 ## 11w: hovers in tactic arguments, the other infoviews, `local instance`, the browser infoview ✅
 
