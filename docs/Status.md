@@ -150,7 +150,7 @@ set the status (open PRs in *italics*). Sections: §3 fixed, §4 open, §5 stuck
 | Observational equality: `eq` computing by type, `cast`, `transp`, funext, propext | **published** | [PT22] (predicative TTobs), [PT23] (impredicative CCobs: decidability of conversion). Earlier: [AMS07]. |
 | Propositions compared by equivalence inside type equality (§8.3) | **conjecture** | This is how TTobs and CCobs treat propositions (rule Eq-Ω: `A ∼ B ⇒ (A → B) ∧ (B → A)`; checked in [PT22] §2.3 and [PT23] Fig. 4). Wiz's version depends on **sort annotations** that the kernel checks; that mechanism is Wiz's own. |
 | Quantities in type equality (`(1 x : A) → B ≢ (ω x : A) → B`) | **conjecture** | Not in any OTT paper we know. It is consistent with a model where quantities are part of a type's code. |
-| Regularity `cast A A e t ≡ t` | **off** by default (D1); kept at inert types: **conjecture** (argued relative to the regularity-off system; decided by ground equality since P1, so stable under substitution, D1); propositionally, the axiom `castRefl`: **folklore** (setoid model) | [AC20]: with impredicative `Prop` and irrelevant equality, full regularity breaks normalisation *of proofs*. TTobs and CCobs do not have definitional regularity; they have the proof term `castrefl`, which is Wiz's `castRefl` ([PT22] §2.2, [PT23] §2.2; checked). CICobs [PLT25] has definitional regularity at **all** types (rule Cast-Refl, side condition by conversion) and proves conversion decidable for a fragment, with an algorithm that never reduces proofs. So regularity at inert types (CoreSpec §8.4) is a special case of a published rule; what is Wiz's own is the restriction, which a proof-reducing evaluator needs. See D1 and `/workspace/wiz-notes/plt-vs-inert.md`. `--regularity full` restores the old rule for experiments. |
+| Regularity `cast A A e t ≡ t` | **off** by default (D1); kept at inert types: **conjecture** (argued relative to the regularity-off system; the rule is InReg_conv, [PLT25]'s Cast-Refl restricted to inert types and decided by the conversion checker, with ground equality as the evaluator's fast path, D1); propositionally, the axiom `castRefl`: **folklore** (setoid model) | [AC20]: with impredicative `Prop` and irrelevant equality, full regularity breaks normalisation *of proofs*. TTobs and CCobs do not have definitional regularity; they have the proof term `castrefl`, which is Wiz's `castRefl` ([PT22] §2.2, [PT23] §2.2; checked). CICobs [PLT25] has definitional regularity at **all** types (rule Cast-Refl, side condition by conversion) and proves conversion decidable for a fragment, with an algorithm that never reduces proofs. So regularity at inert types (CoreSpec §8.4) is a special case of a published rule; what is Wiz's own is the restriction, which a proof-reducing evaluator needs. See D1 and `/workspace/wiz-notes/plt-vs-inert.md`. `--regularity full` restores the old rule for experiments. |
 | Enumerations, `ecase`, equality of tags | **folklore** | Standard finite types. Labels are ignored (`Enum [a,b] ≡ Enum [c,d]`), which is harmless: a model can interpret `Enum` by its size. |
 | Descriptions (`ret`, `arg`, `rec`, `hrec`), `Desc.elim`, `μ`, `ind` | **published** for levitated descriptions without quantities [CDMM10]; **conjecture** with quantities and with `Desc` as a primitive | The eliminator `Desc.elim` is large (into any `Sort v`). Field quantities and the quantity-polymorphic `marg` are Wiz's own. Fields live exactly in `Sort (l+1)`; smaller ones are lifted with `ULift` (F5, was Q4). |
 | Observational equality at `μ` (`con x = con y ↦ x = y`, by the description) | **conjecture** | Natural, follows the TTobs pattern for inductive types; [PT22] and [PT23] give ℕ equality rules by constructor (Eq-zero, Eq-Suc); CICobs [PLT25 §2.1, §4.1] gives inductive types *no* rule for equality of elements (it is derivable from the eliminator) and a weaker, non-injective equation between instances. Since 4g every `μ ≡ μ` computes by the codes, to `(I, D, i) = (I', D', i')` at `(J : Sort (l+1)) × Desc J × J`, and equality at `Desc` is structural (CoreSpec §8.4b); this is stronger still than CICobs's equation (injective in the index and in the description); see E1. |
@@ -720,10 +720,11 @@ does not do this (`Size` is not `canonical` in `Eval.lean:572`; the equation is 
   `Desc` and `ν` likewise; equality at `μ` follows the description constructor by
   constructor, so `succ m = succ n` is `m = n` without a cast. The Abel–Coquand box now
   yields a stuck proof, and the program checks (tests "D1 (Abel–Coquand): the program
-  checks …", "… the Wiz kernel checks the program …"; with `--regularity full
-  --eager-proofs`, resp. `kernelRegularity := .true`, the kernels still loop, which the
-  tests also check; since P2, below, `--regularity full` alone no longer loops in the
-  Lean kernel).
+  checks …", "… the Wiz kernel checks the program …"). It used to loop with
+  `--regularity full --eager-proofs`, when regularity was a rule of evaluation decided
+  by comparing the two types as written. Regularity is now decided by conversion only,
+  and the program checks in every mode, whichever way the cast's source type is written
+  (test "D1 (Abel–Coquand): the cast's source type by name or as inferred …").
 * **Departure from the published theory (conjecture).** Regularity is kept at **inert**
   types: `Enum`, `Unit`, Σs of inert types, and `μ` types whose fields are all inert (no
   `Prop` field, function, neutral type or type variable), decided by a syntactic,
@@ -797,9 +798,26 @@ does not do this (`Size` is not `canonical` in `Eval.lean:572`; the equation is 
     constructors at open ones compute structurally. Measured: every test, library file
     and example checks as before, and no cast in `lib/` or `examples/` is decided
     differently from the old rule (the note, §5). The loss shows only on the probe.
-  * **Option** (a decision for the user). `--inert conv` adds InReg_conv: conversion
-    identifies the cast with its argument when the types are convertible (`convTy`). It
-    is congruent, and it accepts `t1` and `t2` too. It is Lean kernel only so far.
+  * **Decided by conversion (the user's decision; both kernels; the default).** The rule
+    is InReg_conv: `cast A B e t ≡ t` when `A` is inert and `A ≡ B`. It is a rule of
+    conversion, [PLT25]'s Cast-Refl restricted to inert types: the conversion checker
+    removes a cast that stayed stuck when its two types are convertible (`unCast` in
+    `Conv.lean`, `stripCast` in `Kernel.wiz`), on either side, under eliminations too.
+    Ground equality stays as the evaluator's fast path, a fragment of the same rule that
+    needs no conversion. So the open-index case above is no longer lost: all eight
+    probes check (tests "P1: InReg decided by conversion …", and the same as core terms
+    on both kernels, "P1: regularity at inert types is decided by conversion, in both
+    kernels"). `--inert ground` (`kernelInertConv := .false`) keeps only the fast path.
+  * **Syntactic equality is gone from regularity**: `--inert syntactic`, the numeral
+    shortcut, `sameVal`, `lvlBound` and `freeVarsAt` are deleted from both kernels, and
+    with them the D1 modes `nonprop` and `refl`. `--regularity full` is Cast-Refl at
+    every type, in conversion only (an experiment).
+  * **Open.** `inertTy` reads a `Σ`'s optional sort annotation, so conversion with this
+    rule is not transitive at types that differ only in that annotation (not unsound;
+    it goes with mandatory sorts). Completeness of "strip when possible, else
+    congruence" against [PLT25]'s backtracking algorithm is argued, not proved. The
+    theorem behind the rule covers Π, ℕ, ⊥, `Prop`, ∃, not Wiz's data types
+    (`/workspace/wiz-notes/conv-regularity.md`).
 * **P2: the kernels never evaluate a proof** (CoreSpec §8.6, §8.6a;
   `Globals.lazyProofs`, `kernelLazyProofs`; the user's decisions, 2026-11-10;
   `/workspace/wiz-notes/p2-proofs.md`, `prf-marker.md`).
@@ -842,8 +860,7 @@ does not do this (`Size` is not `canonical` in `Eval.lean:572`; the equation is 
     regularity on (its proofs are `let`-bound). Marked, it checks in both kernels, with
     `kernelRegularity := .true` and `--regularity full` too (test "D1 (Abel–Coquand): both
     kernels check the let-encoded program, with regularity on too"). Unmarked, both
-    kernels reject it. With `--regularity full --eager-proofs` the Lean kernel loops as
-    before.
+    kernels reject it.
   * **What [PLT25] proves** (Theorem 5.6): decidability of conversion with full
     regularity, for the fragment with Π, ℕ, ⊥, `Ω`, a proof-irrelevant ∃, the
     observational equality and `cast`, at two universe levels, mechanised in Agda. It
@@ -1170,9 +1187,11 @@ equations are not provable by computation. They are incompleteness, not unsoundn
   compared): type equality is stuck.
 * **Casts at a level `u` that might be 0**, `Sort u ≡ Sort v` for different parameters.
 * **Regularity at an inert type with an open index** (P1): `cast (Fin n) (Fin n) e k` for
-  variables `n`, `k` is stuck. The rule fires only at ground types, so that its firing is
-  stable under substitution (D1). `castRefl` proves the equation propositionally;
-  `--inert conv` is an experiment that recovers it in conversion.
+  variables `n`, `k` is stuck as a *value* (the evaluator's rule fires only at ground
+  types, so that its firing is stable under substitution), and equal to `k` in
+  *conversion* (InReg_conv, D1). A cast at a type that is not inert (a type variable, a
+  type with a `Prop` field or a function) stays; `castRefl` proves that equation
+  propositionally.
 * **The sort annotation decides between rules** (P1 inventory, U5). `propSort?` reads a
   Π/Σ's optional annotation, so an unannotated type and a convertible annotated one are
   treated differently by type equality and `cast` (stuck against computing). That is a
@@ -1309,8 +1328,7 @@ that checks everything. Wiz's situation:
   IR, the C backend, the runtime or the C compiler (none runs). The library never uses it
   (group *native*).
 * **Termination** of the kernel is not proved; all evaluation functions are `partial` in
-  Lean. With non-default options it is known to fail (D1: `--regularity full
-  --eager-proofs`).
+  Lean.
 * **The kernel does not evaluate proofs (P2).** `eval` suspends the equation of a `cast`,
   the proofs of a `transp` and every marked proof, and the kernel requires the marker
   wherever a proof would otherwise be evaluated (CoreSpec §8.6a). Pujet–Tabareau's
