@@ -20,6 +20,11 @@ import Hdl.Core
 -- circuit's output (a bidirectional one becomes an `inout` port). Anything else is an
 -- error of the netlist (`Netlist.errors`, printed by `Verilog.emit`).
 --
+-- Sharing: an instance is never hash-consed (two buffers with the same inputs are two
+-- buffers), so a primitive's result that is used more than once must be one value: bind
+-- it with `let` (auto-share), never pass the `Hw.prim …` expression to a function that
+-- reads it several times (each read would build another instance).
+--
 -- Simulation: a primitive without a model is 0 at values and in `Netlist.simulate`;
 -- `Netlist.unmodelled` names such instances and the checked runners
 -- (`Circuit.runModelled`, `Netlist.simulateModelled`) refuse to run a circuit with one.

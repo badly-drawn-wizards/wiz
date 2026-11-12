@@ -112,9 +112,12 @@ def X7.iserdesP : Prim X7.iserdesIn (X7.bitsT 7) :=
       (.cons ("SERDES_MODE", PrimParam.str "MASTER") (.cons ("IS_CLKB_INVERTED", PrimParam.bits 1 1) .nil)))))))
     (.cons "CLK" (.cons "CLKB" (.cons "CLKDIV" (.cons "DDLY" (.cons "CE1" (.cons "RST" (.cons "BITSLIP" .nil)))))))
     (X7.names "Q" 1 8) Option.none
+-- (the instance is let-bound, so that it is one instance: `X7.gather` reads it eight
+-- times, and an argument is a computation that would build the cell each time)
 def X7.iserdes {r : HwTy → Type} [Hw r] (clk clkdiv : r HwTy.clock) (rst : r X7.B1) (ddly : r X7.B1) : r (HwTy.bits 8) :=
-  X7.gather 7 (Hw.prim X7.iserdesP (Hw.pair clk (Hw.pair clk (Hw.pair clkdiv
-    (Hw.pair ddly (Hw.pair (Hw.lit 1 1) (Hw.pair rst (Hw.lit 1 0))))))))
+  let q := Hw.prim X7.iserdesP (Hw.pair clk (Hw.pair clk (Hw.pair clkdiv
+    (Hw.pair ddly (Hw.pair (Hw.lit 1 1) (Hw.pair rst (Hw.lit 1 0)))))));
+  X7.gather 7 q
 
 ------------------------------------------------------------------------------------
 -- IDELAYE2 on an input pad's data (DELAY_SRC IDATAIN), 32 taps of 1/(64 × 200 MHz) =
