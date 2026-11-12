@@ -2409,7 +2409,8 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
   unless ctors.isEmpty do
     for cl in clauses do
       if let (_, .ctor _ c' _) ← pview (cl.pats[k]!) then
-        unless ctors.contains c' do
+        -- (`✝none`: #250's empty match names no constructor on purpose)
+        unless ctors.contains c' || c' == "✝none" do
           -- (a pattern a macro wrote, such as `if`'s `.true`, has no place of its own)
           let pi := (cl.pats[k]!).info
           let at_ := if pi.stop == 0 || pi.synthetic then ctx.info else pi
