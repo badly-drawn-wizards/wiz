@@ -47,56 +47,56 @@ def Bit.ind3 (0 P : BitVec 1 → BitVec 1 → BitVec 1 → Prop)
 ------------------------------------------------------------------------------------
 -- Gates with a constant
 
-def Bit.and_zero (x : BitVec 1) : BitVec.and Bit.zero x = Bit.zero :=
-  Bit.ind (fun (a : BitVec 1) => BitVec.and Bit.zero a = Bit.zero) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) x
-def Bit.and_zero_r (x : BitVec 1) : BitVec.and x Bit.zero = Bit.zero :=
-  Bit.ind (fun (a : BitVec 1) => BitVec.and a Bit.zero = Bit.zero) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) x
-def Bit.and_one (x : BitVec 1) : BitVec.and Bit.one x = x :=
-  Bit.ind (fun (a : BitVec 1) => BitVec.and Bit.one a = a) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) x
-def Bit.and_one_r (x : BitVec 1) : BitVec.and x Bit.one = x :=
-  Bit.ind (fun (a : BitVec 1) => BitVec.and a Bit.one = a) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) x
-def Bit.or_one (x : BitVec 1) : BitVec.or Bit.one x = Bit.one :=
-  Bit.ind (fun (a : BitVec 1) => BitVec.or Bit.one a = Bit.one) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) x
-def Bit.or_one_r (x : BitVec 1) : BitVec.or x Bit.one = Bit.one :=
-  Bit.ind (fun (a : BitVec 1) => BitVec.or a Bit.one = Bit.one) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) x
-def Bit.or_zero (x : BitVec 1) : BitVec.or Bit.zero x = x :=
-  Bit.ind (fun (a : BitVec 1) => BitVec.or Bit.zero a = a) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) x
-def Bit.or_zero_r (x : BitVec 1) : BitVec.or x Bit.zero = x :=
-  Bit.ind (fun (a : BitVec 1) => BitVec.or a Bit.zero = a) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) x
-def Bit.xor_zero (x : BitVec 1) : BitVec.xor Bit.zero x = x :=
-  Bit.ind (fun (a : BitVec 1) => BitVec.xor Bit.zero a = a) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) x
-def Bit.xor_one (x : BitVec 1) : BitVec.xor Bit.one x = BitVec.not x :=
-  Bit.ind (fun (a : BitVec 1) => BitVec.xor Bit.one a = BitVec.not a) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) x
+def Bit.and_zero (x : BitVec 1) : Bit.zero &&& x = Bit.zero :=
+  Bit.ind (fun (a : BitVec 1) => Bit.zero &&& a = Bit.zero) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) x
+def Bit.and_zero_r (x : BitVec 1) : x &&& Bit.zero = Bit.zero :=
+  Bit.ind (fun (a : BitVec 1) => a &&& Bit.zero = Bit.zero) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) x
+def Bit.and_one (x : BitVec 1) : Bit.one &&& x = x :=
+  Bit.ind (fun (a : BitVec 1) => Bit.one &&& a = a) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) x
+def Bit.and_one_r (x : BitVec 1) : x &&& Bit.one = x :=
+  Bit.ind (fun (a : BitVec 1) => a &&& Bit.one = a) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) x
+def Bit.or_one (x : BitVec 1) : Bit.one ||| x = Bit.one :=
+  Bit.ind (fun (a : BitVec 1) => Bit.one ||| a = Bit.one) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) x
+def Bit.or_one_r (x : BitVec 1) : x ||| Bit.one = Bit.one :=
+  Bit.ind (fun (a : BitVec 1) => a ||| Bit.one = Bit.one) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) x
+def Bit.or_zero (x : BitVec 1) : Bit.zero ||| x = x :=
+  Bit.ind (fun (a : BitVec 1) => Bit.zero ||| a = a) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) x
+def Bit.or_zero_r (x : BitVec 1) : x ||| Bit.zero = x :=
+  Bit.ind (fun (a : BitVec 1) => a ||| Bit.zero = a) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) x
+def Bit.xor_zero (x : BitVec 1) : Bit.zero ^^^ x = x :=
+  Bit.ind (fun (a : BitVec 1) => Bit.zero ^^^ a = a) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) x
+def Bit.xor_one (x : BitVec 1) : Bit.one ^^^ x = ~~~x :=
+  Bit.ind (fun (a : BitVec 1) => Bit.one ^^^ a = ~~~a) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) x
 
 ------------------------------------------------------------------------------------
 -- Gates on variables
 
-def Bit.not_not (x : BitVec 1) : BitVec.not (BitVec.not x) = x :=
-  Bit.ind (fun (a : BitVec 1) => BitVec.not (BitVec.not a) = a) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) x
-def Bit.and_self (x : BitVec 1) : BitVec.and x x = x :=
-  Bit.ind (fun (a : BitVec 1) => BitVec.and a a = a) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) x
-def Bit.or_self (x : BitVec 1) : BitVec.or x x = x :=
-  Bit.ind (fun (a : BitVec 1) => BitVec.or a a = a) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) x
-def Bit.and_not_self (x : BitVec 1) : BitVec.and x (BitVec.not x) = Bit.zero :=
-  Bit.ind (fun (a : BitVec 1) => BitVec.and a (BitVec.not a) = Bit.zero) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) x
-def Bit.or_not_self (x : BitVec 1) : BitVec.or x (BitVec.not x) = Bit.one :=
-  Bit.ind (fun (a : BitVec 1) => BitVec.or a (BitVec.not a) = Bit.one) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) x
-def Bit.and_comm (x y : BitVec 1) : BitVec.and x y = BitVec.and y x :=
-  Bit.ind2 (fun (a b : BitVec 1) => BitVec.and a b = BitVec.and b a) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) x y
-def Bit.or_comm (x y : BitVec 1) : BitVec.or x y = BitVec.or y x :=
-  Bit.ind2 (fun (a b : BitVec 1) => BitVec.or a b = BitVec.or b a) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) x y
-def Bit.xor_comm (x y : BitVec 1) : BitVec.xor x y = BitVec.xor y x :=
-  Bit.ind2 (fun (a b : BitVec 1) => BitVec.xor a b = BitVec.xor b a) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) x y
-def Bit.not_and (x y : BitVec 1) : BitVec.not (BitVec.and x y) = BitVec.or (BitVec.not x) (BitVec.not y) :=
-  Bit.ind2 (fun (a b : BitVec 1) => BitVec.not (BitVec.and a b) = BitVec.or (BitVec.not a) (BitVec.not b)) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) x y
-def Bit.not_or (x y : BitVec 1) : BitVec.not (BitVec.or x y) = BitVec.and (BitVec.not x) (BitVec.not y) :=
-  Bit.ind2 (fun (a b : BitVec 1) => BitVec.not (BitVec.or a b) = BitVec.and (BitVec.not a) (BitVec.not b)) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) x y
-def Bit.and_assoc (x y z : BitVec 1) : BitVec.and (BitVec.and x y) z = BitVec.and x (BitVec.and y z) :=
-  Bit.ind3 (fun (a b c : BitVec 1) => BitVec.and (BitVec.and a b) c = BitVec.and a (BitVec.and b c)) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) x y z
-def Bit.or_assoc (x y z : BitVec 1) : BitVec.or (BitVec.or x y) z = BitVec.or x (BitVec.or y z) :=
-  Bit.ind3 (fun (a b c : BitVec 1) => BitVec.or (BitVec.or a b) c = BitVec.or a (BitVec.or b c)) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) x y z
-def Bit.and_or (x y z : BitVec 1) : BitVec.and x (BitVec.or y z) = BitVec.or (BitVec.and x y) (BitVec.and x z) :=
-  Bit.ind3 (fun (a b c : BitVec 1) => BitVec.and a (BitVec.or b c) = BitVec.or (BitVec.and a b) (BitVec.and a c)) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) x y z
+def Bit.not_not (x : BitVec 1) : ~~~(~~~x) = x :=
+  Bit.ind (fun (a : BitVec 1) => ~~~(~~~a) = a) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) x
+def Bit.and_self (x : BitVec 1) : x &&& x = x :=
+  Bit.ind (fun (a : BitVec 1) => a &&& a = a) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) x
+def Bit.or_self (x : BitVec 1) : x ||| x = x :=
+  Bit.ind (fun (a : BitVec 1) => a ||| a = a) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) x
+def Bit.and_not_self (x : BitVec 1) : x &&& ~~~x = Bit.zero :=
+  Bit.ind (fun (a : BitVec 1) => a &&& ~~~a = Bit.zero) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) x
+def Bit.or_not_self (x : BitVec 1) : x ||| ~~~x = Bit.one :=
+  Bit.ind (fun (a : BitVec 1) => a ||| ~~~a = Bit.one) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) x
+def Bit.and_comm (x y : BitVec 1) : x &&& y = y &&& x :=
+  Bit.ind2 (fun (a b : BitVec 1) => a &&& b = b &&& a) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) x y
+def Bit.or_comm (x y : BitVec 1) : x ||| y = y ||| x :=
+  Bit.ind2 (fun (a b : BitVec 1) => a ||| b = b ||| a) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) x y
+def Bit.xor_comm (x y : BitVec 1) : x ^^^ y = y ^^^ x :=
+  Bit.ind2 (fun (a b : BitVec 1) => a ^^^ b = b ^^^ a) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) x y
+def Bit.not_and (x y : BitVec 1) : ~~~(x &&& y) = ~~~x ||| ~~~y :=
+  Bit.ind2 (fun (a b : BitVec 1) => ~~~(a &&& b) = ~~~a ||| ~~~b) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) x y
+def Bit.not_or (x y : BitVec 1) : ~~~(x ||| y) = ~~~x &&& ~~~y :=
+  Bit.ind2 (fun (a b : BitVec 1) => ~~~(a ||| b) = ~~~a &&& ~~~b) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) x y
+def Bit.and_assoc (x y z : BitVec 1) : (x &&& y) &&& z = x &&& (y &&& z) :=
+  Bit.ind3 (fun (a b c : BitVec 1) => (a &&& b) &&& c = a &&& (b &&& c)) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) x y z
+def Bit.or_assoc (x y z : BitVec 1) : (x ||| y) ||| z = x ||| (y ||| z) :=
+  Bit.ind3 (fun (a b c : BitVec 1) => (a ||| b) ||| c = a ||| (b ||| c)) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) x y z
+def Bit.and_or (x y z : BitVec 1) : x &&& (y ||| z) = (x &&& y) ||| (x &&& z) :=
+  Bit.ind3 (fun (a b c : BitVec 1) => a &&& (b ||| c) = (a &&& b) ||| (a &&& c)) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) x y z
 
 ------------------------------------------------------------------------------------
 -- Multiplexers: the normal form `rfl` reduces
@@ -109,18 +109,18 @@ def HwTy.El.mux_same {t : HwTy} (c : BitVec 1) (x : HwTy.El t) : @HwTy.El.mux t 
   Hdl.boolSame (BitVec.isTrue c) x
 def HwTy.El.mux_one {t : HwTy} (x y : HwTy.El t) : @HwTy.El.mux t Bit.one x y = x := rfl
 def HwTy.El.mux_zero {t : HwTy} (x y : HwTy.El t) : @HwTy.El.mux t Bit.zero x y = y := rfl
-def HwTy.El.mux_not {t : HwTy} (c : BitVec 1) (x y : HwTy.El t) : @HwTy.El.mux t (BitVec.not c) x y = @HwTy.El.mux t c y x :=
-  Bit.ind (fun (a : BitVec 1) => @HwTy.El.mux t (BitVec.not a) x y = @HwTy.El.mux t a y x) rfl rfl c
+def HwTy.El.mux_not {t : HwTy} (c : BitVec 1) (x y : HwTy.El t) : @HwTy.El.mux t ~~~c x y = @HwTy.El.mux t c y x :=
+  Bit.ind (fun (a : BitVec 1) => @HwTy.El.mux t ~~~a x y = @HwTy.El.mux t a y x) rfl rfl c
 
 -- gates as multiplexers
-def Bit.and_mux (x y : BitVec 1) : BitVec.and x y = @HwTy.El.mux HwTy.bit x y Bit.zero :=
-  Bit.ind2 (fun (a b : BitVec 1) => BitVec.and a b = @HwTy.El.mux HwTy.bit a b Bit.zero) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) x y
-def Bit.or_mux (x y : BitVec 1) : BitVec.or x y = @HwTy.El.mux HwTy.bit x Bit.one y :=
-  Bit.ind2 (fun (a b : BitVec 1) => BitVec.or a b = @HwTy.El.mux HwTy.bit a Bit.one b) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) x y
-def Bit.not_mux (x : BitVec 1) : BitVec.not x = @HwTy.El.mux HwTy.bit x Bit.zero Bit.one :=
-  Bit.ind (fun (a : BitVec 1) => BitVec.not a = @HwTy.El.mux HwTy.bit a Bit.zero Bit.one) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) x
-def Bit.xor_mux (x y : BitVec 1) : BitVec.xor x y = @HwTy.El.mux HwTy.bit x (BitVec.not y) y :=
-  Bit.ind2 (fun (a b : BitVec 1) => BitVec.xor a b = @HwTy.El.mux HwTy.bit a (BitVec.not b) b) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) x y
+def Bit.and_mux (x y : BitVec 1) : x &&& y = @HwTy.El.mux HwTy.bit x y Bit.zero :=
+  Bit.ind2 (fun (a b : BitVec 1) => a &&& b = @HwTy.El.mux HwTy.bit a b Bit.zero) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) x y
+def Bit.or_mux (x y : BitVec 1) : x ||| y = @HwTy.El.mux HwTy.bit x Bit.one y :=
+  Bit.ind2 (fun (a b : BitVec 1) => a ||| b = @HwTy.El.mux HwTy.bit a Bit.one b) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) x y
+def Bit.not_mux (x : BitVec 1) : ~~~x = @HwTy.El.mux HwTy.bit x Bit.zero Bit.one :=
+  Bit.ind (fun (a : BitVec 1) => ~~~a = @HwTy.El.mux HwTy.bit a Bit.zero Bit.one) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) x
+def Bit.xor_mux (x y : BitVec 1) : x ^^^ y = @HwTy.El.mux HwTy.bit x ~~~y y :=
+  Bit.ind2 (fun (a b : BitVec 1) => a ^^^ b = @HwTy.El.mux HwTy.bit a ~~~b b) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) (Bit.eqv _ _ rfl) x y
 
 ------------------------------------------------------------------------------------
 -- Booleans: the bridge to `sat_decide`
@@ -137,14 +137,14 @@ def Bit.ofBool_toBool (x : BitVec 1) : Bit.ofBool (Bit.toBool x) = x :=
 def Bit.eq_of_toBool (x y : BitVec 1) (h : Bit.toBool x = Bit.toBool y) : x = y :=
   Eq.trans (Eq.symm (Bit.ofBool_toBool x)) (Eq.trans (Eq.congrArg Bit.ofBool h) (Bit.ofBool_toBool y))
 
-def Bit.toBool_and (x y : BitVec 1) : Bit.toBool (BitVec.and x y) = Bool.and (Bit.toBool x) (Bit.toBool y) :=
-  Bit.ind2 (fun (a b : BitVec 1) => Bit.toBool (BitVec.and a b) = Bool.and (Bit.toBool a) (Bit.toBool b)) rfl rfl rfl rfl x y
-def Bit.toBool_or (x y : BitVec 1) : Bit.toBool (BitVec.or x y) = Bool.or (Bit.toBool x) (Bit.toBool y) :=
-  Bit.ind2 (fun (a b : BitVec 1) => Bit.toBool (BitVec.or a b) = Bool.or (Bit.toBool a) (Bit.toBool b)) rfl rfl rfl rfl x y
-def Bit.toBool_xor (x y : BitVec 1) : Bit.toBool (BitVec.xor x y) = Bool.xor (Bit.toBool x) (Bit.toBool y) :=
-  Bit.ind2 (fun (a b : BitVec 1) => Bit.toBool (BitVec.xor a b) = Bool.xor (Bit.toBool a) (Bit.toBool b)) rfl rfl rfl rfl x y
-def Bit.toBool_not (x : BitVec 1) : Bit.toBool (BitVec.not x) = Bool.not (Bit.toBool x) :=
-  Bit.ind (fun (a : BitVec 1) => Bit.toBool (BitVec.not a) = Bool.not (Bit.toBool a)) rfl rfl x
+def Bit.toBool_and (x y : BitVec 1) : Bit.toBool (x &&& y) = Bool.and (Bit.toBool x) (Bit.toBool y) :=
+  Bit.ind2 (fun (a b : BitVec 1) => Bit.toBool (a &&& b) = Bool.and (Bit.toBool a) (Bit.toBool b)) rfl rfl rfl rfl x y
+def Bit.toBool_or (x y : BitVec 1) : Bit.toBool (x ||| y) = Bool.or (Bit.toBool x) (Bit.toBool y) :=
+  Bit.ind2 (fun (a b : BitVec 1) => Bit.toBool (a ||| b) = Bool.or (Bit.toBool a) (Bit.toBool b)) rfl rfl rfl rfl x y
+def Bit.toBool_xor (x y : BitVec 1) : Bit.toBool (x ^^^ y) = Bool.xor (Bit.toBool x) (Bit.toBool y) :=
+  Bit.ind2 (fun (a b : BitVec 1) => Bit.toBool (a ^^^ b) = Bool.xor (Bit.toBool a) (Bit.toBool b)) rfl rfl rfl rfl x y
+def Bit.toBool_not (x : BitVec 1) : Bit.toBool ~~~x = Bool.not (Bit.toBool x) :=
+  Bit.ind (fun (a : BitVec 1) => Bit.toBool ~~~a = Bool.not (Bit.toBool a)) rfl rfl x
 def Bit.toBool_mux (c x y : BitVec 1) :
     Bit.toBool (@HwTy.El.mux HwTy.bit c x y) = Bool.or (Bool.and (Bit.toBool c) (Bit.toBool x)) (Bool.and (Bool.not (Bit.toBool c)) (Bit.toBool y)) :=
   Bit.ind3 (fun (a b d : BitVec 1) => Bit.toBool (@HwTy.El.mux HwTy.bit a b d) =

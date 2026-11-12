@@ -34,7 +34,7 @@ def lightStep {r : HwTy → Type} [Hw r] (s : Light r) (x : Sensors r) : r (HwTy
   let w := (s.waiting ||| x.car) &&& (p === 0);
   Hw.pair (Light.pack (Lens.set Light.waitingL (Lens.set Light.phaseL s p) w)) s.phase
 
-def Light.start : Light HwTy.El := Light.mk (BitVec.ofNat 2 2) (BitVec.ofNat 1 0)
+def Light.start : Light HwTy.El := Light.mk 2 0
 def lightC : Circuit Sensors.code B2 :=
   Circuit.bundled Light.bundle Sensors.bundle (Bundle.mk B2 (fun x => x) (fun x => x)) Light.start lightStep
 
@@ -73,9 +73,9 @@ def specStep (s : Abs) (x : Bool × Bool) : Abs × Color :=
 -- multiplexers only: the gates evaluate because every bit is known in each case.
 
 def Color.code : Color → BitVec 2
-  | .green => BitVec.ofNat 2 0
-  | .yellow => BitVec.ofNat 2 1
-  | .red => BitVec.ofNat 2 2
+  | .green => 0
+  | .yellow => 1
+  | .red => 2
 def embS (s : Abs) : HwTy.El lightC.st := Bundle.toEl Light.bundle (Light.mk (Color.code s.color) (Bool.toBits s.waiting))
 def embI (x : Bool × Bool) : HwTy.El Sensors.code := Bundle.toEl Sensors.bundle (Sensors.mk (Bool.toBits x.1) (Bool.toBits x.2))
 
