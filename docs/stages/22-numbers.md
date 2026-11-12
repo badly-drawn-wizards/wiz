@@ -528,3 +528,12 @@ hypothesis or a user's axiom, and the two are built differently).
 
 What keeps structural identity: `def`/`abbrev` aliases, a hand-written `μ` or Σ, and
 an `axiom T : Type` (already nominal).
+
+**Both frontends brand.** The self-hosted frontend (`selfhost/Frontend.wiz`) declares the
+brand as an axiom `T.brand✝ : Type` (`Kernel.wiz` compares axioms by name; C1's fast path
+there compares only axioms) and puts it last in the tail as the Lean frontend does. Its
+families now have phantom tails too: an indexed family's index type is `(i : I) × tail`,
+with indices `(i, fun _ … _ => ())` (`idxWithTail`), and a `mutual` block's is
+`(t : Enum m) × ((0 _ : F.brand✝) → Unit)`. Its backend recognises `Nat` over any singleton
+tail (`isNatTy`). Tests: groups `repr` (22m cases) and `selfhost` ("the self-hosted
+frontend brands every declaration").

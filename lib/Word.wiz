@@ -15,14 +15,14 @@ import Prelude
 -- inferred from an argument. At runtime a word is `⟨0 bits⟩` in the model (or just its
 -- bits, compiled: see the end).
 --
--- Both are sealed (22k): `UIntN w` and `IntN w` have the same shape but are different
--- types (`toIntN`/`toUIntN` convert, for free), and no look-alike is either. The
+-- Like every declared type, each has a brand of its own (22m; 22k sealed them):
+-- `UIntN w` and `IntN w` have the same shape but are different types (`toIntN`/`toUIntN` convert, for free), and no look-alike is either. The
 -- constructors are private: this module keeps the invariant `toNat < 2^w`, which the
 -- natives rely on (every function here returns an in-range word if its arguments are),
 -- so outside it a word is built with `ofNat` (or `ofBitsTrusted`) and read with `toNat`.
-sealed inductive UIntN (w : Nat) where
+inductive UIntN (w : Nat) where
   | private mk (toNat : Nat)
-sealed inductive IntN (w : Nat) where
+inductive IntN (w : Nat) where
   | private mk (toNat : Nat)
 
 -- the bits as a number (for `IntN`, the two's-complement bits: `-1` is `2^w - 1`)

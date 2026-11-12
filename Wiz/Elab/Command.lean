@@ -1331,8 +1331,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     if !inner.isOfKind "command.inductive" then
       report .error cmd.info "`sealed` applies to an `inductive` declaration"
     else
-      -- (the deprecation warning comes with the self-hosted frontend's brands, B3: until
-      -- then `lib/Word.wiz` and the differential tests still say `sealed`)
+      report .warning cmd.info "`sealed` is deprecated and does nothing: every declared type has a brand of its own (22m)"
       elabCommand inner
   | "command.local" =>
     -- (13m) grammar that stays in this module: remember what the command adds

@@ -2704,6 +2704,8 @@ def globalDefs : List (String × List String × Option MTm × MTm) :=
    ("twice", [], some (lam (lam (app (var 1) (app (var 1) (var 0))))), pi (pi (univ 0) (univ 0)) (pi (univ 0) (univ 0))),
    ("A", [], none, univ 0),
    ("a", [], none, const "A"),
+   -- (22m) a second opaque type: two brands
+   ("B", [], none, univ 0),
    -- universe-polymorphic
    ("idP", ["u"], some (lam (lam (var 0))), pi (sortParam "u") (pi (var 0) (var 1))),
    ("constP", ["u", "v"], some (lam (lam (lam (lam (var 1))))),
@@ -3642,7 +3644,13 @@ def c1Samples : List (String × MTm × Bool × Bool) :=
         (eq (G (tl (var 2)) (lam star)) (cast (G (tl (var 2)) (lam star)) (G (tl (var 2)) (lam star)) (var 0) (var 1)) (var 1))))), true, false),
     -- controls: a Π into `Enum 2` is not a tail, nor is a Π at quantity ω
     ("enum", reg (G (piq .zero (const "A") (enum 2)) (lam (tag 2 0))), false, false),
-    ("omega", reg (G (pi (const "A") (unit 0)) (lam star)), false, false) ]
+    ("omega", reg (G (pi (const "A") (unit 0)) (lam star)), false, false),
+    -- (22m, brands) two tails with different constants are not convertible, and their
+    -- type equation is not provable by `reflTy`
+    ("brands", ann (lam (var 0)) (pi (G (tl (const "A")) (lam star)) (G (tl (const "B")) (lam star))), false, false),
+    ("brandEq", ann (reflTy (G (tl (const "A")) (lam star))) (eqTy (G (tl (const "A")) (lam star)) (G (tl (const "B")) (lam star))), false, false),
+    -- (and one brand with itself, at the identity: accepted)
+    ("brandSame", ann (lam (var 0)) (pi (G (tl (const "A")) (lam star)) (G (tl (const "A")) (lam star))), true, true) ]
 
 end MTm
 
@@ -4148,8 +4156,8 @@ def phantomHeader : String :=
 
 /-- (22k) A sealed type, a look-alike, and another sealed type of the same shape. -/
 def sealHeader : String :=
-  "sealed inductive W (w : Nat) where\n  | mk (toNat : Nat)\ninductive L (w : Nat) where\n  | mk (toNat : Nat)\n" ++
-  "sealed inductive V (w : Nat) where\n  | mk (toNat : Nat)\n"
+  "inductive W (w : Nat) where\n  | mk (toNat : Nat)\ninductive L (w : Nat) where\n  | mk (toNat : Nat)\n" ++
+  "inductive V (w : Nat) where\n  | mk (toNat : Nat)\n"
 
 /-- Finding Y4 (audit 2): the probe (`def T` twice, with `Box T` in between), and the
 other ways a command could declare a name again. -/
@@ -4521,6 +4529,28 @@ def selfHostGroup : Group where
           ("def bad (x : V 8) : W 8 := x\n", false),
           ("def bad (x : W 8) : W 16 := x\n", false),
           ("sealed structure P where\n  x : Nat\n", false)] },
+    { name := "the self-hosted frontend brands every declaration, as the Lean frontend does (22m)", run := fun _ =>
+        selfhostAgrees "" [
+          -- smt-review B1: a copy of `Bool` is not `Bool`
+          ("inductive Flip where\n  | true\n  | false\ndef x : Bool := Flip.true\n", false),
+          ("inductive M where\n  | zero\n  | succ (n : M)\ndef x : Nat := M.zero\n", false),
+          ("structure Pt where\n  x : Nat\n  y : Nat\nstructure Qt where\n  x : Nat\n  y : Nat\ndef f (p : Pt) : Qt := p\n", false),
+          ("structure Pt where\n  x : Nat\n  y : Nat\ndef f (p : Pt) : Pt := Pt.mk p.x p.y\ndef g (p : Pt) : Nat := p.y\n", true),
+          ("inductive A where\n  | a\ninductive B where\n  | a\ndef f (x : A) : B := x\n", false),
+          -- indexed families (the index type is `(i : I) × tail`): construction, matching
+          -- with index unification, impossible cases, recursion
+          ("inductive V (A : Type) : Nat → Type where\n  | nil : V A .zero\n  | cons (n : Nat) (x : A) (xs : V A n) : V A (.succ n)\n" ++
+           "def V.head {A : Type} {n : Nat} (v : V A (.succ n)) : A := match v with\n  | .cons _ x _ => x\n" ++
+           "def vlen {A : Type} {n : Nat} (v : V A n) : Nat := match v with\n  | .nil => .zero\n  | .cons _ _ xs => Nat.succ (vlen xs)\n" ++
+           "def v : V Nat (.succ (.succ .zero)) := .cons (.succ .zero) .zero (.cons .zero (.succ .zero) .nil)\ndef h : Nat := V.head v\n", true),
+          ("inductive V (A : Type) : Nat → Type where\n  | nil : V A .zero\ninductive W (A : Type) : Nat → Type where\n  | nil : W A .zero\n" ++
+           "def f (x : V Nat 0) : W Nat 0 := x\n", false),
+          -- mutual blocks
+          ("mutual\ninductive Ev where\n  | z\n  | s (o : Od)\ninductive Od where\n  | s (e : Ev)\nend\n" ++
+           "mutual\ndef ev : Ev → Bool\n  | .z => .true\n  | .s o => od o\ndef od : Od → Bool\n  | .s e => ev e\nend\n" ++
+           "def two : Ev := .s (.s .z)\n", true),
+          ("mutual\ninductive E1 where\n  | z1\n  | s1 (o : O1)\ninductive O1 where\n  | t1 (e : E1)\nend\n" ++
+           "mutual\ninductive E2 where\n  | z2\n  | s2 (o : O2)\ninductive O2 where\n  | t2 (e : E2)\nend\ndef f (x : E1) : E2 := x\n", false)] },
     { name := "the self-hosted frontend: constructor parameters from the expected type (21j)", run := fun _ =>
         selfhostAgrees ("def Code : Bool → Type\n  | .true => Nat\n  | .false => Bool\n" ++
           "structure Tagged (b : Bool) where\n  val : Code b\n")
@@ -7203,7 +7233,7 @@ def r3RoundTrips : String × Nat := Id.run do
 /-- (22k) A type with a native representation, sealed, with a private constructor, in a
 module of its own: `W` is a byte, compiled as its bits. -/
 def sealNat8 : String := "import Word
-sealed inductive W where
+inductive W where
   | private mk (toNat : Nat)
 extern \"wiz_word_of_bits\" W.ofBits : NatObj → W
 extern \"wiz_word_to_bits\" W.toBits : W → NatObj
@@ -7302,6 +7332,9 @@ def reprGroup : Group where
         failsLib (hdr ++ "def bad : W 8 = L 8 := rfl\n") "not definitionally equal"
         failsLib (hdr ++ "def bad : W 8 = V 8 := rfl\n") "not definitionally equal"
         failsLib "import Prelude\nsealed structure P where\n  x : Nat\n" "`sealed` applies to an `inductive` declaration"
+        -- (22m) `sealed` is deprecated: a warning, and the type is as without it
+        okLib "import Prelude\nsealed inductive S where\n  | mk (n : Nat)\n#eval (S.mk 3 : S)\n"
+          ["`sealed` is deprecated and does nothing: every declared type has a brand of its own (22m)", ".mk 3"]
         -- the brand can't be named
         check (!(← sealErrors "import Nat8\ndef s : Type := W.brand✝\n").isEmpty) "W.brand✝ was named" },
     { name := "22k: a native sealed type in its own module: its functions, generic code and lists of it, interpreted and compiled", run := fun _ =>

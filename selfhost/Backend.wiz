@@ -86,10 +86,11 @@ def isNatDesc (D : Val) : Bool := match whnf D with
       | .false => .false
     | _ => .false
   | _ => .false
+-- (22m: over an index type with one value, `Unit` or a singleton tail such as a brand's)
 def isNatTy (ty : Val) : Bool := match whnf ty with
-  | .vmu _ I D _ _ => match whnf I with
-    | .vunit _ => isNatDesc D
-    | _ => .false
+  | .vmu _ I D _ _ => match singletonTail 0 I with
+    | .true => isNatDesc D
+    | .false => .false
   | _ => .false
 
 -- (the kernel has accepted the term: nothing to require of its proof markers, `inProof`)
