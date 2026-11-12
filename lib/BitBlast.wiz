@@ -665,3 +665,107 @@ def Bits.wshr_out {ω w : Nat} (x : UIntN w) (k j : Nat) (h : Nat.le w (Nat.add 
     Bits.bit (UIntN.toNat (UIntN.shiftRight x k)) j = .false :=
   Eq.trans (Bits.congr (fun t => Bits.bit t j) (Bits.wshr_val x k))
     (Eq.trans (Bits.high_bit k (UIntN.toNat x) j) (Bits.bit_ge w (UIntN.toNat x) (Nat.add k j) (UIntN.toNat_lt x) h))
+
+-- ## Comparisons
+-- `A < B` on the low `i` bits, from the low bit up: `c` before any bit (`ltc .false`
+-- is `<`, `ltc .true` is `≤`), then at each bit `¬a ∧ b`, or equal bits and the rest.
+def Bits.ltStep (a b c : Bool) : Bool := Bool.or (Bool.and (Bool.not a) b) (Bool.and (Sat.boolEq a b) c)
+def Bits.ltc (c : Bool) (A B : Nat) : Nat → Bool
+  | .zero => c
+  | .succ i => Bits.ltStep (Bits.bit A i) (Bits.bit B i) (Bits.ltc c A B i)
+def Bits.ltc_cons (c a b : Bool) (A B : Nat) : (i : Nat) →
+    Bits.ltc c (Bits.cons a A) (Bits.cons b B) (Nat.succ i) = Bits.ltc (Bits.ltStep a b c) A B i
+  | .zero => Bits.congr2 (fun x y => Bits.ltStep x y c) (Bits.bit_cons0 a A) (Bits.bit_cons0 b B)
+  | .succ i =>
+    @Eq.trans Bool (Bits.ltc c (Bits.cons a A) (Bits.cons b B) (Nat.succ (Nat.succ i)))
+      (Bits.ltStep (Bits.bit A i) (Bits.bit B i) (Bits.ltc c (Bits.cons a A) (Bits.cons b B) (Nat.succ i)))
+      (Bits.ltc (Bits.ltStep a b c) A B (Nat.succ i))
+      (Bits.congr2 (fun x y => Bits.ltStep x y (Bits.ltc c (Bits.cons a A) (Bits.cons b B) (Nat.succ i)))
+        (Bits.bit_consS a A i) (Bits.bit_consS b B i))
+      (Bits.congr (Bits.ltStep (Bits.bit A i) (Bits.bit B i)) (Bits.ltc_cons c a b A B i))
+-- `<` and `==` of two numbers from their low bits and the rest
+def Bits.lt_cons : (A B : Nat) → (a b : Bool) →
+    Nat.lt (Bits.cons a A) (Bits.cons b B) = Bool.or (Nat.lt A B) (Bool.and (Nat.beq A B) (Bool.and (Bool.not a) b))
+  | .zero, .zero, .true, .true => rfl
+  | .zero, .zero, .true, .false => rfl
+  | .zero, .zero, .false, .true => rfl
+  | .zero, .zero, .false, .false => rfl
+  | .zero, .succ B, .true, b => Eq.substProp (fun (t : Nat) => Nat.lt (Bits.cons .true 0) t = .true) (Eq.symm (Bits.cons_ss b B)) rfl
+  | .zero, .succ B, .false, b => Eq.substProp (fun (t : Nat) => Nat.lt (Bits.cons .false 0) t = .true) (Eq.symm (Bits.cons_ss b B)) rfl
+  | .succ A, .zero, a, .true => Eq.substProp (fun (t : Nat) => Nat.lt t (Bits.cons .true 0) = .false) (Eq.symm (Bits.cons_ss a A)) rfl
+  | .succ A, .zero, a, .false => Eq.substProp (fun (t : Nat) => Nat.lt t (Bits.cons .false 0) = .false) (Eq.symm (Bits.cons_ss a A)) rfl
+  | .succ A, .succ B, a, b =>
+    @Eq.trans Bool (Nat.lt (Bits.cons a (Nat.succ A)) (Bits.cons b (Nat.succ B))) (Nat.lt (Bits.cons a A) (Bits.cons b B))
+      (Bool.or (Nat.lt A B) (Bool.and (Nat.beq A B) (Bool.and (Bool.not a) b)))
+      (Bits.congr2 Nat.lt (Bits.cons_ss a A) (Bits.cons_ss b B)) (Bits.lt_cons A B a b)
+def Bits.beq_cons : (A B : Nat) → (a b : Bool) →
+    Nat.beq (Bits.cons a A) (Bits.cons b B) = Bool.and (Nat.beq A B) (Sat.boolEq a b)
+  | .zero, .zero, .true, .true => rfl
+  | .zero, .zero, .true, .false => rfl
+  | .zero, .zero, .false, .true => rfl
+  | .zero, .zero, .false, .false => rfl
+  | .zero, .succ B, .true, b => Eq.substProp (fun (t : Nat) => Nat.beq (Bits.cons .true 0) t = .false) (Eq.symm (Bits.cons_ss b B)) rfl
+  | .zero, .succ B, .false, b => Eq.substProp (fun (t : Nat) => Nat.beq (Bits.cons .false 0) t = .false) (Eq.symm (Bits.cons_ss b B)) rfl
+  | .succ A, .zero, a, .true => Eq.substProp (fun (t : Nat) => Nat.beq t (Bits.cons .true 0) = .false) (Eq.symm (Bits.cons_ss a A)) rfl
+  | .succ A, .zero, a, .false => Eq.substProp (fun (t : Nat) => Nat.beq t (Bits.cons .false 0) = .false) (Eq.symm (Bits.cons_ss a A)) rfl
+  | .succ A, .succ B, a, b =>
+    @Eq.trans Bool (Nat.beq (Bits.cons a (Nat.succ A)) (Bits.cons b (Nat.succ B))) (Nat.beq (Bits.cons a A) (Bits.cons b B))
+      (Bool.and (Nat.beq A B) (Sat.boolEq a b))
+      (Bits.congr2 Nat.beq (Bits.cons_ss a A) (Bits.cons_ss b B)) (Bits.beq_cons A B a b)
+def Bits.ltId : (L E a b c : Bool) →
+    Bool.or (Bool.or L (Bool.and E (Bool.and (Bool.not a) b))) (Bool.and (Bool.and E (Sat.boolEq a b)) c)
+      = Bool.or L (Bool.and E (Bits.ltStep a b c))
+  | .true, _, _, _, _ => rfl
+  | .false, .false, _, _, _ => rfl
+  | .false, .true, _, _, _ => rfl
+def Bits.ltc_lt_cons (k : Nat) (c a b : Bool) (A B : Nat)
+    (ih : Bits.ltc (Bits.ltStep a b c) A B k = Bool.or (Nat.lt A B) (Bool.and (Nat.beq A B) (Bits.ltStep a b c))) :
+    Bits.ltc c (Bits.cons a A) (Bits.cons b B) (Nat.succ k)
+      = Bool.or (Nat.lt (Bits.cons a A) (Bits.cons b B)) (Bool.and (Nat.beq (Bits.cons a A) (Bits.cons b B)) c) :=
+  @Eq.trans Bool (Bits.ltc c (Bits.cons a A) (Bits.cons b B) (Nat.succ k)) (Bits.ltc (Bits.ltStep a b c) A B k)
+    (Bool.or (Nat.lt (Bits.cons a A) (Bits.cons b B)) (Bool.and (Nat.beq (Bits.cons a A) (Bits.cons b B)) c))
+    (Bits.ltc_cons c a b A B k)
+    (@Eq.trans Bool (Bits.ltc (Bits.ltStep a b c) A B k) (Bool.or (Nat.lt A B) (Bool.and (Nat.beq A B) (Bits.ltStep a b c)))
+      (Bool.or (Nat.lt (Bits.cons a A) (Bits.cons b B)) (Bool.and (Nat.beq (Bits.cons a A) (Bits.cons b B)) c))
+      ih
+      (Eq.symm (@Eq.trans Bool
+        (Bool.or (Nat.lt (Bits.cons a A) (Bits.cons b B)) (Bool.and (Nat.beq (Bits.cons a A) (Bits.cons b B)) c))
+        (Bool.or (Bool.or (Nat.lt A B) (Bool.and (Nat.beq A B) (Bool.and (Bool.not a) b))) (Bool.and (Bool.and (Nat.beq A B) (Sat.boolEq a b)) c))
+        (Bool.or (Nat.lt A B) (Bool.and (Nat.beq A B) (Bits.ltStep a b c)))
+        (Bits.congr2 (fun x y => Bool.or x (Bool.and y c)) (Bits.lt_cons A B a b) (Bits.beq_cons A B a b))
+        (Bits.ltId (Nat.lt A B) (Nat.beq A B) a b c))))
+-- **the comparison circuit is `<` (or `≤`) on numbers below `2^k`**
+def Bits.ltc_lt : (k : Nat) → (c : Bool) → (A B : Nat) → Nat.lt A (Nat.pow 2 k) = .true → Nat.lt B (Nat.pow 2 k) = .true →
+    Bits.ltc c A B k = Bool.or (Nat.lt A B) (Bool.and (Nat.beq A B) c)
+  | .zero, .true, .zero, .zero, _, _ => rfl
+  | .zero, .false, .zero, .zero, _, _ => rfl
+  | .zero, _, .succ A, _, h, _ => absurd (Sat.contra (Nat.lt A 0) h (Bits.ltz A))
+  | .zero, _, .zero, .succ B, _, h => absurd (Sat.contra (Nat.lt B 0) h (Bits.ltz B))
+  | .succ k, c, A, B, hA, hB =>
+    Eq.substProp (fun (t : Nat) => Bits.ltc c t B (Nat.succ k) = Bool.or (Nat.lt t B) (Bool.and (Nat.beq t B) c)) (Bits.decomp A)
+      (Eq.substProp (fun (t : Nat) => Bits.ltc c (Bits.cons (Bits.odd A) (Bits.half A)) t (Nat.succ k)
+            = Bool.or (Nat.lt (Bits.cons (Bits.odd A) (Bits.half A)) t) (Bool.and (Nat.beq (Bits.cons (Bits.odd A) (Bits.half A)) t) c))
+        (Bits.decomp B)
+        (Bits.ltc_lt_cons k c (Bits.odd A) (Bits.odd B) (Bits.half A) (Bits.half B)
+          (Bits.ltc_lt k (Bits.ltStep (Bits.odd A) (Bits.odd B) c) (Bits.half A) (Bits.half B)
+            (Bits.half_lt A (Nat.pow 2 k) hA) (Bits.half_lt B (Nat.pow 2 k) hB))))
+def Bits.or_and_false : (L E : Bool) → Bool.or L (Bool.and E .false) = L
+  | .true, _ => rfl
+  | .false, .true => rfl
+  | .false, .false => rfl
+def Bits.le_or : (A B : Nat) → Nat.lt A (Nat.succ B) = Bool.or (Nat.lt A B) (Bool.and (Nat.beq A B) .true)
+  | .zero, .zero => rfl
+  | .zero, .succ _ => rfl
+  | .succ A, .zero => Bits.ltz A
+  | .succ A, .succ B => Bits.le_or A B
+-- the word comparisons, as `bv_decide`'s gates (an `and` of the result with itself)
+def Bits.wlt_bits {ω w : Nat} (x y : UIntN w) :
+    UIntN.lt x y = Bool.and (Bits.ltc .false (UIntN.toNat x) (UIntN.toNat y) w) (Bits.ltc .false (UIntN.toNat x) (UIntN.toNat y) w) :=
+  Eq.trans (Eq.symm (Eq.trans (Bits.ltc_lt w .false (UIntN.toNat x) (UIntN.toNat y) (UIntN.toNat_lt x) (UIntN.toNat_lt y))
+      (Bits.or_and_false (Nat.lt (UIntN.toNat x) (UIntN.toNat y)) (Nat.beq (UIntN.toNat x) (UIntN.toNat y)))))
+    (Eq.symm (Bits.and_self (Bits.ltc .false (UIntN.toNat x) (UIntN.toNat y) w)))
+def Bits.wle_bits {ω w : Nat} (x y : UIntN w) :
+    UIntN.le x y = Bool.and (Bits.ltc .true (UIntN.toNat x) (UIntN.toNat y) w) (Bits.ltc .true (UIntN.toNat x) (UIntN.toNat y) w) :=
+  Eq.trans (Eq.trans (Bits.le_or (UIntN.toNat x) (UIntN.toNat y))
+      (Eq.symm (Bits.ltc_lt w .true (UIntN.toNat x) (UIntN.toNat y) (UIntN.toNat_lt x) (UIntN.toNat_lt y))))
+    (Eq.symm (Bits.and_self (Bits.ltc .true (UIntN.toNat x) (UIntN.toNat y) w)))
