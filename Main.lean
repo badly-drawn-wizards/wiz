@@ -193,6 +193,7 @@ def elaborate (tc : Toolchain) (path : String) (input : String) : IO (CommandSta
 
 /-- (27a) `--trust-native` and `--native-fuel N`. -/
 def nativeOpts (tc : Toolchain) : Bool × Nat := (tc.trustNative, tc.nativeFuel.getD NativeRun.defaultFuel)
+
 /-- (11s) `wiz doc`'s options. -/
 structure DocArgs where
   out : Option String := none
