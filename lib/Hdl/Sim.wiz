@@ -115,6 +115,10 @@ def FastSim.node (i : Nat) (n : SimNode) (acc : FastProg) : FastProg :=
   -- (memories, H14 C3: not in the fast simulation yet; such a netlist is not well formed
   -- here, so `simFast` falls back to `Netlist.simulate`)
   | .memRead _ => FastProg.mk acc.code acc.ins acc.regIns acc.regs acc.outs (.cons 0 acc.init)
+  -- (vendor primitives, H14 P1: likewise)
+  | .inst _ => FastProg.mk acc.code acc.ins acc.regIns acc.regs acc.outs (.cons 0 acc.init)
+  | .instOut _ _ => FastProg.mk acc.code acc.ins acc.regIns acc.regs acc.outs (.cons 0 acc.init)
+  | .clock => FastProg.mk acc.code acc.ins acc.regIns acc.regs acc.outs (.cons 0 acc.init)
 
 def FastSim.nodes : Nat → List SimNode → FastProg → FastProg
   | _, .nil, acc => acc
@@ -137,6 +141,9 @@ def FastSim.nodesOk (nregs : Nat) : Nat → List NetNode → Bool
   | k, .cons n ns => Bool.and (Bool.and (FastSim.allBelow k n.args) (match n.op with
       | .reg r => Nat.lt r nregs
       | .memRead _ => .false
+      | .inst _ => .false
+      | .instOut _ _ => .false
+      | .clock => .false
       | _ => .true)) (FastSim.nodesOk nregs (Nat.succ k) ns)
 
 def FastSim.optBelow (k : Nat) : Option Nat → Bool
@@ -153,7 +160,8 @@ def FastSim.portsOk (k : Nat) : List NetPort → Bool
   | .cons p ps => Bool.and (Nat.lt p.node k) (FastSim.portsOk k ps)
 
 -- Node arguments refer to earlier nodes, register reads to registers, and what the
--- registers load and the outputs show to nodes; no memories (H14 C3; not simulated here yet).
+-- registers load and the outputs show to nodes; no memories (H14 C3) or vendor primitives
+-- (H14 P1): not simulated here yet.
 def Netlist.wellFormed (n : Netlist) : Bool :=
   let ω k := List.length n.nodes;
   Bool.and (FastSim.nodesOk (List.length n.regs) 0 n.nodes) (Bool.and (FastSim.regsOk k n.regs) (FastSim.portsOk k n.outputs))
