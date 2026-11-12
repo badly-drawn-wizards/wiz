@@ -254,7 +254,18 @@ Project X-Ray and nextpnr use. `examples/hdl-arty.wiz` (group `hdl`) checks the 
 that synth_xilinx maps its RAMs, ROM and multiply to RAMB18E1, RAMB36E1 and DSP48E1. The
 flow from there to a bitstream (yosys, nextpnr-xilinx, fasm2frames, xc7frames2bit; the
 openXC7 toolchain from Nix) is a separate package, wiz-arty, as wiz-icestick-uart is for
-the iCEstick.
+the iCEstick. Its four designs (blinky, UART hello and echo, and `squares` with a RAMB18E1
+and a DSP48E1) ran on an Arty A7-35T on 2026-11-12.
+
+**UART clock rates.** An FT2232 (the USB-UART of both boards) makes its baud rate from
+3 MHz with an integer divisor, so "115200" is 3 MHz / 26 = 115384.6 baud, 0.16 % fast. A
+design that relays at line rate with bounded buffering (an echo with one byte of
+buffer) must send at least as fast as the host sends. A divider rounded to the nominal
+rate makes the board slow, and it then drops a byte every few thousand in a long burst.
+That happened on the Arty with 100 MHz / 868 = 115207 baud: one byte in about 2200. The
+iCEstick's 12 MHz / 104 = 115384.6 baud equals the FT2232's rate exactly, which is why
+it never showed there. Compute the divider from the host's real rate and round it down
+(wiz-arty's `Ftdi.divisor` and `clocksPerBit`: 866 at 100 MHz).
 
 ## Logic, heap predicates and Hoare triples ✅
 
