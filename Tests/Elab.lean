@@ -7385,14 +7385,22 @@ def linearCaseGroup : Group where
         -- (if the release were skipped, the second `c_acquire` would wait forever; if it
         -- ran twice, the count would be off)
         ioRunC ticketSrc relHelper "first\nsecond\n2\n" },
-    { name := "side effects live in IO: an extern or implementation returning Unit (or a type) is rejected", run := fun _ => do
+    { name := "side effects live in IO: an extern or implementation whose result has no runtime content is rejected", run := fun _ => do
         -- linear-review's stashes of a pure Unit-valued release (t_stash2, t_stash, t_res)
-        -- start with the extern itself, which is now refused
-        failsLibs "import IO\nextern \"c_release\" cRelease : Nat → Unit\n" "must be in IO"
-        failsLibs "import IO\nextern \"c_release\" cRelease : (1 n : Nat) → Unit\n" "must be in IO"
+        -- start with the extern itself, which is now refused; so do the bypasses b1 (a
+        -- named unit) and b3 (a proposition), and an erased function into Unit. The check
+        -- is semantic (after whnf, erasure's own `erasable`)
+        let m := "must carry something at run time"
+        failsLibs "import IO\nextern \"c_release\" cRelease : Nat → Unit\n" m
+        failsLibs "import IO\nextern \"c_release\" cRelease : (1 n : Nat) → Unit\n" m
+        failsLibs "import IO\ndef Tk : Type := Unit\nextern \"c_release\" cRelease : Nat → Tk\n" m
+        failsLibs "import IO\ndef P : Prop := True\nextern \"c_release\" cRelease : Nat → P\n" m
+        failsLibs "import IO\nextern \"c_release\" cRelease : Nat → (0 k : Nat) → Unit\n" m
         failsLibs ("import IO\ndef rel (n : Nat) : Unit := ()\ndef relImpl (n : Nat) : Unit := ()\n" ++
-          "attribute [implemented_by relImpl] rel\n") "returns Unit or a type"
-        okLibs "import IO\nextern \"c_release\" cRelease : Nat → IO Unit\n" },
+          "attribute [implemented_by relImpl] rel\n") "has no runtime content"
+        failsLibs ("import IO\ndef Tk : Type := Unit\ndef rel (n : Nat) : Tk := ()\ndef relImpl (n : Nat) : Tk := ()\n" ++
+          "attribute [implemented_by relImpl] rel\n") "has no runtime content"
+        okLibs "import IO\nextern \"c_release\" cRelease : Nat → IO Unit\nextern \"c_sq\" cSq : Nat → Nat\n" },
     { name := "linear-review's erased-position stashes: with the release in IO there is no Unit to hide it in", run := fun _ => do
         -- (the same shapes, with the IO release: `t` must reach an IO action that is run;
         -- hiding it in an erasable value is a quantity error, or leaves a World unconsumed)

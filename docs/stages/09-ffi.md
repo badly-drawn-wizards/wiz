@@ -20,8 +20,14 @@ def main : IO Unit := do
   function. Marshalling follows `T`: `Nat` and `UInt64` ↔ `uint64_t`, `Float64` ↔
   `double`, `String` ↔ UTF-8 `char*`, `Bool` ↔ `int`, `Unit` ↔ `void`; a result in `IO`
   takes and returns the world. The backends emit a C wrapper per foreign function.
-  A foreign function returning `Unit` must be in `IO` (`… → IO Unit`): a pure call whose
-  result is `Unit` carries nothing, so compiled code may drop it, effect and all (4h).
+  A foreign function outside `IO` must be pure (no observable effect): compiled code may
+  drop or duplicate such a call. Its result must have runtime content: `Unit`, a
+  proposition, a type, or an erased function into those (after unfolding) is refused.
+  An effect belongs in `IO` (`… → IO Unit`). (4h; CoreSpec §10.2a.)
+  A foreign function outside `IO` must be pure (no observable effect): compiled code may
+  drop or duplicate such a call. Its result must have runtime content: `Unit`, a
+  proposition, a type or an erased function into those (after unfolding) is refused;
+  an effect belongs in `IO` (`… → IO Unit`). (4h; CoreSpec §10.2a.)
   Without a header, a prototype is generated from the Wiz type.
 * `UInt64` and `Float64` are axioms whose operations are runtime functions, bound
   with `extern` (boxed raw words at runtime). The kernel doesn't compute with them.

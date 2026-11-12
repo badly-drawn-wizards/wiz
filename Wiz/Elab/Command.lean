@@ -2080,10 +2080,10 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
           -- (linear-case stage 2) side effects live in `IO` (the world), never in an
           -- erasable or contentless result: a pure `… → Unit` call has nothing to keep, so
           -- erasure may drop it (inside an erased position, an erased closure, a dead `let`)
-          else if !io && rk == .k 'v' then
-            report .error cmd.info ("a foreign function returning Unit must be in IO (`… → IO Unit`): " ++
-              "a pure call whose result is Unit carries nothing, so compiled code may drop it, effect and all. " ++
-              "An effectful extern returns IO or data")
+          else if resultContentless s.globals (eval s.globals [] ty) then
+            report .error cmd.info ("a foreign function's result must carry something at run time: this one returns " ++
+              "Unit, a proposition, a type or another value with no runtime content (outside IO), so compiled code " ++
+              "may drop the call. A pure extern returns data; an effect belongs in IO (`… → IO Unit`)")
           else
           let key : Name := s!"extern:{cname}:{String.join (ks.map (·.toKey))}:{rk.toKey}:{if io then "io" else "pure"}:{header}:{finOf res}"
           match addDeclSorted s.globals { name, type := ty, value := none } with
@@ -2283,8 +2283,8 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
       else if f == impl then report .error (cmd.getArg 3).info s!"{f} can't be implemented by itself"
       -- (linear-case stage 2) as for `extern`: an implementation is where an effect could
       -- hide, and a result of type Unit (or a type) carries nothing erasure must keep
-      else if (match (Wiz.Elab.peelPis df.type).2 with | .unit _ | .sort _ => true | _ => false) then
-        report .error fStx.info s!"{f} returns Unit or a type: its implementation could hide an effect that compiled code drops; return IO or data instead"
+      else if resultContentless s.globals (eval s.globals [] df.type) then
+        report .error fStx.info s!"{f}'s result has no runtime content (Unit, a proposition, a type, …): its implementation could only matter through an effect, which compiled code may drop; return IO or data instead"
       else if df.levelParams.length != di.levelParams.length then
         report .error (cmd.getArg 3).info
           s!"{impl} has {di.levelParams.length} universe parameters, {f} has {df.levelParams.length}"
