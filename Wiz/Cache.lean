@@ -106,6 +106,7 @@ partial def term : Term R → Sx
   | .tt => .a "tt"
   | .empty l => node "empty" [level l]
   | .absurd m t => node "absurd" [term m, term t]
+  | .letUnit u b => node "letUnit" [term u, term b]
   | .eq A a b => node "eq" [term A, term a, term b]
   | .eqTy A B => node "eqTy" [term A, term B]
   | .refl A a => node "refl" [term A, term a]
@@ -214,6 +215,7 @@ partial def dterm : Sx → Option (Term R)
     | "unit" => return .unit (← lv 1)
     | "empty" => return .empty (← lv 1)
     | "absurd" => return .absurd (← t 1) (← t 2)
+    | "letUnit" => return .letUnit (← t 1) (← t 2)
     | "eq" => return .eq (← t 1) (← t 2) (← t 3)
     | "eqTy" => return .eqTy (← t 1) (← t 2)
     | "refl" => return .refl (← t 1) (← t 2)
