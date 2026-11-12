@@ -1,0 +1,148 @@
+# Changelog
+
+All notable changes to Wiz. Versions follow [Semantic Versioning](https://semver.org/)
+in its 0.x form: until 1.0, a minor release (0.1 → 0.2) may break anything; a patch
+release (0.1.0 → 0.1.1) fixes bugs only. See "Stability" in the 0.1.0 notes for what is
+covered.
+
+Section numbers (`4c`, `22e`, …) refer to the stage docs: section `NNx` is in
+`docs/stages/NN-*.md`. `#n` is a pull request on GitHub.
+
+## [Unreleased]
+
+## [0.1.0] - unreleased (draft)
+
+The first tagged release. Everything below is new in it; it collects stages 1–26 and the
+pull requests merged up to the tag.
+
+### Stability
+
+* Nothing is stable yet. 0.1 is a snapshot for people who want a fixed toolchain to
+  pin (`wiz-toolchain`: `v0.1.0`), not a compatibility promise. The language, the
+  standard library, the LSP and infoview protocol, the grail manifest and the C FFI may
+  all change in 0.2 without deprecation aliases. Breaking changes will be listed here.
+* **Soundness.** Nothing about Wiz as a whole is proved. [docs/Status.md](docs/Status.md)
+  lists what is known: the trusted base, the conjectures (regularity at inert types,
+  equality of descriptions) and the open issues. Please report a proof of `False`
+  (Status.md, "How to report a soundness bug").
+
+### The core theory and the kernel
+
+* A kernel for quantitative type theory, parametric in the rig (quantities `0`, `1`,
+  `ω`), with universe polymorphism, Σ, `Unit`, `Empty` (stages 1, 4a–b), quantity
+  polymorphism (4d).
+* Observational equality with an impredicative, proof-irrelevant `Prop`: function
+  extensionality, `cast` that computes on data (4c); equality of descriptions,
+  `μ ≡ μ` compares the codes (4g, #40).
+* Data as indexed descriptions with `μ`/`ν`, `inductive` and `structure`, dependent
+  pattern matching and structural recursion (4d–e), sized types (4f), codata and
+  copatterns.
+* Regularity off by default (decision D1 (a), #4, #15); regularity at inert types
+  decided by ground equality (#46); `castRefl` as a propositional axiom (#23).
+* Proofs are never evaluated by the kernels (P2, #61); `Size`/`Qty` handling, `ULift`
+  for small description fields (Q4, #26).
+* The trusted base made explicit (22f): partial definitions need a witness the kernel
+  checks (#5), `builtin` registrations outside the toolchain's library are axioms (#5),
+  a builtin key is registered once (#67), compiled equations are derived from the
+  checked value and their agreement is checked by the kernel (T1, #82, #126),
+  `#print axioms` lists native implementations (#66).
+* Soundness fixes, each with regression tests (docs/Status.md §3–4): propositions
+  compared by shape (F1), `∞ < ∞` (F2), partial definitions at an empty index (F3, #5),
+  unchecked registrations (F4, #5), quantity variables in type equality (F6, #43), a
+  variable captured by a native operation (F7, #59), `absurd` on glued values (F8,
+  #59), the eliminators' index levels (F9, #83), K3/Q1/Q2/Q3 (#14), projections only on
+  unrestricted pairs (R1, #84), two declarations of one name (#104), a variable out of
+  scope (#72), the self-hosted kernel's fast path at universe levels (W1, #76),
+  `Size ≡ Size` in the self-hosted kernel (O1).
+* Kernel lint: every traversal handles every constructor; a panic is not a value (#78).
+* WizMeta: a specification of the core theory and a reference checker (#122);
+  equations at propositions are `True` (#123).
+
+### The language and the elaborator
+
+* An extensible parser (stage 2), an elaborator with implicit arguments and unification
+  (stage 3), macros by example, procedural macros and tactics written in Wiz (stage 6,
+  #88: `trace`, hygienic names, `unfold`/`whnf`/`change`/`rw`, reflection of
+  constructors), type classes with tabled resolution and `deriving` (stage 7, #39),
+  numeric classes `Add`/`Sub`/`Mul`/`Div`/`Mod`/`Neg`/`OfNat` and `Int` (7e, #85).
+* Effects as a library, fusion, one-shot effects (stage 10).
+* Named arguments (13a, #33); private declarations, constructors, fields and types,
+  per module (13b, #33, #48, #109, #132); `if`/`&&`/`||`/`!`, `Functor`/`Applicative`,
+  `∃` binders and ASCII logic, `let` tuple patterns (13c–f, #107); as-patterns,
+  structure patterns and `⟨…⟩`, structure update (13g–i, #106); keyword scopes (13j,
+  #89); list literals, `++` as `Append`, local notation (13k–m, #115); `rfl` at an
+  equation that has computed (13n, #111).
+* Phantom fields for unused type parameters (22e, #10); sealed types (22k, #119);
+  regions: borrow checking as typing (22g, #19); Feral, a Rust-like surface language as
+  a command macro (22j, #125).
+* Many elaborator fixes: postponed lambdas, trailing instances, projection functions,
+  constructor parameters from the expected type (#25), numeral-sub blowup and computed
+  equations (#13), scope escape (#31), unification approximation and do-notation (#92),
+  fast-failing unification (#110), `Level.normalize` (#35), linear nested spines (#62).
+
+### Running and compiling programs
+
+* Erasure and an interpreter (`#eval`, stage 5); representations decided by what
+  conversion sees (R3, #70).
+* An IR with Perceus reference counting and reuse, C and LLVM backends (stage 8),
+  borrowed parameters and drop specialisation (8e, #34); optimiser quick wins (#32);
+  unboxed structure fields and `attribute [inline]` (22i, #37).
+* Numbers for hardware and systems code (stage 22): division, powers and bits,
+  `implemented_by`, machine integers, unboxed words (#11), one bit-vector family (#24),
+  big numerals (#80).
+* The C FFI (stage 9): foreign functions and header import, checked glue, foreign
+  pointers and finalizers, `link_c`/`link_lib` (9f, #57), callbacks and exported
+  functions (9g, #56), processes, environment and files in `lib/Sys.wiz` (9h, #64), C
+  structs by value (9i, #63), bytes on handles, time limits and serial ports (9k, #101).
+* Concurrency (stage 25): a thread-safe runtime (#49), session-typed linear channels,
+  MVars and locks (#52).
+
+### Self-hosting
+
+* The lexer, parser, kernel, frontend and a backend written in Wiz (`selfhost/*.wiz`,
+  stages 12–21). The self-hosted frontend checks its own source, and the bootstrap
+  reaches a fixpoint (stage-1 C = stage-2 C).
+* Reference counting in the self-hosted backend (#9, #16, #28, #71, #77).
+* Parity work: phantom parameters, constructor parameters from the expected type,
+  `IO.args`, `--rc` (#44); foreign functions and types (21l, #73); written quantities,
+  `private`, `link_c`/`link_lib`/`export` (21m–p, #113).
+
+### Libraries
+
+* The Prelude, `Vec`/`Fin`/`BitVec` (#3), `lib/Json.wiz` and `lib/Infoview.wiz` (#12),
+  `lib/Text.wiz` (#103), `lib/Session.wiz` and `lib/MVar.wiz` (#52), `lib/Sys.wiz`
+  (#64, #101). See docs/libraries.md.
+* Separation logic (stage 24, #65): propositional logic over `Prop`, heaps and heap
+  predicates, Hoare triples as a Dijkstra monad, and `x`-tactics (24d, #114, #127).
+* HDL (experimental): a hash-consing netlist builder (#30), named ports, registers,
+  bundles, composition, reset/enable, Verilog emitters and simulation (#81, #91, #108,
+  #118).
+
+### Tooling
+
+* `wiz parse|check|build|run|lsp`, and `--version` on `wiz`, `grail` and `tower`.
+* A content-addressed elaboration cache shared between projects (11c, #29).
+* A language server: info tree, infoview protocol methods, code actions (11d, #6);
+  `wiz lsp --infoview SOCK` (11l, #21) and `--ws` (#42); go to definition and hovers
+  for syntax, binders, imports and instances (11q, #124).
+* Infoview clients in the terminal and in the browser (WebAssembly) (11m–n, #12).
+* wiz.nvim, a Neovim plugin (11p, #47, #99).
+* grail, a build tool and test runner configured in Wiz (stage 23): modules by path,
+  a cache key per module, grail v0 (#7), the self-hosted toolchain as targets and a test
+  runner (#17), parallel jobs (#22), git dependencies and `grail.lock` (#27), command
+  targets, `grail run` and a job supervisor (#102), `grail lsp` (#95).
+* tower, a toolchain manager with `wiz`/`grail` shims and a `wiz-toolchain` file per
+  project (stage 26, #54, #90, #93), also written in Wiz (26e, #103).
+
+### Distribution
+
+* A Nix flake: `nix develop`, `packages.wiz`, `packages.tower`, `nvim-wiz`, with
+  binaries on the Cachix cache `badlydrawnwizards` (#29).
+* Release tarballs that need only glibc 2.27 (2.30 for the bundled C compiler), with
+  their own C compiler, GMP and Boehm GC (26f, #100); a snapshot release for every
+  master commit and a `nightly` tag that moves once CI passes (26g, #97).
+
+### Licence
+
+* GPL-3.0-or-later, with the Wiz Runtime Library Exception for the runtime and the
+  libraries, so programs built with Wiz can be licensed as their authors like (#86).
