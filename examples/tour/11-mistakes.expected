@@ -1,4 +1,4 @@
-examples/tour/11-mistakes.wiz:6:32: error: missing case for constructor false
+examples/tour/11-mistakes.wiz:6:32: error: missing case for constructor false: add an alternative for .false
 examples/tour/11-mistakes.wiz:15:27: error: type mismatch
   expected: Vec ?m0 (.succ ?m1)
   inferred: Vec Nat 0
