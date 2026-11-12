@@ -3526,6 +3526,20 @@ def proofTower (k : Nat) : MTm :=
   let head := (List.range k).foldl (fun acc i => app acc (app (var 0) (A (k - 1 - i)))) (app (var 0) (A k))
   ann (prf (.num 0) (letE twoTy twoVal (letE ptrue (app (app head (lam (var 0))) star) star))) ptrue
 
+/-- (review F7, Q2.9 of `wiz-notes/prf-review.md`) The same tower, unmarked, as a proof of
+`False` under a hypothesis `h : False`: `fun h => refl (absurd h) : (h : False) → absurd h
+= absurd (prf (let two := …; let _ : True := tower; h))` at `Enum 2`. The kernel never runs
+the proof; reading the type back does (it is evaluated, to be a normal form), and must stop
+at the step budget. -/
+def proofTowerAbsurd (k : Nat) : MTm :=
+  let A : Nat → MTm := fun n => (List.range n).foldl (fun a _ => sorted 0 (pi a a)) ptrue
+  let twoTy := sorted 0 (pi prop (sorted 0 (pi (sorted 0 (pi (var 0) (var 1))) (sorted 0 (pi (var 1) (var 2))))))
+  let twoVal := lams 3 (app (var 1) (app (var 1) (var 0)))
+  let head := (List.range k).foldl (fun acc i => app acc (app (var 0) (A (k - 1 - i)))) (app (var 0) (A k))
+  let tower := letE twoTy twoVal (letE ptrue (app (app head (lam (var 0))) star) (var 2))
+  ann (prf (.num 0) (lam (refl (enum 2) (exfalso (enum 2) (var 0)))))
+    (pi pfalse (eq (enum 2) (exfalso (enum 2) (var 0)) (exfalso (enum 2) (prf (.num 0) tower))))
+
 /-- (P2) The proof marker, on terms that are *not* run through the marking pass: is the
 term accepted? `T2` is `True → True`, a proposition. -/
 def markerSamples : List (MTm × Bool) :=
@@ -4885,7 +4899,7 @@ def selfHostGroup : Group where
         let body := "\n".intercalate ((src.splitOn "\n").filter (!·.startsWith "import"))
         -- every declaration is reported, none with an error
         let decls := (src.splitOn "\n").filter fun l =>
-          ["def ", "partial def ", "inductive ", "structure "].any (fun (p : String) => l.startsWith p)
+          ["def ", "partial def ", "inductive ", "structure ", "extern "].any (fun (p : String) => l.startsWith p)
         let some out ← selfhostOutput ("import Prelude\n" ++ body) | pure ()
         let lines := (out.splitOn "\n").filter (· != "")
         for l in lines do
@@ -5097,6 +5111,25 @@ def selfHostGroup : Group where
         let calls := [3, 4, 6].map fun k => s!"(rawVerdict {(MTm.proofTower k).toWiz})"
         let printAll := "def printAll : List String → IO Unit\n  | .nil => IO.pure ()\n  | .cons s ss => do\n    IO.println s;\n    printAll ss\n"
         ioRun (kernel ++ "\n" ++ wizVerdict ++ printAll ++ s!"def main : IO Unit := printAll {wizList calls}\n") "True\nTrue\nTrue\n" },
+    { name := "F7: reading a proof back stops at its step budget in the self-hosted kernel too (a tower under absurd, read back in a type)", run := fun _ => do
+        -- (review F7) `quote` evaluates a suspended proof, to read it back as a normal form;
+        -- Kernel.wiz's had no budget, and reading this type back did not finish (30 s). The
+        -- Lean read-back stops at its budget and writes the proof as the message; the Wiz one
+        -- must too, with the same message (and the kernels accept the term at once).
+        let t := MTm.proofTowerAbsurd 4
+        let g := leanGlobals ()
+        let msg := Budget.message Budget.defaultSteps
+        match infer (R := ZeroOneMany) { globals := g } t.toTerm with
+        | .error e => throw (IO.userError s!"the Lean kernel rejects the term: {e}")
+        | .ok (ty, _) =>
+          unless ((reprStr (quote g 0 ty)).splitOn "a proof was not read back: it needs more than 1000000 evaluation steps").length > 1 do
+            throw (IO.userError s!"the Lean read-back of the type did not stop at the budget: {(reprStr (quote g 0 ty)).take 400}")
+        let kernel ← IO.FS.readFile "selfhost/Kernel.wiz"
+        -- (and the stub is no constant: the kernel rejects a term that holds it, with the message)
+        let stub := "(.prf (.lnum 0) (.axiomC proofStub .star))"
+        let main := s!"def main : IO Unit := do\n  IO.println (rawVerdict {t.toWiz});\n  IO.println (match infer empty {stub} with\n    | .ok _ _ => \"ok\"\n    | .err m => m)\n"
+        ioRun (kernel ++ "\n" ++ wizVerdict ++ main)
+          s!"(x0 : False) → Eq(Enum2, absurd(Enum2, x0), absurd(Enum2, {msg}))\n{msg}\n" },
     { name := "D2 (known gap, pinned): a Π/Σ/ULift cast across components of different sorts is accepted and its normal form rejected (both kernels; flips with mandatory component sorts)", run := fun _ => do
         -- (meta-review D2, `wiz-notes/soundness-probes/mr-cast-component-sorts.lean`) the casts
         -- compute with no check on the components' sorts, and the kernel rejects the normal
