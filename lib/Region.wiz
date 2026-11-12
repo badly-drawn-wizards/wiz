@@ -335,3 +335,16 @@ def Mut.store {ρ : Region} {A S : Type} (m : Mut ρ A S) : Store A S :=
   | .mk st => st
 -- (`Mut.ofPLens r l` is `Mut.ofR (Uniq.get r) (l (Uniq.get r))`, and `Mut.ofR v (.ok st)` is
 -- the borrow `st` itself: a spec of a place function is stated on the place's `Store`)
+-- a proof by cases on a handle: it is `Uniq.mk v` for its value `v` (a proposition, so
+-- nothing is used at run time). A generated `f.Spec x` holds by computation once its
+-- handles are values: `Uniq.elim (P := fun x => f.Spec x) x (fun a => …)`; with two handles,
+-- `Uniq.elim2 (P := fun x y => f.Spec x y) x y (fun a b => …)`. (The motive is given: the
+-- elaborator checks `h` before it sees the expected type.)
+def Uniq.elim {ρ : Region} {A : Type} {P : Uniq ρ A → Prop} (r : Uniq ρ A) (h : (v : A) → P (Uniq.mk v)) : P r :=
+  match r with
+  | .mk v => h v
+def Uniq.elim2 {ρ ρ' : Region} {A B : Type} {P : Uniq ρ A → Uniq ρ' B → Prop} (r : Uniq ρ A) (s : Uniq ρ' B)
+    (h : (a : A) → (b : B) → P (Uniq.mk a) (Uniq.mk b)) : P r s :=
+  match r with
+  | .mk a => (match s with
+    | .mk b => h a b)

@@ -202,14 +202,16 @@ def group : Group where
         let fn := "  fn swap {'a 'b} (x : &'a mut U64) (y : &'b mut U64) : Unit := {\n    let t := *x;\n    *x := *y;\n    *y := t\n  }\n"
         let s ← frontend (pre ++ "#lower feral\n" ++ fn ++ "  spec swap ensures (final x = old y) ensures (final y = old x)\nend\n")
         check ((infosOf s).any (has · ("def swap.Spec {ρa ρb : Region} (x : (Uniq ρa U64)) (y : (Uniq ρb U64)) : Prop :=\n" ++
-          "  Result.Holds (fun (r : (Unit × ((Uniq ρa U64) × (Uniq ρb U64)))) => ((r.2.1.val) = (y.val)) × ((r.2.2.val) = (x.val))) ( swap x y)")))
+          "  (match swap x y with\n" ++
+          "    | .ok r h_ => let 1 (x_h, h__t) := h_; let 1 y_h := h__t; Uniq.end x_h (fun x_fin => Uniq.end y_h (fun y_fin => (x_fin = (Uniq.get y)) × (y_fin = (Uniq.get x))))\n" ++
+          "    | .err e_ h_ => let 1 (x_h, h__t) := h_; let 1 y_h := h__t; Uniq.end x_h (fun _ => Uniq.end y_h (fun _ => False)))")))
           s!"{infosOf s}"
         -- a true specification is proved, a false one is not
         let ok := pre ++ "feral\n" ++ fn ++ "  spec swap ensures (final x = old y) ensures (final y = old x)\nend\n" ++
-          "def swap_ok {ρa ρb : Region} (x : Uniq ρa U64) (y : Uniq ρb U64) : swap.Spec x y := (rfl, rfl)\n"
+          "def swap_ok {ρa ρb : Region} (x : Uniq ρa U64) (y : Uniq ρb U64) : swap.Spec x y :=\n  Uniq.elim2 (P := fun (x : Uniq ρa U64) (y : Uniq ρb U64) => swap.Spec x y) x y (fun a b => (rfl, rfl))\n"
         checkEq "[]" (toString (errorsOf (← frontend ok) ok))
         let e ← firstError (pre ++ "feral\n" ++ fn ++ "  spec swap ensures (final x = old x)\nend\n" ++
-          "def swap_bad {ρa ρb : Region} (x : Uniq ρa U64) (y : Uniq ρb U64) : swap.Spec x y := rfl\n")
+          "def swap_bad {ρa ρb : Region} (x : Uniq ρa U64) (y : Uniq ρb U64) : swap.Spec x y :=\n  Uniq.elim2 (P := fun (x : Uniq ρa U64) (y : Uniq ρb U64) => swap.Spec x y) x y (fun a b => rfl)\n")
         check (has e "rfl") e
         -- requires, result
         let r := pre ++ "feral\n  fn add1 (a : U64) : U64 := a + 1\n  spec add1 requires (Nat.lt a.val 10 = .true) ensures (result.val = Nat.succ a.val)\nend\n" ++

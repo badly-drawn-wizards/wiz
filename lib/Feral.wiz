@@ -2679,7 +2679,8 @@ def Fe.toksL : SyntaxF .false → List String
 end
 -- an argument's value in a clause
 def Fe.valOf (ps : List (String × Fe.Ty)) (x : String) : String := match Fe.lookup x ps with
-  | .some (.ref _ _ _) => "(" +++ x +++ ".val)"
+  | .some (.ref .false _ _) => "(" +++ x +++ ".val)"
+  | .some (.ref .true _ _) => "(Uniq.get " +++ x +++ ")"
   | _ => x
 -- the clause's tokens, with `result`, `final x`, `old x` and the arguments replaced
 -- (`fi`/`ol`: the previous token was `final`/`old`)
@@ -2699,15 +2700,17 @@ def Fe.specGo (ps : List (String × Fe.Ty)) (fin : List (String × String)) (res
       | .false => .cons (Fe.valOf ps t) (Fe.specGo ps fin res .false .false rest)))
 def Fe.specToks (ps : List (String × Fe.Ty)) (fin : List (String × String)) (res : String) (ts : List String) : List String :=
   Fe.specGo ps fin res .false .false ts
--- the projections of `r` that hold the value and each handed-back argument
--- (`Fe.packV`: `(v, (x₁, (x₂, …)))`)
-def Fe.handedProj : String → List String → List (String × String)
-  | _, .nil => .nil
-  | pre, .cons x .nil => .cons (x, "(" +++ pre +++ ".val)") .nil
-  | pre, .cons x xs => .cons (x, "(" +++ pre +++ ".1.val)") (Fe.handedProj (pre +++ ".2") xs)
-def Fe.packTyStr : String → List String → String
-  | ret, .nil => ret
-  | ret, .cons h rest => "(" +++ ret +++ " × " +++ Fe.packTyStr h rest +++ ")"
+-- the handed-back handles of a `Result1` (linear): unpacked (`let 1 (x_h, t) := …`) and
+-- ended one by one (`Uniq.end x_h (fun x_fin => …)`), each final value bound for the clauses
+def Fe.specUnpack : String → List String → String
+  | src, .nil => ""
+  | src, .cons x .nil => "let 1 " +++ x +++ "_h := " +++ src +++ "; "
+  | src, .cons x xs => "let 1 (" +++ x +++ "_h, " +++ src +++ "_t) := " +++ src +++ "; " +++ Fe.specUnpack (src +++ "_t") xs
+def Fe.specEnds (fin : Bool) (body : String) : List String → String
+  | .nil => body
+  | .cons x xs => "Uniq.end " +++ x +++ "_h (fun " +++ (match fin with
+    | .true => x +++ "_fin"
+    | .false => "_") +++ " => " +++ Fe.specEnds fin body xs +++ ")"
 -- the tokens as source: separated by spaces, except after a `.` (`.true`, `x.1`)
 def Fe.joinToks : String → List String → String
   | _, .nil => ""
@@ -2736,13 +2739,8 @@ def Fe.specText (g : Fe.Glob) (p : List Nat) (it : Syntax) : Except String Strin
     | .nil =>
       let ev := Fe.boundsEv sig.bounds 0;
       let hs := Fe.paramNames sig sig.handed;
-      let hts := Fe.map (fun (h : String) => (match Fe.lookup h sig.params with
-        | .some t => Fe.tyStr t
-        | .none => "_")) hs;
-      let res := (match hs with
-        | .nil => "r"
-        | _ => "r.1");
-      let fin := Fe.handedProj "r.2" hs;
+      let res := "r";
+      let fin := Fe.map (fun (h : String) => (h, h +++ "_fin")) hs;
       let cls := Fe.kids (Fe.arg it 2);
       let reqs := Fe.clauses sig.params fin res "feral_clause.req" cls;
       let enss := Fe.clauses sig.params fin res "feral_clause.ens" cls;
@@ -2757,8 +2755,10 @@ def Fe.specText (g : Fe.Glob) (p : List Nat) (it : Syntax) : Except String Strin
           | .nil => ""
           | ts => "{" +++ Fe.words ts +++ ": Type} ")
         +++ Fe.words (Fe.map (fun (q : String × Fe.Ty) => "(" +++ q.1 +++ " : " +++ Fe.tyStr q.2 +++ ")") sig.params)
-        +++ ": Prop :=\n  " +++ Fe.arrows reqs ("Result.Holds (fun (r : " +++ Fe.packTyStr (Fe.tyStr sig.ret) hts +++ ") => "
-          +++ Fe.joinWith " × " enss +++ ") (" +++ call +++ ")")))
+        +++ ": Prop :=\n  " +++ Fe.arrows reqs (match hs with
+          | .nil => "Result.Holds (fun (r : " +++ Fe.tyStr sig.ret +++ ") => " +++ Fe.joinWith " × " enss +++ ") (" +++ call +++ ")"
+          | _ => "(match" +++ call +++ " with\n    | .ok r h_ => " +++ Fe.specUnpack "h_" hs +++ Fe.specEnds .true (Fe.joinWith " × " enss) hs
+              +++ "\n    | .err e_ h_ => " +++ Fe.specUnpack "h_" hs +++ Fe.specEnds .false "False" hs +++ ")")))
 
 -- ## The command macro
 inductive Fe.Item where
