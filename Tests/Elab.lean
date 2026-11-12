@@ -8542,6 +8542,9 @@ def linearCaseGroup : Group where
           "attribute [implemented_by relImpl] rel\n") "has no runtime content"
         failsLibs ("import IO\ndef Tk : Type := Unit\ndef rel (n : Nat) : Tk := ()\ndef relImpl (n : Nat) : Tk := ()\n" ++
           "attribute [implemented_by relImpl] rel\n") "has no runtime content"
+        -- an implementation at a proposition is a proof, erased too: allowed (externs are not)
+        okLibs ("import IO\ndef pf (n : Nat) : n = n := refl n\ndef pfImpl (n : Nat) : n = n := refl n\n" ++
+          "attribute [implemented_by pfImpl] pf\n")
         okLibs "import IO\nextern \"c_release\" cRelease : Nat → IO Unit\nextern \"c_sq\" cSq : Nat → Nat\n" },
     { name := "linear-review's erased-position stashes: with the release in IO there is no Unit to hide it in", run := fun _ => do
         -- (the same shapes, with the IO release: `t` must reach an IO action that is run;

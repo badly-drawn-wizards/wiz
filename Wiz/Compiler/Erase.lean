@@ -342,6 +342,19 @@ where
       | .pi x _ _ A B _ => go (ctx.bind x [] A) (Closure.inst ctx.globals B (.var ctx.lvl)) fuel
       | _ => false
 
+/-- Is the result of the function type `ty` (under its Πs) a proposition? Then an
+`implemented_by` for it is allowed: the implementation is ordinary Wiz code, a proof,
+erased like the definition, so no effect can be lost (externs still refuse it). -/
+partial def resultProp (g : Globals R) (ty : VTy R) : Bool :=
+  go { globals := g } ty 1000
+where
+  go (ctx : Ctx R) (ty : VTy R) : Nat → Bool
+    | 0 => false
+    | fuel + 1 =>
+      match whnf ty with
+      | .pi x _ _ A B _ => go (ctx.bind x [] A) (Closure.inst ctx.globals B (.var ctx.lvl)) fuel
+      | ty => isProp ctx.globals ctx.tys ty
+
 /-- (linear-case stage 2, defence in depth) Is `t` an application of a foreign function
 (`extern`)? Its call is kept even where its type is erasable: an effect never hides in a
 value that erasure drops. (`extern` itself refuses a pure `Unit` result; this covers a

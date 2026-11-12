@@ -2436,8 +2436,9 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
       else if f == impl then report .error (cmd.getArg 3).info s!"{f} can't be implemented by itself"
       -- (linear-case stage 2) as for `extern`: an implementation is where an effect could
       -- hide, and a result of type Unit (or a type) carries nothing erasure must keep
-      else if resultContentless s.globals (eval s.globals [] df.type) then
-        report .error fStx.info s!"{f}'s result has no runtime content (Unit, a proposition, a type, …): its implementation could only matter through an effect, which compiled code may drop; return IO or data instead"
+      -- (a proposition is allowed: the implementation is a proof, erased as well)
+      else if resultContentless s.globals (eval s.globals [] df.type) && !resultProp s.globals (eval s.globals [] df.type) then
+        report .error fStx.info s!"{f}'s result has no runtime content (Unit, a type, …): its implementation could only matter through an effect, which compiled code may drop; return IO or data instead"
       else if df.levelParams.length != di.levelParams.length then
         report .error (cmd.getArg 3).info
           s!"{impl} has {di.levelParams.length} universe parameters, {f} has {df.levelParams.length}"
