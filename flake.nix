@@ -115,7 +115,7 @@
             inherit (unwrapped) version;
             src = fs.toSource {
               root = ./.;
-              fileset = fs.unions [ ./lakefile.toml ./lake-manifest.json ./lean-toolchain ./Tower.lean ./Tower ];
+              fileset = fs.unions [ ./lakefile.toml ./lake-manifest.json ./lean-toolchain ./Tower.lean ./Tower ./Wiz/Version.lean ];
             };
             nativeBuildInputs = [ lean ];
             buildPhase = ''

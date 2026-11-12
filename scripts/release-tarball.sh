@@ -63,7 +63,12 @@ fi
 [ -n "$ccdir" ] && cp -R "$ccdir" "$top/share/wiz/cc"
 if [ -n "$webdir" ]; then
   mkdir -p "$top/share/wiz/web"
+  # (11s) tagged.js is shared by the infoview and the documentation's pages (`wiz doc`,
+  # which also copies scroll.*); a web dir from before 11s has none of them
   for f in infoview.html infoview.js wiz-infoview.mjs wiz-infoview.wasm; do cp "$webdir/$f" "$top/share/wiz/web/$f"; done
+  for f in tagged.js scroll.js scroll-search.js scroll.css; do
+    if [ -f "$webdir/$f" ]; then cp "$webdir/$f" "$top/share/wiz/web/$f"; fi
+  done
 fi
 echo 'A Wiz toolchain: lib/ is its standard library, .lake/build/bin/ its binaries, ../../bin/ its commands (editors use this file to find them).' > "$top/share/wiz/TOOLCHAIN"
 cat > "$top/bin/wiz" <<'EOF'
