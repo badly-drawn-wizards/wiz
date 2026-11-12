@@ -1,5 +1,6 @@
 import BitVec
 import Logic
+import Trace
 import Deriving
 -- The HDL library (`import Hdl.Core`). Combinational logic is tagless-final code,
 -- polymorphic in its representation `r : HwTy → Type`, with two instances: values
@@ -865,6 +866,33 @@ def Circuit.runAcc_eq {i o : HwTy} (c : Circuit i o) : (s : HwTy.El c.st) → (x
 
 def Circuit.run_eq {i o : HwTy} (c : Circuit i o) (xs : List (HwTy.El i)) : Circuit.run c xs = Circuit.runFrom c c.init xs :=
   Circuit.runAcc_eq c c.init xs List.nil
+
+-- The infinite semantics (lib/Trace.wiz): a circuit is a Mealy machine, and its run along
+-- an input trace is a trace. `run` and `runFrom` are its finite prefixes
+-- (`Mealy.runFrom_take`, `Circuit.run_take`); temporal properties are stated over `Circuit.trace` and
+-- `Circuit.obs`.
+def Circuit.mealy {i o : HwTy} (c : Circuit i o) : Mealy (HwTy.El c.st) (HwTy.El i) (HwTy.El o) := Circuit.stepEl c
+def Circuit.stateAt {ω i o : HwTy} (c : Circuit i o) (xs : Trace (HwTy.El i)) : Trace (HwTy.El c.st) :=
+  Mealy.stateAt (Circuit.mealy c) c.init xs
+def Circuit.trace {ω i o : HwTy} (c : Circuit i o) (xs : Trace (HwTy.El i)) : Trace (HwTy.El o) :=
+  Mealy.outAt (Circuit.mealy c) c.init xs
+-- the state and the input at each cycle
+def Circuit.obs {ω i o : HwTy} (c : Circuit i o) (xs : Trace (HwTy.El i)) : Trace (HwTy.El c.st × HwTy.El i) :=
+  Mealy.obs (Circuit.mealy c) c.init xs
+
+-- `runFrom` is `Mealy.runFrom` of the step, so simulating `n` cycles gives the first `n`
+-- elements of the trace.
+def Circuit.runFrom_mealy {i o : HwTy} (c : Circuit i o) : (s : HwTy.El c.st) → (xs : List (HwTy.El i)) →
+    Circuit.runFrom c s xs = Mealy.run (Circuit.mealy c) s xs
+  | s, .nil => rfl
+  | s, .cons x xs => Eq.congrArg (List.cons (Circuit.stepEl c s x).2) (Circuit.runFrom_mealy c (Circuit.stepEl c s x).1 xs)
+-- (the statement lib/Hdl/Temporal.wiz uses)
+def Mealy.runFrom_take {i o : HwTy} (c : Circuit i o) (n : Nat) (s : HwTy.El c.st) (xs : Trace (HwTy.El i)) :
+    Circuit.runFrom c s (Trace.take n xs) = Trace.take n (Mealy.outAt (Circuit.stepEl c) s xs) :=
+  Eq.trans (Circuit.runFrom_mealy c s (Trace.take n xs)) (Mealy.run_take (Circuit.mealy c) n s xs)
+def Circuit.run_take {i o : HwTy} (c : Circuit i o) (n : Nat) (xs : Trace (HwTy.El i)) :
+    Circuit.run c (Trace.take n xs) = Trace.take n (Circuit.trace c xs) :=
+  Eq.trans (Circuit.run_eq c (Trace.take n xs)) (Mealy.runFrom_take c n c.init xs)
 
 ------------------------------------------------------------------------------------
 -- Composition. Each combinator's state is made of its parts' states; the lemmas after

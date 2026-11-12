@@ -6768,6 +6768,14 @@ def hdlGroup : Group where
           "def g {r : HwTy → Type} [Hw r] (x : r (HwTy.bits 8)) (k : Nat) : r (HwTy.bits 8) := let j := Nat.succ k; Hw.lit 8 j\n#erase f\n#erase g")
           ["f := (λr. (λinst✝. (λx. (((((ShareLet.share ◾) ◾) ((((instShareLetRARB ◾) #1) ⟨0 8⟩) ⟨0 8⟩)) (((((Hw.add ◾) #1) 8) #0) #0)) (λy. (((((Hw.add ◾) #2) 8) #0) #0))))))",
            "g := (λr. (λinst✝. (λx. (λk. (let j := (Nat.succ #0); ((((Hw.lit ◾) #3) 8) #0))))))"] },
+    { name := "traces: a circuit's run along a trace (lib/Trace.wiz); the finite simulation is its prefix", run := fun _ =>
+        okLibs ("import Hdl.Core\ndef u8 : HwTy := HwTy.bits 8\n" ++
+          "def ctr : Circuit (HwTy.bits 1) u8 := Circuit.mk u8 (BitVec.ofNat 8 250) (fun s u => Hw.pair (Hw.add s (Hw.lit 8 1)) s)\n" ++
+          "def xs : Trace (BitVec 1) := Trace.const (BitVec.ofNat 1 0)\n" ++
+          "def t3 : Circuit.trace ctr xs 3 = BitVec.ofNat 8 253 := rfl\n" ++
+          "def pre (n : Nat) (ys : Trace (BitVec 1)) : Circuit.run ctr (Trace.take n ys) = Trace.take n (Circuit.trace ctr ys) := Circuit.run_take ctr n ys\n" ++
+          "#eval Hdl.map BitVec.toNat (Trace.take 8 (Circuit.trace ctr xs))\n")
+          [".cons 250 (.cons 251 (.cons 252 (.cons 253 (.cons 254 (.cons 255 (.cons 0 (.cons 1 .nil)))))))"] },
     { name := "Verilog: declarations before use (regs, wires, then the updates), sized initial values", run := fun _ =>
         okLibs (hdlVerilogSrc ++ "#eval v1\n")
           ["\"module counter(input clk, input [0:0] x, output [7:0] y);\\n  reg [7:0] r; initial r = 8'd250;\\n  wire [7:0] n3 = r + 8'd1;\\n  always @(posedge clk) r <= n3;\\n  assign y = r;\\nendmodule\\n\""] },
@@ -6789,6 +6797,15 @@ def hdlGroup : Group where
            ".cons \"no pin for port rst\" (.cons \"no pin for port en\" (.cons \"port leds has 4 bits, one pin given\" (.cons \"no pin for port top\" (.cons \"pin for no port: led\" .nil))))",
            "\"$timescale 1ns $end\\n$scope module counter $end\\n$var wire 1 ! clk $end\\n$var wire 1 \\\" go $end\\n$var wire 4 # leds $end\\n$var wire 1 $ top $end\\n$var wire 4 % count $end\\n$var wire 1 & up $end\\n$upscope $end\\n$enddefinitions $end\\n#0\\n0!\\n0\\\"\\nb0000 #\\n0$\\nb0000 %\\n1&\\n#1\\n1!\\n#2\\n0!\\n#3\\n1!\\n#4\\n0!\\n#5\\n1!\\n#6\\n0!\\n1\\\"\\n#7\\n1!\\n#8\\n\"",
            ".cons 17 (.cons 5 (.cons 4 .nil))"] },
+    { name := "H14 T: temporal properties (UART idle-high and delivery for ever, valid/ready refinement, stability, liveness)", run := fun _ => do
+        okLibs (← IO.FS.readFile "examples/hdl-temporal.wiz") },
+    { name := "H14 T: temporal notation □ ◇ ○ ~> |-> |=>, printed back; `|=>` leaves `fun`/`match` alone (13o)", run := fun _ => do
+        okLibs ("import Hdl.Temporal\n" ++
+          "def p (a b : TL Nat) : TL Nat := □ (a ~> ◇ b)\n#check p\n#check fun (a b : TL Nat) => TL.always (TL.leadsTo a (TL.eventually b))\n" ++
+          "#check fun (a b : TL Nat) => a |-> ○ b\n#check fun (a b : TL Nat) => a |=> b |-> a\n" ++
+          "def q (n : Nat) : Nat := match n with\n  |.zero=>1\n  | .succ k => k\ndef r : Nat → Nat := fun x=>x\n#eval q 0")
+          ["p : TL Nat → TL Nat → TL Nat", "fun a b => □ (a ~> ◇ b) : TL Nat → TL Nat → TL Nat",
+           "fun a b => a |-> ○ b : TL Nat → TL Nat → TL Nat", "fun a b => a |=> b |-> a : TL Nat → TL Nat → TL Nat", "1"] },
     { name := "Verilog: Icarus Verilog accepts the emitted modules (skipped without iverilog on PATH)", run := fun _ => do
         let found ← (do let o ← IO.Process.output { cmd := "iverilog", args := #["-V"] }; pure (o.exitCode == 0)) <|> pure false
         unless found do skip "no iverilog"; return
