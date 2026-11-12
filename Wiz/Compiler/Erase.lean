@@ -316,6 +316,15 @@ def unboxedSigma (g : Globals R) (lvl : Nat) (ty : VTy R) : Bool :=
   | .sigma _ _ _ B _ => erasedFunTy g (Closure.inst g B (.var lvl)) (lvl + 1)
   | _ => false
 
+/-- (linear-case stage 2, defence in depth) Is `t` an application of a foreign function
+(`extern`)? Its call is kept even where its type is erasable: an effect never hides in a
+value that erasure drops. (`extern` itself refuses a pure `Unit` result; this covers a
+polymorphic native whose result type is instantiated with an erasable one.) -/
+def externCall (g : Globals R) (t : Term R) : Bool :=
+  match t.spine.1 with
+  | .const n _ => g.builtins.any fun (k, x) => x == n && k.startsWith "extern:"
+  | _ => false
+
 /-- A call of a generated `T.casesOn`, unfolded and beta-reduced: as a function, its
 arguments (the branches) would all be computed before the call; unfolded, they sit in
 the branches of a `case` and only the one taken runs. -/
@@ -575,7 +584,9 @@ partial def quickType (ctx : Ctx R) (t : Term R) : TCM (VTy R) := do
 * `tt` is `◾`; `letE` keeps the binder (with `◾` for a `0` let);
 * everything else: `eraseInfer`. -/
 partial def eraseCheck (ctx : Ctx R) (t : Term R) (ty : VTy R) (inDesc : Bool := false) : TCM ETerm := do
-  if erasable ctx ty then return .erased
+  if erasable ctx ty then
+    if externCall ctx.globals t && !ctx.erased then return .letE "_" (← eraseSpine ctx t).1 .erased
+    return .erased
   -- (given) Q4: `ULift` has no runtime content: `up a` is `a`
   if let (.up a, .ulift _ A) := (t, whnf ty) then return ← eraseCheck ctx a A
   --<sol
@@ -693,7 +704,9 @@ partial def eraseInfer (ctx : Ctx R) (t : Term R) (known : Option (VTy R) := non
   let ty ← match known with
     | some ty => pure ty
     | none => quickType ctx t
-  if erasable ctx ty then return (.erased, ty)
+  if erasable ctx ty then
+    if externCall ctx.globals t && !ctx.erased then return (.letE "_" (← eraseSpine ctx t).1 .erased, ty)
+    return (.erased, ty)
   if let .natLit n := t then return (.natLit n, ty)
   -- (given) Q4: `down t` is `t`
   if let .down x := t then return (← eraseE ctx x, ty)

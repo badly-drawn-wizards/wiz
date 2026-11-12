@@ -1561,6 +1561,17 @@ match, a 0 field used at run time).
   the backend's dead-code pass keeps (it drops only pure values). So a consumer that
   computed `u` (`useU t`) runs exactly once: tested with a C consumer that releases a lock
   guard, after which a second `acquire` succeeds (C and LLVM, reference counting).
+* **Side effects live in `IO`, never in an erasable or contentless value.** Erasure drops
+  whatever has an erasable type (a proof, a type, an erased function into `Unit`), and an
+  erased head applied computes nothing, so a consumer hidden there (`(fun (0 k) =>
+  release t) 0`, or a definition whose result type is `(0 k : Nat) → Unit`) would not
+  run, though the kernel rightly counts `t` once (linear-review, second round). So:
+  `extern` refuses a pure function whose result is `Unit` ("must be in IO"), and
+  `implemented_by` refuses a function whose result is `Unit` or a type. Every effect then
+  goes through a `World`, which is linear and must reach `main`'s result. As defence in
+  depth, erasure keeps the call of a foreign function even where its type is erasable
+  (a polymorphic native instantiated at an erasable type): `let _ := call; ◾`
+  (`externCall`, Erase.lean).
 * **Only `Unit` itself.** `checkUnit` requires the `whnf` of `u`'s type to be `Unit_l`,
   never a type that is a singleton by η: a function into `Unit` may be a closure holding
   a resource, and consuming it would mean applying it, to an argument nobody may have.

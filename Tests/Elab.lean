@@ -7270,26 +7270,32 @@ def stashDef : String :=
 
 /-- A lock in C, a non-recursive mutex: `c_acquire` locks it (a second `c_acquire` without
 a `c_release` in between would wait forever) and hands out a ticket number; `c_release`
-returns `Unit`, unlocks and counts. -/
+(in IO) unlocks and counts. `c_poly` is a polymorphic foreign function that counts its
+calls (for erasure's defence in depth). -/
 def relHelper : String := "#include <stdint.h>
 #include <pthread.h>
+typedef uintptr_t wiz_val;
 static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
-static uint64_t released = 0, next = 0;
+static uint64_t released = 0, next = 0, polys = 0;
 uint64_t c_acquire(void) { pthread_mutex_lock(&mu); return next++; }
 void c_release(uint64_t n) { (void)n; released++; pthread_mutex_unlock(&mu); }
 uint64_t c_count(void) { return released; }
+wiz_val c_poly(uint64_t n) { (void)n; polys++; return (wiz_val)1; }
+uint64_t c_polys(void) { return polys; }
 "
 
-/-- A linear ticket for `relHelper`'s lock, released by a consumer that returns `Unit`
-(through `casesOn1`) and consumed with `let () := …`. -/
-def ticketSrc : String :=
-  "import IO\nextern \"c_acquire\" cAcquire : IO Nat\nextern \"c_release\" cRelease : Nat → Unit\n" ++
+/-- A linear ticket for `relHelper`'s lock: acquired and released in IO (side effects live
+in the world), released through `casesOn1`. -/
+def ticketHeader : String :=
+  "import IO\nextern \"c_acquire\" cAcquire : IO Nat\nextern \"c_release\" cRelease : Nat → IO Unit\n" ++
   "extern \"c_count\" cCount : IO Nat\n" ++
   "inductive Ticket where\n  | mk (n : Nat)\n" ++
-  "def Ticket.release (1 t : Ticket) : Unit := match t with\n  | .mk n => cRelease n\n" ++
-  "def withTicket {B : Type} (1 k : (1 t : Ticket) → IO B) : IO B :=\n  fun w => let 1 (n, w') := cAcquire w; k (Ticket.mk n) w'\n" ++
-  "def main : IO Unit :=\n  IO.bind (withTicket (fun t => let () := Ticket.release t; IO.println \"first\"))\n" ++
-  "    (fun _ => IO.bind (withTicket (fun t => let () := Ticket.release t; IO.println \"second\"))\n" ++
+  "def Ticket.release (1 t : Ticket) : IO Unit := match t with\n  | .mk n => cRelease n\n" ++
+  "def withTicket {B : Type} (1 k : (1 t : Ticket) → IO B) : IO B :=\n  fun w => let 1 (n, w') := cAcquire w; k (Ticket.mk n) w'\n"
+
+def ticketSrc : String := ticketHeader ++
+  "def main : IO Unit :=\n  IO.bind (withTicket (fun t => IO.then1 (Ticket.release t) (IO.println \"first\")))\n" ++
+  "    (fun _ => IO.bind (withTicket (fun t => IO.then1 (Ticket.release t) (IO.println \"second\")))\n" ++
   "      (fun _ => IO.bind cCount (fun c => IO.println (Nat.toString c))))\n"
 
 def linearCaseGroup : Group where
@@ -7375,10 +7381,29 @@ def linearCaseGroup : Group where
         ioRun ("import IO\ninductive Res1 (A : Type) where\n  | ok (1 a : A)\n  | err (e : Nat) (1 back : A)\n" ++
           "def get (1 r : Res1 Nat) : Nat := match r with\n  | .ok n => n\n  | .err e n => n\n" ++
           "def main : IO Unit := do\n  IO.println (Nat.toString (get (.ok 3)));\n  IO.println (Nat.toString (get (.err 4 5)))\n") "3\n5\n" },
-    { name := "`let () := u` runs u exactly once, compiled (C and LLVM): a unit-valued consumer releases a lock", run := fun _ =>
-        -- (if `Ticket.release t` were skipped, the second `c_acquire` would wait forever;
-        -- if it ran twice, the count would be off)
-        ioRunC ticketSrc relHelper "first\nsecond\n2\n" }
+    { name := "a linear lock ticket released in IO runs exactly once, compiled (C and LLVM)", run := fun _ =>
+        -- (if the release were skipped, the second `c_acquire` would wait forever; if it
+        -- ran twice, the count would be off)
+        ioRunC ticketSrc relHelper "first\nsecond\n2\n" },
+    { name := "side effects live in IO: an extern or implementation returning Unit (or a type) is rejected", run := fun _ => do
+        -- linear-review's stashes of a pure Unit-valued release (t_stash2, t_stash, t_res)
+        -- start with the extern itself, which is now refused
+        failsLibs "import IO\nextern \"c_release\" cRelease : Nat → Unit\n" "must be in IO"
+        failsLibs "import IO\nextern \"c_release\" cRelease : (1 n : Nat) → Unit\n" "must be in IO"
+        failsLibs ("import IO\ndef rel (n : Nat) : Unit := ()\ndef relImpl (n : Nat) : Unit := ()\n" ++
+          "attribute [implemented_by relImpl] rel\n") "returns Unit or a type"
+        okLibs "import IO\nextern \"c_release\" cRelease : Nat → IO Unit\n" },
+    { name := "linear-review's erased-position stashes: with the release in IO there is no Unit to hide it in", run := fun _ => do
+        -- (the same shapes, with the IO release: `t` must reach an IO action that is run;
+        -- hiding it in an erasable value is a quantity error, or leaves a World unconsumed)
+        let h := ticketHeader
+        failsLibs (h ++ "def hide (1 t : Ticket) : (0 k : Nat) → Unit := fun k => ()\n") "used 0"
+        failsLibs (h ++ "def hide (1 t : Ticket) : (0 k : Nat) → IO Unit := fun k => Ticket.release t\n" ++
+          "def drop (1 t : Ticket) : Nat := let 1 g := hide t; 0\n") "used 0" },
+    { name := "defence in depth: an extern call is kept where its type is erasable (C and LLVM)", run := fun _ =>
+        ioRunC ("import IO\nextern \"c_poly\" cPoly : {A : Type} → Nat → A\nextern \"c_polys\" cPolys : IO Nat\n" ++
+          "def main : IO Unit :=\n  let g : (0 k : Nat) → Unit := cPoly 5\n  IO.bind cPolys (fun c => IO.println (Nat.toString c))\n")
+          relHelper "1\n" }
   ]
 
 def concGroup : Group where
