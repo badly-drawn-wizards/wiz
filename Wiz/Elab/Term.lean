@@ -1653,8 +1653,15 @@ partial def elabLet (ctx : LocalCtx R) (stx : Syntax) (expected : Option (VTy R)
     | none =>
       let (val, vty) ← infer ctx (stx.getArg 5)
       pure (quote (← getGlobals) ctx.lvl vty, val)
-  recordBinder ctx (stx.getArg 2).info x (← evalIn ctx ty)
-  let ctx' := ctx.define x (← evalIn ctx ty) (← evalIn ctx val)
+  -- (P2) a `let`-bound proof is bound suspended, as the kernel binds it: the elaborator
+  -- does not run it either (a proof need not have a normal form, and a short one can
+  -- take a tower of exponentials of steps)
+  let vTy ← evalIn ctx ty
+  recordBinder ctx (stx.getArg 2).info x vTy
+  let g ← getGlobals
+  let vVal ← if g.lazyProofs && isProp g ctx.types.reverse.toArray vTy then pure (suspend g ctx.env val)
+    else evalIn ctx val
+  let ctx' := ctx.define x vTy vVal
   let body := stx.getArg 7
   match expected with
   | some e =>
@@ -2163,7 +2170,20 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
   let varTm (l : Lvl) : Term R := .var (ctx.lvl - l - 1)
   let typeOf (l : Lvl) : VTy R := ctx.types[ctx.lvl - l - 1]!
   let nameOf (l : Lvl) : Name := ctx.names[ctx.lvl - l - 1]!
-  let some cl := clauses.head? | throwAt ctx.info "missing cases" "missing-case"
+  let some cl := clauses.head? | do
+    -- (#250) an empty match: split the first variable whose constructors are all
+    -- impossible (a pattern naming no constructor, so every branch must close itself)
+    let noCtor : Syntax := .node {} "term.dotIdent" #[.atom {} ".", .ident {} "✝none"]
+    let mut firstErr : Option (ElabError R) := none
+    for x in vars, k in [0:vars.length] do
+      if let .mu _ _ _ _ _ (some _) ← force (typeOf x) then
+        let pats := (List.range vars.length).map fun i => if i == k then noCtor else holeStx
+        try
+          return ← compileMatch ctx vars [{ pats, rhs := holeStx }] goal rc top
+        catch e => if firstErr.isNone then firstErr := some e
+    match firstErr with
+    | some e => throw e
+    | none => throwAt ctx.info "missing cases" "missing-case"
   -- A catch-all last row of a multi-column match would be copied into every leaf of the
   -- split (one per pair of constructors, say): elaborate it once, as a local function
   -- of the scrutinees, and make the row call it. If it doesn't check generically (its
@@ -2248,13 +2268,19 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
   -- a pair pattern: match the components, as two new (defined) variables
   if views[k]! matches .tuple .. then
     let x := vars[k]!
-    let .sigma _ _ A B _ ← force (typeOf x)
+    let .sigma _ sq A B _ ← force (typeOf x)
       | throwAt (cl.pats[k]!).info s!"a tuple pattern needs a pair, not {← showVal ctx (typeOf x)}"
     let xv ← evalIn ctx (varTm x)
     let v1 := vFst xv
     let ty2 := Closure.inst g B v1
     let v2 := vSnd xv
-    let ctx2 := (ctx.define "fst✝" A v1).define "snd✝" ty2 v2
+    -- a first component at quantity 0 (a structure's erased field, `0 n : Nat`) is bound
+    -- at 0: its projection is then in an erased position, and the component may only be
+    -- used there (as by a constructor pattern on a data type, and the self-hosted frontend)
+    let erased1 := ((Val.toPoly? sq).bind (·.isConst?)) == some 0
+    let ctx1 := ctx.define "fst✝" A v1
+    let ctx1 := if erased1 then { ctx1 with erasedLvls := ctx.lvl :: ctx1.erasedLvls } else ctx1
+    let ctx2 := ctx1.define "snd✝" ty2 v2
     let vars' := vars.take k ++ [ctx.lvl, ctx.lvl + 1] ++ vars.drop (k + 1)
     let clauses' ← clauses.mapM fun c => do
       let p := c.pats[k]!
@@ -2268,7 +2294,8 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
       pure { c with pats := c.pats.take k ++ ps ++ c.pats.drop (k + 1), binds := binds ++ asBinds }
     let body ← compileMatch ctx2 vars' clauses' goal rc top
     let w : Term R := .qlit QuantitySyntax.explicitDefault
-    return .letE "fst✝" w (q A) (q v1) (.letE "snd✝" w (quote g (ctx.lvl + 1) ty2) (quote g (ctx.lvl + 1) v2) body)
+    let w1 : Term R := if erased1 then .qlit 0 else w
+    return .letE "fst✝" w1 (q A) (q v1) (.letE "snd✝" w (quote g (ctx.lvl + 1) ty2) (quote g (ctx.lvl + 1) v2) body)
   if rc.isSome && top && k != 0 then
     throwAt cl.rhs.info "structural recursion: the first argument must be matched first"
   let x := vars[k]!
@@ -2399,9 +2426,10 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
       ctx' := ctx'.bind "e✝" E
       if let some prf := findAbsurd g (← force E) (Val.var eLvl) then
         absurdBody := some (.absurd (quote g ctx'.lvl mt) (quote g ctx'.lvl prf))
-    let body ← match absurdBody with
-      | some b => pure b
-      | none =>
+    -- (#250) the arms' branch for constructor `c` (when it is possible, the method's body)
+    let elabBranch (clauses : List (MClause R)) : ElabM R (Term R) := do
+        let mut ctx' := ctx'
+        let mut mt := mt
         -- the solution rule with an equation: find `y = t` (or `t = y`) with `y` a field
         -- of this constructor, and substitute it in the later fields by re-binding them
         let mut solution : Option (Lvl × Val R × Bool × Val R × Val R) := none
@@ -2518,6 +2546,24 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
           let castTm : Term R := .cast Gdt Gd (if yFirst then eqPrf else eqPrf) F
           -- `body0` was built under the re-bound fields, which sit after `e` in the context
           pure (deps.foldl (fun acc d => .app acc (vt d)) castTm)
+    -- (#250) an impossible constructor's branch is closed with `absurd`, but the arms that
+    -- name it are still elaborated here (and the result dropped), so that their right-hand
+    -- sides are type checked; a structural failure of this check (a missing nested case,
+    -- an equation that can't be solved) is not reported, only an error inside a body
+    let clausesHere ← if absurdBody.isNone then pure clauses else clauses.filterM fun cl' => do
+      match patViewAs g (cl'.pats[k]!) with
+      | .ok (_, pv) => match ← natPatView T (cl'.pats[k]!) pv with
+        | .ctor _ c' _ => pure (c' == c)
+        | _ => pure false
+      | .error _ => pure false
+    let inRhs (i : SourceInfo) : Bool := !i.synthetic && clausesHere.any fun cl' =>
+      let r := cl'.rhs.info
+      !r.synthetic && r.start ≤ i.start && i.stop ≤ r.stop && r.start < r.stop
+    let body ← if let some b := absurdBody then
+        if clausesHere.isEmpty then pure b else
+        tryCatch (do let _ ← elabBranch clausesHere; pure b) fun err =>
+          if inRhs err.info then throw err else pure b
+      else elabBranch clausesHere
     -- lambdas for fields, hypotheses and the equation
     let names := (if sized then ["_j"] else []) ++ fieldInfos.map (·.1) ++ (List.replicate nRec "_ih") ++
       (if modeA then [] else ["e"])
@@ -2568,6 +2614,22 @@ partial def ifMux? (ctx : LocalCtx R) (alts : Array Syntax) (c : Term R) (C expe
   unless Ct.mvars.isEmpty do return none
   let mux (A : VTy R) : VTy R := vApp g (vApp g (eval g [] (.const "Mux" [])) C) A
   let some _ ← (try synthInstance ctx (mux C) catch _ => pure none) | return none
+  -- (H14 S4) `a && b` and `a || b` on a signal: the prelude makes them
+  -- `if a then b else Bool.false` and `if a then Bool.true else b`; they are the gates
+  -- `AndOp.and a b` and `OrOp.or a b` at the condition's type (`a &&& b`, `a ||| b`)
+  let isConst (stx : Syntax) (n : Name) : Bool :=
+    stx.isOfKind "term.ident" && (stx.getArg 0).getId? == some n
+  let gate? : Option (Name × Syntax) :=
+    if isConst eStx "Bool.false" then some ("AndOp.and", tStx)
+    else if isConst tStx "Bool.true" then some ("OrOp.or", eStx)
+    else none
+  if let some (op, other) := gate? then
+    unifyAt ctx other expected C
+    let o ← check ctx other C
+    let cls : Name := if op == "AndOp.and" then "AndOp" else "OrOp"
+    let inst ← freshMeta ctx "an instance"
+    addInstProblem ctx inst (vApp g (eval g [] (.const cls [])) C)
+    return some (.app (.app (.app (.app (.const op []) Ct) inst) c) o)
   -- a branch that is a numeral (or an `if` of numerals) takes its type from the other
   -- one (`if c then 0 else x + 1`), so the other is elaborated first
   let (t, e) ← if numeralish tStx && !numeralish eStx then do
@@ -2707,6 +2769,11 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
       | "Unit", none | "True", none => return (.unit builtinLevel.get!, .sort builtinLevel.get!)
       | "Empty", none | "False", none => return (.empty builtinLevel.get!, .sort builtinLevel.get!)
       | _, _ =>
+      -- the definition being elaborated (`def f … := … f …`): recursion needs equations
+      if (← get).defining == some x then
+        throwAt ctx.info (s!"recursive call to {x} in a definition without equations; write it as equations " ++
+          s!"(`def {x} … : T | p => …`), or as `:= match y with | p => …` on its own parameters, " ++
+          "or make it `partial`") "recursive-without-equations"
       -- field access: `p.x.y`
       match x.splitOn "." with
       | base :: f :: fs =>

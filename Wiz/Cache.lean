@@ -142,6 +142,7 @@ partial def term : Term R → Sx
   | .ulift l A => node "ulift" [level l, term A]
   | .up a => node "up" [term a]
   | .down t => node "down" [term t]
+  | .prf l t => node "prf" [level l, term t]
 where
   optLevel : Option Level → Sx
     | none => .a "none"
@@ -243,6 +244,7 @@ partial def dterm : Sx → Option (Term R)
     | "ulift" => return .ulift (← lv 1) (← t 2)
     | "up" => return .up (← t 1)
     | "down" => return .down (← t 1)
+    | "prf" => return .prf (← lv 1) (← t 2)
     | "scofix" => return .scofix (← lv 1) (← t 2) (← t 3) (← t 4) (← t 5) (← t 6) (← t 7) (← t 8)
     | "coit" => return .coit (← lv 1) (← t 2) (← t 3) (← t 4) (← t 5) (← t 6) (← t 7)
     | "nat" => return .natLit (← n 1)
@@ -503,7 +505,7 @@ def Effect.ofSx? (x : Sx) : Option (Effect R) := do
 /-- The cache's version: change it whenever the format or the elaborator's output changes.
 (The directory store also mixes in the binary's own hash, `binaryId`, so two builds of
 wiz never share entries; the salt is for invalidating by hand.) -/
-def salt : UInt64 := hash "wiz-cache-15-doc-comments"  -- 15: doc comments and declaration kinds (11s); 14: a builtin key is registered once; 13: witnesses, assumed registrations, warnings; 12: private constructors, observations, fields (13b); 11: 22i, marked structure tails; 9: private names (13b); 8: Q4
+def salt : UInt64 := hash "wiz-cache-20-prf"  -- 20: proof markers (P2: declarations are stored marked); 15: doc comments and declaration kinds (11s); 14: a builtin key is registered once; 13: witnesses, assumed registrations, warnings; 12: private constructors, observations, fields (13b); 11: 22i, marked structure tails; 9: private names (13b); 8: Q4
 
 /-! ## Keys and atomic writes (stage 23c)
 
@@ -692,6 +694,12 @@ where
                 let dup := (errs.find? (·.code == "duplicate-declaration")).map (·.text) |>.getD msg.text
                 s := { s with messages := s.messages.push { msg with text := dup, code := "duplicate-declaration" } ++ warns,
                               imported := m :: s.imported, pristine := false }
+                -- in a module, that is the end of it: its later commands were checked
+                -- (and their effects cached) with `m` imported, and replayed without it
+                -- they would refer to declarations that aren't there, or to the other
+                -- module's (the macro interpreter then ran a deriver of lib/Deriving.wiz
+                -- with lib/Text.wiz dropped, and panicked). The importer drops the module.
+                unless stack.isEmpty do break
               else
               s := { inner with messages := (if errs.isEmpty then s.messages else s.messages.push msg) ++ warns,
                                 module := s.module, infos := s.infos }
