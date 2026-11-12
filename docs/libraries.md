@@ -272,6 +272,43 @@ unchanged, for every state (no evaluation needed). `Bundle.lens b` (with
 `Bundle.Lawful b`, `rfl` for derived bundles) and `HwTy.fstL`/`sndL` are the packed
 views at values. Example: `examples/hdl-optic.wiz` (group `hdl`).
 
+## H14 S3: fast simulation for compiled programs (`import Hdl.Sim`) ✅
+
+Compiled, the value simulation (`Circuit.run`, `Design.runLeaves`) runs the step function
+at `HwTy.El` every cycle, and with it every meta-level computation the step contains:
+table trees and top-level constants (compiled code does not cache a closed top-level
+definition: each use computes it again), widths and constants computed from the
+configuration, bundle codes, `pack`/`unpack`, and a dictionary call and a closure per
+operation. Profiled on the iCEstick OLED demo (`oled_fast`, 1068 netlist nodes, about
+1400 cycles/s): about 60% of the time is allocation and reference counting, and the
+table trees (`RomT.go`, `List.take`) are rebuilt in every cycle. `Netlist.simulate` is no
+faster (an allocation per node in its random-access list).
+
+`lib/Hdl/Sim.wiz` runs the netlist instead: synthesis is the partial evaluation (all the
+meta-level work is done once, and the netlist is hash-consed), and the netlist is turned
+once into a flat program (a constructor per node with exactly its operands, constants
+written once, input ports and register outputs as slots) that runs over native arrays
+updated in place (`Array`, lib/Std.wiz).
+
+* `Netlist.simFast n xs` computes exactly what `Netlist.simulate n xs` computes (the same
+  formulas on the same numbers, node by node) for every well-formed netlist
+  (`Netlist.wellFormed`: arguments refer to earlier nodes, register reads to registers,
+  register inputs and outputs to nodes; every netlist `Circuit.netlist` builds), and is
+  `Netlist.simulate` on any other.
+* `Circuit.simFast c xs` = `Circuit.runLeaves c xs`, `Design.simFast d xs` =
+  `Design.runLeaves d xs`, by the netlist's agreement with the values (which the `hdl`
+  group and a design's own check, such as `oled gen`'s, establish).
+* Compiled code only: `Array` has no definition the kernel or `#eval` could run.
+* About 25× the value simulation on `oled_fast` (about 35000 cycles/s) and 13× on
+  `examples/hdl-sim-bench.wiz` (informal numbers; `bench/hdl-sim` in wiz-tools times it).
+  `examples/hdl-sim.wiz` (the `hdl` group) checks `simFast` against `Netlist.simulate`
+  (hash-consed and naive netlists) and `Circuit.run` on every operation, 70-bit widths,
+  reset and enable, a table tree and composition, and the fallback.
+
+Not done: skipping nodes whose arguments did not change (event-driven simulation),
+generated C for a netlist, a value simulation that keeps its meta-level work (caching
+closed top-level definitions in compiled code would remove the table rebuilding).
+
 ## Logic, heap predicates and Hoare triples ✅
 
 `lib/Logic.wiz` (`∧`, `∨`, `∃` with binder notation `∃ x : A, P`, `↔`, `¬`, ASCII

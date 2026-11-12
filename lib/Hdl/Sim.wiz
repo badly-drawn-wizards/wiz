@@ -1,0 +1,254 @@
+import Hdl.Core
+import Std
+-- Fast netlist simulation for compiled programs (`import Hdl.Sim`).
+--
+-- `Netlist.simulate` (lib/Hdl/Core.wiz) is the netlist's semantics, written for the
+-- kernel: node values in a persistent random-access list, O(nodes · log nodes) per cycle
+-- with an allocation per node. `Circuit.run` (the value simulation) is the circuit's
+-- semantics; compiled, it runs the step function at `HwTy.El` every cycle, with every
+-- meta-level computation in it (table trees, constants computed from the configuration,
+-- bundle codes, dictionary calls) done again in each cycle.
+--
+-- `Netlist.simFast` computes exactly what `Netlist.simulate` computes (the same
+-- operations on the same numbers, node by node), but builds the netlist's program once
+-- and runs it over native arrays updated in place (`Array`, lib/Std.wiz): a value per
+-- node, the register values, the input values. The netlist is the step function with
+-- all the meta-level work done once (synthesis is partial evaluation), and hash-consed,
+-- so this is also the fast way to run a circuit's value simulation:
+-- `Circuit.simFast`, `Design.simFast` (on leaves, as `Circuit.runLeaves` and
+-- `Design.runLeaves`). Compiled code only: `Array` has no definition the kernel or
+-- `#eval` could run.
+--
+-- Agreement: `Netlist.simFast n xs = Netlist.simulate n xs` for every netlist whose node
+-- arguments refer to earlier nodes and whose registers and ports refer to nodes that
+-- exist (every netlist `Circuit.netlist` builds; `Netlist.wellFormed` checks it), and
+-- `Netlist.simFast` falls back to `Netlist.simulate` on any other. The `hdl` test group
+-- checks both against `Circuit.run` cycle for cycle.
+
+------------------------------------------------------------------------------------
+-- The program: one instruction per node that changes from cycle to cycle, each a
+-- constructor with exactly its operands as fields (flat: a structure would be nested
+-- pairs), so that running it reads no more than it needs. `i` is the node's index, `a`,
+-- `b`, `c` its arguments (node indices; 0 where the node has fewer, as `Hdl.nthD 0`
+-- reads them), `m` = `2^width - 1`, `p` = `2^width`, `k` a payload (concat: the
+-- second argument's width; slice: the offset; resetTo: the reset value).
+
+inductive FastNode where
+  | add (i a b m : Nat)
+  | sub (i a b p m : Nat)
+  | mul (i a b m : Nat)
+  | and (i a b : Nat)
+  | or (i a b : Nat)
+  | xor (i a b : Nat)
+  | not (i a m : Nat)
+  | eq (i a b : Nat)
+  | ult (i a b : Nat)
+  | mux (i a b c : Nat)
+  | concat (i a b k : Nat)
+  | slice (i a k m : Nat)
+  | resetTo (i a b k : Nat)
+  | hold (i a b c : Nat)
+
+-- the nodes that read an input port (node `i`, port `k`) or a register (node `i`,
+-- register `k`): written at the start of each cycle
+inductive FastSlot where
+  | mk (i k : Nat)
+
+-- a register: what it loads (`NetReg.load`), its reset and enable flattened
+inductive FastReg where
+  | plain (next : Nat)
+  | en (next e : Nat)
+  | rst (next r init : Nat)
+  | both (next e r init : Nat)
+
+def FastReg.ofReg (r : NetReg) : FastReg := match r.rst, r.en with
+  | .none, .none => FastReg.plain r.next
+  | .none, .some e => FastReg.en r.next e
+  | .some k, .none => FastReg.rst r.next k r.init
+  | .some k, .some e => FastReg.both r.next e k r.init
+
+-- The netlist prepared: the instructions in order, the input and register slots, the
+-- registers, the output nodes, and the node values before the first cycle (each
+-- constant's value, 0 for the others: constants are never written again).
+structure FastProg where
+  code : List FastNode
+  ins : List FastSlot
+  regIns : List FastSlot
+  regs : List FastReg
+  outs : List Nat
+  init : List Nat
+
+-- sorting one node into the program (`acc` in reverse)
+def FastSim.node (i : Nat) (n : SimNode) (acc : FastProg) : FastProg :=
+  let ω a := Hdl.nthD 0 n.args 0;
+  let ω b := Hdl.nthD 0 n.args 1;
+  let ω c := Hdl.nthD 0 n.args 2;
+  let ω p := Nat.pow 2 n.width;
+  let ω m := p - 1;
+  let ω op := fun (x : FastNode) => FastProg.mk (.cons x acc.code) acc.ins acc.regIns acc.regs acc.outs (.cons 0 acc.init);
+  match n.op with
+  | .input port => FastProg.mk acc.code (.cons (FastSlot.mk i port) acc.ins) acc.regIns acc.regs acc.outs (.cons 0 acc.init)
+  | .const v => FastProg.mk acc.code acc.ins acc.regIns acc.regs acc.outs (.cons v acc.init)
+  | .reg r => FastProg.mk acc.code acc.ins (.cons (FastSlot.mk i r) acc.regIns) acc.regs acc.outs (.cons 0 acc.init)
+  | .add => op (FastNode.add i a b m)
+  | .sub => op (FastNode.sub i a b p m)
+  | .mul => op (FastNode.mul i a b m)
+  | .and => op (FastNode.and i a b)
+  | .or => op (FastNode.or i a b)
+  | .xor => op (FastNode.xor i a b)
+  | .not => op (FastNode.not i a m)
+  | .eq => op (FastNode.eq i a b)
+  | .ult => op (FastNode.ult i a b)
+  | .mux => op (FastNode.mux i a b c)
+  | .concat => op (FastNode.concat i a b n.aux)
+  | .slice lo => op (FastNode.slice i a lo m)
+  | .resetTo v => op (FastNode.resetTo i a b v)
+  | .hold => op (FastNode.hold i a b c)
+
+def FastSim.nodes : Nat → List SimNode → FastProg → FastProg
+  | _, .nil, acc => acc
+  | i, .cons n ns, acc => FastSim.nodes (Nat.succ i) ns (FastSim.node i n acc)
+
+def FastProg.ofNetlist (n : Netlist) : FastProg :=
+  let ω r := FastSim.nodes 0 (SimNode.ofNodes n.nodes Hdl.Vec.empty) (FastProg.mk .nil .nil .nil .nil .nil .nil);
+  FastProg.mk (Hdl.reverse r.code) (Hdl.reverse r.ins) (Hdl.reverse r.regIns) (Hdl.map FastReg.ofReg n.regs)
+    (Hdl.map (fun (p : NetPort) => p.node) n.outputs) (Hdl.reverse r.init)
+
+------------------------------------------------------------------------------------
+-- Well-formedness: what makes the array reads below the reads of `Netlist.simulate`.
+
+def FastSim.allBelow (k : Nat) : List Nat → Bool
+  | .nil => .true
+  | .cons x xs => Bool.and (Nat.lt x k) (FastSim.allBelow k xs)
+
+def FastSim.nodesOk (nregs : Nat) : Nat → List NetNode → Bool
+  | _, .nil => .true
+  | k, .cons n ns => Bool.and (Bool.and (FastSim.allBelow k n.args) (match n.op with
+      | .reg r => Nat.lt r nregs
+      | _ => .true)) (FastSim.nodesOk nregs (Nat.succ k) ns)
+
+def FastSim.optBelow (k : Nat) : Option Nat → Bool
+  | .none => .true
+  | .some x => Nat.lt x k
+
+def FastSim.regsOk (k : Nat) : List NetReg → Bool
+  | .nil => .true
+  | .cons r rs => Bool.and (Bool.and (Nat.lt r.next k) (Bool.and (FastSim.optBelow k r.rst) (FastSim.optBelow k r.en)))
+      (FastSim.regsOk k rs)
+
+def FastSim.portsOk (k : Nat) : List NetPort → Bool
+  | .nil => .true
+  | .cons p ps => Bool.and (Nat.lt p.node k) (FastSim.portsOk k ps)
+
+-- Node arguments refer to earlier nodes, register reads to registers, and what the
+-- registers load and the outputs show to nodes.
+def Netlist.wellFormed (n : Netlist) : Bool :=
+  let ω k := List.length n.nodes;
+  Bool.and (FastSim.nodesOk (List.length n.regs) 0 n.nodes) (Bool.and (FastSim.regsOk k n.regs) (FastSim.portsOk k n.outputs))
+
+------------------------------------------------------------------------------------
+-- One cycle. `vals` holds a value per node, updated in place: the inputs and register
+-- outputs first, then the instructions in order (arguments come first, so every node
+-- is written in a cycle before it is read in it).
+
+def FastSim.get (a : Array Nat) (i : Nat) : Nat := Array.getD a i 0
+
+def FastSim.isZero (v : Nat) : Bool := Nat.beq v 0
+
+-- the formulas are `SimNode.eval`'s
+def FastNode.exec (n : FastNode) (vals : Array Nat) : Array Nat := match n with
+  | .add i a b m => Array.set vals i (Nat.land (FastSim.get vals a + FastSim.get vals b) m)
+  | .sub i a b p m => Array.set vals i (Nat.land (FastSim.get vals a + p - FastSim.get vals b) m)
+  | .mul i a b m => Array.set vals i (Nat.land (FastSim.get vals a * FastSim.get vals b) m)
+  | .and i a b => Array.set vals i (Nat.land (FastSim.get vals a) (FastSim.get vals b))
+  | .or i a b => Array.set vals i (Nat.lor (FastSim.get vals a) (FastSim.get vals b))
+  | .xor i a b => Array.set vals i (Nat.xor (FastSim.get vals a) (FastSim.get vals b))
+  | .not i a m => Array.set vals i (m - FastSim.get vals a)
+  | .eq i a b => Array.set vals i (Nat.ofBool (Nat.beq (FastSim.get vals a) (FastSim.get vals b)))
+  | .ult i a b => Array.set vals i (Nat.ofBool (Nat.lt (FastSim.get vals a) (FastSim.get vals b)))
+  | .mux i a b c => Array.set vals i (match FastSim.isZero (FastSim.get vals a) with
+    | .true => FastSim.get vals c
+    | .false => FastSim.get vals b)
+  | .concat i a b k => Array.set vals i (Nat.shiftLeft (FastSim.get vals a) k + FastSim.get vals b)
+  | .slice i a k m => Array.set vals i (Nat.land (Nat.shiftRight (FastSim.get vals a) k) m)
+  | .resetTo i a b k => Array.set vals i (match FastSim.isZero (FastSim.get vals a) with
+    | .true => FastSim.get vals b
+    | .false => k)
+  | .hold i a b c => Array.set vals i (match FastSim.isZero (FastSim.get vals a) with
+    | .true => FastSim.get vals c
+    | .false => FastSim.get vals b)
+
+def FastSim.run : List FastNode → Array Nat → Array Nat
+  | .nil, vals => vals
+  | .cons n ns, vals => FastSim.run ns (FastNode.exec n vals)
+
+-- the input ports' values (`Hdl.nthD 0`, as `SimNode.eval` reads them)
+def FastSim.setIns (ins : List Nat) : List FastSlot → Array Nat → Array Nat
+  | .nil, vals => vals
+  | .cons (.mk i k) ss, vals => FastSim.setIns ins ss (Array.set vals i (Hdl.nthD 0 ins k))
+
+def FastSim.setRegs (regs : Array Nat) : List FastSlot → Array Nat → Array Nat
+  | .nil, vals => vals
+  | .cons (.mk i k) ss, vals => FastSim.setRegs regs ss (Array.set vals i (FastSim.get regs k))
+
+-- what a register loads (`NetReg.load`): `init` under reset, its own value without enable
+def FastReg.load (vals : Array Nat) (r : FastReg) (cur : Nat) : Nat := match r with
+  | .plain next => FastSim.get vals next
+  | .en next e => (match FastSim.isZero (FastSim.get vals e) with
+    | .true => cur
+    | .false => FastSim.get vals next)
+  | .rst next k init => (match FastSim.isZero (FastSim.get vals k) with
+    | .true => FastSim.get vals next
+    | .false => init)
+  | .both next e k init => match FastSim.isZero (FastSim.get vals k) with
+    | .true => (match FastSim.isZero (FastSim.get vals e) with
+      | .true => cur
+      | .false => FastSim.get vals next)
+    | .false => init
+
+-- the registers' next values, written over their current ones (`regs` is unique)
+def FastSim.loadAll (vals : Array Nat) : List FastReg → Nat → Array Nat → Array Nat
+  | .nil, _, regs => regs
+  | .cons r rs, k, regs =>
+    let ω v := FastReg.load vals r (FastSim.get regs k);
+    FastSim.loadAll vals rs (Nat.succ k) (Array.set regs k v)
+
+def FastSim.outputs (vals : Array Nat) : List Nat → List Nat
+  | .nil => .nil
+  | .cons k ks => .cons (FastSim.get vals k) (FastSim.outputs vals ks)
+
+def FastSim.ofList : List Nat → Array Nat → Array Nat
+  | .nil, a => a
+  | .cons x xs, a => FastSim.ofList xs (Array.push a x)
+
+-- the cycles: `vals` and `regs` are reused from cycle to cycle (overwritten in place)
+def FastSim.go (p : FastProg) : Array Nat → Array Nat → List (List Nat) → List (List Nat) → List (List Nat)
+  | _, _, .nil, acc => Hdl.reverse acc
+  | regs, vals, .cons ins rest, acc =>
+    let ω vals2 := FastSim.run p.code (FastSim.setRegs regs p.regIns (FastSim.setIns ins p.ins vals));
+    let ω out := FastSim.outputs vals2 p.outs;
+    let ω regs2 := FastSim.loadAll vals2 p.regs 0 regs;
+    FastSim.go p regs2 vals2 rest (List.cons out acc)
+
+def Netlist.simFastGo (n : Netlist) (inputs : List (List Nat)) : List (List Nat) :=
+  let ω p := FastProg.ofNetlist n;
+  FastSim.go p (FastSim.ofList (Hdl.map (fun (r : NetReg) => r.init) n.regs) Array.empty)
+    (FastSim.ofList p.init Array.empty) inputs List.nil
+
+-- = `Netlist.simulate n inputs`
+def Netlist.simFast (n : Netlist) (inputs : List (List Nat)) : List (List Nat) :=
+  match Netlist.wellFormed n with
+  | .true => Netlist.simFastGo n inputs
+  | .false => Netlist.simulate n inputs
+
+------------------------------------------------------------------------------------
+-- Circuits and designs: the value simulation on leaves, run on the netlist.
+-- `Circuit.simFast c xs` is `Circuit.runLeaves c xs` (values in, one number per output
+-- port per cycle out); `Design.simFast d xs` is `Design.runLeaves d xs` (one number per
+-- input port per cycle in).
+
+def Circuit.simFast {ω i o : HwTy} (c : Circuit i o) (xs : List (HwTy.El i)) : List (List Nat) :=
+  Netlist.simFast (Circuit.netlist "c" c) (Hdl.map (HwTy.leaves i) xs)
+
+def Design.simFast (d : Design) (xs : List (List Nat)) : List (List Nat) :=
+  Netlist.simFast (Design.netlist d) xs

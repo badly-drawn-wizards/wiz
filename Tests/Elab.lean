@@ -7739,7 +7739,15 @@ def hdlGroup : Group where
           unless o.exitCode == 0 do throw (IO.userError s!"iverilog rejects the test bench:\n{o.stderr}")
           let r ← IO.Process.output { cmd := "vvp", args := #["-n", (dir / "tb.vvp").toString], cwd := dir }
           unless (r.stdout.splitOn "PASS counter: 60 cycles").length > 1 do
-            throw (IO.userError s!"test bench: {r.stdout}{r.stderr}") }
+            throw (IO.userError s!"test bench: {r.stdout}{r.stderr}") },
+    { name := "fast netlist simulation (Hdl.Sim, compiled): = Netlist.simulate = Circuit.run, cycle for cycle; not well formed falls back", run := fun _ => do
+        -- examples/hdl-sim.wiz: every netlist operation, 70-bit widths, reset and enable, a
+        -- table tree, composition; 3000 random cycles each, hash-consed and naive netlists
+        cRunLibs (← IO.FS.readFile "examples/hdl-sim.wiz")
+          ("alu: yes, 3000 cycles, well formed yes, checksum 840993931\n" ++
+           "alu with reset and enable: yes, 3000 cycles, well formed yes, checksum 86608463\n" ++
+           "piped: yes, 3000 cycles, well formed yes, checksum 623585979\n" ++
+           "not well formed: yes, simFast = simulate: yes\n") }
   ]
 
 /-! ## Regions: borrow checking as typing (lib/Region.wiz, Feral RD12) -/
