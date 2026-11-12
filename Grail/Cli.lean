@@ -82,7 +82,9 @@ def findStd (opt : Option String) : IO System.FilePath := do
   pure "lib"
 
 def cliMain (args : List String) : IO UInt32 := do
-  if args == ["--version"] then IO.println (← Wiz.versionLine "grail"); return 0
+  -- (after the toolchain flags: tower's wrapper puts its flags before the user's arguments)
+  if ((({} : Toolchain).parseFlags args).2) == ["--version"] then
+    IO.println (← Wiz.versionLine "grail"); return 0
   -- (23k) the supervisor of a job process
   if let "--grail-exec" :: rest := args then return ← execMain rest
   -- a `panic!` (a kernel-internal failure) ends the build, as it ends `wiz check`

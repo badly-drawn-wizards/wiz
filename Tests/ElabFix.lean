@@ -180,8 +180,8 @@ def group : Group where
     { name := "the unifier meets an equation with its computed form (unify-computed-equations)", run := fun _ =>
         okOptic ("import Optic\n" ++
           "def t3 (x : Nat) (xs ys : List Nat) (h : xs = ys) : List.cons x xs = List.cons x ys :=\n" ++
-          "  Optic.congrArg (List.cons x) h\n" ++
-          "def t4 (a b : Nat) (h : a = b) : Nat.succ a = Nat.succ b := Optic.congrArg Nat.succ h") },
+          "  Eq.congrArg (List.cons x) h\n" ++
+          "def t4 (a b : Nat) (h : a = b) : Nat.succ a = Nat.succ b := Eq.congrArg Nat.succ h") },
     -- agent/elab-stretch
     { name := "numerals and notation in class field types (numerals-in-class-decls)", run := fun _ =>
         okLib ("import Prelude\ninductive HwTy where\n  | bits (n : Nat)\nclass Hw (r : HwTy → Type) where\n" ++
@@ -508,6 +508,12 @@ def group : Group where
           "def t {i o : HwTy} (f : Comb i o) : (s : Nat) → (xs : List (HwTy.El i)) → Hdl.map (Comb.el f) xs = Hdl.map (Comb.el f) xs\n" ++
           "  | _, .nil => refl (@List.nil (HwTy.El o))\n" ++
           "  | s, .cons x xs => Hdl.consEq (f x) (t f s xs)\n") },
+    { name := "an equation at a product type: η for projected holes, stale casts (cohesion-hardware)", run := fun _ =>
+        -- `Eq.congrArg f e`/`fstEq e` with `e : f y = (y, y)`: the expected `?p = ?q` computes
+        -- to `(?p.1 = ?q.1) × …` and `?q.1 =?= y` is solved by η (`?q := (?a, ?b)`); a cast
+        -- computed while the second component's type was a hole is dropped once its two
+        -- types are the same (it would compute away)
+        okLibs "import Logic\ndef fstEq {A B : Type} {p q : (_ : A) × B} (e : p = q) : p.1 = q.1 := Eq.congrArg (fun (r : (_ : A) × B) => r.1) e\ndef t1 (f : Nat → (_ : Nat) × Nat) (h : (x : Nat) → f x = (x, x)) (y : Nat) : (f y).1 = y := fstEq (h y)\ndef t2 (f : Nat → (_ : Nat) × Nat) (y : Nat) (h : f y = (y, y)) : (f y).1 = y := fstEq h\ndef t3 (f : Nat → (_ : Nat) × Nat) (h : (x : Nat) → f x = (x, x)) (y : Nat) : (f y).1 = y :=\n  Eq.congrArg (fun (r : (_ : Nat) × Nat) => r.1) (h y)\n" },
     { name := "pruning: a `let` of an inferred `match` (icestick-cpu C6)", run := fun _ =>
         -- the match's type `?T n` meets `List (?A n x✝)` from a branch, where `x✝` (the
         -- scrutinee) is in scope: `?A` can't depend on `x✝`, so it is pruned to `?A' n`
@@ -559,6 +565,16 @@ def group : Group where
         -- (since agent/elab-bugs the inner `Ex.intro` waits for nothing better and no
         -- ill-typed guess is made: `rfl` meets the unsolved motive `?P ?w`)
         failsLibs "import Logic\ndef t := Ex.intro _ 3 (Ex.intro _ 3 rfl)" "rfl: the expected type is not an equation" },
+    { name := "a failing unification under a binder fails fast (wiz-reals S1: one unfolding order per layer)", run := fun _ =>
+        -- each `Int.ofPair` is `Nat.sub` five definitions deep; trying both unfolding orders
+        -- at every layer took 17 s
+        failsLibsWithin 8 ("import Int\nimport Logic\n" ++
+          "def Int.ofPair (a b : Nat) : Int := Int.subNatNat a b\n" ++
+          "axiom ofPair_negate (a b : Nat) : -(Int.ofPair a b) = Int.ofPair b a\n" ++
+          "axiom ofPair_add (a b c d : Nat) : Int.ofPair a b + Int.ofPair c d = Int.ofPair (a + c) (b + d)\n" ++
+          "def r (a b c d : Nat) : Int.ofPair a b + -(Int.ofPair c d) = Int.ofPair (a + d) (b + c) :=\n" ++
+          "  Eq.trans (Eq.congrArg (fun y => Int.ofPair _ _ + y) (ofPair_negate _ _)) (ofPair_add _ _ _ _)\n")
+          "outside the pattern fragment" },
     -- agent/bugfix-elab
     { name := "a module reaching a duplicate declaration through an import stops there: an error, not a run of its macros (dup-import-macro-panic)", run := fun _ => do
         -- `DupMap` declares lib/Text.wiz's `List.map`; lib/Deriving.wiz imports Text and then
@@ -649,7 +665,19 @@ def group : Group where
           "def s0t (s : S0) : Type := match s with\n  | .mk n m => Nat\n" ++
           "#eval s0mt (S0.mk 3 4)\n") ["4"]
         -- used at runtime it is an error (not a projection at ω behind the user's back)
-        failsLib (hdr ++ "def bad (s : S0) : Nat := match s with\n  | .mk n m => n\n") "n" }
+        failsLib (hdr ++ "def bad (s : S0) : Nat := match s with\n  | .mk n m => n\n") "n" },
+    { name := "#250: the body of an impossible arm is type checked; an empty match", run := fun _ => do
+        let hdr := "import Prelude\ninductive T : Bool → Type where\n  | mk : T .true\n"
+        failsLibW (hdr ++ "def f (t : T .false) : False := match t with\n  | .mk => \"hello\"\n") "type mismatch"
+        -- a well-typed body on an impossible arm is still accepted
+        okLib (hdr ++ "def f (t : T .false) (h : False) : False := match t with\n  | .mk => h\n")
+        -- no arms when every case is impossible
+        okLib (hdr ++ "def f (t : T .false) : False := match t with\n" ++
+          "def g : T .false → False := fun t => match t with\n" ++
+          "def h (n : Nat) : (b : Bool) → T b → b = .false → Nat\n  | _, .mk, e => absurd e.1\n" ++
+          "def k : {b : Bool} → T b → b = .false → False\n  | _, .mk, e => absurd e.1\n")
+        failsLibW (hdr ++ "def f (t : T .true) : False := match t with\n") "missing case for constructor mk"
+        failsLibW (hdr ++ "def g : (b : Bool) → T b → False := fun b t => match t with\n") "missing case for constructor mk" }
   ]
 
 /-- This module's test groups, which `Tests/Main.lean` runs: one per line, in sorted

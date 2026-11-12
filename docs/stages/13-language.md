@@ -652,9 +652,30 @@ Hover: a pattern variable under a numeral (`k` in `k + 1`) is a pattern variable
 any other; a literal compared with `T.beq` is elaborated where it is written, so its
 `OfNat` instance shows in the hover as in a term. Tests: `language` ("13q: …"), `lsp`.
 
-**Self-hosted parity (follow-up).** The self-hosted frontend (`selfhost/Frontend.wiz`)
-has numeral patterns at `Nat` but not: literal patterns at other types (the `T.beq`
-test and its catch-all check in its match compiler), hex/binary numerals in
-`selfhost/Lex.wiz`, structure update at all (13i: the `term.structUpdate` grammar and
-its elaboration over the structure's layout), nor the printer's read-back. Its own
-sources use none of these, so the bootstrap is unaffected.
+**The self-hosted frontend** (`selfhost/Frontend.wiz`, `selfhost/Lex.wiz`) has all of
+13i, 13p and 13q, with the Lean frontend's verdicts and messages:
+- `selfhost/Lex.wiz` reads `0x3F` / `0b1010` as the decimal `num` token (`radixNum`); a
+  value from 2^63 on is read as 2^63, which the frontend rejects as it does the decimal
+  numeral (its numbers are 63-bit words).
+- Literal patterns: at `Nat` the numerals were already constructors (`patOf`); now a
+  numeral above 256, a string at `Nat`, `p + k` without a numeral `k`, and a literal on
+  a data type are the Lean frontend's errors (`litSplitErr`), and a literal in the first
+  row of a column of another type is the `T.beq` test (`litTest`, after
+  `compileLitTest`): `beqHead` finds `T` through the definitions the type unfolds
+  through, the column needs a catch-all row, and the new `Bool` column goes in front.
+  Numerals are `Nat` there (no `OfNat`), so in practice the literals are strings.
+- Structure update (`structUpdT`): `{ s with … }` is `let upd✝ := s; S.mk …`, a path
+  `a.b := v` an inner update of `S.a upd✝` (a sixth argument of the synthesized node
+  carries the path, for messages), checked against the type of `s`. A structure is
+  marked when declared (`Globals.markStruct`, an entry `structure S` among the
+  inductive types), so a one-constructor `inductive` is not one, as in Lean. The
+  self-hosted structures have no dependent fields, so the kept-field type check of 13i
+  has nothing to check.
+- There is no printer to read updates back: the self-hosted frontend prints kernel
+  terms (`show`).
+
+Tests: `selfhost` ("the self-hosted frontend: literal patterns …", "… structure update
+…"), each program checked by both frontends: the same values (`#eval` in one,
+`#reduce Nat.beq` in the other) and the same verdict for each declaration; the lexer
+agreement case has hex and binary numerals. The self-hosted sources use none of these,
+so the bootstrap is unaffected.

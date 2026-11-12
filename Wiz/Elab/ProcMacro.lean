@@ -201,6 +201,84 @@ partial def setInfoAll (info : SourceInfo) : Syntax → Syntax
   | .ident _ n => .ident info n
   | .node _ k as => .node info k (as.map (setInfoAll info))
 
+/-! ### Positions inside generated source
+
+A command macro can mark which parts of its generated source come from which node of its
+input: the text between U+E000 *path* U+E001 and the matching U+E002 (marks nest; *path*
+is decimal child indices separated by `.`) comes from the input node at *path*. Feral
+marks every expression's value, the names of functions, parameters and `let`s, and the
+function a call names (lib/Feral.wiz, `Fe.Out.at`). -/
+
+/-- A marked part of generated source: its range in the text without marks, and the
+path of the input node it comes from (a `null` node of decimal atoms, as `pathNode`). -/
+structure MarkSpan where
+  start : Nat
+  stop : Nat
+  path : Syntax
+  deriving Inhabited
+
+/-- The generated text without its marks, and the marked spans. -/
+def stripMarks (text : String) : String × Array MarkSpan := Id.run do
+  let mut out : Array Char := #[]
+  let mut spans : Array MarkSpan := #[]
+  let mut open_ : List (Nat × Syntax) := []
+  let mut inPath := false
+  let mut path : String := ""
+  for c in text.toList do
+    if inPath then
+      if c == '' then
+        inPath := false
+        let atoms := (path.splitOn ".").filter (· ≠ "") |>.map (Syntax.atom {} ·)
+        open_ := (out.size, Syntax.mkNull atoms.toArray) :: open_
+      else path := path.push c
+    else if c == '' then
+      inPath := true
+      path := ""
+    else if c == '' then
+      match open_ with
+      | (a, p) :: rest =>
+        spans := spans.push { start := a, stop := out.size, path := p }
+        open_ := rest
+      | [] => pure ()
+    else out := out.push c
+  (String.mk out.toList, spans)
+
+/-- The innermost span containing `[a, b)`: the shortest; among equal ones, the one
+closed first (the innermost mark). -/
+def innermostSpan (spans : Array MarkSpan) (a b : Nat) : Option MarkSpan :=
+  spans.foldl (fun acc sp =>
+    if sp.start ≤ a && b ≤ sp.stop then
+      match acc with
+      | some q => if sp.stop - sp.start < q.stop - q.start then some sp else acc
+      | none => some sp
+    else acc) none
+
+/-- Position syntax parsed from a macro's generated source (ranges in the text without
+marks) in the user's file. Syntax whose range is exactly a marked span gets the range of
+the input node the span comes from, so that its type shows there and errors about it are
+reported there; syntax strictly inside a span gets that range too, but synthetic (nothing
+is recorded for hovers: the span's own syntax is the precise one); the rest is the
+macro's own (synthetic, at `item`), except the command itself, which is at `item`.
+Without spans, every node is at `item` (`setInfoAll`). -/
+partial def locateMarked (input : Syntax) (item : SourceInfo) (spans : Array MarkSpan) (stx : Syntax) : Syntax :=
+  if spans.isEmpty then setInfoAll item stx else
+  match stx with
+  | .node _ k as => .node item k (as.map go)
+  | s => go s
+where
+  infoFor (i : SourceInfo) : SourceInfo :=
+    if i.stop == 0 then { item with synthetic := true } else
+    match innermostSpan spans i.start i.stop with
+    | some sp =>
+      let u := pathInfo input sp.path
+      if sp.start == i.start && sp.stop == i.stop then u else { u with synthetic := true }
+    | none => { item with synthetic := true }
+  go : Syntax → Syntax
+    | .missing => .missing
+    | .atom i v => .atom (infoFor i) v
+    | .ident i n => .ident (infoFor i) n
+    | .node i k as => .node (infoFor i) k (as.map go)
+
 def atomText : Syntax → String
   | .atom _ v => v
   | _ => ""
