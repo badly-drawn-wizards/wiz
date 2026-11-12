@@ -36,6 +36,7 @@ information is coming. `ElabState.approx` (`Approx`) says which guesses are allo
 | variables, one repeated | `?m Γ i' =?= r i'` (`i'` in `Γ`) | solve without the repeated variable if the right side doesn't use it (pruning); else the first-order guess from the repeated variable on (`.default`) | not a pattern (`isDefEqPattern` wants distinct variables): first-order approximation, else postponed |
 | flex-rigid, not a pattern | `?m ?A =?= M Nat` (`do`) | first-order guess (`.default`) | `isDefEq` with `foApprox` (the elaborator's configuration): the same guess |
 | the same, in the "expected type first" pass of an application whose result type mentions placeholders of its explicit arguments | `?p ?k =?= ok (base + k)`, `?p`, `?k` the arguments `p`, `k` | no guess (`.none`): the speculative pass fails and is undone, the arguments decide, the result type is unified after them | the expected type is not propagated when the result type depends on explicit arguments (`propagateExpectedType`) |
+| flex-flex, both holes over variables applied to the same number of other arguments without holes | `?r Γ (.bits 1) =?= ?r' Γ' x (.bits 1)` (`let x := if c then Hw.lit 1 1 else Hw.lit 1 0`) | the other arguments pairwise, then `?r Γ =?= ?r' Γ' x` (`.default`) | first-order (`isDefEqApp`) |
 | flex-flex, both not patterns, different holes | `?r (.bits ?m) =?= ?r' (.bits 1)` (`Hw.cat (Hw.lit 1 1) d`) | postponed: the argument waits behind a placeholder for the other arguments (`inferApp`); still stuck after them, the first-order guess `?r := ?r'` as the last resort (`.last`) | postponed; postponed problems are retried at the end, with approximations |
 | flex-flex, one side a pattern | `?a (f y) =?= ?b x` | solve the pattern side (either orientation) | the same |
 | a structure-valued hole under projections, applied | `(?C).2.2.1 ?f ?g =?= C.2.2.1 f g` (`C.comp`) | `?C =?= C`, then the eliminations pairwise (`.default`; a guess: another structure with an equal field would do too) | `Category.comp ?C ?f ?g` is a constant applied: first-order (`isDefEqApp`) |
@@ -545,7 +546,40 @@ partial def unify (l : Lvl) (t u : Val R) : ElabM R Unit := do
     -- (if the left spine isn't a pattern, the right one may be)
     tryCatch (solve l m sp (.neutral (.mvar m') sp')) fun e => do
       if e.code != "non-pattern" then throw e
-      solve l m' sp' (.neutral (.mvar m) sp)
+      tryCatch (solve l m' sp' (.neutral (.mvar m) sp)) fun e' => do
+        if e'.code != "non-pattern" then throw e'
+        -- neither is a pattern: two holes over variables, applied to the same number of
+        -- other arguments (`?r Γ (.bits 1) =?= ?r' Γ' x (.bits 1)`, a family of types at an
+        -- index): those pairwise, and the holes over the variables (a guess, as Lean's
+        -- first-order approximation; not in the speculative pass)
+        if (← get).approx == .none then throw e'
+        let varPrefix (sp : Array (Elim R)) : ElabM R Nat := do
+          let mut k := 0
+          for el in sp do
+            match el with
+            | .app a => match ← forceMeta a with
+              | .neutral (.local _) #[] => k := k + 1
+              | _ => break
+            | _ => break
+          pure k
+        let k ← varPrefix sp
+        let k' ← varPrefix sp'
+        let rest := sp.extract k sp.size
+        let rest' := sp'.extract k' sp'.size
+        unless !rest.isEmpty && rest.size == rest'.size && rest.all (· matches .app _) && rest'.all (· matches .app _) do
+          throw e'
+        -- (before the last resort, only at indices without holes: `?r (.bits ?m) =?= ?r' (.bits 1)`
+        -- waits for the other arguments, which may fix `?r`; see "When unification approximates")
+        let g ← getGlobals
+        let closed (sp : Array (Elim R)) : ElabM R Bool := sp.allM fun el => match el with
+          | .app a => return (← (quote g l a).instSolved).isSome
+          | _ => pure false
+        unless (← get).approx == .last || ((← closed rest) && (← closed rest')) do throw e'
+        let s ← get
+        try
+          unifySpine l rest rest'
+          unify l (.neutral (.mvar m) (sp.extract 0 k)) (.neutral (.mvar m') (sp'.extract 0 k'))
+        catch _ => set s; throw e'
   | .neutral (.mvar m) sp, t' => solve l m sp t'
   | t', .neutral (.mvar m) sp => solve l m sp t'
   | .neutral h sp, .neutral h' sp' => unifyHead l h h'; unifySpine l sp sp'

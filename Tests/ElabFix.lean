@@ -651,6 +651,14 @@ def group : Group where
         -- the second `let`'s column
         okLib ("import Prelude\ndef t (a b : Nat) : Nat :=\n  let x := a; let y := b;\n  Nat.add x y\n#eval t 2 3\n" ++
           "def u (a : Nat) : Nat :=\n  let x := a\n  Nat.add x x\n#eval u 4") ["5", "8"] },
+    { name := "a `let` of an `if` between signals, without an ascription (wiz-rv: pruning a hole applied to a non-variable)", run := fun _ =>
+        -- `?r Γ mx x (.bits 1)` (the signal type of `Hw.lit 1 0` in a branch) against the
+        -- `let`'s type hole: the branch's variables are pruned, `.bits 1` stays
+        okLibs ("import Hdl.Core\n" ++
+          "def f {r : HwTy → Type} [Hw r] (mx : Bool) (a : r (HwTy.bits 1)) : r (HwTy.bits 1) :=\n" ++
+          "  let x := if mx then a else Hw.lit 1 0;\n  x\n" ++
+          "def g {r : HwTy → Type} [Hw r] (mx : Bool) : r (HwTy.bits 1) :=\n" ++
+          "  let x := if mx then Hw.lit 1 1 else Hw.lit 1 0;\n  x\n") },
     { name := "a broken module's errors are reported once, not nested in every importer (wiz-reals P9)", run := fun _ => do
         let prelude ← IO.FS.readFile "lib/Prelude.wiz"
         let mods : List (String × String) := [("Prelude", prelude),
