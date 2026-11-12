@@ -4963,7 +4963,7 @@ def stdGroup : Group where
           "def u (a b c : Int) : -(a - b) * c + a * c = b * c := int_ring! -(a - b) * c + a * c = b * c\n" ++
           "#check Int.mul_comm\n#check Int.neg_mul\n#print axioms Int.mul_add")
           ["Int.mul_comm : (a : Int) → (b : Int) → a * b = b * a",
-           "Int.neg_mul : (a : Int) → (b : Int) → -a * b = -(a * b)",
+           "Int.neg_mul : (a : Int) → (b : Int) → -a * b = - (a * b)",
            "'Int.mul_add' does not depend on any axioms"] },
     { name := "int_ring! rejects an equation that is not an identity", run := fun _ =>
         failsLibs "import IntRing\ndef bad (a b : Int) : a - b = b - a := int_ring! a - b = b - a" "not definitionally equal" },
