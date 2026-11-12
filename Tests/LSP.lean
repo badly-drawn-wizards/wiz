@@ -653,6 +653,44 @@ def serverGroup : Group where
         let (_, r) := ask srv "wiz/interactiveInfo" src (offAfter src "2 *" (-1))
         checkEq ["Mul Nat"] ((item r "instance").map fun i => flatten (LSP.get? i ["type"]).get!)
         check ((item r "syntax").length == 1 && (item r "expansion").length == 1) s!"syntax items: {r.compress}" },
+    { name := "references, document highlights and rename, across the package's modules (11y)", run := fun _ => do
+        let lib := "import Prelude\ndef helper (n : Nat) : Nat := Nat.succ n\ndef useHelper : Nat := helper 1\n"
+        let src := "import Prelude\nimport Lib\ndef double (n : Nat) : Nat := Nat.add n n\ndef four : Nat := double 2\n" ++
+          "def eight : Nat := double (double (helper 2))\n"
+        let srv0 ← server
+        let srv0 := { srv0 with libs := srv0.libs.insert "Lib" ("/pkg/Lib.wiz", lib) }
+        let (srv, _) := LSP.handle srv0 (req "{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"initialize\",\"params\":{}}")
+        let (srv, _) := LSP.handle srv (Lean.Json.mkObj [("jsonrpc", "2.0"), ("method", "textDocument/didOpen"),
+          ("params", Lean.Json.mkObj [("textDocument", Lean.Json.mkObj [("uri", "file:///t.wiz"), ("version", (1 : Nat)), ("text", src)])])])
+        let locs (r : Lean.Json) : List (String × Nat × Nat) := match r with
+          | .arr ls => ls.toList.map fun l => (LSP.getStr l ["uri"], LSP.getNat l ["range", "start", "line"], LSP.getNat l ["range", "start", "character"])
+          | _ => []
+        -- a global of this file: its declaration and its three uses
+        let (srv, r) := ask srv "textDocument/references" src (offAfter src "four : Nat := dou")
+        checkEq [("file:///t.wiz", 2, 4), ("file:///t.wiz", 3, 18), ("file:///t.wiz", 4, 19), ("file:///t.wiz", 4, 27)] (locs r)
+        -- a global of a package module: there too
+        let (srv, r) := ask srv "textDocument/references" src (offAfter src "(helper" (-2))
+        let sorted := (locs r).toArray.qsort fun a b => a.1 < b.1 || (a.1 == b.1 && (a.2.1 < b.2.1 || (a.2.1 == b.2.1 && a.2.2 < b.2.2)))
+        checkEq [("file:///pkg/Lib.wiz", 1, 4), ("file:///pkg/Lib.wiz", 2, 23), ("file:///t.wiz", 4, 35)] sorted.toList
+        -- a local: the binder and its uses
+        let (srv, r) := ask srv "textDocument/documentHighlight" src (offAfter src "Nat.add n" (-1))
+        let some (.arr hs) := some r | throw (IO.userError s!"{r.compress}")
+        checkEq 3 hs.size
+        -- the toolchain's library can't be renamed
+        let (srv, r) := ask srv "textDocument/prepareRename" src (offAfter src "Nat.ad")
+        check (has r "toolchain") s!"prepareRename: {r.compress}"
+        -- rename a global: every document, and the package module
+        let (srv', out) := LSP.handle srv (req s!"\{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"textDocument/rename\",\"params\":\{\"textDocument\":\{\"uri\":\"file:///t.wiz\"},\"position\":{posJson src (offAfter src "four : Nat := dou")},\"newName\":\"twice\"}}")
+        let some e := LSP.get? out[0]! ["result"] | throw (IO.userError s!"{out[0]!.compress}")
+        let src' := applyEdit src e
+        check ((src'.splitOn "double").length == 1) s!"renamed:\n{src'}"
+        checkEq ([] : List String) (← codes (src'.replace "import Lib\n" "" |>.replace "(helper 2)" "2"))
+        let (_, out) := LSP.handle srv' (req s!"\{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"textDocument/rename\",\"params\":\{\"textDocument\":\{\"uri\":\"file:///t.wiz\"},\"position\":{posJson src (offAfter src "(helper" (-2))},\"newName\":\"aid\"}}")
+        check (has out[0]! "file:///pkg/Lib.wiz") s!"rename in Lib: {out[0]!.compress}"
+        -- a local
+        let (_, out) := LSP.handle srv (req s!"\{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"textDocument/rename\",\"params\":\{\"textDocument\":\{\"uri\":\"file:///t.wiz\"},\"position\":{posJson src (offAfter src "Nat.add n" (-1))},\"newName\":\"m\"}}")
+        let src' := applyEdit src (LSP.get? out[0]! ["result"]).get!
+        check ((src'.splitOn "def double (m : Nat) : Nat := Nat.add m m\n").length > 1) s!"renamed:\n{src'}" },
     { name := "document symbols, workspace symbols and folding ranges (11v)", run := fun _ => do
         let src := "import Prelude\n/- a block\n   comment -/\nstructure Point where\n  px : Nat\n  py : Nat\n" ++
           "def Point.norm (p : Point) : Nat := p.px\ndef k : Nat → Nat := by\n  intro n\n  exact n\n"
