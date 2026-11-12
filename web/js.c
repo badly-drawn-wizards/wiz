@@ -7,3 +7,4 @@ EM_JS(void, js_send, (const char *s), { globalThis.wizSend(UTF8ToString(Number(s
 EM_JS(void, js_set_html, (const char *id, const char *html), {
   globalThis.wizSetHtml(UTF8ToString(Number(id)), UTF8ToString(Number(html)));
 });
+EM_JS(void, js_go, (const char *url), { globalThis.wizGo(UTF8ToString(Number(url))); });

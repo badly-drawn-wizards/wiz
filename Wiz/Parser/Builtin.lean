@@ -216,7 +216,7 @@ def termLeading : List LeadingParser := [
   { kind := "term.match", prec := leadPrec,
     -- alternatives line up at or right of the first `|`, so an outer match's next
     -- alternative ends a nested match (as in Lean)
-    p := seqs ["match", sepBy1 term ",", "with", withPosition (many1 (seqs [colGe, matchAlt]))] },
+    p := seqs ["match", sepBy1 term ",", "with", withPosition (many (seqs [colGe, matchAlt]))] },
   -- tactics line up (or are separated by `;`); the tactics themselves come from the prelude
   { kind := "term.by", prec := leadPrec,
     p := seqs ["by", withPosition (many1 (seqs [colGe, cat "tactic" 0, optional ";"]))] },
