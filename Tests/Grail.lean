@@ -711,12 +711,14 @@ def grailDepsGroup : Group where
   ]
 
 /-- Run `grail test` in-process on a package directory. -/
-def runTests (dir : System.FilePath) (tc : Toolchain) (update : Bool := false) : IO (Array Grail.TestResult × Grail.Stats) := do
+def runTests (dir : System.FilePath) (tc : Toolchain) (update : Bool := false) (testTimeoutMs : Option Nat := none) :
+    IO (Array Grail.TestResult × Grail.Stats) := do
   let std : System.FilePath := "lib"
   match ← Grail.readConfig tc 7 std dir with
   | .error e => throw (IO.userError e)
   | .ok (pkg, _) =>
     let r ← runner dir tc pkg 2 (← IO.mkRef "")
+    let r := { r with testTimeoutMs := testTimeoutMs.getD r.testTimeoutMs }
     let res ← r.tests pkg.targets [] update
     pure (res, ← r.stats.get)
 
@@ -764,6 +766,35 @@ def testRunnerGroup : Group where
         if res.any fun t => (t.message.splitOn "gmp.h").length > 1 then
           skip "no toolchain"; return
         for t in res do check t.ok s!"{t.file}: {t.message}" },
+    { name := "--update never records a failure: a program that doesn't build, fails or times out", run := fun _ => do
+        let tc : Toolchain := { (← toolchain) with cacheDir := some (← IO.FS.createTempDir) }
+        let failed (res : Array Grail.TestResult) (file needle : String) : IO Unit := do
+          match res.find? (·.file == file) with
+          | none => throw (IO.userError s!"no result for {file}")
+          | some t =>
+            check (!t.ok) s!"{file} passed: {t.message}"
+            check ((t.message.splitOn needle).length > 1) s!"{file}: {t.message}"
+        -- its program doesn't check (the run test's check job fails)
+        let dir ← mkTree [("grail.wiz", "import Grail\ndef package : Package := Package.new \"t\" |> Package.tests \"tests\" \"tests\"\n"),
+          ("tests/broken.wiz", "-- test: run\nimport Prelude\ndef main : Nat := Nat.zero Nat.zero\n")]
+        for update in [true, false] do
+          let (res, _) ← runTests dir tc update
+          failed res "tests/broken.wiz" "does not build"
+          check (!(← (dir / "tests/broken.expected").pathExists)) "--update recorded the failure"
+        -- a time limit
+        let dir ← mkTree [("grail.wiz", "import Grail\ndef package : Package := Package.new \"t\" |> Package.tests \"tests\" \"tests\"\n"),
+          ("tests/slow.wiz", "import Prelude\ndef n : Nat := 1\n")]
+        let (res, _) ← runTests dir tc (update := true) (testTimeoutMs := some 1)
+        failed res "tests/slow.wiz" "timed out"
+        check (!(← (dir / "tests/slow.expected").pathExists)) "--update recorded the time-out"
+        -- a program that fails when it runs
+        let dir ← mkTree [("grail.wiz", "import Grail\ndef package : Package := Package.new \"t\" |> Package.tests \"tests\" \"tests\"\n"),
+          ("tests/exit.wiz", "-- test: run\nimport Sys\ndef main : IO Unit := Process.exit 3\n")]
+        let (res, _) ← runTests dir tc (update := true)
+        if res.any fun t => (t.message.splitOn "gmp.h").length > 1 then
+          skip "no toolchain"; return
+        failed res "tests/exit.wiz" "exited with 3"
+        check (!(← (dir / "tests/exit.expected").pathExists)) "--update recorded the failed run" },
     -- the suite's own driver (`Tests/Main.lean`): `tests --run GROUP INDEX` ran a case
     -- in-process and printed nothing for a pass, so a stale binary or a wrong index that
     -- ran another (passing) case looked like a pass; a selector that picked nothing

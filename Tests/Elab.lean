@@ -7405,6 +7405,24 @@ def concGroup : Group where
         cRunLibs concCancel "cancelled after 30\n"
         cRunLibs (concCancel.replace "def main : IO Unit := Chan.fork (items 3) (serveItems 3 0) (fun c => client c)" "" ++
           "def main : IO Unit := Chan.fork (items 2) (serveItems 2 0) (fun c => full c)") "all: 3\n" },
+    { name := "owned handles (lib/Handle.wiz): released exactly once, no use after release", run := fun _ => do
+        cRunLibs ("import Handle\n" ++
+          "-- write a file through an owned handle, release it, read it back\n" ++
+          "def writeLog (p : String) : EIO Unit :=\n" ++
+          "  File.withOwned p \"w\" (fun f o =>\n" ++
+          "    Handle.use f o (fun f => File.write f \"one\\n\") (fun r1 o =>\n" ++
+          "    Handle.use f o (fun f => File.write f \"two\\n\") (fun r2 o =>\n" ++
+          "    File.releaseOwned f o (fun r => IO.pure r))))\n" ++
+          "def main : IO Unit := EIO.toIO (EIO.bind FS.createTempDir (fun d =>\n" ++
+          "  let p := Path.join d \"log.txt\";\n" ++
+          "  EIO.bind (writeLog p) (fun _ => EIO.bind (FS.readFile p) (fun s =>\n" ++
+          "    EIO.bind (FS.removeAll d) (fun _ => EIO.lift (IO.print s))))))\n") "one\ntwo\n"
+        failsLibs "import Handle\n-- a handle that is never released\ndef leak (p : String) : EIO Unit := File.withOwned p \"w\" (fun f o => EIO.pure ())" "quantity 1"
+        failsLibs "import Handle\n-- released twice\ndef twice (p : String) : EIO Unit := File.withOwned p \"w\" (fun f o =>\n  File.releaseOwned f o (fun _ => File.releaseOwned f o (fun r => IO.pure r)))" "quantity 1"
+        failsLibs "import Handle\n-- used after release\ndef after (p : String) : EIO Unit := File.withOwned p \"w\" (fun f o =>\n  File.releaseOwned f o (fun _ => Handle.use f o (fun f => File.write f \"x\") (fun r o => File.releaseOwned f o (fun r => IO.pure r))))" "quantity 1"
+        failsLibs "import Handle\ndef forge (f : File) : IO (Owned f) := Owned.mint" "private"
+        failsLibs "import Handle\n-- a second token for an owned handle (natives-review M6-1): Handle.own is private\ndef twice (p : String) : EIO Unit := File.withOwned p \"w\" (fun f o => Handle.own f (fun o2 =>\n  File.releaseOwned f o (fun _ => Handle.use f o2 (fun f => File.write f \"after release\\n\") (fun r o2 =>\n  File.releaseOwned f o2 (fun r => IO.pure r)))))" "private"
+        failsLibs "import Handle\n-- re-owning an existing handle through `with` (natives-review M6-1): Handle.with is private\ndef again (f : File) : EIO Unit := Handle.with (EIO.pure f) (fun g o => File.releaseOwned g o (fun r => IO.pure r))" "private" },
     { name := "Ref: cells owned by linear points-to tokens; a function's type is its triple", run := fun _ => do
         cRunLibs ("import Ref\n" ++
           "-- swap through two tokens: the type is the triple {p ↦ a ⋆ q ↦ b} swap {p ↦ b ⋆ q ↦ a}\n" ++
