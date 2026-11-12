@@ -414,6 +414,21 @@ def Ctx.sortOf (ctx : Ctx R) (ty : VTy R) : TCM Level :=
   | some l => pure l
   | none => throw (.other s!"internal error: cannot compute the sort of {ctx.showVal ty}")
 
+/-- Is this type a proposition, its sort computed and `0` (whatever the proof mode: the
+usage rule "a proof uses nothing")? -/
+def Ctx.isPropTy (ctx : Ctx R) (ty : VTy R) : Bool := (ctx.sortOf? ty).any (·.isZero)
+
+/-- Leave a binder of quantity `q` and type `ty`: as `popUsage`, except that a binder
+whose type is a proposition takes any usage. Its variable is a proof, erased and never
+run (CoreSpec §6), so a linear proof that is used zero times or several times consumes
+nothing (prf-review L1: `(1 h : True) → True`, `let 1 (a, h) := p` at `(1 x : A) × P x`). -/
+def Ctx.popUsageAt (ctx : Ctx R) (x : Name) (q : QPoly R) (ty : VTy R) (u : Usage R) : TCM (Usage R) :=
+  if ctx.isPropTy ty then
+    match u with
+    | _ :: rest => pure rest
+    | [] => throw (.other "internal error: usage vector underflow")
+  else popUsage x q u
+
 /-- Is this type a proposition (its sort is computed, and is `0`)? -/
 def Ctx.isProofTy (ctx : Ctx R) (ty : VTy R) : Bool :=
   ctx.globals.lazyProofs && (ctx.sortOf? ty).any (·.isZero)
@@ -479,6 +494,16 @@ of the expected one.)
 
 **Exercise 4.7a** (stage 4b): the `pair` and `tt` rules. -/
 partial def check (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM (Usage R) := do
+  -- (given) a proof uses nothing: a term at a proposition is checked in an erased position
+  -- and its usage is `0`, at every level of a proof (CoreSpec §6: proofs are erased and
+  -- never run, so a variable at quantity `0` may appear in one)
+  if ctx.isPropTy ty then
+    let _ ← checkU { ctx with erased := true } t ty
+    return Usage.zeros ctx.lvl
+  checkU ctx t ty
+
+/-- `check` without the rule for proofs. -/
+partial def checkU (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM (Usage R) := do
   -- (given) P2: inside a proof, a term that is not a proof is a relevant term again. A
   -- sort that can't be computed is an error here as it is in relevant mode (`requireMarker`),
   -- for a term the requirement would apply to, not a silent "proof mode" (review F4)
@@ -504,14 +529,14 @@ partial def checkCore (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM (Usage R) :=
   | .lam x body, .pi _ _ q dom cod _ => do
     let q ← qtyPoly ctx q
     let u ← check (ctx.bind x q dom) body (Closure.inst ctx.globals cod (Val.var ctx.lvl))
-    popUsage x q u
+    ctx.popUsageAt x q dom u
   | .letE x q tty val body, _ => do
     let q ← checkQty ctx q
     let _ ← checkType ctx tty
     let vty := ctx.eval tty
     let uv ← check (ctx.erasedAt q) val vty
     let ub ← check (ctx.define x q vty (ctx.evalAt val vty)) body ty
-    let ub ← popUsage x q ub
+    let ub ← ctx.popUsageAt x q vty ub
     pure (q • uv + ub)
   | .pair a b, .sigma _ q A B _ => do
     let q ← qtyPoly ctx q
@@ -588,7 +613,8 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) := do
   let (ty, u) ← inferCore (if ctx.marked then { ctx with marked := false } else ctx) t
   -- (given) P2: outside a proof, a proof is marked or neutral-shaped
   ctx.requireMarker t ty
-  pure (ty, u)
+  -- (given) a proof uses nothing (as in `check`)
+  pure (ty, if ctx.isPropTy ty then Usage.zeros ctx.lvl else u)
 
 /-- The rules of `infer` (which adds the proof marker's requirement). -/
 partial def inferCore (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
@@ -676,12 +702,12 @@ partial def inferCore (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
       -- evaluated, and its value with it: the value is then checked as in relevant mode
       let (bty, ub) ← infer (ctx.define x q vty (suspend ctx.globals ctx.env val)) body
       let uv ← check ((if ctx.isProofTy bty then ctx else { ctx with proof := false }).erasedAt q) val vty
-      let ub ← popUsage x q ub
+      let ub ← ctx.popUsageAt x q vty ub
       pure (bty, q • uv + ub)
     else
     let uv ← check (ctx.erasedAt q) val vty
     let (bty, ub) ← infer (ctx.define x q vty (ctx.eval val)) body
-    let ub ← popUsage x q ub
+    let ub ← ctx.popUsageAt x q vty ub
     pure (bty, q • uv + ub)
   | .ann tm tty => do
     let _ ← checkType ctx tty
@@ -698,8 +724,9 @@ partial def inferCore (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     let (ty, u) ← infer ctx t
     match whnf ty with
     | .sigma x q A _ _ =>
-      -- in an erased position nothing is consumed: any field of any pair may be read
-      if ctx.erased then pure (A, u) else
+      -- in an erased position nothing is consumed: any field of any pair may be read; nor
+      -- by a projection of a proof (a proof uses nothing)
+      if ctx.erased || ctx.isPropTy ty then pure (A, u) else
       let q ← qtyPoly ctx q
       unless QPoly.le (QPoly.const 1) q do
         throw (.other s!"cannot project the field {x}, which has quantity {q}; use let (x, y) := ... instead")
@@ -711,7 +738,7 @@ partial def inferCore (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     match whnf pty with
     | .sigma _ _ _ B _ =>
       let ty := Closure.inst ctx.globals B (vFst (ctx.evalAt t pty))
-      if ctx.erased then pure (ty, u) else
+      if ctx.erased || ctx.isPropTy pty then pure (ty, u) else
       -- (R1) as for `t.1`. The first field's quantity doesn't matter: an unrestricted
       -- pair's field is at ω·q, which may always go unused
       pure (ty, ← projUsage ctx t pty ".2" u)
@@ -731,8 +758,8 @@ partial def inferCore (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
       let vy : Val R := Val.var (ctx.lvl + 1)
       let ctx₂ := (ctx.bind x (q * p) A).bind y q (Closure.inst ctx.globals B vx)
       let ub ← check ctx₂ b (Closure.inst ctx.globals mc (.pair vx vy))
-      let ub ← popUsage y q ub
-      let ub ← popUsage x (q * p) ub
+      let ub ← (ctx.bind x (q * p) A).popUsageAt y q (Closure.inst ctx.globals B vx) ub
+      let ub ← ctx.popUsageAt x (q * p) A ub
       pure (Closure.inst ctx.globals mc (ctx.evalAt s sty), q • us + ub)
     | _ => throw (.other s!"not a pair: {ctx.showTerm s}\n  has type: {ctx.showVal sty}")
   | .unit l => pure (.sort l, Usage.zeros ctx.lvl)

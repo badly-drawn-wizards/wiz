@@ -187,9 +187,204 @@ Signals are written with operators: `c + 1`, `x &&& ~~~y`, `s.left === 0`,
   type other than `Nat` (`OfNat.ofNat A n _`) now prints as the numeral, for `Int` and
   words too (`fun x => x + 1 : Int → Int`).
 
-Not done: shifts by a signal (a barrel shifter needs a `NetOp`), signed comparisons and
-arithmetic shift, ASCII spellings of `≤ᵤ` …, `&&`/`||` on signals (they are `if`s whose
-other branch is a `Bool`).
+Not done: ASCII spellings of `≤ᵤ` …. (Shifts by a signal, signed comparisons, arithmetic
+shift and `&&`/`||` on signals: H14 S4.)
+
+## H14 T: temporal properties of circuits (prototype)
+
+Stating and proving properties of circuits over unbounded time, after TLA+, LTL and
+SVA. `lib/Hdl/Temporal.wiz`, on the traces and Mealy machines of H14 C1 (`lib/Trace.wiz`);
+examples and tests in `examples/hdl-temporal.wiz` (group `hdl`). Survey and design:
+`/workspace/wiz-notes/hdl-temporal.md`.
+
+```
+def Uart.onlyThat_a5 :     -- the loopback reports byte 0xa5 and nothing else, for ever
+    TL.always (TL.nowB (fun o => onlyByte 165 o.1 o.2)) (Mealy.obs loopM loopback.init (sendOnce 165)) 0 :=
+  Mealy.always_settled_const loopM (onlyByte 165) loopback.init (sendOnce 165) quiet F (loopIdle 165)
+    (sendOnce_from 165) (refl Bool.true) (refl (loopIdle 165)) (loopIdle_fixed 165) (loopIdle_ok 165)
+```
+
+* **Formulas** `TL A := Trace A → Nat → Prop`: a proposition about a trace at a cycle.
+  `TL.always φ σ t := ∀ k, φ σ (k + t)`, `TL.eventually` its `∃` (traces are functions, so
+  □ is a Π and ◇ an impredicative `∃`, not ν and μ).
+* **Operators**: `now`/`nowB` (atoms), `and`/`or`/`imp`/`not`, `next` (○), `nexts n`
+  (`##n`), `within n` and `during n` (bounded ◇ and □), `delayRange m n` (`##[m:n]`),
+  `until`, `implies`/`impliesNext` (`|->`/`|=>` for a Boolean antecedent), `past n`
+  (`$past`), and TLA's `leadsTo`, `infOften`, `WF`, `SF`, `act` and `stut` (`[R]_v`).
+* **Laws**: `always_now`, `always_next`, `always_cons`, `always_ind` (induction on time),
+  `always_of`, `always_mono`, `always_and`, `always_during`, `eventually_now`,
+  `eventually_next`, `eventually_mono`, `within_eventually`, `splitTime`/`splitAt` (a
+  transient phase, then the rest).
+* **Proof rules** (with `Mealy.invariant` and `Mealy.simulates` from H14 C1):
+  `Mealy.refinesStut` (TLA refinement up to stuttering), `TL.fairStep` (liveness from a
+  fair Boolean event: WF1), `TL.rank` (liveness with a bound from a ranking function),
+  `Mealy.settles`, `always_settled` and `always_settled_const` (the run reaches a state
+  that is fixed under the remaining inputs; the facts are named, `Mealy.Reaches`,
+  `Mealy.Fixed`, `Trace.From`, so that concrete instances are matched by name).
+* **Bounded checks by evaluation**: `Mealy.checkFrom`/`findFrom` (one pass over a run)
+  with `_spec`, `checkFrom_during`, `findFrom_within`: `refl Bool.true` (the kernel
+  evaluates) becomes a temporal statement. For long checks, `native_refl` (stage 27a).
+
+The examples: the UART transmitter's line is high whenever it is idle, at every cycle;
+the loopback delivers the byte sent within 45 cycles and reports no other, for ever
+(per byte: 48 evaluated cycles and a fixed point); a valid/ready buffer refines a
+Bool-level specification for every input trace (eight cases of the control bits, data
+variables), keeps an offered item stable (AXI), and hands on every accepted item if the
+consumer is ready infinitely often.
+
+Not done: sequences with repetition (SEREs; planned as monitor circuits), stuttering
+invariance as a theorem, a deep embedding printable as SVA, notation (□, ◇, `|->`:
+dsl-ergo, stacked on this), case splits on neutral bits (they need the range of `UIntN` in
+the sealed type; wishful `uintn-range-proof`), a tactic for the Bool case splits.
+
+## H14 C1: traces, the common semantics (`lib/Trace.wiz`) ✅
+
+One semantics for everything that runs step by step (design:
+`/workspace/wiz-notes/cohesion-hardware.md`, 2.1). A trace is a function, `Trace A :=
+Nat → A` (equality is pointwise and computes; a ν-stream's is stuck), and a Mealy machine
+is a step `Mealy S I O := S → I → S × O`, run along an input trace by
+`Mealy.stateAt m s0 xs t` and `Mealy.outAt`. `Mealy.run` is the finite run on a list and
+`Mealy.run_take` says it is a prefix of the infinite one. Proof rules on the trace:
+`Mealy.invariant` (an inductive invariant under an environment assumption) and
+`Mealy.simulates`/`simulatesOut` (refinement by a representation map, one step as the
+premise). `Trace.tail`, `map`, `zip`, `cons`, `const`, `once`, `ofList`, `take`.
+
+A circuit is such a machine: `Circuit.mealy c` (its step at values),
+`Circuit.trace c xs : Trace (El o)`, `Circuit.stateAt`, `Circuit.obs` (state and input
+per cycle, what temporal formulas are about), and `Circuit.run_take`:
+`Circuit.run c (Trace.take n xs) = Trace.take n (Circuit.trace c xs)`, so what a
+simulation prints is what a theorem about the trace says. The temporal logic (H14 T)
+builds on these.
+
+## H14 C2: lenses for structures and bundles (`lib/OpticDerive.wiz`, `lib/Hdl/Optic.wiz`) ✅
+
+`deriving Lens` gives every field of a structure a lens (lib/Optic.wiz's `Lens S A`), its
+laws and the independence of every two distinct fields, all by `rfl`:
+`S.fL : Lens (S Δ) T`, `S.fL_lawful : Lens.Lawful S.fL`, `S.f_g_indep : Lens.Indep S.fL
+S.gL` (f declared before g; `Hdl.indep_symm` turns it round). The names and statements
+are the ones Feral's lowering of `struct` writes, so lowered code can switch to the
+deriver. On an HDL bundle (`deriving Bundle, Lens`) a lens is polymorphic in the
+representation, `Tx.leftL : Lens (Tx r) (r B4)`: the same lens updates values in a proof
+and wires in synthesis. `Hdl.zoom l g` runs a sub-step `g` on the place `l` of a state
+(`Hdl.zoom_get`), and `Hdl.zoom_frame` is the frame rule: a place independent of `l` is
+unchanged, for every state (no evaluation needed). `Bundle.lens b` (with
+`Bundle.Lawful b`, `rfl` for derived bundles) and `HwTy.fstL`/`sndL` are the packed
+views at values. Example: `examples/hdl-optic.wiz` (group `hdl`).
+
+## H14 S3: fast simulation for compiled programs (`import Hdl.Sim`) ✅
+
+Compiled, the value simulation (`Circuit.run`, `Design.runLeaves`) runs the step function
+at `HwTy.El` every cycle, and with it every meta-level computation the step contains:
+table trees and top-level constants (compiled code does not cache a closed top-level
+definition: each use computes it again), widths and constants computed from the
+configuration, bundle codes, `pack`/`unpack`, and a dictionary call and a closure per
+operation. Profiled on the iCEstick OLED demo (`oled_fast`, 1068 netlist nodes, about
+1400 cycles/s): about 60% of the time is allocation and reference counting, and the
+table trees (`RomT.go`, `List.take`) are rebuilt in every cycle. `Netlist.simulate` is no
+faster (an allocation per node in its random-access list).
+
+`lib/Hdl/Sim.wiz` runs the netlist instead: synthesis is the partial evaluation (all the
+meta-level work is done once, and the netlist is hash-consed), and the netlist is turned
+once into a flat program (a constructor per node with exactly its operands, constants
+written once, input ports and register outputs as slots) that runs over native arrays
+updated in place (`Array`, lib/Std.wiz).
+
+* `Netlist.simFast n xs` computes exactly what `Netlist.simulate n xs` computes (the same
+  formulas on the same numbers, node by node) for every well-formed netlist
+  (`Netlist.wellFormed`: arguments refer to earlier nodes, register reads to registers,
+  register inputs and outputs to nodes; every netlist `Circuit.netlist` builds), and is
+  `Netlist.simulate` on any other.
+* `Circuit.simFast c xs` = `Circuit.runLeaves c xs`, `Design.simFast d xs` =
+  `Design.runLeaves d xs`, by the netlist's agreement with the values (which the `hdl`
+  group and a design's own check, such as `oled gen`'s, establish).
+* Compiled code only: `Array` has no definition the kernel or `#eval` could run.
+* About 25× the value simulation on `oled_fast` (about 35000 cycles/s) and 13× on
+  `examples/hdl-sim-bench.wiz` (informal numbers; `bench/hdl-sim` in wiz-tools times it).
+  `examples/hdl-sim.wiz` (the `hdl` group) checks `simFast` against `Netlist.simulate`
+  (hash-consed and naive netlists) and `Circuit.run` on every operation, 70-bit widths,
+  reset and enable, a table tree and composition, and the fallback.
+
+Not done: skipping nodes whose arguments did not change (event-driven simulation),
+generated C for a netlist, a value simulation that keeps its meta-level work (caching
+closed top-level definitions in compiled code would remove the table rebuilding).
+
+## H14 S4: the iCEstick gaps: shifts by a signal, signed operations, `&&`/`||`, BitPack, reset and enable ✅
+
+What the iCEstick projects (`/workspace/wiz-icestick-uart`, FINDINGS.md) still had to
+work around after S1 and S2. Everything is in `lib/Hdl/Core.wiz`; the examples and tests
+are `examples/hdl-gaps.wiz` (group `hdl`, with Icarus Verilog test benches when
+`iverilog` is installed) and a shifter in `examples/hdl-sim.wiz` (S3's fast simulation).
+
+| notation (at `r (HwTy.bits n)`) | meaning | Verilog |
+|---|---|---|
+| `a <<< s`, `a >>> s` (`s : r (HwTy.bits m)`) | logical shifts by a signal (`Hw.shlBy`, `Hw.lshrBy`) | `a << s`, `a >> s` |
+| `a >>>ₛ s` | arithmetic shift right by a signal (`Hw.ashrBy`) | `$signed(a) >>> s` |
+| `a >>>ₛ k` (`k : Nat`) | arithmetic shift right by a fixed amount: wiring (`Hw.ashr`) | |
+| `a <ₛ b`, `a ≤ₛ b`, `a >ₛ b`, `a ≥ₛ b` | signed (two's complement) comparisons, one bit (`Hw.slt`, `sle`, `sgt`, `sge`) | `$signed(a) < $signed(b)` |
+| `a && b`, `a \|\| b` (`a b : r HwTy.bit`) | `a &&& b`, `a \|\|\| b` | `&`, `\|` |
+
+* **Shifts by a signal** are four new `Hw` operations (`shlBy`, `lshrBy`, `ashrBy`, `slt`)
+  and four new `NetOp`s (`shl`, `lshr`, `ashr`, `slt`; codes 20–23, leaving 17–19 to
+  memories, H14 C3). The values (`HwTy.El`), the netlist simulation and `Hdl.Sim` all
+  compute them with one set of functions on numbers (`Hdl.shlN`, `lshrN`, `ashrN`,
+  `sltN`), and an amount of `n` or more gives 0 (or all sign bits) without computing
+  `2^s`. `examples/hdl-gaps.wiz` checks the values against lib/BitVec.wiz's own
+  `BitVec.shl`/`lshr`/`ashr`/`slt`/`sle` (every 8-bit value and amount), and the
+  Verilog with a test bench that replays the value simulation in Icarus Verilog.
+* **The shift notation takes any amount type.** `<<<` and `>>>` are now the prelude's
+  `HShiftLeft A B`/`HShiftRight A B` (Lean's `HShiftLeft` without its result type), with
+  `HShiftLeft A Nat` from every `ShiftLeft A`, so `Nat`, words and the fixed shifts of S2
+  are unchanged, and the HDL adds `HShiftLeft (r (bits n)) (r (bits m))`. A numeral amount
+  is a `Nat` (the default type of a numeral), so `x <<< 2` is still wiring.
+  `>>>ₛ` is the HDL's class `AShiftRight A B` (signals only).
+* **`&&` and `||` on one-bit signals.** The prelude's `a && b` is
+  `if a then b else Bool.false` and `a || b` is `if a then Bool.true else b`. When `a` is a
+  signal (S2's `if`-as-a-mux test), the elaborator (`ifMux?`) makes them the gates
+  `AndOp.and a b` / `OrOp.or a b` at the condition's type, so they print as `&&&`/`|||`
+  and have the Verilog of those. On `Bool` they are unchanged (`!` is still `Bool.not`
+  only: use `~~~` on a signal).
+* **`deriving BitPack`.** `structure BitPack A` is a type's values as bit vectors of one
+  width (a value, not an instance, as `Bundle`). For an **enumeration** (no parameters,
+  constructors without fields) constructor `i` is the number `i` in
+  `⌈log₂ #constructors⌉` bits (Clash's encoding):
+  ```
+  inductive Phase where | idle | start | data | stop  deriving BitPack
+  -- Phase.width = 2, Phase.code = HwTy.bits 2, Phase.toNat, Phase.ofNat (out of range:
+  -- the first constructor), Phase.pack : Phase → HwTy.El Phase.code, Phase.unpack,
+  -- Phase.unpack_pack : Phase.unpack (Phase.pack p) = p (by cases), Phase.bitPack,
+  -- Phase.lit p : r Phase.code (the constant in a circuit: `s.ph === Phase.lit .stop`)
+  ```
+  A bundle's field can be `r Phase.code`. For a **bundle** `S Δ r` it adds `S.width`,
+  `S.toBits : S Δ r → r (HwTy.bits (S.width Δ))` and `S.ofBits` (the bundle as one bus:
+  `Hw.packBits`/`Hw.unpackBits`, first field in the high bits as `HwTy.pack`; wiring
+  only), `S.unpack_pack : S.unpack (S.pack s) = s` at values and `S.bitPack`; it derives
+  the `Bundle` too when `S.code` does not exist yet (`deriving Bundle, BitPack` or just
+  `deriving BitPack`). The bit-level round trip `S.ofBits (S.toBits s) = s` holds by `rfl`
+  for closed values (the example checks one, and all 32 values of a 5-bit bundle); a
+  general lemma needs words' range proofs (stage 22l) and lemmas on `concat`/`slice`.
+* **Reset and enable: the convention.** A design with a reset or a clock enable takes
+  them as its first inputs, named `rst` and `en`, reset first: both synchronous and
+  active high, and the reset wins over the enable, as
+  `always @(posedge clk) if (rst) r <= init; else if (en) r <= next;`. Three ways to get
+  it, all of which the netlist turns into the register's reset and enable (not
+  multiplexers):
+  * a whole circuit: `Circuit.withResetEnable c` (= `withReset (withEnable c)`; S1's
+    `withReset`, `withEnable` alone);
+  * one register: `Circuit.registerR t init`, `registerE`, `registerRE` (a `delay` with
+    them; `Circuit.stepEl_registerRE` … say what they do in a cycle);
+  * a field of a state, inside a step function: `Hw.regNext rst en init cur next`
+    (`init` under `rst`, else `next` under `en`, else `cur`). The netlist sees the reset
+    when `init` is the register's initial value, and the enable when `cur` is the
+    register itself; otherwise it is the same multiplexers, with the same meaning.
+
+  Every register keeps its `initial` value, which is all an iCE40 needs (yosys turns a
+  non-zero initial value into inverters around a flip-flop); a reset is for targets
+  without initial values and for restarting a design.
+
+Not done: a general bit-level round-trip lemma for bundles (above), `BitPack` for
+inductive types with fields (a tag and the widest constructor's fields), `!` on signals,
+`match` on an enumeration signal (staged `match`, hdl-staging-research S3), asynchronous
+reset.
 
 ## Logic, heap predicates and Hoare triples ✅
 
@@ -200,6 +395,14 @@ laws), `lib/Hoare.wiz` (`wp`, triples, the frame rule, adequacy for an interpret
 `lib/HoareTactics.wiz` (SLF-style automation: `xsimpl`, `xpull`, `xstep`, `xapp`, …) and
 `lib/HoareExamples.wiz` (verified swap, list reversal, counter, list length, in-place map,
 freeing a list). See [stage 24](stages/24-separation-logic.md).
+
+`lib/HeapBorrow.wiz` is the bridge to Feral's functional model: a `&mut`/`&` borrow of a
+heap cell (`Prog.borrowMut`, `Prog.borrowMut2`, `Prog.borrowShr`: read the cell, run the
+value-level function, write the final value back), whose triples follow from the
+function's `Result.Holds` specification (`Prog.borrowMut_spec`, …) or from its computed
+result (`Prog.handBack_ok`, `Prog.handBack2_ok`, for `xapp`). How it fits with regions,
+optics and quantities: [Resources in Wiz](resources.md); the example is
+`examples/resources.wiz`.
 
 `lib/Ref.wiz` puts mutable cells in `IO` under linear points-to tokens (plan CS7b). A
 location `l : Loc V` is an ordinary value. Owning the cell is a separate token `Pts l v`

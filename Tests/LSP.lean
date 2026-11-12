@@ -653,6 +653,44 @@ def serverGroup : Group where
         let (_, r) := ask srv "wiz/interactiveInfo" src (offAfter src "2 *" (-1))
         checkEq ["Mul Nat"] ((item r "instance").map fun i => flatten (LSP.get? i ["type"]).get!)
         check ((item r "syntax").length == 1 && (item r "expansion").length == 1) s!"syntax items: {r.compress}" },
+    { name := "references, document highlights and rename, across the package's modules (11y)", run := fun _ => do
+        let lib := "import Prelude\ndef helper (n : Nat) : Nat := Nat.succ n\ndef useHelper : Nat := helper 1\n"
+        let src := "import Prelude\nimport Lib\ndef double (n : Nat) : Nat := Nat.add n n\ndef four : Nat := double 2\n" ++
+          "def eight : Nat := double (double (helper 2))\n"
+        let srv0 ← server
+        let srv0 := { srv0 with libs := srv0.libs.insert "Lib" ("/pkg/Lib.wiz", lib) }
+        let (srv, _) := LSP.handle srv0 (req "{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"initialize\",\"params\":{}}")
+        let (srv, _) := LSP.handle srv (Lean.Json.mkObj [("jsonrpc", "2.0"), ("method", "textDocument/didOpen"),
+          ("params", Lean.Json.mkObj [("textDocument", Lean.Json.mkObj [("uri", "file:///t.wiz"), ("version", (1 : Nat)), ("text", src)])])])
+        let locs (r : Lean.Json) : List (String × Nat × Nat) := match r with
+          | .arr ls => ls.toList.map fun l => (LSP.getStr l ["uri"], LSP.getNat l ["range", "start", "line"], LSP.getNat l ["range", "start", "character"])
+          | _ => []
+        -- a global of this file: its declaration and its three uses
+        let (srv, r) := ask srv "textDocument/references" src (offAfter src "four : Nat := dou")
+        checkEq [("file:///t.wiz", 2, 4), ("file:///t.wiz", 3, 18), ("file:///t.wiz", 4, 19), ("file:///t.wiz", 4, 27)] (locs r)
+        -- a global of a package module: there too
+        let (srv, r) := ask srv "textDocument/references" src (offAfter src "(helper" (-2))
+        let sorted := (locs r).toArray.qsort fun a b => a.1 < b.1 || (a.1 == b.1 && (a.2.1 < b.2.1 || (a.2.1 == b.2.1 && a.2.2 < b.2.2)))
+        checkEq [("file:///pkg/Lib.wiz", 1, 4), ("file:///pkg/Lib.wiz", 2, 23), ("file:///t.wiz", 4, 35)] sorted.toList
+        -- a local: the binder and its uses
+        let (srv, r) := ask srv "textDocument/documentHighlight" src (offAfter src "Nat.add n" (-1))
+        let some (.arr hs) := some r | throw (IO.userError s!"{r.compress}")
+        checkEq 3 hs.size
+        -- the toolchain's library can't be renamed
+        let (srv, r) := ask srv "textDocument/prepareRename" src (offAfter src "Nat.ad")
+        check (has r "toolchain") s!"prepareRename: {r.compress}"
+        -- rename a global: every document, and the package module
+        let (srv', out) := LSP.handle srv (req s!"\{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"textDocument/rename\",\"params\":\{\"textDocument\":\{\"uri\":\"file:///t.wiz\"},\"position\":{posJson src (offAfter src "four : Nat := dou")},\"newName\":\"twice\"}}")
+        let some e := LSP.get? out[0]! ["result"] | throw (IO.userError s!"{out[0]!.compress}")
+        let src' := applyEdit src e
+        check ((src'.splitOn "double").length == 1) s!"renamed:\n{src'}"
+        checkEq ([] : List String) (← codes (src'.replace "import Lib\n" "" |>.replace "(helper 2)" "2"))
+        let (_, out) := LSP.handle srv' (req s!"\{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"textDocument/rename\",\"params\":\{\"textDocument\":\{\"uri\":\"file:///t.wiz\"},\"position\":{posJson src (offAfter src "(helper" (-2))},\"newName\":\"aid\"}}")
+        check (has out[0]! "file:///pkg/Lib.wiz") s!"rename in Lib: {out[0]!.compress}"
+        -- a local
+        let (_, out) := LSP.handle srv (req s!"\{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"textDocument/rename\",\"params\":\{\"textDocument\":\{\"uri\":\"file:///t.wiz\"},\"position\":{posJson src (offAfter src "Nat.add n" (-1))},\"newName\":\"m\"}}")
+        let src' := applyEdit src (LSP.get? out[0]! ["result"]).get!
+        check ((src'.splitOn "def double (m : Nat) : Nat := Nat.add m m\n").length > 1) s!"renamed:\n{src'}" },
     { name := "document symbols, workspace symbols and folding ranges (11v)", run := fun _ => do
         let src := "import Prelude\n/- a block\n   comment -/\nstructure Point where\n  px : Nat\n  py : Nat\n" ++
           "def Point.norm (p : Point) : Nat := p.px\ndef k : Nat → Nat := by\n  intro n\n  exact n\n"
@@ -710,6 +748,50 @@ def serverGroup : Group where
         -- an unmasked frame from a client breaks the protocol
         WebSocket.sendText w "x"
         checkEq none (← WebSocket.recvText r' w') },
+    { name := "inside a feral block: hovers, go to definition and errors at the Feral source", run := fun _ => do
+        -- the server's library: Prelude, Feral and the runtime of lowered code
+        let mut libs := (← server).libs
+        -- plus whatever Optic/FeralCore import on this tree (Result, Logic, OpticDerive and
+        -- Deriving arrive with the cohesion stack); a module whose file is absent is skipped
+        for (m, p) in [("Optic", "lib/Optic.wiz"), ("Region", "lib/Region.wiz"), ("Text", "lib/Text.wiz"),
+                       ("Feral", "lib/Feral.wiz"), ("FeralCore", "drafts/feral/lib/FeralCore.wiz"),
+                       ("Result", "lib/Result.wiz"), ("Logic", "lib/Logic.wiz"),
+                       ("OpticDerive", "lib/OpticDerive.wiz"), ("Deriving", "lib/Deriving.wiz")] do
+          if ← System.FilePath.pathExists p then
+            libs := libs.insert m (p, ← IO.FS.readFile p)
+        let srv : LSP.Server := { (← server) with libs, trusted := ["Prelude", "Optic", "Region", "Text", "Feral"] }
+        let (srv, _) := LSP.handle srv (req "{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"initialize\",\"params\":{}}")
+        let src := "import FeralCore\nimport Feral\nferal\n  fn double (n : U64) : U64 := n + n\n" ++
+          "  fn f (x : U64) : U64 := {\n    let mut v := Vec.new;\n    v.push x;\n    double (v.len)\n  }\nend\n"
+        let msg := Lean.Json.mkObj [("jsonrpc", "2.0"), ("method", "textDocument/didOpen"),
+          ("params", Lean.Json.mkObj [("textDocument", Lean.Json.mkObj [("uri", "file:///t.wiz"), ("version", (1 : Nat)), ("text", src)])])]
+        let (srv, out) := LSP.handle srv msg
+        check (!has (Lean.Json.arr out) "\"severity\":1") s!"errors: {(Lean.Json.arr out).compress}"
+        -- the type first; then (for a node of Feral's grammar) its `syntax`
+        let hover (srv : LSP.Server) (off : Nat) (want : String) : IO Unit := do
+          let md := LSP.getStr (ask srv "textDocument/hover" src off).2 ["contents", "value"]
+          check (md.startsWith s!"```wiz\n{want}\n```") s!"expected {want}, got\n{md}"
+        hover srv (offAfter src "push x" (-1)) "x : U64"
+        hover srv (offAfter src "double (v" (-4)) "double : U64 → Result U64"
+        -- a call's value is named by the call (not by the lowering's local `v_…`)
+        hover srv (offAfter src "double (v" (-3)) "double (v.len) : U64"
+        -- go to definition: `fn double`, line 4
+        let (srv, r) := ask srv "textDocument/definition" src (offAfter src "double (v" (-4))
+        checkEq "file:///t.wiz" (LSP.getStr r ["uri"])
+        checkEq 3 (LSP.getNat r ["range", "start", "line"])
+        checkEq 2 (LSP.getNat r ["range", "start", "character"])
+        -- a type error of the lowering (unchecked) is at the expression, line 13 (not the item, line 8)
+        let bad ← IO.FS.readFile "drafts/feral/rejected/surface/E0499_two_mut.wiz"
+        let bad := bad.replace "\nferal\n" "\n#unchecked feral\n"
+        let msg := Lean.Json.mkObj [("jsonrpc", "2.0"), ("method", "textDocument/didChange"),
+          ("params", Lean.Json.mkObj [("textDocument", Lean.Json.mkObj [("uri", "file:///t.wiz"), ("version", (2 : Nat))]),
+            ("contentChanges", Lean.Json.arr #[Lean.Json.mkObj [("text", bad)]])])]
+        let (_, out) := LSP.handle srv msg
+        let diags := out.toList.flatMap fun j => match (j.getObjVal? "params" >>= (·.getObjVal? "diagnostics")).toOption with
+          | some (.arr ds) => ds.toList
+          | _ => []
+        check (diags.any fun d => LSP.getNat d ["range", "start", "line"] == 12 && has d "type mismatch")
+          s!"no type mismatch on line 13: {(Lean.Json.arr diags.toArray).compress}" },
     { name := "11w: the web infoview's files over HTTP on the WebSocket's port (fixed list, local origins)", run := fun _ => do
         let dir ← IO.FS.createTempDir
         IO.FS.writeFile (dir / "infoview.html") "<p>page</p>"

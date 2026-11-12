@@ -1,5 +1,6 @@
 import BitVec
 import Logic
+import Trace
 import Deriving
 -- The HDL library (`import Hdl.Core`). Combinational logic is tagless-final code,
 -- polymorphic in its representation `r : HwTy → Type`, with two instances: values
@@ -179,6 +180,14 @@ class Hw (r : HwTy → Type) where
   not : {ω n : Nat} → r (HwTy.bits n) → r (HwTy.bits n)
   eq : {ω n : Nat} → r (HwTy.bits n) → r (HwTy.bits n) → r HwTy.bit
   ult : {ω n : Nat} → r (HwTy.bits n) → r (HwTy.bits n) → r HwTy.bit
+  -- (H14 S4) shifts by an amount that is a signal (barrel shifters): `shlBy a s` is `a`
+  -- moved up by `s` places (zeros in), `lshrBy` down (zeros in), `ashrBy` down (copies
+  -- of the sign bit in); by `n` places or more, all zeros (or all sign). `slt`: signed
+  -- (two's complement) less-than
+  shlBy : {ω n m : Nat} → r (HwTy.bits n) → r (HwTy.bits m) → r (HwTy.bits n)
+  lshrBy : {ω n m : Nat} → r (HwTy.bits n) → r (HwTy.bits m) → r (HwTy.bits n)
+  ashrBy : {ω n m : Nat} → r (HwTy.bits n) → r (HwTy.bits m) → r (HwTy.bits n)
+  slt : {ω n : Nat} → r (HwTy.bits n) → r (HwTy.bits n) → r HwTy.bit
   mux : {ω t : HwTy} → r HwTy.bit → r t → r t → r t
   cat : {ω m n : Nat} → r (HwTy.bits m) → r (HwTy.bits n) → r (HwTy.bits (Nat.add m n))
   slice : (ω lo w : Nat) → {ω n : Nat} → r (HwTy.bits n) → r (HwTy.bits w)
@@ -213,6 +222,29 @@ def Bool.toBits (b : Bool) : BitVec 1 := match b with
   | .false => BitVec.ofNat 1 0
 def BitVec.isTrue {0 n : Nat} (v : BitVec n) : Bool := Bool.not (Nat.beq v.toNat 0)
 
+-- (H14 S4) The shifts by a signal and the signed comparison on numbers below `2^w`: the
+-- value simulation, the netlist simulation and `Hdl.Sim` all compute with these. An
+-- amount of `w` or more gives 0 (or all sign bits) without computing `2^s`.
+def Hdl.shlN (w a s : Nat) : Nat := match Nat.lt s w with
+  | .true => Nat.mod (Nat.shiftLeft a s) (Nat.pow 2 w)
+  | .false => 0
+def Hdl.lshrN (w a s : Nat) : Nat := match Nat.lt s w with
+  | .true => Nat.shiftRight a s
+  | .false => 0
+-- the sign bit of a `w`-bit number (none at width 0)
+def Hdl.negN (w a : Nat) : Bool := match w with
+  | .zero => .false
+  | .succ v => Bool.not (Nat.lt a (Nat.pow 2 v))
+def Hdl.ashrN (w a s : Nat) : Nat := match Hdl.negN w a with
+  | .false => Hdl.lshrN w a s
+  | .true => (match Nat.lt s w with
+    | .true => Nat.shiftRight a s + (Nat.pow 2 w - Nat.pow 2 (w - s))
+    | .false => Nat.pow 2 w - 1)
+def Hdl.sltN (w a b : Nat) : Bool := match Hdl.negN w a, Hdl.negN w b with
+  | .true, .false => .true
+  | .false, .true => .false
+  | _, _ => Nat.lt a b
+
 -- Simulation: the values themselves. (Named functions where an implicit width is
 -- needed: a lambda can't bind one; wishful: implicit-lambda-binders.)
 def HwTy.El.mux {ω t : HwTy} (c : HwTy.El HwTy.bit) (x y : HwTy.El t) : HwTy.El t :=
@@ -223,6 +255,14 @@ def HwTy.El.cat {ω m n : Nat} (a : HwTy.El (HwTy.bits m)) (b : HwTy.El (HwTy.bi
     HwTy.El (HwTy.bits (Nat.add m n)) := BitVec.concat a b
 def HwTy.El.slice (ω lo w : Nat) {ω n : Nat} (a : HwTy.El (HwTy.bits n)) : HwTy.El (HwTy.bits w) :=
   BitVec.ofNat w (Nat.shiftRight (a : BitVec n).toNat lo)
+def HwTy.El.shlBy {ω n : Nat} {0 m : Nat} (a : HwTy.El (HwTy.bits n)) (s : HwTy.El (HwTy.bits m)) : HwTy.El (HwTy.bits n) :=
+  BitVec.ofNat n (Hdl.shlN n (a : BitVec n).toNat (s : BitVec m).toNat)
+def HwTy.El.lshrBy {ω n : Nat} {0 m : Nat} (a : HwTy.El (HwTy.bits n)) (s : HwTy.El (HwTy.bits m)) : HwTy.El (HwTy.bits n) :=
+  BitVec.ofNat n (Hdl.lshrN n (a : BitVec n).toNat (s : BitVec m).toNat)
+def HwTy.El.ashrBy {ω n : Nat} {0 m : Nat} (a : HwTy.El (HwTy.bits n)) (s : HwTy.El (HwTy.bits m)) : HwTy.El (HwTy.bits n) :=
+  BitVec.ofNat n (Hdl.ashrN n (a : BitVec n).toNat (s : BitVec m).toNat)
+def HwTy.El.slt {ω n : Nat} (a b : HwTy.El (HwTy.bits n)) : HwTy.El HwTy.bit :=
+  Bool.toBits (Hdl.sltN n (a : BitVec n).toNat (b : BitVec n).toNat)
 def HwTy.El.tag (ω s : String) {ω t : HwTy} (x : HwTy.El t) : HwTy.El (HwTy.named s t) := x
 def HwTy.El.untag {ω s : String} {ω t : HwTy} (x : HwTy.El (HwTy.named s t)) : HwTy.El t := x
 def HwTy.El.label (ω s : String) {ω t : HwTy} (x : HwTy.El t) : HwTy.El t := x
@@ -240,6 +280,10 @@ instance : Hw HwTy.El where
   not := fun a => BitVec.not a
   eq := fun a b => Bool.toBits (BitVec.beq a b)
   ult := fun a b => Bool.toBits (BitVec.ult a b)
+  shlBy := HwTy.El.shlBy
+  lshrBy := HwTy.El.lshrBy
+  ashrBy := HwTy.El.ashrBy
+  slt := HwTy.El.slt
   mux := HwTy.El.mux
   cat := HwTy.El.cat
   slice := HwTy.El.slice
@@ -275,6 +319,10 @@ inductive NetOp where
   | slice (lo : Nat)
   | resetTo (v : Nat)
   | hold
+  | shl     -- (H14 S4) by a signal: `a << s`, `a >> s`, `$signed(a) >>> s`, `$signed(a) < $signed(b)`
+  | lshr
+  | ashr
+  | slt
 
 structure NetNode where
   op : NetOp
@@ -325,6 +373,11 @@ def NetOp.code : NetOp → List Nat
   | .slice lo => List.cons 14 (List.cons lo List.nil)
   | .resetTo v => List.cons 15 (List.cons v List.nil)
   | .hold => List.cons 16 List.nil
+  -- (codes 17–19 left for memories, H14 C3)
+  | .shl => List.cons 20 List.nil
+  | .lshr => List.cons 21 List.nil
+  | .ashr => List.cons 22 List.nil
+  | .slt => List.cons 23 List.nil
 
 def NetOp.commutative : NetOp → Bool
   | .add => .true
@@ -507,6 +560,18 @@ def Wire.xor {ω n : Nat} (a b : Wire (HwTy.bits n)) : Wire (HwTy.bits n) := Wir
 def Wire.not {ω n : Nat} (a : Wire (HwTy.bits n)) : Wire (HwTy.bits n) := Wire.op1 NetOp.not n a
 def Wire.eq {ω n : Nat} (a b : Wire (HwTy.bits n)) : Wire HwTy.bit := Wire.op2 NetOp.eq 1 a b
 def Wire.ult {ω n : Nat} (a b : Wire (HwTy.bits n)) : Wire HwTy.bit := Wire.op2 NetOp.ult 1 a b
+-- (an amount of width 0 is no shift; at width 0 there is nothing to shift or compare)
+def Wire.shiftBy (op : NetOp) {ω n m : Nat} (a : Wire (HwTy.bits n)) (s : Wire (HwTy.bits m)) : Wire (HwTy.bits n) :=
+  match Nat.beq n 0, Nat.beq m 0 with
+  | .true, _ => a
+  | _, .true => a
+  | _, _ => Wire.op2 op n a s
+def Wire.shlBy {ω n m : Nat} (a : Wire (HwTy.bits n)) (s : Wire (HwTy.bits m)) : Wire (HwTy.bits n) := Wire.shiftBy NetOp.shl a s
+def Wire.lshrBy {ω n m : Nat} (a : Wire (HwTy.bits n)) (s : Wire (HwTy.bits m)) : Wire (HwTy.bits n) := Wire.shiftBy NetOp.lshr a s
+def Wire.ashrBy {ω n m : Nat} (a : Wire (HwTy.bits n)) (s : Wire (HwTy.bits m)) : Wire (HwTy.bits n) := Wire.shiftBy NetOp.ashr a s
+def Wire.slt {ω n : Nat} (a b : Wire (HwTy.bits n)) : Wire HwTy.bit := match Nat.beq n 0 with
+  | .true => Wire.lit 1 0
+  | .false => Wire.op2 NetOp.slt 1 a b
 def Wire.mux {ω t : HwTy} (c : Wire HwTy.bit) (x y : Wire t) : NetM (HwTy.Ids t) := do
   k ← c;
   a ← x;
@@ -557,6 +622,10 @@ instance : Hw Wire where
   not := Wire.not
   eq := Wire.eq
   ult := Wire.ult
+  shlBy := Wire.shlBy
+  lshrBy := Wire.lshrBy
+  ashrBy := Wire.ashrBy
+  slt := Wire.slt
   mux := Wire.mux
   cat := Wire.cat
   slice := Wire.slice
@@ -635,8 +704,8 @@ def Nat.ofBool (b : Bool) : Nat := match b with
   | .false => 0
 def Hdl.isZero (v : Nat) : Bool := Nat.beq v 0
 
--- A node prepared for simulation: `aux` is the width of the second argument of a
--- `concat` (its shift).
+-- A node prepared for simulation: `aux` is the width of the second argument (the shift
+-- of a `concat`; the operands' width of an `slt`).
 structure SimNode where
   op : NetOp
   width : Nat
@@ -667,6 +736,10 @@ def SimNode.eval (n : SimNode) (vals : Hdl.Vec Nat) (ins : List Nat) (regs : Hdl
   | .not => Nat.pow 2 w - 1 - arg 0
   | .eq => Nat.ofBool (Nat.beq (arg 0) (arg 1))
   | .ult => Nat.ofBool (Nat.lt (arg 0) (arg 1))
+  | .shl => Hdl.shlN w (arg 0) (arg 1)
+  | .lshr => Hdl.lshrN w (arg 0) (arg 1)
+  | .ashr => Hdl.ashrN w (arg 0) (arg 1)
+  | .slt => Nat.ofBool (Hdl.sltN n.aux (arg 0) (arg 1))
   | .mux => (match Hdl.isZero (arg 0) with
     | .true => arg 2
     | .false => arg 1)
@@ -866,6 +939,33 @@ def Circuit.runAcc_eq {i o : HwTy} (c : Circuit i o) : (s : HwTy.El c.st) → (x
 def Circuit.run_eq {i o : HwTy} (c : Circuit i o) (xs : List (HwTy.El i)) : Circuit.run c xs = Circuit.runFrom c c.init xs :=
   Circuit.runAcc_eq c c.init xs List.nil
 
+-- The infinite semantics (lib/Trace.wiz): a circuit is a Mealy machine, and its run along
+-- an input trace is a trace. `run` and `runFrom` are its finite prefixes
+-- (`Mealy.runFrom_take`, `Circuit.run_take`); temporal properties are stated over `Circuit.trace` and
+-- `Circuit.obs`.
+def Circuit.mealy {i o : HwTy} (c : Circuit i o) : Mealy (HwTy.El c.st) (HwTy.El i) (HwTy.El o) := Circuit.stepEl c
+def Circuit.stateAt {ω i o : HwTy} (c : Circuit i o) (xs : Trace (HwTy.El i)) : Trace (HwTy.El c.st) :=
+  Mealy.stateAt (Circuit.mealy c) c.init xs
+def Circuit.trace {ω i o : HwTy} (c : Circuit i o) (xs : Trace (HwTy.El i)) : Trace (HwTy.El o) :=
+  Mealy.outAt (Circuit.mealy c) c.init xs
+-- the state and the input at each cycle
+def Circuit.obs {ω i o : HwTy} (c : Circuit i o) (xs : Trace (HwTy.El i)) : Trace (HwTy.El c.st × HwTy.El i) :=
+  Mealy.obs (Circuit.mealy c) c.init xs
+
+-- `runFrom` is `Mealy.runFrom` of the step, so simulating `n` cycles gives the first `n`
+-- elements of the trace.
+def Circuit.runFrom_mealy {i o : HwTy} (c : Circuit i o) : (s : HwTy.El c.st) → (xs : List (HwTy.El i)) →
+    Circuit.runFrom c s xs = Mealy.run (Circuit.mealy c) s xs
+  | s, .nil => rfl
+  | s, .cons x xs => Eq.congrArg (List.cons (Circuit.stepEl c s x).2) (Circuit.runFrom_mealy c (Circuit.stepEl c s x).1 xs)
+-- (the statement lib/Hdl/Temporal.wiz uses)
+def Mealy.runFrom_take {i o : HwTy} (c : Circuit i o) (n : Nat) (s : HwTy.El c.st) (xs : Trace (HwTy.El i)) :
+    Circuit.runFrom c s (Trace.take n xs) = Trace.take n (Mealy.outAt (Circuit.stepEl c) s xs) :=
+  Eq.trans (Circuit.runFrom_mealy c s (Trace.take n xs)) (Mealy.run_take (Circuit.mealy c) n s xs)
+def Circuit.run_take {i o : HwTy} (c : Circuit i o) (n : Nat) (xs : Trace (HwTy.El i)) :
+    Circuit.run c (Trace.take n xs) = Trace.take n (Circuit.trace c xs) :=
+  Eq.trans (Circuit.run_eq c (Trace.take n xs)) (Mealy.runFrom_take c n c.init xs)
+
 ------------------------------------------------------------------------------------
 -- Composition. Each combinator's state is made of its parts' states; the lemmas after
 -- each say what it does to `runFrom` (and so, by `Circuit.run_eq`, to `run`).
@@ -945,6 +1045,32 @@ def Circuit.withEnable {ω i o : HwTy} (c : Circuit i o) : Circuit (HwTy.prod (H
     let rc := c.step s (Hw.snd x);
     Hw.pair (Hw.hold (Hw.untag (Hw.fst x)) (Hw.fst rc) s) (Hw.snd rc))
 
+-- (H14 S4) The reset and enable convention. A design that has a reset or a clock enable
+-- takes them as its first inputs, named `rst` and `en`, reset first: `rst` wins over
+-- `en` (a held register is still reset), and both are synchronous and active high (as
+-- `if (rst) r <= init; else if (en) r <= next;`). For a whole circuit:
+-- `Circuit.withResetEnable c`; for one register: `Circuit.registerR`/`registerE`/
+-- `registerRE`; for one field of a state inside a step function: `Hw.regNext rst en init
+-- cur next` (the next value of a register whose value is `cur`). Each of them becomes
+-- the register's reset and enable in the netlist, not a multiplexer. Every register still
+-- has its initial value (`initial` in Verilog: the iCE40 needs no reset).
+def Circuit.withResetEnable {ω i o : HwTy} (c : Circuit i o) :
+    Circuit (HwTy.prod (HwTy.named "rst" HwTy.bit) (HwTy.prod (HwTy.named "en" HwTy.bit) i)) o :=
+  Circuit.withReset (Circuit.withEnable c)
+-- a register (`Circuit.delay`) with a reset to its initial value, with an enable, with both
+def Circuit.registerR (ω t : HwTy) (init : HwTy.El t) : Circuit (HwTy.prod (HwTy.named "rst" HwTy.bit) t) t :=
+  Circuit.withReset (Circuit.delay t init)
+def Circuit.registerE (ω t : HwTy) (init : HwTy.El t) : Circuit (HwTy.prod (HwTy.named "en" HwTy.bit) t) t :=
+  Circuit.withEnable (Circuit.delay t init)
+def Circuit.registerRE (ω t : HwTy) (init : HwTy.El t) :
+    Circuit (HwTy.prod (HwTy.named "rst" HwTy.bit) (HwTy.prod (HwTy.named "en" HwTy.bit) t)) t :=
+  Circuit.withResetEnable (Circuit.delay t init)
+-- inside a step function: `init` under `rst`, else `next` under `en`, else `cur` (for the
+-- netlist to see a reset, `init` must be the register's initial value; to see an enable,
+-- `cur` must be the register itself)
+def Hw.regNext {r : HwTy → Type} [Hw r] {ω t : HwTy} (rst en : r HwTy.bit) (init : HwTy.El t) (cur next : r t) : r t :=
+  Hw.resetTo rst init (Hw.hold en next cur)
+
 ------------------------------------------------------------------------------------
 -- What the combinators do to the semantics.
 
@@ -1020,6 +1146,17 @@ def Circuit.stepEl_withEnable {i o : HwTy} (c : Circuit i o) (s : HwTy.El c.st) 
     Circuit.stepEl (Circuit.withEnable c) s (en, x) =
       (@HwTy.El.mux c.st en (Circuit.stepEl c s x).1 s, (Circuit.stepEl c s x).2) :=
   refl (Circuit.stepEl (Circuit.withEnable c) s (en, x))
+-- the registers, cycle by cycle: the output is the current value; the next one is `init`
+-- under reset, the input under enable, else the current value
+def Circuit.stepEl_registerRE {ω t : HwTy} (v : HwTy.El t) (s : HwTy.El t) (rst en : HwTy.El HwTy.bit) (x : HwTy.El t) :
+    Circuit.stepEl (Circuit.registerRE t v) s (rst, (en, x)) = (HwTy.El.mux rst v (HwTy.El.mux en x s), s) :=
+  rfl
+def Circuit.stepEl_registerR {ω t : HwTy} (v : HwTy.El t) (s : HwTy.El t) (rst : HwTy.El HwTy.bit) (x : HwTy.El t) :
+    Circuit.stepEl (Circuit.registerR t v) s (rst, x) = (HwTy.El.mux rst v x, s) :=
+  rfl
+def Circuit.stepEl_registerE {ω t : HwTy} (v : HwTy.El t) (s : HwTy.El t) (en : HwTy.El HwTy.bit) (x : HwTy.El t) :
+    Circuit.stepEl (Circuit.registerE t v) s (en, x) = (HwTy.El.mux en x s, s) :=
+  rfl
 
 -- the same for `run`
 def Circuit.run_seq {ω i m o : HwTy} (a : Circuit i m) (b : Circuit m o) (xs : List (HwTy.El i)) :
@@ -1242,6 +1379,14 @@ def Verilog.expr (cx : VCtx) (n : NetNode) : String := match n.op with
     | _ => "?")
   | .eq => Verilog.bin cx "==" n.args
   | .ult => Verilog.bin cx "<" n.args
+  | .shl => Verilog.bin cx "<<" n.args
+  | .lshr => Verilog.bin cx ">>" n.args
+  | .ashr => (match n.args with
+    | .cons a (.cons s _) => "$signed(" <+> VCtx.ref cx a <+> ") >>> " <+> VCtx.ref cx s
+    | _ => "?")
+  | .slt => (match n.args with
+    | .cons a (.cons b _) => "$signed(" <+> VCtx.ref cx a <+> ") < $signed(" <+> VCtx.ref cx b <+> ")"
+    | _ => "?")
   | .concat => (match n.args with
     | .cons a (.cons b _) => Verilog.concat cx a b
     | _ => "?")
@@ -1551,6 +1696,176 @@ def deriveBundle : Deriver := fun n => do
 attribute [deriver Bundle] deriveBundle
 
 ------------------------------------------------------------------------------------
+-- (H14 S4) Bit packing: a value as one bit vector.
+--
+-- `Hw.packBits t x` is any code's signal as one bus (the first component in the high
+-- bits, as `HwTy.pack`), `Hw.unpackBits t` takes it apart again: wiring only
+-- (concatenations and slices), at any representation.
+
+def Hw.packBits {r : HwTy → Type} [Hw r] : (ω t : HwTy) → r t → r (HwTy.bits (HwTy.width t))
+  | .bits n, x => x
+  | .prod a b, x => Hw.share x (fun y => Hw.cat (Hw.packBits a (Hw.fst y)) (Hw.packBits b (Hw.snd y)))
+  | .named _ t, x => Hw.packBits t (Hw.untag x)
+def Hw.unpackBits {r : HwTy → Type} [Hw r] : (ω t : HwTy) → r (HwTy.bits (HwTy.width t)) → r t
+  | .bits n, x => x
+  | .prod a b, x => Hw.share x (fun y =>
+    Hw.pair (Hw.unpackBits a (Hw.slice (HwTy.width b) (HwTy.width a) y)) (Hw.unpackBits b (Hw.slice 0 (HwTy.width b) y)))
+  | .named s t, x => Hw.tag s (Hw.unpackBits t x)
+
+-- at values
+def HwTy.El.packBits (ω t : HwTy) (x : HwTy.El t) : BitVec (HwTy.width t) := Hw.packBits (r := HwTy.El) t x
+def HwTy.El.unpackBits (ω t : HwTy) (x : BitVec (HwTy.width t)) : HwTy.El t := Hw.unpackBits (r := HwTy.El) t x
+
+-- A type's values as bit vectors of one width (Clash's `BitPack`). A plain value, not an
+-- instance, for the reason `Bundle` is one. `deriving BitPack` makes `T.bitPack`.
+structure BitPack (A : Type) where
+  width : Nat
+  pack : A → BitVec width
+  unpack : BitVec width → A
+
+-- the number of bits for `k` values: the least `w` with `k ≤ 2^w`
+def Hdl.clog2Go : Nat → Nat → Nat → Nat
+  | .zero, w, _ => w
+  | .succ f, w, k => match Nat.lt (Nat.pow 2 w) k with
+    | .true => Hdl.clog2Go f (Nat.succ w) k
+    | .false => w
+def Hdl.clog2 (k : Nat) : Nat := Hdl.clog2Go k 0 k
+
+-- `deriving BitPack`:
+-- * for an enumeration `T` (no parameters, constructors without fields), constructor
+--   `i` is the number `i`, in `w = ⌈log₂ #constructors⌉` bits:
+--     `T.width : Nat`, `T.code : HwTy` (= `HwTy.bits T.width`),
+--     `T.toNat`, `T.ofNat` (a number out of range is the first constructor),
+--     `T.pack : T → HwTy.El T.code`, `T.unpack`, `T.unpack_pack : T.unpack (T.pack x) = x`,
+--     `T.lit x : r T.code` (the constant, at any representation), `T.bitPack`;
+-- * for a bundle `S Δ r` (a structure whose last parameter is the representation; its
+--   `deriving Bundle` is made too if it is not there yet), the bundle as one bus:
+--     `S.width Δ`, `S.toBits Δ : S Δ r → r (HwTy.bits (S.width Δ))`, `S.ofBits Δ`,
+--     `S.unpack_pack Δ : S.unpack Δ (S.pack Δ s) = s` (at values), and
+--     `S.bitPack Δ : BitPack (S Δ HwTy.El)`.
+def HdlDerive.num (k : Nat) : Syntax := Syntax.mkNode "term.num" (.cons (Syntax.mkNode "num" (.cons (.atom (Syntax.decimal k)) .nil)) .nil)
+def HdlDerive.ctorVars (v : IndView) : List CtorView → List Syntax
+  | .nil => .nil
+  | .cons c cs => .cons (Syntax.mkVar (Derive.ctorName v c)) (HdlDerive.ctorVars v cs)
+def HdlDerive.listOf : List Syntax → Syntax
+  | .nil => Syntax.mkVar "List.nil"
+  | .cons x xs => Syntax.mkApp (Syntax.mkVar "List.cons") (.cons x (.cons (HdlDerive.listOf xs) .nil))
+def HdlDerive.nums : Nat → List CtorView → List Syntax
+  | _, .nil => .nil
+  | i, .cons _ cs => .cons (HdlDerive.num i) (HdlDerive.nums (Nat.succ i) cs)
+def HdlDerive.refls : List Syntax → List Syntax
+  | .nil => .nil
+  | .cons c cs => .cons `(term| refl $c) (HdlDerive.refls cs)
+def HdlDerive.allNullary : List CtorView → Bool
+  | .nil => .true
+  | .cons c cs => match CtorView.fields c with
+    | .nil => HdlDerive.allNullary cs
+    | _ => .false
+
+def HdlDerive.enumPack (v : IndView) (n : String) : MacroM (List Syntax) :=
+  let cs := IndView.ctors v;
+  let w := HdlDerive.num (Hdl.clog2 (List.length cs));
+  let tyT := Syntax.mkVar n;
+  let wN := Syntax.mkIdent (String.append n ".width");
+  let wV := Syntax.mkVar (String.append n ".width");
+  let codeN := Syntax.mkIdent (String.append n ".code");
+  let codeV := Syntax.mkVar (String.append n ".code");
+  let toNatN := Syntax.mkIdent (String.append n ".toNat");
+  let toNatV := Syntax.mkVar (String.append n ".toNat");
+  let ofNatN := Syntax.mkIdent (String.append n ".ofNat");
+  let ofNatV := Syntax.mkVar (String.append n ".ofNat");
+  let packN := Syntax.mkIdent (String.append n ".pack");
+  let packV := Syntax.mkVar (String.append n ".pack");
+  let unpackN := Syntax.mkIdent (String.append n ".unpack");
+  let unpackV := Syntax.mkVar (String.append n ".unpack");
+  let litN := Syntax.mkIdent (String.append n ".lit");
+  let lawN := Syntax.mkIdent (String.append n ".unpack_pack");
+  let lawV := Syntax.mkVar (String.append n ".unpack_pack");
+  let bpN := Syntax.mkIdent (String.append n ".bitPack");
+  let x := Syntax.mkIdent "x✝";
+  let xv := Syntax.mkVar "x✝";
+  let k := Syntax.mkIdent "k✝";
+  let kv := Syntax.mkVar "k✝";
+  let r := Syntax.mkIdent "r";
+  let rv := Syntax.mkVar "r";
+  let ctors := HdlDerive.ctorVars v cs;
+  let first := (match ctors with
+    | .cons c _ => c
+    | .nil => Syntax.mkVar "x✝");
+  let toNatBody := Syntax.mkApp (Syntax.mkVar (String.append n ".rec"))
+    (.cons `(term| fun _ => Nat) (List.append (HdlDerive.nums 0 cs) (.cons xv .nil)));
+  let ofNatBody := Syntax.mkApp (Syntax.mkVar "Hdl.nthD") (.cons first (.cons (HdlDerive.listOf ctors) (.cons kv .nil)));
+  let motive := `(term| fun $x => $unpackV ($packV $xv) = $xv);
+  let lawBody := Syntax.mkApp (Syntax.mkVar (String.append n ".rec"))
+    (.cons motive (List.append (HdlDerive.refls ctors) (.cons xv .nil)));
+  MacroM.pure (.cons `(command| def $wN : Nat := $w)
+    (.cons `(command| def $codeN : HwTy := HwTy.bits $wV)
+    (.cons `(command| def $toNatN ($x : $tyT) : Nat := $toNatBody)
+    (.cons `(command| def $ofNatN ($k : Nat) : $tyT := $ofNatBody)
+    (.cons `(command| def $packN ($x : $tyT) : HwTy.El $codeV := BitVec.ofNat $wV ($toNatV $xv))
+    (.cons `(command| def $unpackN ($x : HwTy.El $codeV) : $tyT := $ofNatV (BitVec.toNat ($xv : BitVec $wV)))
+    (.cons `(command| def $litN {$r : HwTy → Type} [Hw $rv] ($x : $tyT) : $rv $codeV := Hw.lit $wV ($toNatV $xv))
+    (.cons `(command| def $lawN ($x : $tyT) : $unpackV ($packV $xv) = $xv := $lawBody)
+    (.cons `(command| def $bpN : BitPack $tyT := BitPack.mk $wV $packV $unpackV) .nil)))))))))
+
+def HdlDerive.bundlePack (v : IndView) (n : String) (pre : List Syntax) : MacroM (List Syntax) :=
+  let ps := HdlDerive.init (IndView.params v);
+  let delta := Derive.paramVars ps;
+  let tyF := Syntax.mkApp (Syntax.mkVar n) delta;
+  let r := Syntax.mkIdent (HdlDerive.lastName (IndView.params v));
+  let rv := Syntax.mkVar (HdlDerive.lastName (IndView.params v));
+  let tyS := Syntax.mkApp tyF (.cons rv .nil);
+  let tyEl := Syntax.mkApp tyF (.cons `(term| HwTy.El) .nil);
+  let app := fun (suffix : String) => Syntax.mkApp (Syntax.mkVar (String.append n suffix)) delta;
+  let idt := fun (suffix : String) => Syntax.mkIdent (String.append n suffix);
+  let codeApp := app ".code";
+  let widthApp := app ".width";
+  let packApp := app ".pack";
+  let unpackApp := app ".unpack";
+  let s := Syntax.mkIdent "s✝";
+  let sv := Syntax.mkVar "s✝";
+  let x := Syntax.mkIdent "x✝";
+  let xv := Syntax.mkVar "x✝";
+  let wN := idt ".width";
+  let wTy := HdlDerive.explicitPis ps `(term| Nat);
+  let wVal := HdlDerive.lams ps `(term| HwTy.width $codeApp);
+  let tN := idt ".toBits";
+  let tTy := HdlDerive.explicitPis ps `(term| {$r : HwTy → Type} → [Hw $rv] → $tyS → $rv (HwTy.bits $widthApp));
+  let tVal := HdlDerive.lams ps `(term| fun $s => Hw.packBits $codeApp ($packApp $sv));
+  let oN := idt ".ofBits";
+  let oTy := HdlDerive.explicitPis ps `(term| {$r : HwTy → Type} → [Hw $rv] → $rv (HwTy.bits $widthApp) → $tyS);
+  let oVal := HdlDerive.lams ps `(term| fun $x => $unpackApp (Hw.unpackBits $codeApp $xv));
+  let lN := idt ".unpack_pack";
+  let lTy := HdlDerive.explicitPis ps `(term| ($s : $tyEl) → $unpackApp ($packApp $sv) = $sv);
+  let lVal := HdlDerive.lams ps `(term| fun $s => refl $sv);
+  let bN := idt ".bitPack";
+  let bTy := HdlDerive.explicitPis ps `(term| BitPack $tyEl);
+  let bVal := HdlDerive.lams ps `(term| BitPack.mk $widthApp (fun $s => HwTy.El.packBits $codeApp ($packApp $sv))
+    (fun $x => $unpackApp (HwTy.El.unpackBits $codeApp $xv)));
+  MacroM.pure (List.append pre
+    (.cons `(command| def $wN : $wTy := $wVal)
+    (.cons `(command| def $tN : $tTy := $tVal)
+    (.cons `(command| def $oN : $oTy := $oVal)
+    (.cons `(command| def $lN : $lTy := $lVal)
+    (.cons `(command| def $bN : $bTy := $bVal) .nil))))))
+
+def deriveBitPack : Deriver := fun n => do
+  v ← Derive.lookup "BitPack" n;
+  Derive.noIndices "BitPack" v;
+  match IndView.params v, HdlDerive.allNullary (IndView.ctors v) with
+  | .nil, .true => HdlDerive.enumPack v n
+  | .cons _ _, _ => (match IndView.isStructure v with
+    | .true => do
+      code ← MacroM.getType (String.append n ".code");
+      pre ← (match code with
+        | .some _ => MacroM.pure List.nil
+        | .none => deriveBundle n);
+      HdlDerive.bundlePack v n pre
+    | .false => MacroM.throw (String.append "BitPack: not an enumeration or a bundle: " n))
+  | .nil, .false => MacroM.throw (String.append "BitPack: not an enumeration (constructors without fields) or a bundle: " n)
+attribute [deriver BitPack] deriveBitPack
+
+------------------------------------------------------------------------------------
 -- Test benches. `Testbench.verilog n vec cycles` replays a vector file on the module
 -- `Verilog.emit n` makes: each line of `vec` is one cycle, in hexadecimal, the input
 -- ports then the expected output ports (in port order, the first in the high bits;
@@ -1788,6 +2103,10 @@ def Design.runLeaves (d : Design) (xs : List (List Nat)) : List (List Nat) :=
 --   `a <ᵤ b`  `a ≤ᵤ b`  `a >ᵤ b`  `a ≥ᵤ b`   unsigned comparisons: 1 bit      (62)
 --   `a === b`  `a =/= b`                equality, inequality: a 1-bit signal   (61)
 --   `if c then a else b`, `c : r HwTy.bit`   `Hw.mux c a b`, at any type `r t`
+--   (H14 S4) `a <<< s`  `a >>> s`  `a >>>ₛ s`  (`s` a signal)   barrel shifters   (75)
+--   `a >>>ₛ k` (`k : Nat`)   arithmetic shift right by wiring                    (75)
+--   `a <ₛ b`  `a ≤ₛ b`  `a >ₛ b`  `a ≥ₛ b`   signed comparisons: 1 bit           (62)
+--   `a && b`  `a || b`  (`a b : r HwTy.bit`)   `a &&& b`, `a ||| b`             (35, 30)
 --
 -- They are the `Hw` operations, so circuits written with them have the same netlists and
 -- the same Verilog as with `Hw.add` …, and print back as written. `Hw.ofNat k` is a
@@ -1826,6 +2145,33 @@ def Hw.lshr {r : HwTy → Type} [Hw r] {ω n : Nat} (a : r (HwTy.bits n)) (k : N
 instance {r : HwTy → Type} [Hw r] {ω n : Nat} : ShiftLeft (r (HwTy.bits n)) := ShiftLeft.mk (fun a k => Hw.shl a k)
 instance {r : HwTy → Type} [Hw r] {ω n : Nat} : ShiftRight (r (HwTy.bits n)) := ShiftRight.mk (fun a k => Hw.lshr a k)
 
+-- (H14 S4) Shifts by a signal `s : r (HwTy.bits m)`: `a <<< s`, `a >>> s` are barrel
+-- shifters (`Hw.shlBy`, `Hw.lshrBy`; Verilog `<<`, `>>`). A `Nat` amount stays wiring.
+instance {r : HwTy → Type} [Hw r] {ω n m : Nat} : HShiftLeft (r (HwTy.bits n)) (r (HwTy.bits m)) (r (HwTy.bits n)) :=
+  HShiftLeft.mk (fun a s => Hw.shlBy a s)
+instance {r : HwTy → Type} [Hw r] {ω n m : Nat} : HShiftRight (r (HwTy.bits n)) (r (HwTy.bits m)) (r (HwTy.bits n)) :=
+  HShiftRight.mk (fun a s => Hw.lshrBy a s)
+
+-- Arithmetic shift right, `a >>>ₛ k` (copies of the sign bit come in): by a fixed `k :
+-- Nat` it is wiring (the sign bit repeated `k` times on top, then a slice); by a signal,
+-- `Hw.ashrBy` (Verilog `$signed(a) >>> s`).
+def Hw.signs {r : HwTy → Type} [Hw r] {ω n : Nat} (a : r (HwTy.bits n)) (k : Nat) : r (HwTy.bits k) :=
+  Hw.mux (Hw.slice (n - 1) 1 a) (Hw.lit k (Nat.pow 2 k - 1)) (Hw.lit k 0)
+def Hw.ashr {r : HwTy → Type} [Hw r] {ω n : Nat} (a : r (HwTy.bits n)) (k : Nat) : r (HwTy.bits n) :=
+  match Nat.beq k 0, Nat.beq n 0 with
+  | .true, _ => a
+  | _, .true => a
+  | _, _ => Hw.share a (fun a => match Nat.lt k n with
+    | .true => Hw.slice k n (Hw.cat (Hw.signs a k) a)
+    | .false => Hw.signs a n)
+class AShiftRight (A B : Type) (C : outParam Type) where
+  ashr : A → B → C
+instance {r : HwTy → Type} [Hw r] {ω n : Nat} : AShiftRight (r (HwTy.bits n)) Nat (r (HwTy.bits n)) :=
+  AShiftRight.mk (fun a k => Hw.ashr a k)
+instance {r : HwTy → Type} [Hw r] {ω n m : Nat} : AShiftRight (r (HwTy.bits n)) (r (HwTy.bits m)) (r (HwTy.bits n)) :=
+  AShiftRight.mk (fun a s => Hw.ashrBy a s)
+infixl:75 " >>>ₛ " => AShiftRight.ashr
+
 -- comparisons: one bit
 def Hw.neq {r : HwTy → Type} [Hw r] {ω n : Nat} (a b : r (HwTy.bits n)) : r HwTy.bit := Hw.not (Hw.eq a b)
 def Hw.ule {r : HwTy → Type} [Hw r] {ω n : Nat} (a b : r (HwTy.bits n)) : r HwTy.bit := Hw.not (Hw.ult b a)
@@ -1837,6 +2183,15 @@ infix:62 " <ᵤ " => Hw.ult
 infix:62 " ≤ᵤ " => Hw.ule
 infix:62 " >ᵤ " => Hw.ugt
 infix:62 " ≥ᵤ " => Hw.uge
+
+-- (H14 S4) signed comparisons (two's complement), one bit: `<ₛ ≤ₛ >ₛ ≥ₛ`
+def Hw.sle {r : HwTy → Type} [Hw r] {ω n : Nat} (a b : r (HwTy.bits n)) : r HwTy.bit := Hw.not (Hw.slt b a)
+def Hw.sgt {r : HwTy → Type} [Hw r] {ω n : Nat} (a b : r (HwTy.bits n)) : r HwTy.bit := Hw.slt b a
+def Hw.sge {r : HwTy → Type} [Hw r] {ω n : Nat} (a b : r (HwTy.bits n)) : r HwTy.bit := Hw.not (Hw.slt a b)
+infix:62 " <ₛ " => Hw.slt
+infix:62 " ≤ₛ " => Hw.sle
+infix:62 " >ₛ " => Hw.sgt
+infix:62 " ≥ₛ " => Hw.sge
 
 -- `if` on a one-bit signal (lib/Prelude.wiz, `Mux`): a multiplexer at any type
 instance {r : HwTy → Type} [Hw r] {ω t : HwTy} : Mux (r HwTy.bit) (r t) := Mux.mk (fun c a b => Hw.mux c a b)
