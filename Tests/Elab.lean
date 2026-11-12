@@ -7150,15 +7150,17 @@ def concGroup : Group where
           "  File.withOwned p \"w\" (fun f o =>\n" ++
           "    Handle.use f o (fun f => File.write f \"one\\n\") (fun r1 o =>\n" ++
           "    Handle.use f o (fun f => File.write f \"two\\n\") (fun r2 o =>\n" ++
-          "    Handle.release f o (EIO.pure ()))))\n" ++
+          "    File.releaseOwned f o (fun r => IO.pure r))))\n" ++
           "def main : IO Unit := EIO.toIO (EIO.bind FS.createTempDir (fun d =>\n" ++
           "  let p := Path.join d \"log.txt\";\n" ++
           "  EIO.bind (writeLog p) (fun _ => EIO.bind (FS.readFile p) (fun s =>\n" ++
           "    EIO.bind (FS.removeAll d) (fun _ => EIO.lift (IO.print s))))))\n") "one\ntwo\n"
         failsLibs "import Handle\n-- a handle that is never released\ndef leak (p : String) : EIO Unit := File.withOwned p \"w\" (fun f o => EIO.pure ())" "quantity 1"
-        failsLibs "import Handle\n-- released twice\ndef twice (p : String) : EIO Unit := File.withOwned p \"w\" (fun f o =>\n  Handle.release f o (Handle.release f o (EIO.pure ())))" "quantity 1"
-        failsLibs "import Handle\n-- used after release\ndef after (p : String) : EIO Unit := File.withOwned p \"w\" (fun f o =>\n  Handle.release f o (Handle.use f o (fun f => File.write f \"x\") (fun r o => Handle.release f o (EIO.pure ()))))" "quantity 1"
-        failsLibs "import Handle\ndef forge (f : File) : IO (Owned f) := Owned.mint" "private" },
+        failsLibs "import Handle\n-- released twice\ndef twice (p : String) : EIO Unit := File.withOwned p \"w\" (fun f o =>\n  File.releaseOwned f o (fun _ => File.releaseOwned f o (fun r => IO.pure r)))" "quantity 1"
+        failsLibs "import Handle\n-- used after release\ndef after (p : String) : EIO Unit := File.withOwned p \"w\" (fun f o =>\n  File.releaseOwned f o (fun _ => Handle.use f o (fun f => File.write f \"x\") (fun r o => File.releaseOwned f o (fun r => IO.pure r))))" "quantity 1"
+        failsLibs "import Handle\ndef forge (f : File) : IO (Owned f) := Owned.mint" "private"
+        failsLibs "import Handle\n-- a second token for an owned handle (natives-review M6-1): Handle.own is private\ndef twice (p : String) : EIO Unit := File.withOwned p \"w\" (fun f o => Handle.own f (fun o2 =>\n  File.releaseOwned f o (fun _ => Handle.use f o2 (fun f => File.write f \"after release\\n\") (fun r o2 =>\n  File.releaseOwned f o2 (fun r => IO.pure r)))))" "private"
+        failsLibs "import Handle\n-- re-owning an existing handle through `with` (natives-review M6-1): Handle.with is private\ndef again (f : File) : EIO Unit := Handle.with (EIO.pure f) (fun g o => File.releaseOwned g o (fun r => IO.pure r))" "private" },
     { name := "MVars and locks: eight threads, one counter", run := fun _ =>
         cRunLibs concCounter "8000\n" },
     { name := "a lazy stream shared between threads", run := fun _ =>

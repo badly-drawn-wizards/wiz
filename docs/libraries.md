@@ -148,14 +148,17 @@ freeing a list). See [stage 24](stages/24-separation-logic.md).
 
 ## Owned handles (`lib/Handle.wiz`) ✅
 
-`Owned h` is the obligation to release the handle `h` (a `File`, `Fd`, `Child`, or any
-type with a `Release` instance): a token at quantity 1 indexed by the handle, as
-`MVar.Hole m` and `Lock.Guard l` are ([25d](stages/25-concurrency.md)). `Handle.own`,
-`Handle.use` (the token goes in and comes back), `Handle.release`, `Handle.with`, and
-`File.withOwned`. A handle acquired this way is released exactly once on every path, and
-not used after release through this API. The handles themselves stay ω values, so
-direct calls to lib/Sys.wiz are not checked. Making them linear (direct style, with
-lib/Sys.wiz and lib/Serial.wiz moved onto this module) waits for linear Σ fields
+`Owned h` is the obligation to release the handle `h`: a token at quantity 1 indexed by
+the handle, as `MVar.Hole m` and `Lock.Guard l` are ([25d](stages/25-concurrency.md)).
+The owned constructors `File.withOwned`, `Fd.withOwned` and `Process.spawnOwned` open a
+fresh handle and mint its one token; nothing else can mint one. `Handle.use` passes the
+token in and hands it back, and `File.releaseOwned`, `Fd.releaseOwned` and
+`Child.releaseOwned` (close, close, wait) use it up. **For handles obtained through the
+owned constructors**, the release happens exactly once on every path, and there is no use
+after release through this API. Handles from lib/Sys.wiz's ω API (`File.open`, …) have no
+token and are not covered; the handles stay ω values, so direct calls to lib/Sys.wiz on an
+owned handle are not checked either. Making the handles themselves linear (direct style,
+with lib/Sys.wiz and lib/Serial.wiz moved onto this module) waits for linear Σ fields
 (linear-case stage 2). Trusted: two natives (`wiz_handle_own`/`wiz_handle_disown`).
 
 ## Functors and Booleans
