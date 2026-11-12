@@ -94,6 +94,7 @@ require('wiz').setup {
     root_markers = { 'grail.wiz', 'wiz-toolchain', 'lakefile.toml', '.git' },
     on_attach = nil,                   -- function(client, bufnr)
     capabilities = nil,                -- merged into the defaults
+    folding = false,                   -- fold with the server's ranges (0.11+)
   },
   abbreviations = {
     enable = true,
@@ -131,6 +132,8 @@ What the server offers, and Neovim's keys for it:
 | | |
 |---|---|
 | semantic tokens (on by default) | the keywords of the file's own syntax and of keyword-scoped DSLs, as `@lsp.type.keyword` |
+| outline (`gO`), workspace symbols (`:lua vim.lsp.buf.workspace_symbol()`) | the file's declarations (fields and constructors as children); every declaration of the open files and their imports |
+| folding (`lsp.folding`) | commands, `by` blocks, `match`es, block comments |
 
 In the infoview: `K` or `<CR>` shows what the subterm under the cursor is (its text,
 type, kind and, for a constant, where it is declared: `wiz/subtermInfo`); moving the

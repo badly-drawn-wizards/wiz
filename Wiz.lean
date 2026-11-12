@@ -49,6 +49,7 @@ import Wiz.Query
 import Wiz.Infoview
 import Wiz.Actions
 import Wiz.Semantic
+import Wiz.Symbols
 import Wiz.LSP
 import Wiz.Toolchain
 import Wiz.Module
