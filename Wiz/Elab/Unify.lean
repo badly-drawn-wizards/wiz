@@ -653,26 +653,30 @@ partial def unifyGlued (l : Lvl) (t u : Val R) : ElabM R Bool := do
     let key? ← if same then failKey? l n t u else pure none
     if let some key := key? then
       if let some msg ← lookupFail key then throwAt {} msg
-    -- lazy delta: unfold the later definition by one step, and compare again
+    -- lazy delta: unfold the later definition by one step (both, if they are the same),
+    -- and compare again
     let g ← getGlobals
-    let height (x : Name) : Nat := (g.order.idxOf? x).getD 0
-    -- (recursors compute: unfold them first; otherwise the later definition, then the other)
+    -- (recursors compute: unfold them first; otherwise the later definition)
     let isRec (x : Name) : Bool := x.endsWith ".rec" || x.endsWith ".casesOn" || x.endsWith ".scasesOn"
-    let first := isRec n || (!isRec n' && height n ≥ height n')
-    let (one, other) := if first then (unify l v.get u, unify l t v'.get) else (unify l t v'.get, unify l v.get u)
-    match ← trackMeta one with
+    let first := isRec n || (!isRec n' && g.height n ≥ g.height n')
+    let step := if n == n' then unify l v.get v'.get
+      else if first then unify l v.get u else unify l t v'.get
+    match ← trackMeta step with
     | (.ok (), _) => return true
     | (.error err, sawMeta) =>
-      -- A failure that met no metavariable is final. Unfolding is confluent, and the
-      -- mismatch it found is between rigid parts that no metavariable can change, so
-      -- the other order (or unfolding both, which the caller would do next) meets it
-      -- too. Without this, every glued layer tried two or three orders, and a wrong
-      -- proof about `⋆` took minutes to be rejected (each `⋆` is four definitions deep).
+      -- The failure is final: no other order of unfolding is tried. Unfolding is
+      -- confluent, so unfolding the other side first meets the same normal forms; trying
+      -- both orders at every glued layer is exponential in the number of layers (a wrong
+      -- proof about `⋆`, each four definitions deep, took minutes to be rejected; a
+      -- wrong proof about `Int.ofPair`, a `Nat.sub` five layers deep, 17 s, wiz-reals S1).
+      -- (Trying the other order once per path, when the failure met a metavariable, made
+      -- no file of lib/, examples/, selfhost/ or two dogfooding projects check that
+      -- doesn't check without it, and was slower.) A failure that met no metavariable is
+      -- also remembered (`recordFail`).
       unless sawMeta do
         if let some key := key? then recordFail key err.msg
-        -- (with the state as it is now, which has what was learnt)
-        throw { err with state? := some (← get) }
-      attempt other
+      -- (with the state as it is now, which has what was learnt)
+      throw { err with state? := some (← get) }
   | .neutral (.mvar m) sp, v@(.unfold ..) | v@(.unfold ..), .neutral (.mvar m) sp =>
     noteMeta
     if ← attempt (solve l m sp v) then return true

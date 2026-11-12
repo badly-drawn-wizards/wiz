@@ -264,8 +264,9 @@ def renamePrivate (s : CommandState R) (added : Array Name) : CommandState R :=
                                                    impl := d.impl.map rn, witness := d.witness.map rn }
     | none => m) g.decls
   let order := g.order.map f
+  let heights := Std.HashMap.ofList (order.toList.zipIdx)
   let rb (bs : List (Name × Name)) := bs.map fun (k, n) => (k, f n)
-  { s with globals := { g with decls, order, builtins := rb g.builtins, assumed := rb g.assumed },
+  { s with globals := { g with decls, order, heights, builtins := rb g.builtins, assumed := rb g.assumed },
            builtins := rb s.builtins }
 
 /-- Metas are untyped, so `?A : Sort ?u` never learns `?u` from `?A := A`. For each

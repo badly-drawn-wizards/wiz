@@ -565,6 +565,16 @@ def group : Group where
         -- (since agent/elab-bugs the inner `Ex.intro` waits for nothing better and no
         -- ill-typed guess is made: `rfl` meets the unsolved motive `?P ?w`)
         failsLibs "import Logic\ndef t := Ex.intro _ 3 (Ex.intro _ 3 rfl)" "rfl: the expected type is not an equation" },
+    { name := "a failing unification under a binder fails fast (wiz-reals S1: one unfolding order per layer)", run := fun _ =>
+        -- each `Int.ofPair` is `Nat.sub` five definitions deep; trying both unfolding orders
+        -- at every layer took 17 s
+        failsLibsWithin 8 ("import Int\nimport Logic\n" ++
+          "def Int.ofPair (a b : Nat) : Int := Int.subNatNat a b\n" ++
+          "axiom ofPair_negate (a b : Nat) : -(Int.ofPair a b) = Int.ofPair b a\n" ++
+          "axiom ofPair_add (a b c d : Nat) : Int.ofPair a b + Int.ofPair c d = Int.ofPair (a + c) (b + d)\n" ++
+          "def r (a b c d : Nat) : Int.ofPair a b + -(Int.ofPair c d) = Int.ofPair (a + d) (b + c) :=\n" ++
+          "  Eq.trans (Eq.congrArg (fun y => Int.ofPair _ _ + y) (ofPair_negate _ _)) (ofPair_add _ _ _ _)\n")
+          "outside the pattern fragment" },
     -- agent/bugfix-elab
     { name := "a module reaching a duplicate declaration through an import stops there: an error, not a run of its macros (dup-import-macro-panic)", run := fun _ => do
         -- `DupMap` declares lib/Text.wiz's `List.map`; lib/Deriving.wiz imports Text and then
