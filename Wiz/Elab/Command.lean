@@ -608,8 +608,10 @@ def elabDefEqns (name : Name) (cmd : Syntax) (isPartial : Bool := false) :
   let mut tyv ← evalIn ctx ty
   let mut vars : List Lvl := []
   let mut names : List Name := []
+  let mut colExplicit : List Bool := []
   for i in [0:n] do
-    let .pi x _ xq A B _ ← force tyv | throwAt tyStx.info s!"{name} takes fewer than {n} arguments"
+    let .pi x bi xq A B _ ← force tyv | throwAt tyStx.info s!"{name} takes fewer than {n} arguments"
+    colExplicit := colExplicit ++ [bi == .default]
     let x := if x == "_" then s!"a{i}" else x
     vars := vars ++ [ctx'.lvl]
     names := names ++ [x]
@@ -633,7 +635,7 @@ def elabDefEqns (name : Name) (cmd : Syntax) (isPartial : Bool := false) :
     | [] => xs
   let params := (tele.filterMap fun (x, bi, _, _) => if bi == .default then some x else none).toList
   let allParams := (tele.map fun (x, bi, _, _) => (x, bi == .default)).toList
-  let rc : Option RecCtx := if recursive then some { fn := name, params, pos, cols := n, allParams } else none
+  let rc : Option RecCtx := if recursive then some { fn := name, params, pos, cols := n, allParams, colExplicit } else none
   if let some x := vars.head? then recordMatch cmd.info alts clauses ctx'.types[ctx'.lvl - x - 1]!
   -- a recursive definition whose first argument has a size-variable size: compile to `sfix`
   if rc.isSome && pos == 0 then
