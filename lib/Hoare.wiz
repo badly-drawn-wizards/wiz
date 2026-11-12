@@ -1,4 +1,5 @@
 import HProp
+import Nat
 import Text
 -- Hoare triples over a model heap, with the frame rule (stage 24c).
 --
@@ -299,11 +300,7 @@ def Option.substP {V : Type} (0 P : Option V → Prop) {a b : Option V} (e : a =
   @Eq.substProp (Option V) P a b e p
 
 
-def Nat.beq_eq : (a b : Nat) → Nat.beq a b = .true → a = b
-  | .zero, .zero, e => rfl
-  | .zero, .succ b, e => absurd e.1
-  | .succ a, .zero, e => absurd e.1
-  | .succ a, .succ b, e => Nat.beq_eq a b e
+-- (`Nat.beq_eq` is in lib/Nat.wiz)
 def Nat.add_succ_r : (m n : Nat) → m + Nat.succ n = Nat.succ (m + n)
   | .zero, n => rfl
   | .succ m, n => Nat.add_succ_r m n
