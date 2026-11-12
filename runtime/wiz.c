@@ -292,23 +292,65 @@ static void wiz_free(wiz_val v) {
   free(h);
 }
 
-/* a shared constant: never freed, and not counted as live (so not a leak) */
+/* A shared constant (a hoisted constant, or the value of a closed top-level definition):
+   never freed, and not counted as live (so not a leak). Everything it reaches that one
+   thread owns (rc > 0) becomes immortal too (rc 0), whatever its kind: the value of a
+   closed definition may hold closures, suspensions, numbers, arrays … An object shared
+   between threads (rc < 0) keeps its count: other threads may be changing it, and it
+   stays alive as long as the constant holds its reference. Iterative (a constant may be
+   a long list). */
 static void wiz_immortal(wiz_val v) {
-  if (WIZ_IS_SCALAR(v)) return;
-  wiz_hdr *h = (wiz_hdr *)v;
-  if (h->rc <= 0) return; /* immortal already (or shared: not a fresh constant) */
-  h->rc = 0;
-  wiz_live--;
-  wiz_untrack(h);
-  if (h->tag < WIZ_TAG_FIRST_SPECIAL)
-    for (uint32_t i = 0; i < h->size; i++) wiz_immortal(((wiz_ctor *)v)->fields[i]);
-  else if (h->tag == WIZ_TAG_WMAP) {
-    wiz_wmap *m = (wiz_wmap *)v;
-    for (size_t i = 0; i < m->cap; i++) if (m->vals[i]) wiz_immortal(m->vals[i]);
-  } else if (h->tag == WIZ_TAG_ITAB) {
-    wiz_itab *t = (wiz_itab *)v;
-    for (size_t i = 0; i < t->count; i++) wiz_immortal(t->strs[i]);
+  if (WIZ_IS_SCALAR(v) || ((wiz_hdr *)v)->rc <= 0) return;
+  size_t cap = 64, n = 0;
+  wiz_val *st = (wiz_val *)malloc(cap * sizeof(wiz_val));
+  st[n++] = v;
+#define WIZ_PUSH(x) do { wiz_val y_ = (x); if (!WIZ_IS_SCALAR(y_) && ((wiz_hdr *)y_)->rc > 0) { \
+    if (n == cap) { cap *= 2; st = (wiz_val *)realloc(st, cap * sizeof(wiz_val)); } st[n++] = y_; } } while (0)
+  while (n) {
+    wiz_val x = st[--n];
+    wiz_hdr *h = (wiz_hdr *)x;
+    if (h->rc <= 0) continue; /* reached twice, or immortal or shared already */
+    h->rc = 0;
+    wiz_live--;
+    wiz_untrack(h);
+    switch (h->tag) {
+    case WIZ_TAG_CLO: for (uint32_t i = 0; i < h->size; i++) WIZ_PUSH(((wiz_clo *)x)->args[i]); break;
+    case WIZ_TAG_THUNK: { wiz_thunk *t = (wiz_thunk *)x; WIZ_PUSH(t->fn ? t->fn : t->val); break; }
+    case WIZ_TAG_ARRAY: { wiz_array *a = (wiz_array *)x; for (size_t i = 0; i < a->len; i++) WIZ_PUSH(a->data[i]); break; }
+    case WIZ_TAG_MAP: { wiz_map *m = (wiz_map *)x;
+      for (size_t i = 0; i < m->cap; i++)
+        if (m->keys[i]) { WIZ_PUSH(m->keys[i]); WIZ_PUSH(m->vals[i]); }
+      break; }
+    case WIZ_TAG_WMAP: { wiz_wmap *m = (wiz_wmap *)x;
+      for (size_t i = 0; i < m->cap; i++) if (m->vals[i]) WIZ_PUSH(m->vals[i]);
+      break; }
+    case WIZ_TAG_ITAB: { wiz_itab *t = (wiz_itab *)x;
+      for (size_t i = 0; i < t->count; i++) WIZ_PUSH(t->strs[i]);
+      break; }
+    case WIZ_TAG_BIG: case WIZ_TAG_RAW: case WIZ_TAG_EXT: case WIZ_TAG_BYTES: case WIZ_TAG_STR: case WIZ_TAG_WARRAY: break;
+    default: for (uint32_t i = 0; i < h->size; i++) WIZ_PUSH(((wiz_ctor *)x)->fields[i]);
+    }
   }
+#undef WIZ_PUSH
+  free(st);
+}
+
+/* The value of a closed top-level definition (a CAF), computed on its first use and
+   kept for the rest of the run, immortal. The generated code reads `*slot` itself and
+   calls this only while it is still 0 (no value is 0: scalars are odd). Threads may race
+   to build it: the first to publish wins; a loser's copy stays immortal and unused. A
+   definition that uses itself while it is being built builds itself again (as it did
+   without the cache): it loops exactly when it looped before. */
+WIZ_API wiz_val wiz_caf_init(wiz_val *slot, wiz_val (*build)(void)) {
+  wiz_val v = __atomic_load_n(slot, __ATOMIC_ACQUIRE);
+  if (!v) {
+    wiz_val z = 0;
+    v = build();
+    wiz_immortal(v);
+    if (!__atomic_compare_exchange_n(slot, &z, v, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) v = z;
+  }
+  wiz_inc(v); /* (nothing, unless the value was shared between threads already) */
+  return v;
 }
 
 static void wiz_mark_mt(wiz_val v);
@@ -616,13 +658,16 @@ WIZ_API wiz_val wiz_apply(wiz_val f, uint32_t n, wiz_val *args) {
     wiz_thunk *t = (wiz_thunk *)f;
     /* a thunk shared between threads is forced under one (recursive) lock, and its
        value is shared too; pure code never blocks, so the lock can't deadlock */
-    int shared = WIZ_RC(&t->h) < 0;
+    /* An immortal thunk (part of a constant, which every thread can see) is forced
+       under the lock too, and its value made immortal: the constant keeps it. */
+    int64_t rc = WIZ_RC(&t->h);
+    int shared = rc <= 0;
     if (shared) wiz_thunk_lock();
     if (t->fn) {
       wiz_val g = t->fn;
       t->fn = 0;
       t->val = wiz_apply(g, 1, args);
-      if (shared) wiz_mark_mt(t->val);
+      if (rc < 0) wiz_mark_mt(t->val); else if (rc == 0) wiz_immortal(t->val);
     } else wiz_dec(args[0]);
     wiz_val r = t->val;
     wiz_inc(r);
@@ -2074,9 +2119,10 @@ WIZ_API uint64_t wiz_sys_file_flush(void *p) {
 }
 WIZ_API uint64_t wiz_sys_file_close(void *p) {
   wiz_sys_file *h = (wiz_sys_file *)p;
-  if (!h->f) return EBADF;
-  int r = h->owned ? fclose(h->f) : fflush(h->f);
-  h->f = NULL;
+  /* take the stream atomically: two threads closing one handle close it once */
+  FILE *f = __atomic_exchange_n(&h->f, (FILE *)NULL, __ATOMIC_ACQ_REL);
+  if (!f) return EBADF;
+  int r = h->owned ? fclose(f) : fflush(f);
   return wiz_sys_status(r == 0 ? 0 : -1);
 }
 
@@ -2598,9 +2644,11 @@ WIZ_API void wiz_sys_fd_set_pty(void *p) { ((wiz_sys_fdh *)p)->eio_eof = 1; }
 WIZ_API void wiz_sys_fd_keep(void *p) { (void)p; }
 WIZ_API uint64_t wiz_sys_fd_close(void *p) {
   wiz_sys_fdh *h = (wiz_sys_fdh *)p;
-  if (h->fd < 0) return EBADF;
-  int r = h->owned ? close(h->fd) : 0;
-  h->fd = -1;
+  /* take the number atomically: two threads closing one handle close it once (never a
+     second close(2) of a number another thread may have reused) */
+  int fd = __atomic_exchange_n(&h->fd, -1, __ATOMIC_ACQ_REL);
+  if (fd < 0) return EBADF;
+  int r = h->owned ? close(fd) : 0;
   return wiz_sys_status(r);
 }
 /* a pipe: (read end) + 2^32 * (write end), both close-on-exec */
@@ -3017,6 +3065,24 @@ WIZ_API wiz_val wiz_mvar_read(wiz_val mv) { return wiz_mvar_take_(mv, 1); }
 /* the hole is a token with nothing in it */
 WIZ_API wiz_val wiz_mvar_take_hole(wiz_val mv) { return wiz_pair(wiz_mvar_take_(mv, 0), WIZ_BOX(0)); }
 WIZ_API void wiz_mvar_fill(wiz_val mv, wiz_val hole, wiz_val a) { wiz_dec(hole); wiz_mvar_put(mv, a); }
+
+/* lib/Handle.wiz: the obligation to release a handle is an empty box (as an MVar hole) */
+WIZ_API wiz_val wiz_handle_own(void) { return WIZ_BOX(0); }
+WIZ_API void wiz_handle_disown(wiz_val tok) { wiz_dec(tok); }
+/* lib/Ref.wiz: a cell is an MVar that stays full; its ownership token is a box with
+   nothing in it (as an MVar hole). The token's index (the cell's value) is a ghost: the
+   types in Ref.wiz are trusted to keep it equal to what the cell holds. */
+WIZ_API wiz_val wiz_ref_new(wiz_val a) { return wiz_pair(wiz_mvar_new_full(a), WIZ_BOX(0)); }
+WIZ_API wiz_val wiz_ref_read(wiz_val mv, wiz_val tok) { return wiz_pair(wiz_mvar_take_(mv, 1), wiz_pair(WIZ_BOX(0), tok)); }
+WIZ_API wiz_val wiz_ref_write(wiz_val mv, wiz_val a, wiz_val tok) {
+  wiz_inc(mv); /* take_ and put each consume one reference */
+  wiz_dec(wiz_mvar_take_(mv, 0));
+  wiz_mvar_put(mv, a);
+  return tok;
+}
+/* the value goes now (take_ empties the cell and consumes our reference to it); the cell
+   itself when the last Loc does */
+WIZ_API void wiz_ref_free(wiz_val mv, wiz_val tok) { wiz_dec(tok); wiz_dec(wiz_mvar_take_(mv, 0)); }
 
 /* a lock is a binary semaphore, so a guard may be released by another thread */
 typedef struct {

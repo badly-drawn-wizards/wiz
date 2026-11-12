@@ -102,6 +102,17 @@ def goalsAt (s : CommandState R) (off : Nat) : Option (Nat × SourceInfo × Arra
       | some (j, _) => if r.stop > j.info.stop || (r.stop == j.info.stop && size r ≥ size j.info) then some (i, k) else acc
       | none => some (i, k)
     else acc) none
+  -- (11w) at the very start of a tactic: the goals before it (the outermost starting there),
+  -- as Lean shows them; `exact x` with the cursor in front of `exact` shows what it solves
+  let starting : Option (Info R × Nat) := inside.foldl (fun acc (i, k) =>
+    let r := i.info
+    if r.start == off then
+      match acc with
+      | some (j, _) => if size r > size j.info then some (i, k) else acc
+      | none => some (i, k)
+    else acc) none
+  if let some (.tactic r _ before _, k) := starting then
+    return (k + 2 * s.infos.size, r, before)
   match (containing.orElse fun _ => before : Option (Info R × Nat)) with
   | some (.tactic r _ _ after, k) => pure (k, r, after)
   | _ =>
@@ -176,10 +187,15 @@ declaration; for its declaration, the other way round. A module name in an `impo
 the module. -/
 def targetsAt (s : CommandState R) (off : Nat) (decl : Bool := false) : Array Target := Id.run do
   let es := syntaxAt s off
-  if es.isEmpty then
-    return match definitionAt s off with
-      | some (_, info, m) => #[.site info m]
-      | none => #[]
+  -- a global named by syntax that is just the identifier (a DSL's `ident : cat` node, as
+  -- Feral's variables and calls): its definition is the global's
+  let sameRange := !decl && match es[0]?, identAt s off with
+    | some e, some i => i.info.start == e.info.start && i.info.stop == e.info.stop
+    | _, _ => false
+  if es.isEmpty || sameRange then
+    match definitionAt s off with
+    | some (_, info, m) => return #[.site info m]
+    | none => if es.isEmpty then return #[]
   let refs := es.filterMap fun | .syntaxRef _ r => refSite s r | _ => none
   let handlers := es.filterMap fun | .expansion _ _ h _ => handlerSite s h | _ => none
   let mods := es.filterMap fun | .importMod _ m => some (Target.module m) | _ => none
