@@ -4004,10 +4004,10 @@ def quantityProgram : String :=
 /-- (stage 21o) The files of `linkFiles`-style programs compiled by the self-hosted
 compiler: `main.wiz` is its input, the `// wiz-link-c:`/`// wiz-link-lib:` lines of the C
 it prints name the C files (relative to the input's directory) and libraries that `cc`
-compiles and links with it. Compares the output, or (`fails`) the exit code 3 of a
-runtime error and a fragment of its message. -/
+compiles and links with it. Compares the output, or (`fails`) the exit code (3, a
+runtime error; 4, a leak) and a fragment of its message. -/
 def selfhostLinkRun (files : List (String × String)) (expected : String) (flags : Array String := #[])
-    (fails : Option String := none) : IO Unit := do
+    (fails : Option String := none) (failCode : UInt32 := 3) : IO Unit := do
   let tc ← toolchain
   if tc.gcCflags.isEmpty then IO.println "    (skipped: no garbage collector, --gc-cflags)"; return
   match ← selfhostCompiler with
@@ -4037,7 +4037,7 @@ def selfhostLinkRun (files : List (String × String)) (expected : String) (flags
       unless run.exitCode == 0 do throw (IO.userError s!"the program failed ({run.exitCode}): {run.stderr}")
       checkEq expected run.stdout
     | some frag =>
-      unless run.exitCode == 3 && (run.stderr.splitOn frag).length > 1 do
+      unless run.exitCode == failCode && (run.stderr.splitOn frag).length > 1 do
         throw (IO.userError s!"expected the runtime error '{frag}', got exit {run.exitCode}: {run.stderr}")
       checkEq expected run.stdout
 
@@ -4070,6 +4070,151 @@ def exportDecls : List (String × Bool) := [
   ("export \"1x\" f\n", false), ("export \"ok_f\" nope\n", false), ("export \"ok_f\" f : Nat → Bool\n", false),
   ("export \"ok_g\" g\n", false), ("export \"ok_h\" h\n", false), ("export \"ok_k\" k\n", false),
   ("export \"ok_f\" f\nexport \"ok_f\" f\n", false), ("link_lib \"-lm\"\n", false)]
+
+/-- (stages 21q–t) `selfhostAgrees` for declarations that need `import IO` in the Lean
+toolchain (the self-hosted frontend's `import` is its one Prelude, which has `IO` and
+`Callback`). -/
+def selfhostAgreesIO (header : String) (decls : List (String × Bool)) : IO Unit := do
+  let prelude ← IO.FS.readFile "lib/Prelude.wiz"
+  let ioLib ← IO.FS.readFile "lib/IO.wiz"
+  let loader : Name → Option String := fun m =>
+    if m == "Prelude" then some prelude else if m == "IO" then some ioLib else none
+  for (d, ok) in decls do
+    let src := "import IO\n" ++ header ++ d
+    let s := runFrontend (R := ZeroOneMany) src { loader, trustedModule := Tests.libModule }
+    let leanOk := (s.messages.filter (·.severity == .error)).isEmpty
+    unless leanOk == ok do throw (IO.userError s!"the Lean frontend {if leanOk then "accepts" else "rejects"}:\n{d}")
+    let some out ← selfhostOutput src | return
+    let errs := (out.splitOn "\n").filter (·.startsWith "error")
+    unless errs.isEmpty == ok do
+      throw (IO.userError s!"the self-hosted frontend {if errs.isEmpty then "accepts" else "rejects"}:\n{d}\n{out}")
+
+/-- (stage 21q) Callbacks: Wiz closures passed to C (qsort with Wiz comparators, borrowed
+for the call; a string callback; a `Callback` C keeps, calls later in `IO` and releases). -/
+def callbackFiles (release : Bool) : List (String × String) :=
+  [("main.wiz", "import IO\nlink_c \"c/cb.c\"\n" ++
+      "extern \"sort_some\" sortSome : (Nat → Nat → Bool) → String\n" ++
+      "extern \"apply_str\" applyStr : (String → String) → String → String\n" ++
+      "extern \"on_tick\" onTick : Callback (Nat → IO Unit) → IO Unit\n" ++
+      "extern \"tick\" tick : Nat → IO Unit\nextern \"forget\" forget : IO Unit\n" ++
+      "def byShift (k : Nat) (a b : Nat) : Bool := Nat.lt (Nat.mod (a + k) 10) (Nat.mod (b + k) 10)\n" ++
+      "def say (p : String) (n : Nat) : IO Unit := IO.println (String.append p (Nat.toString n))\n" ++
+      "def main : IO Unit := do\n  IO.println (sortSome (fun a b => Nat.lt a b));\n" ++
+      "  IO.println (sortSome (fun a b => Nat.lt b a));\n  IO.println (sortSome (byShift 3));\n" ++
+      "  IO.println (applyStr (fun s => String.append s \"!\") \"hey\");\n" ++
+      "  onTick (say (String.append \"tick \" \"#\"));\n  IO.println \"registered\";\n" ++
+      "  tick 2;\n  onTick (fun n => say \"tock \" (n + 10));\n  tick 1" ++ (if release then ";\n  forget\n" else "\n")),
+   ("c/cb.c", sortHelper ++ tickHelper.replace "#include <stdint.h>\n" "" ++
+      "const char *apply_str(char *(*f)(void *, const char *), void *ctx, const char *s) {\n" ++
+      "  static char buf[64]; char *r = f(ctx, s); strncpy(buf, r, 63); free(r); return buf;\n}\n")]
+def callbackExpected : String :=
+  "1 3 4 5 7 9\n9 7 5 4 3 1\n7 9 1 3 4 5\nhey!\nregistered\ntick #0\ntick #1\ntock 10\n"
+
+/-- (stage 21q) The checks of callbacks, both frontends alike. -/
+def callbackHeader : String := "foreign_type FILE\n"
+def callbackDecls : List (String × Bool) := [
+  ("extern \"f1\" f1 : (Nat → Nat → Bool) → String\nextern \"f2\" f2 : (String → IO Unit) → IO Nat\n" ++
+     "extern \"f3\" f3 : Callback (Nat → IO Bool) → IO Unit\nextern \"f4\" f4 : (FILE → Float64) → Nat → Nat\n", true),
+  ("extern \"g1\" g1 : (Nat → IO Unit) → Nat\n", false),
+  ("extern \"g2\" g2 : ((Nat → Nat) → Nat) → Nat\n", false),
+  ("extern \"g3\" g3 : (Unit → Nat) → Nat\n", false),
+  ("extern \"g4\" g4 : (Nat → FILE) → Nat\n", false),
+  ("extern \"g5\" g5 : Callback ((Nat → Nat) → Nat) → IO Unit\n", false)]
+
+/-- (stage 21r) Structs by value: `div_t` from a header, a struct defined from its fields
+(numbers, a `Float64`, a `Bool`, a string) passed and returned, and one nesting it. -/
+def structFiles : List (String × String) :=
+  [("main.wiz", "import IO\nlink_c \"c/st.c\"\n" ++
+      "c_struct \"div_t\" (header := \"stdlib.h\") DivT where\n  quot : Nat\n  rem : Nat\n" ++
+      "extern \"div\" (header := \"stdlib.h\") cdiv : Nat → Nat → DivT\n" ++
+      "c_struct \"struct pair\" Pair where\n  a : Nat\n  b : Float64\n  ok : Bool\n  name : String\n" ++
+      "c_struct Outer where\n  p : Pair\n  n : Nat\n" ++
+      "extern \"bump\" bump : Pair → Pair\nextern \"outer_sum\" outerSum : Outer → Nat\n" ++
+      "extern \"make_outer\" makeOuter : Nat → IO Outer\n" ++
+      "def showB : Bool → String\n  | .true => \"true\"\n  | .false => \"false\"\n" ++
+      "def main : IO Unit := do\n  let d := cdiv 17 5;\n  IO.println (Nat.toString d.quot);\n  IO.println (Nat.toString d.rem);\n" ++
+      "  let p := bump (Pair.mk 41 (Float64.ofNat 3) .false \"wiz\");\n  IO.println (Nat.toString p.a);\n" ++
+      "  IO.println (Float64.toString p.b);\n  IO.println (showB p.ok);\n  IO.println p.name;\n" ++
+      "  IO.println (Nat.toString (outerSum (Outer.mk p 8)));\n  o ← makeOuter 5;\n  let q := o.p;\n" ++
+      "  IO.println q.name;\n  IO.println (Nat.toString (q.a + o.n))\n"),
+   ("c/st.c", "#include <stdint.h>\n#include <string.h>\n" ++
+      "struct pair { uint64_t a; double b; int ok; const char *name; };\n" ++
+      "typedef struct { struct pair p; uint64_t n; } wiz_s_Outer;\n" ++
+      "struct pair bump(struct pair p) { static char buf[32]; p.a += 1; p.b *= 2; p.ok = !p.ok;\n" ++
+      "  strcpy(buf, p.name); strcat(buf, \"!\"); p.name = buf; return p; }\n" ++
+      "uint64_t outer_sum(wiz_s_Outer o) { return o.p.a + o.n + strlen(o.p.name); }\n" ++
+      "wiz_s_Outer make_outer(uint64_t n) { wiz_s_Outer o; o.p.a = n; o.p.b = 0.5; o.p.ok = 1; o.p.name = \"made in C\"; o.n = 2 * n; return o; }\n")]
+def structExpected : String := "3\n2\n42\n6\ntrue\nwiz!\n54\nmade in C\n15\n"
+
+/-- (stage 21r) The checks of `c_struct`, both frontends alike. -/
+def structDecls : List (String × Bool) := [
+  ("c_struct S3 where\n  x : Nat\n  y : Bool\ndef s3 : S3 := S3.mk 1 .true\ndef s3x : Nat := s3.x\n" ++
+     "c_struct \"struct s4\" S4 where\n  s : S3\n  f : Float64\nextern \"f6\" f6 : S4 → IO S3\n", true),
+  ("c_struct S0 where\n", false),
+  ("c_struct S1 where\n  xs : List Nat\n", false),
+  ("c_struct \"a:b\" S2 where\n  x : Nat\n", false),
+  ("c_struct Nat where\n  x : Nat\n", false),
+  ("extern \"f7\" f7 : Nat → Type\n", false)]
+
+/-- (stage 21t) `implemented_by`: compiled code runs the implementation (here a different
+answer, to see it), for a definition and for an axiom. -/
+def implProgram : String :=
+  "import IO\ndef model (n : Nat) : Nat := n\ndef fast (n : Nat) : Nat := n + 1\nattribute [implemented_by fast] model\n" ++
+  "axiom secret : Nat → Nat\ndef secretImpl (n : Nat) : Nat := n * 2\nattribute [implemented_by secretImpl] secret\n" ++
+  "def main : IO Unit := do\n  IO.println (Nat.toString (model 3));\n  IO.println (Nat.toString (secret 21))\n"
+def implHeader : String := "def f1 (n : Nat) : Nat := n\ndef g1 (n : Nat) : Nat := n + 0\ndef g2 (b : Bool) : Bool := b\n" ++
+  "extern \"strlen\" (header := \"string.h\") strlen : String → Nat\ndef myLen (s : String) : Nat := 0\n"
+def implDecls : List (String × Bool) := [
+  ("attribute [implemented_by g1] f1\n", true),
+  ("attribute [implemented_by g1] nope\n", false), ("attribute [implemented_by nope] f1\n", false),
+  ("attribute [implemented_by f1] f1\n", false), ("attribute [implemented_by g2] f1\n", false),
+  ("attribute [implemented_by myLen] strlen\n", false)]
+
+/-- (stage 21s) A Wiz library: the self-hosted compiler's C without a `main` (`--lib`, or
+`--no-main`) and its header (`--header`), linked with a C program that calls the exports
+and the handle functions. -/
+def selfhostLibRun (src csrc expected : String) (flags : Array String := #[]) : IO Unit := do
+  let tc ← toolchain
+  if tc.gcCflags.isEmpty then skip "no garbage collector, --gc-cflags"; return
+  match ← selfhostCompiler with
+  | .error e =>
+    if (e.splitOn "gmp.h").length > 1 then skip "no toolchain" else throw (IO.userError e)
+  | .ok exe =>
+    let dir ← IO.FS.createTempDir
+    IO.FS.writeFile (dir / "input.wiz") src
+    let out ← IO.Process.output { cmd := "timeout", args := #["300", exe.toString] ++ flags, cwd := dir }
+    unless out.exitCode == 0 do throw (IO.userError s!"the compiler failed ({out.exitCode}): {out.stderr}")
+    IO.FS.writeFile (dir / "lib.c") out.stdout
+    let hdr ← IO.Process.output { cmd := "timeout", args := #["300", exe.toString, "--header"], cwd := dir }
+    unless hdr.exitCode == 0 do throw (IO.userError s!"the compiler failed ({hdr.exitCode}): {hdr.stderr}")
+    IO.FS.writeFile (dir / "lib.h") hdr.stdout
+    IO.FS.writeFile (dir / "main.c") csrc
+    let rt := (← IO.currentDir) / "selfhost"
+    let args := #["-O2", "-w", s!"-I{rt}", "-I", dir.toString] ++ tc.gcCflags.toArray ++ #["main.c", "lib.c", "-o", "prog"] ++ tc.gcLdflags.toArray
+    let cc ← IO.Process.output { cmd := tc.cc, args, cwd := dir }
+    unless cc.exitCode == 0 do throw (IO.userError s!"cc failed: {cc.stderr.take 2000}")
+    let run ← IO.Process.output { cmd := "timeout", args := #["60", (dir / "prog").toString], cwd := dir }
+    unless run.exitCode == 0 do throw (IO.userError s!"the program failed ({run.exitCode}): {run.stderr}")
+    checkEq expected run.stdout
+
+/-- (stage 21s) The library of the `callbacks` group's `--lib` case. -/
+def libSrc : String :=
+  "import IO\ndef fact : Nat → Nat\n  | .zero => 1\n  | .succ n => (n + 1) * fact n\n" ++
+  "export \"wiz_fact\" fact\n" ++
+  "def greet (who : String) : String := String.append \"hello, \" who\nexport \"wiz_greet\" greet : String → String\n" ++
+  "def shout (s : String) : IO Unit := IO.println (String.append s \"!\")\nexport \"wiz_shout\" shout\n" ++
+  "structure Counter where\n  total : Nat\n  steps : Nat\n" ++
+  "def Counter.zero : Counter := Counter.mk 0 0\ndef Counter.add (c : Counter) (n : Nat) : Counter := Counter.mk (c.total + n) (c.steps + 1)\n" ++
+  "def Counter.get (c : Counter) : Nat := c.total * 100 + c.steps\n" ++
+  "export \"wiz_counter_new\" Counter.zero\nexport \"wiz_counter_add\" Counter.add\nexport \"wiz_counter_get\" Counter.get\n"
+def libMain : String :=
+  "#include <stdio.h>\n#include <stdlib.h>\n#include \"lib.h\"\nint main(void) {\n" ++
+  "  printf(\"%llu\\n\", (unsigned long long)wiz_fact(20));\n" ++
+  "  char *s = wiz_greet(\"C\"); printf(\"%s\\n\", s); free(s);\n  wiz_shout(\"from Wiz\"); fflush(stdout);\n" ++
+  "  wiz_val c = wiz_counter_new();\n  for (int i = 1; i <= 4; i++) c = wiz_counter_add(c, i);\n" ++
+  "  wiz_retain((void *)c); printf(\"%llu\\n\", (unsigned long long)wiz_counter_get(c));\n" ++
+  "  wiz_release((void *)c);\n  printf(\"live %ld\\n\", wiz_live_objects());\n  return 0;\n}\n"
+def libExpected : String := "2432902008176640000\nhello, C\nfrom Wiz!\n1004\nlive 0\n"
 
 /-- (stage 21n) `private` everywhere the Lean frontend takes it: with one module, the
 names are used as usual (privacy is per module). -/
@@ -4386,8 +4531,8 @@ def selfHostGroup : Group where
     { name := "foreign pointers passed around and flushed, with either collector (21l)", run := fun _ =>
         ffiAgrees (ffiProgramFin true) "line\nline\nline\n" },
     { name := "the self-hosted frontend: foreign types are checked (21l)", run := fun _ =>
-        selfhostCheckFile "import Prelude\nextern \"f\" f : (Nat → Nat) → Nat\nforeign_type T\nextern \"g\" g : {A : Type} → A → T → IO A\n"
-          "error: a foreign function's arguments and result must be Nat, UInt64, Float64, String, Bool, Unit or a Wiz data type (the result may be in IO)\nT : U0\ng : (x0 :0 U0) → (x1 : x0) → (x2 : T) → (IO x0)\n" },
+        selfhostCheckFile "import Prelude\nextern \"f\" f : ((Nat → Nat) → Nat) → Nat\nforeign_type T\nextern \"g\" g : {A : Type} → A → T → IO A\n"
+          "error: a foreign function's arguments and result must be Nat, UInt64, Float64, String, Bool, Unit, a c_struct, a Wiz data type or a function of those (a callback; the result may be in IO)\nT : U0\ng : (x0 :0 U0) → (x1 : x0) → (x2 : T) → (IO x0)\n" },
     { name := "the self-hosted frontend: the Prelude's division and bits compute", run := fun _ =>
         selfhostCheckFile "import Prelude\n#reduce Nat.beq (Nat.mod 17 5) 2\n#reduce Nat.beq (Nat.xor 6 3) 5\n#reduce Nat.beq (Nat.log2 9) 3\n"
           "con((#1, (tt, tt)))\ncon((#1, (tt, tt)))\ncon((#1, (tt, tt)))\n" },
@@ -4432,6 +4577,37 @@ def selfHostGroup : Group where
         linkRun exportFiles exportExpected
         selfhostLinkRun exportFiles exportExpected
         selfhostLinkRun exportFiles exportExpected (flags := #["--rc"]) },
+    { name := "callbacks: Wiz closures passed to C, borrowed or kept (Callback), the Lean and the self-hosted compilers agree (21q)", run := fun _ => do
+        linkRun (callbackFiles true) callbackExpected
+        selfhostLinkRun (callbackFiles true) callbackExpected
+        selfhostLinkRun (callbackFiles true) callbackExpected (flags := #["--rc"]) },
+    { name := "a kept callback that C never releases is a leak, in both compilers (21q)", run := fun _ => do
+        let files := callbackFiles false
+        ioRunC ((files.lookup "main.wiz").get!.replace "link_c \"c/cb.c\"\n" "") (files.lookup "c/cb.c").get! "" (fails := some "leaked")
+        selfhostLinkRun files callbackExpected (flags := #["--rc"]) (fails := some "objects leaked") (failCode := 4) },
+    { name := "the self-hosted frontend: callbacks are checked as in the Lean frontend (21q)", run := fun _ =>
+        selfhostAgreesIO callbackHeader callbackDecls },
+    { name := "c_struct: C structs by value, the Lean and the self-hosted compilers agree (21r)", run := fun _ => do
+        linkRun structFiles structExpected
+        selfhostLinkRun structFiles structExpected
+        selfhostLinkRun structFiles structExpected (flags := #["--rc"]) },
+    { name := "the self-hosted frontend: c_struct is checked as in the Lean frontend (21r)", run := fun _ =>
+        selfhostAgreesIO "" structDecls },
+    { name := "a Wiz library (--lib, --no-main, --header) used by a C program, with the handle functions (21s)", run := fun _ => do
+        libRunC libSrc libMain libExpected
+        selfhostLibRun libSrc libMain libExpected (flags := #["--lib"])
+        selfhostLibRun libSrc libMain libExpected (flags := #["--no-main", "--rc"]) },
+    { name := "implemented_by: compiled code runs the implementation, in both compilers (21t)", run := fun _ =>
+        ffiAgrees implProgram "4\n42\n" },
+    { name := "the self-hosted frontend: implemented_by is checked as in the Lean frontend (21t)", run := fun _ =>
+        selfhostAgreesIO implHeader implDecls },
+    { name := "a link_c file that does not exist is an error, in both toolchains (21t)", run := fun _ => do
+        let prog := "import IO\nlink_c \"c/nope.c\"\ndef main : IO Unit := IO.println \"hi\"\n"
+        let (s, src, _) ← elabTree [("main.wiz", prog)]
+        let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
+        unless errs.any (fun e => (e.splitOn "link_c: no file c/nope.c").length > 1) do
+          throw (IO.userError s!"the Lean frontend: {errs}")
+        selfhostCompileFails prog "error: link_c: no file c/nope.c (paths are relative to the .wiz file)\n" },
     { name := "a C Nat that does not fit the self-hosted runtime's 63 bits is an error, not cut (21p)", run := fun _ => do
         let prog := "import IO\ndef main : IO Unit := do\n  IO.println (Nat.toString (UInt64.toNat (UInt64.ofNat 1000000)));\n" ++
           "  IO.println (Nat.toString (UInt64.toNat (UInt64.sub (UInt64.ofNat 0) (UInt64.ofNat 1))))\n"
