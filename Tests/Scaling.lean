@@ -432,6 +432,100 @@ def probeChecker (opts : List String := []) : IO Unit := do
 
 /-- A probe (`tests --probe-reuse`): `reuseAcross` agrees with its specification on the IR
 of every definition of each `lib/` module, and of the self-hosted checker and compiler. -/
+/-! ### IR bodies from files (Tests/data/reuse/*.ir)
+
+Function bodies as the backend saw them, written in a prefix form, one token per item
+(`Decl`: name, number of parameters, parameters, body):
+`V x e` binding, `C x n alts…` case, `R x` return, `J j n ps… body k` join point, `M j n args…`
+jump, `D x` dup, `P x` drop, `U` unreachable; expressions `E` ◾, `L n`, `K tag n args…`,
+`Q i x` projection, `F f n args…`, `A f n args…` (pap), `X f n args…` (ap), `O op n args…`,
+`S x` reset, `Z tok tag n args…` reuse. They come from wiz-rv's core (`St.pack`,
+`coreStep`'s lambdas, …), lowered, constants hoisted and dead code removed. -/
+/-- The number of instructions of an IR body. -/
+partial def irSize : IR.Body → Nat
+  | .vdecl _ _ b | .dup _ b | .drop _ b => irSize b + 1
+  | .case _ alts => alts.foldl (fun n a => n + irSize a) 1
+  | .jdecl _ _ body k => irSize body + irSize k + 1
+  | _ => 1
+
+namespace IRText
+
+abbrev P := StateT (List String) (Except String)
+
+def tok : P String := do
+  match ← get with
+  | t :: ts => set ts; pure t
+  | [] => throw "unexpected end"
+def num : P Nat := do
+  let t ← tok
+  match t.toNat? with
+  | some n => pure n
+  | none => throw s!"expected a number, got {t}"
+def nums : P (Array Nat) := do
+  let n ← num
+  let mut xs := #[]
+  for _ in [0:n] do xs := xs.push (← num)
+  pure xs
+
+def expr : P IR.Expr := do
+  match ← tok with
+  | "E" => pure .erased
+  | "L" => return .lit (← num)
+  | "K" => let t ← num; return .ctor t (← nums)
+  | "Q" => let i ← num; return .proj i (← num)
+  | "F" => let f ← tok; return .fap f (← nums)
+  | "A" => let f ← tok; return .pap f (← nums)
+  | "X" => let f ← num; return .ap f (← nums)
+  | "O" => let f ← tok; return .prim f (← nums)
+  | "S" => return .reset (← num)
+  | "Z" => let t ← num; let g ← num; return .reuse t g (← nums)
+  | t => throw s!"bad expression {t}"
+
+partial def body : P IR.Body := do
+  match ← tok with
+  | "V" => let x ← num; let e ← expr; return .vdecl x e (← body)
+  | "C" =>
+    let x ← num; let n ← num
+    let mut alts := #[]
+    for _ in [0:n] do alts := alts.push (← body)
+    return .case x alts
+  | "R" => return .ret (← num)
+  | "J" => let j ← num; let ps ← nums; let b ← body; return .jdecl j ps b (← body)
+  | "M" => let j ← num; return .jmp j (← nums)
+  | "D" => let x ← num; return .dup x (← body)
+  | "P" => let x ← num; return .drop x (← body)
+  | "U" => pure .unreachable
+  | t => throw s!"bad body {t}"
+
+def decl (text : String) : Except String IR.Decl := do
+  let toks := (text.split Char.isWhitespace).filter (· ≠ "")
+  let (d, _) ← (do
+    let name ← tok
+    let params ← nums
+    return ({ name, params, body := ← body } : IR.Decl)).run toks
+  pure d
+
+end IRText
+
+/-- `tests --probe-reuse-ir FILE…`: the time of each of `Decl.optimize`'s stages on each
+body, with every parameter owned (as `inferBorrow` runs it). -/
+def probeReuseIR (files : List String) : IO UInt32 := do
+  for f in files do
+    let d ← match IRText.decl (← IO.FS.readFile f) with
+      | .ok d => pure d
+      | .error e => throw (IO.userError s!"{f}: {e}")
+    let t0 ← IO.monoMsNow
+    let b1 ← IO.lazyPure fun _ => (IR.elimDead d.body).1
+    let d2 ← IO.lazyPure fun _ => ({ d with body := b1 } : IR.Decl).insertRC {}
+    let b3 ← IO.lazyPure fun _ => IR.dropScalars d2.body
+    let t1 ← IO.monoMsNow
+    let b4 ← IO.lazyPure fun _ => IR.reuseAcross {} {} b3
+    let t2 ← IO.monoMsNow
+    let b5 ← IO.lazyPure fun _ => IR.insertReuse b4
+    let t3 ← IO.monoMsNow
+    IO.println s!"{d.name}: size {irSize d.body} → {irSize b5}; elimDead+RC {t1 - t0} ms, reuseAcross {t2 - t1} ms, insertReuse {t3 - t2} ms"
+  pure 0
+
 def probeReuse : IO UInt32 := do
   let loader ← Tests.Elab.libLoader
   let mut failures := 0
