@@ -325,12 +325,14 @@ def externCall (g : Globals R) (t : Term R) : Bool :=
   | .const n _ => g.builtins.any fun (k, x) => x == n && k.startsWith "extern:"
   | _ => false
 
-/-- A call of a generated `T.casesOn`, unfolded and beta-reduced: as a function, its
+/-- A call of a generated `T.casesOn` (or `casesOn1`, `casesOnA`), unfolded and beta-reduced: as a function, its
 arguments (the branches) would all be computed before the call; unfolded, they sit in
 the branches of a `case` and only the one taken runs. -/
 def unfoldCases? (g : Globals R) (t : Term R) : Option (Term R) := do
   let (.const n us, args) := t.spine | none
-  unless n.endsWith ".casesOn" do none
+  -- (also the linear `T.casesOn1` and the additive `T.casesOnA`: a `match` on a linear
+  -- handle, `Uniq`, `Result1`, is otherwise a call with its branches as closures)
+  unless n.endsWith ".casesOn" || n.endsWith ".casesOn1" || n.endsWith ".casesOnA" do none
   let d ← g.find? n
   let v ← d.value
   -- the arguments are annotated with their types, so that the kernel can still infer
