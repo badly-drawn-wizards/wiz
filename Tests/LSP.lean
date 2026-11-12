@@ -608,7 +608,7 @@ def serverGroup : Group where
         let (srv, r) := ask srv "textDocument/hover" src (offAfter src "1 +" (-1))
         let md := LSP.getStr r ["contents", "value"]
         check ((md.splitOn "Add Nat").length > 1) s!"no instance in the hover:\n{md}"
-        check ((md.splitOn "expands to\n```wiz\nAdd.add 1 2").length > 1) s!"no expansion in the hover:\n{md}"
+        check ((md.splitOn "expands to\n```wiz\nHAdd.hAdd 1 2").length > 1) s!"no expansion in the hover:\n{md}"
         -- a category's name, where a rule uses it and in the rule's target
         for needle in ["\"greet\" greeting", ": greeting"] do
           let (_, r) := ask srv "textDocument/definition" src (offAfter src needle (-2))
@@ -672,7 +672,7 @@ def serverGroup : Group where
         checkEq ["pred 3 : Nat"] ((item r "message").map (LSP.getStr · ["text"]))
         -- an instance argument, at the notation that needed it; and the syntax
         let (_, r) := ask srv "wiz/interactiveInfo" src (offAfter src "2 *" (-1))
-        checkEq ["Mul Nat"] ((item r "instance").map fun i => flatten (LSP.get? i ["type"]).get!)
+        checkEq ["HMul Nat Nat Nat"] ((item r "instance").map fun i => flatten (LSP.get? i ["type"]).get!)
         check ((item r "syntax").length == 1 && (item r "expansion").length == 1) s!"syntax items: {r.compress}" },
     { name := "completion: locals and expected type, globals, dot completion, tactics, commands", run := fun _ => do
         let src := completionSrc
