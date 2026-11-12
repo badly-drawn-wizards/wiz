@@ -618,6 +618,9 @@ structure Listen where
   infoview : Option String := none
   /-- `--ws [ADDR:]PORT`: a WebSocket (§8.2) on (address, port); port 0 takes a free one -/
   ws : Option (UInt32 × UInt16) := none
+  /-- (11w) the directory of the web infoview's files (`web/build.sh`'s output), which the
+  WebSocket's port also serves over HTTP (`WebSocket.webAssets`) -/
+  web : Option String := none
 
 /-- Handle a message from a WebSocket client: like an infoview's, but documents may be
 opened and edited, and every request is answered. Its `initialize` changes only its own
@@ -658,7 +661,7 @@ partial def serveWith (libs : Std.HashMap String (String × String)) (stdio : Op
   -- a WebSocket: the handshake (on this connection's own thread), then a message per frame
   let wsConn (fd : UInt32) (r w : IO.FS.Handle) : IO Unit := do
     let (r, w) := (IO.FS.Stream.ofHandle r, IO.FS.Stream.ofHandle w)
-    unless ← (try WebSocket.accept r w catch _ => pure false) do Socket.shutdown fd; return
+    unless ← (try WebSocket.accept r w listen.web catch _ => pure false) do Socket.shutdown fd; return
     let k ← fresh
     ch.send (.connected k { fd, send := fun j => WebSocket.sendText w j.compress, editing := true })
     readLoop k do
@@ -674,9 +677,27 @@ partial def serveWith (libs : Std.HashMap String (String × String)) (stdio : Op
   if let (some fd, some _) := (unixFd, listen.infoview) then
     let _ ← IO.asTask (prio := .dedicated) (acceptLoop fd unixConn)
   let wsFd ← listen.ws.mapM fun (addr, port) => Socket.tcpListen addr port
+  -- the WebSocket listener: from `--ws`, or (11w) started by `wiz/browserInfoview`
+  let wsRef ← IO.mkRef wsFd
   if let some (fd, port) := wsFd then
     let _ ← IO.asTask (prio := .dedicated) (acceptLoop fd wsConn)
     ready port
+  -- (11w) `wiz/browserInfoview` from the editor: listen on a WebSocket (on 127.0.0.1, a
+  -- free port) unless already listening, and say where the page is
+  let browser (msg : Json) : IO Json := do
+    let port ← match ← wsRef.get with
+      | some (_, p) => pure p
+      | none =>
+        let (fd, p) ← Socket.tcpListen Socket.loopback 0
+        wsRef.set (some (fd, p))
+        let _ ← IO.asTask (prio := .dedicated) (acceptLoop fd wsConn)
+        ready p
+        pure p
+    let res : Json := match listen.web with
+      | some _ => Json.mkObj [("port", port.toNat), ("url", s!"http://127.0.0.1:{port}/infoview.html?port={port}&follow=1")]
+      | none => Json.mkObj [("port", port.toNat), ("url", Json.null),
+          ("message", "the web infoview is not built: run web/build.sh in a checkout, or use a release toolchain")]
+    pure (Json.mkObj [("jsonrpc", "2.0"), ("id", (msg.getObjVal? "id").toOption.getD Json.null), ("result", res)])
   if let some (input, _) := stdio then
     let _ ← IO.asTask (prio := .dedicated) (readEditor input)
   let rec loop (srv : Server) (conns : Std.HashMap Nat Conn) : IO (Std.HashMap Nat Conn) := do
@@ -695,6 +716,12 @@ partial def serveWith (libs : Std.HashMap String (String × String)) (stdio : Op
     | .editorDone => pure conns
     | .editor msg =>
       if getStr msg ["method"] == "exit" then return conns
+      if getStr msg ["method"] == "wiz/browserInfoview" then
+        let r ← try browser msg catch e =>
+          pure (Json.mkObj [("jsonrpc", "2.0"), ("id", (msg.getObjVal? "id").toOption.getD Json.null),
+            ("error", Json.mkObj [("code", (-32603 : Int)), ("message", s!"cannot listen: {e}")])])
+        if let some (_, output) := stdio then writeMessage output r
+        return ← loop srv conns
       let (srv, out) := handle srv msg
       if let some (_, output) := stdio then
         for j in out do writeMessage output j
@@ -725,7 +752,7 @@ partial def serveWith (libs : Std.HashMap String (String × String)) (stdio : Op
   let conns ← loop { libs, trusted } {}
   -- stop the other threads: the acceptors and every infoview's reader see the end
   if let (some fd, some sock) := (unixFd, listen.infoview) then Socket.close fd sock
-  if let some (fd, _) := wsFd then Socket.closeFd fd
+  if let some (fd, _) ← wsRef.get then Socket.closeFd fd
   for (_, c) in conns do Socket.shutdown c.fd
 
 /-- `serveWith` for the editor on `input`/`output` and infoviews on the Unix socket `sock`. -/
@@ -739,15 +766,8 @@ partial def serve (libs : Std.HashMap String (String × String)) (listen : Liste
     (trusted : List String := []) : IO Unit := do
   let stdin ← IO.getStdin
   let stdout ← IO.getStdout
-  if listen.infoview.isSome || listen.ws.isSome || !stdio then
-    let ready (port : UInt16) := IO.eprintln s!"wiz lsp: WebSocket on port {port}"
-    return ← serveWith libs (if stdio then some (stdin, stdout) else none) listen ready trusted
-  let rec loop (srv : Server) : IO Unit := do
-    let some msg ← readMessage stdin | return
-    if getStr msg ["method"] == "exit" then return
-    let (srv, out) := handle srv msg
-    for j in out do writeMessage stdout j
-    loop srv
-  loop { libs, trusted }
+  -- (11w) always through `serveWith`: `wiz/browserInfoview` may start a WebSocket later
+  let ready (port : UInt16) := IO.eprintln s!"wiz lsp: WebSocket on port {port}"
+  serveWith libs (if stdio then some (stdin, stdout) else none) listen ready trusted
 
 end Wiz.LSP
