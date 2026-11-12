@@ -140,8 +140,13 @@ def flakeRef (flake commit : String) : String :=
   if flake.startsWith "github:" || flake.startsWith "gitlab:" then s!"{flake}/{commit}"
   else if flake.contains '?' then s!"{flake}&rev={commit}" else s!"{flake}?rev={commit}"
 
+/-- The official flakes: the current one and the pre-move name, which settings saved before
+the move to wiz-pl still hold (GitHub redirects it). -/
+def officialFlake (flake : String) : Bool :=
+  flake == "github:wiz-pl/wiz" || flake == "github:badly-drawn-wizards/wiz"
+
 def cachixOptions (s : Settings) : List String :=
-  if s.flake == "github:badly-drawn-wizards/wiz" then
+  if officialFlake s.flake then
     ["--option", "extra-substituters", "https://badlydrawnwizards.cachix.org",
      "--option", "extra-trusted-public-keys",
      "badlydrawnwizards.cachix.org-1:TxG+RHY8RMC/AXc0LJbYtYm9LW/XRjfQwgz+EEaAjBI="]
