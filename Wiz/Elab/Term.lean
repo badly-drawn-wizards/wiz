@@ -2370,6 +2370,50 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
 where
   nameOf' (_ : Lvl) : Name := "_"
 
+/-- A numeral, or an `if`/`match` whose branches are all numerals (H14 S2). -/
+partial def numeralish (stx : Syntax) : Bool :=
+  numLike stx ||
+  (stx.isOfKind "term.paren" && numeralish (stx.getArg 1)) ||
+  (stx.isOfKind "term.ite" && numeralish (stx.getArg 3) && numeralish (stx.getArg 5)) ||
+  (stx.isOfKind "term.match" && (stx.getArg 3).args.all fun a => a matches .atom .. || numeralish (a.getArg 3))
+
+/-- (H14 S2) `if c then t else e` (the match `match c with | .true => t | .false => e` that the
+prelude's `if` makes) when `c` is a signal: its type is not a data type and selects between
+values of its own type (an instance `Mux C C`, as `r HwTy.bit` in the HDL). It is then
+`Mux.mux c t e`, with an instance `Mux C A` at the expected type `A`. Any other condition
+(a `Bool`, a hole, `Nat`, a type without a `Mux` instance) takes the ordinary path, and
+its messages. -/
+partial def ifMux? (ctx : LocalCtx R) (alts : Array Syntax) (c : Term R) (C expected : VTy R) :
+    ElabM R (Option (Term R)) := do
+  unless alts.size == 2 do return none
+  let pat (a : Syntax) : Option Name :=
+    match (a.getArg 1).args.filter (!· matches .atom ..) with
+    | #[p] => if p.isOfKind "term.dotIdent" then (p.getArg 1).getId? else none
+    | _ => none
+  let some (tStx, eStx) := (match pat alts[0]!, pat alts[1]! with
+      | some "true", some "false" => some (alts[0]!.getArg 3, alts[1]!.getArg 3)
+      | some "false", some "true" => some (alts[1]!.getArg 3, alts[0]!.getArg 3)
+      | _, _ => none) | return none
+  match ← force C with
+  | .mu .. | .neutral (.mvar _) _ => return none
+  | _ => pure ()
+  unless (← get).classes.any (·.name == "Mux") do return none
+  let g ← getGlobals
+  let Ct ← zonk ctx.lvl (quote g ctx.lvl C)
+  unless Ct.mvars.isEmpty do return none
+  let mux (A : VTy R) : VTy R := vApp g (vApp g (eval g [] (.const "Mux" [])) C) A
+  let some _ ← (try synthInstance ctx (mux C) catch _ => pure none) | return none
+  -- a branch that is a numeral (or an `if` of numerals) takes its type from the other
+  -- one (`if c then 0 else x + 1`), so the other is elaborated first
+  let (t, e) ← if numeralish tStx && !numeralish eStx then do
+      let e ← check ctx eStx expected
+      pure (← check ctx tStx expected, e)
+    else pure (← check ctx tStx expected, ← check ctx eStx expected)
+  let inst ← freshMeta ctx "an instance"
+  addInstProblem ctx inst (mux expected)
+  let At := quote (← getGlobals) ctx.lvl expected
+  return some (.app (.app (.app (.app (.app (.app (.const "Mux.mux" []) Ct) At) inst) c) t) e)
+
 /-- Elaborate `match e₁, …, eₙ with | p₁, …, pₙ => rhs …` against `expected`. -/
 partial def elabMatch (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : ElabM R (Term R) := do
   let g ← getGlobals
@@ -2386,6 +2430,9 @@ partial def elabMatch (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : Ela
   for s in scruts do
     let (t, ty) ← infer ctx s
     ts := ts.push t
+    -- (H14 S2) a signal as the condition of `if`: a multiplexer
+    if scruts.size == 1 then
+      if let some m ← ifMux? ctx alts t ty expected then return m
     -- an inaccessible name, so the user's own `x` isn't shadowed
     binders := binders.push ("x✝", quote g ctx.lvl ty)
   -- abstract the scrutinees, last first
@@ -2711,7 +2758,7 @@ partial def runTac (code : Code) (info : SourceInfo) (st : TacState R) (v : RVal
   let str (r : RVal) : ElabM R String := match r.toString? with
     | some s => pure s
     | none => throwAt info "tactic: malformed string"
-  let stxOf (r : RVal) : ElabM R Syntax := match decodeSyntax info r with
+  let stxOf (r : RVal) : ElabM R Syntax := match decodeLocated info r with
     | some s => pure s
     | none => throwAt info "tactic: malformed syntax"
   let goalOf (r : RVal) : ElabM R (Goal R) := do

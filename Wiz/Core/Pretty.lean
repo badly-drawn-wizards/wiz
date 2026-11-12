@@ -523,6 +523,11 @@ partial def unexpand (g : Globals R) (names : List Name) (tys : List (Option (Te
   let u := (betaForNotation? g u).getD u
   let (f, args) := spine u #[]
   let .const c _ := f | return none
+  -- a numeral at a type other than `Nat` (7e): `OfNat.ofNat A n inst` with a literal `n`
+  -- prints as the numeral `n` (its type and instance are implicit; H14 S2)
+  if c == "OfNat.ofNat" && args.size == 3 then
+    if let .natLit n := args[1]! then
+      return some (.node {} "term.num" #[.node {} "num" #[.atom {} (toString n)]])
   let some entries := g.pp.unexpanders[c]? | return none
   if entries.isEmpty then return none
   let argStx ← (explicitArgs g c args).mapM (delab g names tys)
