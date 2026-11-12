@@ -407,3 +407,20 @@ package's `lib` targets with its module roots (dependencies included), into
   `by` blocks, `match`es, and block comments (kind `comment`).
 * wiz.nvim: `gO` (Neovim 0.11) lists the outline; `lsp.folding = true` folds with the
   server's ranges (`vim.lsp.foldexpr`).
+
+## 11y: references, highlights and rename
+
+`Wiz/Refs.lean`, from the info tree's identifiers (each records what it resolved to):
+
+* **References** (`textDocument/references`): for a global, its uses in every open
+  document and in the package's other modules (the library modules that aren't the
+  toolchain's, so under `grail lsp` the package's own and its dependencies'), each
+  elaborated once per source and kept by the server, plus the name in its declaration.
+  For a local, its binder and the uses that see that binder (the nearest binder of the
+  name before the use, inside the declaration).
+* **Document highlights** (`textDocument/documentHighlight`, also what tells the
+  infoview where the cursor is): the same, in the document.
+* **Rename** (`textDocument/prepareRename`, `textDocument/rename`): edits every place
+  that spells the whole name, in all those documents; it refuses a declaration of the
+  toolchain's library and a new name that isn't one. A use through generalised field
+  notation (`p.norm` for `Point.norm`) is not edited.
