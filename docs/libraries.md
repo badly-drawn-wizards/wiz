@@ -317,8 +317,8 @@ updated in place (`Array`, lib/Std.wiz).
 * `Netlist.simFast n xs` computes exactly what `Netlist.simulate n xs` computes (the same
   formulas on the same numbers, node by node) for every well-formed netlist
   (`Netlist.wellFormed`: arguments refer to earlier nodes, register reads to registers,
-  register inputs and outputs to nodes; every netlist `Circuit.netlist` builds), and is
-  `Netlist.simulate` on any other.
+  register inputs and outputs to nodes, and no memories, H14 C3; every netlist without
+  memories that `Circuit.netlist` builds), and is `Netlist.simulate` on any other.
 * `Circuit.simFast c xs` = `Circuit.runLeaves c xs`, `Design.simFast d xs` =
   `Design.runLeaves d xs`, by the netlist's agreement with the values (which the `hdl`
   group and a design's own check, such as `oled gen`'s, establish).

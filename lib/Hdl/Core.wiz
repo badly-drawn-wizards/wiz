@@ -1353,12 +1353,13 @@ def Circuit.stepEl_withEnable {i o : HwTy} (c : Circuit i o) (s : HwTy.El c.st) 
       (@HwTy.El.mux c.st en (Circuit.stepEl c s x).1 s, (Circuit.stepEl c s x).2) :=
   refl (Circuit.stepEl (Circuit.withEnable c) s (en, x))
 -- the registers, cycle by cycle: the output is the current value; the next one is `init`
--- under reset, the input under enable, else the current value
+-- under reset (memories keep their contents, `resetToAt`), the input under enable, else
+-- the current value
 def Circuit.stepEl_registerRE {ω t : HwTy} (v : HwTy.El t) (s : HwTy.El t) (rst en : HwTy.El HwTy.bit) (x : HwTy.El t) :
-    Circuit.stepEl (Circuit.registerRE t v) s (rst, (en, x)) = (HwTy.El.mux rst v (HwTy.El.mux en x s), s) :=
+    Circuit.stepEl (Circuit.registerRE t v) s (rst, (en, x)) = (HwTy.El.resetToAt t rst v (HwTy.El.mux en x s), s) :=
   rfl
 def Circuit.stepEl_registerR {ω t : HwTy} (v : HwTy.El t) (s : HwTy.El t) (rst : HwTy.El HwTy.bit) (x : HwTy.El t) :
-    Circuit.stepEl (Circuit.registerR t v) s (rst, x) = (HwTy.El.mux rst v x, s) :=
+    Circuit.stepEl (Circuit.registerR t v) s (rst, x) = (HwTy.El.resetToAt t rst v x, s) :=
   rfl
 def Circuit.stepEl_registerE {ω t : HwTy} (v : HwTy.El t) (s : HwTy.El t) (en : HwTy.El HwTy.bit) (x : HwTy.El t) :
     Circuit.stepEl (Circuit.registerE t v) s (en, x) = (HwTy.El.mux en x s, s) :=
@@ -1987,11 +1988,13 @@ def Hw.packBits {r : HwTy → Type} [Hw r] : (ω t : HwTy) → r t → r (HwTy.b
   | .bits n, x => x
   | .prod a b, x => Hw.share x (fun y => Hw.cat (Hw.packBits a (Hw.fst y)) (Hw.packBits b (Hw.snd y)))
   | .named _ t, x => Hw.packBits t (Hw.untag x)
+  | .mem _ _, x => Hw.const (HwTy.bits 0) (BitVec.ofNat 0 0)
 def Hw.unpackBits {r : HwTy → Type} [Hw r] : (ω t : HwTy) → r (HwTy.bits (HwTy.width t)) → r t
   | .bits n, x => x
   | .prod a b, x => Hw.share x (fun y =>
     Hw.pair (Hw.unpackBits a (Hw.slice (HwTy.width b) (HwTy.width a) y)) (Hw.unpackBits b (Hw.slice 0 (HwTy.width b) y)))
   | .named s t, x => Hw.tag s (Hw.unpackBits t x)
+  | .mem aw dw, x => Hw.const (HwTy.mem aw dw) (fun (a : BitVec aw) => BitVec.ofNat dw 0)
 
 -- at values
 def HwTy.El.packBits (ω t : HwTy) (x : HwTy.El t) : BitVec (HwTy.width t) := Hw.packBits (r := HwTy.El) t x
