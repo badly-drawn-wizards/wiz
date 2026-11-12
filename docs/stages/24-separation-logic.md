@@ -188,7 +188,14 @@ The remaining gaps:
   unifies.
 * A term assigned with `TacticM.assign` is type-inferred at the end of the block (13b), so
   it must not contain a β-redex with a λ at its head (a reflected λ has no domain):
-  `Q a` is reduced (`TacticM.instantiate`) before it is used.
+  `Q a` is reduced (`TacticM.instantiate`) before it is used. Nor may it contain what a
+  program computes to when that is a kernel form tactics only see as an opaque handle: a
+  structure's tuple or a projection, as in the `Uniq` handles of code lowered from Feral
+  (`Uniq.mk` is private to lib/Region.wiz, so the tuple has no type in the proof's
+  module). `xstep` then names the command's parts through the program as written
+  (`Prog.loc c`, `Prog.getK c v`, `Prog.setV u c`, `Prog.next c`) and leaves them to
+  conversion, so `xgo` steps through such programs; a goal it leaves can show those
+  names (`p ↦ Prog.setV a (Prog.getK (bumpCell p) a)`).
 * `succ b = succ c` computes to `b = c`, so `Eq.congrArg Nat.succ e` has the type of `e`,
   and `Eq.trans e₁ (Eq.congrArg Nat.succ e)` can't infer its middle endpoint
   (`Nat.succ_eq_of` passes the endpoints; the known gap "implicit endpoints of heap
@@ -203,7 +210,8 @@ case analysis inside a tactic (needs a `cases` request or motives built from the
 a second effect observation from `Eff` (lib/Eff.wiz) state operations into `W` — the
 morphism-based shape means this is a translation `Eff [Heap] → Prog` plus its morphism
 lemma (watch agent/lin-fixes's one-shot continuations); linear points-to tokens at
-quantity 1 over a native heap, with this model as the `implemented_by` reference (CS7b);
+quantity 1 over a native heap (CS7b: lib/Ref.wiz, docs/libraries.md; adequacy against this
+model is argued in its header, not yet mechanised);
 then a scheduler semantics, CSL with resource invariants and PCM ghost state (CS10a).
 SteelCore's action trees with `Par` nodes are the model for where concurrency goes.
 

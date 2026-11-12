@@ -424,11 +424,31 @@ loops, `?`, `U64`, and functions that return borrows.
   `Syntax.sourceAt path text` (`Elab/ProcMacro.lean`, `pathInfo`): diagnostics at that
   node, and Wiz source parsed as commands and positioned there. Generated source that
   fails to check is reported at the node with its text.
+* **Positions inside generated source.** Generated text may mark which parts come from
+  which input node: U+E000 *path* U+E001 … U+E002 (`Elab/ProcMacro.lean`, `stripMarks`,
+  `locateMarked`). The command elaborator strips the marks (the text checked, shown by
+  `#lower` and in error reports is unchanged) and positions the parsed syntax: syntax
+  whose range is exactly a marked part gets the input node's range, syntax inside one
+  gets it as synthetic, the rest is synthetic at the item. Feral marks (`Fe.Out.at`) every
+  expression's value, the function a call names (operators too), `&`/`&mut` arguments,
+  and the names of functions, parameters, `let`s and named borrows. So inside a `feral`
+  block a hover shows the type of a variable, a call (its value, named by the call's
+  text, not by the lowering's `v_…`) or a `&mut` argument (its handle); go to definition
+  on a call goes to the `fn` item (what a generated command declares is declared at its
+  item); and a type error of the generated Wiz (say, of an `#unchecked` lowering) is at
+  the Feral expression it is about. Types are those of the lowering (`Uniq ρ (Vec U64)`,
+  `Result U64`); a method call on a variable (`r.push`) is one identifier, so it shows the
+  receiver.
 
-Limitations: the fragment (LOWERING.md §1a); spec clauses are not parsed; `U64` and `Vec`
-are the stand-ins of `drafts/feral/lib/FeralCore.wiz`; (keywords such as `if` and `mut` are
-reserved only inside `feral … end` since 13j, and only `feral` itself elsewhere); errors inside generated code point at the
-whole item; one borrow error per function; stricter than rustc where a `&mut` would be
+Specifications: a `spec f requires (P) ensures (Q)` item states `f.Spec`, a Wiz
+proposition over the arguments' values, `result`, `old x` and `final x` (an `&mut`
+argument's value when the borrow ends, its handed-back handle), with total correctness
+(`Result.Holds`), proved in Wiz; see [Resources in Wiz](../resources.md).
+
+Limitations: the fragment (LOWERING.md §1a); loop invariants, `decreases` and `final result`
+(a returned borrow) in specs are not supported; `U64` and `Vec`
+are the stand-ins of `drafts/feral/lib/FeralCore.wiz`; keywords such as `if` and `mut`
+are reserved only inside `feral … end` (13j), and only `feral` itself elsewhere; one borrow error per function; stricter than rustc where a `&mut` would be
 implicitly reborrowed at a shorter lifetime.
 
 ## 22k: sealed types ✅

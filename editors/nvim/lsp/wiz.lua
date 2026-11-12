@@ -16,4 +16,5 @@ return {
   root_markers = { 'grail.wiz', 'wiz-toolchain', 'lakefile.toml', '.git' },
   capabilities = lsp.capabilities(),
   handlers = lsp.handlers,
+  on_attach = lsp.on_attach,
 }

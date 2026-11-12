@@ -14,9 +14,13 @@ source:
 * `release`: the tarball `RELEASES/TAG/wiz-ARCH-linux.tar.gz` that CI attaches to the
   GitHub release of a tag, or for any other spec the snapshot of its commit,
   `RELEASES/snapshot-<full sha>/…` (26g: CI publishes one for every master commit and
-  prunes old ones; `nightly` is the commit of the tag `nightly`, which CI moves only
-  once that snapshot is complete);
+  prunes old ones);
 * `source`: `git clone` + `lake build wiz grail` (needs elan).
+
+Channels resolve to one commit for every source: `nightly` is the commit of the tag
+`nightly` (which CI moves only once that commit's CI passed and its snapshot is
+complete; the branch `nightly-ref`'s tip when there is no such tag), `stable` the
+highest `vX.Y.Z` tag's.
 
 `auto` (the default) takes `nix` when `nix` runs, else the release (when the commit has
 one), else the source. A toolchain is built in `toolchains/.tmp-…` and renamed into place, so a
@@ -82,11 +86,14 @@ def resolveSpec (s : Settings) (spec : String) : IO (Except String Want) := do
   | "nightly" =>
     match find s.nightlyRef with
     | some c =>
-      -- the tag `nightly` (when there is one): the newest commit with a complete snapshot
+      -- the tag `nightly` (when there is one): the newest commit whose CI passed and whose
+      -- snapshot is complete. It is nightly's commit for every source (a Nix or source
+      -- install too), so a channel means the same commit whatever the source; without
+      -- the tag, the branch's tip
       let snap := match refs with
         | .ok rs => (rs.find? (·.1 == "refs/tags/nightly")).map (·.2)
         | .error _ => none
-      pure (.ok { ref := s.nightlyRef, commit := some c, snapshot := snap })
+      pure (.ok { ref := s.nightlyRef, commit := some (snap.getD c), snapshot := snap })
     | none => pure (.error s!"nightly: no branch {s.nightlyRef} in {s.git}{(refs.toOption.map fun _ => "").getD " (could not list it)"}")
   | "stable" =>
     match refs with
@@ -133,8 +140,13 @@ def flakeRef (flake commit : String) : String :=
   if flake.startsWith "github:" || flake.startsWith "gitlab:" then s!"{flake}/{commit}"
   else if flake.contains '?' then s!"{flake}&rev={commit}" else s!"{flake}?rev={commit}"
 
+/-- The official flakes: the current one and the pre-move name, which settings saved before
+the move to wiz-pl still hold (GitHub redirects it). -/
+def officialFlake (flake : String) : Bool :=
+  flake == "github:wiz-pl/wiz" || flake == "github:badly-drawn-wizards/wiz"
+
 def cachixOptions (s : Settings) : List String :=
-  if s.flake == "github:badly-drawn-wizards/wiz" then
+  if officialFlake s.flake then
     ["--option", "extra-substituters", "https://badlydrawnwizards.cachix.org",
      "--option", "extra-trusted-public-keys",
      "badlydrawnwizards.cachix.org-1:TxG+RHY8RMC/AXc0LJbYtYm9LW/XRjfQwgz+EEaAjBI="]
