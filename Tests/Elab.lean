@@ -6844,11 +6844,14 @@ def hdlGroup : Group where
             throw (IO.userError s!"test bench: {r.stdout}{r.stderr}") },
     { name := "fast netlist simulation (Hdl.Sim, compiled): = Netlist.simulate = Circuit.run, cycle for cycle; not well formed falls back", run := fun _ => do
         -- examples/hdl-sim.wiz: every netlist operation, 70-bit widths, reset and enable, a
-        -- table tree, composition; 3000 random cycles each, hash-consed and naive netlists
+        -- table tree, composition, memories (two write ports, read-during-write, a ROM,
+        -- out-of-range addresses); 3000 random cycles each, hash-consed and naive netlists
         cRunLibs (← IO.FS.readFile "examples/hdl-sim.wiz")
           ("alu: yes, 3000 cycles, well formed yes, checksum 840993931\n" ++
            "alu with reset and enable: yes, 3000 cycles, well formed yes, checksum 86608463\n" ++
            "piped: yes, 3000 cycles, well formed yes, checksum 623585979\n" ++
+           "memories: yes, 3000 cycles, well formed yes, checksum 380888474\n" ++
+           "memories, raw out-of-range values: simFast = simulate: yes\n" ++
            "not well formed: yes, simFast = simulate: yes\n") }
   ]
 

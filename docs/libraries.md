@@ -152,7 +152,11 @@ faster (an allocation per node in its random-access list).
 meta-level work is done once, and the netlist is hash-consed), and the netlist is turned
 once into a flat program (a constructor per node with exactly its operands, constants
 written once, input ports and register outputs as slots) that runs over native arrays
-updated in place (`Array`, lib/Std.wiz).
+updated in place (`Array`, lib/Std.wiz). Memories (`NetMem`, H14 C3) are one flat native array (each
+memory's words from its base) plus a trie for addresses beyond a memory's range (as raw
+port values can give); `memRead` nodes read it during the cycle and the writes are applied
+at the clock edge in order (a later write wins), exactly as `Netlist.simulate` does (a read
+in the same cycle sees the old contents; the netlist's bypass nodes give the new word).
 
 * `Netlist.simFast n xs` computes exactly what `Netlist.simulate n xs` computes (the same
   formulas on the same numbers, node by node) for every well-formed netlist
