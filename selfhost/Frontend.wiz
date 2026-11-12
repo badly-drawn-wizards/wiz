@@ -753,6 +753,8 @@ partial def retail (v : Tm) (D : Tm) : Tm := match D with
     | .lam B => .darg S (.lam (retail v B))
     | _ => D
   | .drec _ E => .drec v (retail v E)
+  -- (a function field: its index is `fun h => …`; the tail's value is closed)
+  | .dhrec H _ E => .dhrec H (.lam v) (retail v E)
   | .dret _ => .dret v
   | _ => D
 def retailTms (v : Tm) : Tms → Tms
@@ -765,6 +767,9 @@ partial def retailIdx (v : Tm) (D : Tm) : Tm := match D with
     | .lam B => .darg S (.lam (retailIdx v B))
     | _ => D
   | .drec j E => .drec (.pair j v) (retailIdx v E)
+  | .dhrec H j E => .dhrec H (match j with
+    | .lam b => .lam (.pair b v)
+    | _ => .lam (.pair (.app (shiftTm 1 0 j) (.var 0)) v)) (retailIdx v E)
   | .dret i => .dret (.pair i v)
   | _ => D
 def retailIdxTms (v : Tm) : Tms → Tms
@@ -906,7 +911,10 @@ def inductiveCmd (gs0 : Globals) (stx0 : Syntax) : Step := match ctorQtyErr (kid
   | .ident T =>
     let K := String.append T ".brand✝";
     let brand : Tm := .axiomC K (.univ 0);
-    let gs := Globals.add gs0 (.mk K (.univ 0) brand brand .nil);
+    -- (declared once: a second `inductive T` is reported as `T`'s duplicate, not the brand's)
+    let gs := match Scope.lookup (Globals.scope gs0) K with
+      | .some _ => gs0
+      | .none => Globals.add gs0 (.mk K (.univ 0) brand brand .nil);
     let stx := match sigOf stx0 with
       | .indexed I => match strEq (kindOf I) "term.ident" with
         | .true => fixDots T (identOf I) stx0
@@ -3204,7 +3212,9 @@ def mutualInductiveCmd (gs : Globals) (defs : List Syntax) : Step := match mutua
   -- (22m) the family's brand, the last domain of its index tail: `(t : Enum m) × tail`
   let K := String.append F ".brand✝";
   let brand : Tm := .axiomC K (.univ 0);
-  let gs := Globals.add gs (.mk K (.univ 0) brand brand .nil);
+  let gs := match Scope.lookup (Globals.scope gs) K with
+    | .some _ => gs
+    | .none => Globals.add gs (.mk K (.univ 0) brand brand .nil);
   let tailT : Tm := piTm .qz brand (.unit 0);
   let tl := phantomVal tailT;
   let I : Tm := STm.tm (sortSpine empty (sigmaTm .qw (.enum m) (piTm .qz brand (.unit 0))));

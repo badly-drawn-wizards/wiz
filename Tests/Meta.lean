@@ -372,9 +372,10 @@ def group : Group where
         for (n, t, ok, _) in c1Samples do
           if ok then accepts t else rejects t
           check (kernelAccepts t == ok) s!"{n}: the Lean kernel's verdict differs"
-        -- without InReg (T0) none of them is accepted
-        for (_, t, _, _) in c1Samples do
-          rejects t { kernelOpts with inertReg := false } },
+        -- without InReg (T0) none of them is accepted (but the identity at one brand, 22m,
+        -- which needs no regularity)
+        for (n, t, _, _) in c1Samples do
+          unless n == "brandSame" do rejects t { kernelOpts with inertReg := false } },
     { name := "the level premise of ind (audit F3): the index type is in Sort (l+1)", run := fun _ => do
         -- `ind.{1}` at an index type in `Sort 1`; `D` and the scrutinee are checked against values
         -- the rule builds, so no former sees the level (the Lean kernel at a143052 accepts this)
