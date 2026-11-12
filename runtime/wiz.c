@@ -1583,9 +1583,10 @@ WIZ_API uint64_t wiz_sys_file_flush(void *p) {
 }
 WIZ_API uint64_t wiz_sys_file_close(void *p) {
   wiz_sys_file *h = (wiz_sys_file *)p;
-  if (!h->f) return EBADF;
-  int r = h->owned ? fclose(h->f) : fflush(h->f);
-  h->f = NULL;
+  /* take the stream atomically: two threads closing one handle close it once */
+  FILE *f = __atomic_exchange_n(&h->f, (FILE *)NULL, __ATOMIC_ACQ_REL);
+  if (!f) return EBADF;
+  int r = h->owned ? fclose(f) : fflush(f);
   return wiz_sys_status(r == 0 ? 0 : -1);
 }
 
@@ -2107,9 +2108,11 @@ WIZ_API void wiz_sys_fd_set_pty(void *p) { ((wiz_sys_fdh *)p)->eio_eof = 1; }
 WIZ_API void wiz_sys_fd_keep(void *p) { (void)p; }
 WIZ_API uint64_t wiz_sys_fd_close(void *p) {
   wiz_sys_fdh *h = (wiz_sys_fdh *)p;
-  if (h->fd < 0) return EBADF;
-  int r = h->owned ? close(h->fd) : 0;
-  h->fd = -1;
+  /* take the number atomically: two threads closing one handle close it once (never a
+     second close(2) of a number another thread may have reused) */
+  int fd = __atomic_exchange_n(&h->fd, -1, __ATOMIC_ACQ_REL);
+  if (fd < 0) return EBADF;
+  int r = h->owned ? close(fd) : 0;
   return wiz_sys_status(r);
 }
 /* a pipe: (read end) + 2^32 * (write end), both close-on-exec */
