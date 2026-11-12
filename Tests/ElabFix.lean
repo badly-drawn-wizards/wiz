@@ -258,6 +258,29 @@ def group : Group where
         failsPriv privMod "import Priv\ndef x : Pos Nat := (5, ())" "Pos"
         failsPriv privMod "import Priv\nstructure Fake (A : Type) where\n  val : A\ndef x : Pos Nat := Fake.mk 5" "mismatch"
         failsPriv privMod "import Priv\ndef x (p : Pos Nat) : Nat := p.1" "cannot project" },
+    { name := "two values of another module's opaque type: compared at its definition, proofs irrelevant (13b)", run := fun _ => do
+        -- wiz-notes/soundness-probes/opaque-proof-irrelevance: `P.mk 4 (lt_s 4)` and
+        -- `P.mk 4 rfl` are equal in PM, and the kernel (which sees `P`) agrees; outside PM
+        -- `P` is opaque, and its values used to be compared field by field, proofs included
+        let pm := "import Prelude\ndef lt_s : (n : Nat) → Nat.lt n (Nat.succ n) = .true\n  | .zero => rfl\n  | .succ n => lt_s n\ninductive P where\n  | private mk (x : Nat) (0 h : Nat.lt x 5 = .true)\ndef P.a : P := .mk 4 (lt_s 4)\ndef P.b : P := .mk 4 rfl\ndef P.c (n : Nat) (h : Nat.lt n 5 = .true) : P := .mk n h\ndef P.d (n : Nat) (h : Nat.lt n 5 = .true) : P := .mk n (transp (fun t _ => Nat.lt n 5 = t) (refl (Nat.lt n 5)) h)\ndef inside : P.a = P.b := rfl\ndef insideSym (n : Nat) (h : Nat.lt n 5 = .true) : P.c n h = P.d n h := rfl\n"
+        okPriv "" pm
+        let sig := "(n : Nat) (h : Nat.lt n 5 = .true)"
+        okPriv pm "import Priv\ndef outside : P.a = P.b := rfl\n"
+        okPriv pm s!"import Priv\ndef outsideSym {sig} : P.c n h = P.d n h := rfl\n"
+        okPriv pm "import Priv\ndef o3 : P.a = P.b := refl P.a\n"
+        okPriv pm s!"import Priv\ndef o4 {sig} : P.c n h = P.d n h := refl (P.c n h)\n"
+        -- the other fields still count
+        let neq := "rfl: the two sides are not definitionally equal"
+        failsPriv pm "import Priv\ndef no : P.a = P.c 3 rfl := rfl\n" neq
+        failsPriv pm s!"import Priv\ndef no {sig} (m : Nat) (k : Nat.lt m 5 = .true) : P.c n h = P.c m k := rfl\n" neq
+        -- the kernel's environment never has the hidden definitions (only the elaborator's
+        -- view does): the kernel decides as before, and the elaborator now agrees with it
+        let lib ← preludeLoader
+        let s := runFrontend (R := ZeroOneMany) "import Priv\ndef outside : P.a = P.b := rfl\n"
+          { trustedModule := Tests.libModule, loader := fun m => if m == "Priv" then some pm else lib m }
+        check s.globals.hidden.isEmpty "the command state's globals have hidden definitions"
+        check (s.globals.elabView.hidden.contains "P") "the elaborator's view hides P"
+        check (s.globals.find? "outside" |>.isSome) "outside was not added" },
     { name := "rfl compares the two sides in the elaborator's view: no equation with a look-alike (13b)", run := fun _ => do
         let look := "import Priv\nstructure Look (A : Type) where\n  val : A\n"
         let neq := "rfl: the two sides are not definitionally equal"
@@ -554,7 +577,98 @@ def group : Group where
         -- without an expected type the motives can't be inferred: an error, not a panic
         -- (since agent/elab-bugs the inner `Ex.intro` waits for nothing better and no
         -- ill-typed guess is made: `rfl` meets the unsolved motive `?P ?w`)
-        failsLibs "import Logic\ndef t := Ex.intro _ 3 (Ex.intro _ 3 rfl)" "rfl: the expected type is not an equation" }
+        failsLibs "import Logic\ndef t := Ex.intro _ 3 (Ex.intro _ 3 rfl)" "rfl: the expected type is not an equation" },
+    -- agent/bugfix-elab
+    { name := "a module reaching a duplicate declaration through an import stops there: an error, not a run of its macros (dup-import-macro-panic)", run := fun _ => do
+        -- `DupMap` declares lib/Text.wiz's `List.map`; lib/Deriving.wiz imports Text and then
+        -- runs its derivers (`deriving instance … for Bool, Option, List`). Text is dropped
+        -- for the clash: Deriving's later commands, replayed from its own isolated run,
+        -- once ran without it, and the macro interpreter panicked
+        let lib ← libLoader
+        let dup := "import Prelude\ndef List.map {A B : Type} (f : A → B) : List A → List B\n" ++
+          "  | .nil => .nil\n  | .cons x xs => .cons (f x) (List.map f xs)\n"
+        let init : CommandState ZeroOneMany := { trustedModule := Tests.libModule, loader := fun m => if m == "DupMap" then some dup else lib m }
+        for src in ["import DupMap\nimport Deriving\n", "import DupMap\nimport Hdl.Core\ndef x : Nat := 1\n"] do
+          for (how, st) in [("runFrontend", runFrontend src init), ("wiz check", ← Cache.elaborateUncached src init)] do
+            let errs := (st.messages.filter (·.severity == .error)).map (·.text)
+            check (errs.any (·.startsWith "'List.map' is declared by both module DupMap and module Text"))
+              s!"{how}: {src}: {errs}" },
+    { name := "soundness: a lemma about lib/Text's List.map never meets another module's List.map (dup-import-macro-panic)", run := fun _ => do
+        -- `BadMap.List.map` returns `.nil`; `M` (and `N`, through `M`) prove
+        -- `List.map id [x] = [x]` about Text's. Replayed next to BadMap's, that lemma would
+        -- give `[] = [0]`. On every path (the cache cold and warm, without it, the
+        -- frontend) the module that reaches the clash is dropped, or re-checked
+        let lib ← libLoader
+        let mods : List (Name × String) := [
+          ("BadMap", "import Prelude\ndef List.map {A B : Type} (f : A → B) (xs : List A) : List B := .nil\n"),
+          ("M", "import Prelude\nimport Text\ndef lem (x : Nat) : List.map (fun (y : Nat) => y) (List.cons x List.nil) = List.cons x List.nil := rfl\n"),
+          ("N", "import M\ndef lem2 (x : Nat) : List.map (fun (y : Nat) => y) (List.cons x List.nil) = List.cons x List.nil := lem x\n")]
+        let init : CommandState ZeroOneMany := { trustedModule := Tests.libModule, loader := fun m => (mods.lookup m).orElse fun _ => lib m }
+        let cache ← IO.FS.createTempDir
+        let bad := "def bad : (List.nil : List Nat) = List.cons 0 List.nil := "
+        for src in ["import BadMap\nimport M\n" ++ bad ++ "lem 0\n", "import BadMap\nimport N\n" ++ bad ++ "lem2 0\n",
+                    "import N\nimport BadMap\n" ++ bad ++ "lem2 0\n", "import M\nimport BadMap\n" ++ bad ++ "lem 0\n"] do
+          let cold := (← Cache.elaborateCached cache src init 0).1
+          let warm := (← Cache.elaborateCached cache src init 0).1
+          for (how, st) in [("cold cache", cold), ("warm cache", warm), ("no cache", ← Cache.elaborateUncached src init),
+                            ("runFrontend", runFrontend src init)] do
+            check (st.messages.any fun m => m.severity == .error && (m.text.splitOn "is declared by both").length > 1)
+              s!"{how}: no clash reported for\n{src}"
+            check (!st.globals.contains "bad") s!"{how}: [] = [0] was accepted for\n{src}"
+        IO.FS.removeDirAll cache },
+    { name := "a module kept from an isolated run is kept per pp.notation setting, and the other Globals options (isokey-settings)", run := fun _ => do
+        -- the first run keeps Prelude's isolated state (with notation on); the second, with
+        -- notation off from the start (`wiz check --pp-all`), once got that state, notation on
+        let loader ← preludeLoader
+        let src := "import Prelude\n#check [1]\n"
+        let texts (s : CommandState ZeroOneMany) := s.messages.toList.map (·.text)
+        let on := runFrontend src ({ loader, trustedModule := Tests.libModule } : CommandState ZeroOneMany)
+        checkEq (repr ["[1] : List Nat"]).pretty (repr (texts on)).pretty
+        let off := runFrontend src ({ loader, trustedModule := Tests.libModule, globals := { pp := { useNotation := false } } } : CommandState ZeroOneMany)
+        checkEq (repr ["List.cons Nat 1 (List.nil Nat) : List Nat"]).pretty (repr (texts off)).pretty
+        -- and the options the key didn't have: each gives its own key
+        let base : CommandState ZeroOneMany := { loader, trustedModule := Tests.libModule }
+        let k := isoKey base "Prelude"
+        check k.isSome "no key for an initial state"
+        for (opt, st) in [("pp.notation", { base with globals := { pp := { useNotation := false } } }),
+                          ("pushCalls", { base with globals := { pushCalls := false } }),
+                          ("strictPrivacy", { base with globals := { strictPrivacy := true } }),
+                          ("quoteErasesProofs", { base with globals := { quoteErasesProofs := true } }),
+                          ("assumed", { base with globals := { assumed := [("a", "b")] } })] do
+          check (isoKey st "Prelude" != k) s!"{opt} is not in isoKey" },
+    { name := "a recursive `def … := match` on its parameters is its equations (def-match-recursion)", run := fun _ => do
+        okLib ("import Prelude\n" ++
+          -- the match on the second parameter, under a `fun`, and directly
+          "def Fe.f (x : Nat) : List Nat → Nat := fun ps => match ps with\n  | .nil => x\n  | .cons _ t => Fe.f x t\n" ++
+          "def Fe.g (x : Nat) (ps : List Nat) : Nat := match ps with\n  | .nil => x\n  | .cons _ t => Nat.succ (Fe.g x t)\n" ++
+          -- a parameter after the scrutinee, and the scrutinee used in a right-hand side
+          "def Fe.h (ps : List Nat) (acc : Nat) : Nat := match ps with\n  | .nil => acc\n  | .cons _ t => Fe.h t (Nat.succ acc)\n" ++
+          "def Fe.len (ps : List Nat) : Nat := match ps with\n  | .nil => 0\n  | .cons _ t => Nat.succ (Fe.len t)\n" ++
+          "def Fe.k (ps : List Nat) : Nat := match ps with\n  | .nil => 0\n  | .cons _ t => Nat.add (Fe.len ps) (Fe.k t)\n" ++
+          -- two scrutinees
+          "def Fe.zip (xs : List Nat) (ys : List Nat) : Nat := match xs, ys with\n  | .cons _ a, .cons _ b => Nat.succ (Fe.zip a b)\n  | _, _ => 0\n" ++
+          "#eval Fe.f 7 (.cons 1 (.cons 2 .nil))\n#eval Fe.g 7 (.cons 1 (.cons 2 .nil))\n#eval Fe.h (.cons 1 (.cons 2 .nil)) 5\n" ++
+          "#eval Fe.k (.cons 1 (.cons 2 .nil))\n#eval Fe.zip (.cons 1 (.cons 2 .nil)) (.cons 3 .nil)\n")
+          ["7", "9", "7", "3", "1"]
+        -- not structurally recursive: the equations' error
+        failsLib "import Prelude\ndef f (ps : List Nat) : Nat := match ps with\n  | .nil => 0\n  | .cons _ t => f ps\n"
+          "recursive call of f on ps" },
+    { name := "a recursive call in a plain `def … :=` that isn't a match on its parameters says what's wrong (def-match-recursion)", run := fun _ => do
+        failsLib "import Prelude\ndef Fe.f (x : Nat) : Nat := Nat.succ (Fe.f x)\n"
+          "recursive call to Fe.f in a definition without equations"
+        failsLib "import Prelude\ndef f (x : Nat) (ps : List Nat) : Nat := Nat.add 1 (match ps with\n  | .nil => x\n  | .cons _ t => f x t)\n"
+          "recursive call to f in a definition without equations"
+        -- a local of that name is still a local
+        okLib "import Prelude\ndef f (x : Nat) : Nat := let f := x; f\n" },
+    { name := "a match on a structure with a field at quantity 0 binds it at 0 (struct-erased-field-match)", run := fun _ => do
+        let hdr := "import Prelude\nstructure S0 where\n  0 n : Nat\n  m : Nat\n"
+        okLib (hdr ++ "def s0mt (s : S0) : Nat := match s with\n  | .mk n m => m\n" ++
+          "def s0a (s : S0) : Nat := match s with\n  | ⟨_, m⟩ => Nat.succ m\n" ++
+          -- the erased field in an erased position (a type)
+          "def s0t (s : S0) : Type := match s with\n  | .mk n m => Nat\n" ++
+          "#eval s0mt (S0.mk 3 4)\n") ["4"]
+        -- used at runtime it is an error (not a projection at ω behind the user's back)
+        failsLib (hdr ++ "def bad (s : S0) : Nat := match s with\n  | .mk n m => n\n") "n" }
   ]
 
 /-- This module's test groups, which `Tests/Main.lean` runs: one per line, in sorted
