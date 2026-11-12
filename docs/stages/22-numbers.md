@@ -432,6 +432,18 @@ loops, `?`, `U64`, and functions that return borrows.
   E0499 in the front end, yet its `#unchecked` lowering checks. The surface language
   never names handles, scopes or tokens, so when handles become linear only the text
   emitted for scopes changes.
+* **Linear mode (cohesion M4b-1).** A block whose functions use `&mut` and stay in the
+  fragment it covers (straight-line code, calls, `if`, `mem.swap/take/replace`) lowers to
+  the linear handles of 22g (`Uniq1`). `&mut` parameters are taken at 1. `*x` becomes
+  `let 1 (d, x) := Uniq1.peek x`, and `*x := e` becomes `let 1 x := Uniq1.write x e`.
+  A function returns `Result1 v handles`, and every error exit hands the live handles
+  back (D8). An `if` that changes a handle joins through `Result1`, and a call that
+  borrows two locals threads the outer handle through `Uniq1.borrowIn`.
+  `#lower` marks such functions `-- linear handles`. The kernel then rejects passing one
+  `&mut` twice (E0499) on the `#unchecked` lowering too.
+  Any other construct keeps the whole block on the ω handles for now: loops, `return`,
+  `?`, `match`/`if let`, methods, indexing, shared or field borrows, returned borrows.
+  M4b-2 and M4b-3 cover those.
 * **Located output for command macros.** Runtime `Syntax` has no positions. A command
   macro now names a node of its input by **path** (child indices), and its output may
   contain `Syntax.errorAt path msg`, `Syntax.infoAt path msg` and

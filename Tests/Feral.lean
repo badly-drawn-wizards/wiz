@@ -120,13 +120,25 @@ def group : Group where
         for n in ["forge_handle", "lengthen_borrow"] do
           let src ← IO.FS.readFile s!"drafts/feral/rejected/{n}.wiz"
           check (!(errorsOf (← frontend src) src).isEmpty) s!"{n} is accepted" },
+    { name := "linear mode (M4b-1): a join and an error path hand the handle back; a block outside the fragment stays on ω handles", run := fun _ => do
+        let src := pre ++ "feral\n  fn bump {'a} (x : &'a mut U64) (c : Bool) : Unit := {\n    if c then { *x := *x + 1 } else { () };\n    *x := *x + 1\n  }\n  fn twice (n : U64) : U64 := {\n    let mut v := n;\n    bump (&mut v) (U64.lt n 5);\n    v\n  }\nend\n#eval Result.map (fun (u : U64) => u.val) (twice (U64.lit 3))\n#eval Result.map (fun (u : U64) => u.val) (twice (U64.lit 7))\n"
+        let s ← frontend src
+        checkEq "[]" (toString (errorsOf s src))
+        checkEq "[.ok 5, .ok 8]" (toString (infosOf s))
+        let l ← frontend (src.replace "\nferal\n" "\n#lower feral\n")
+        check ((infosOf l).any (has · "Result1 Unit (Uniq1 ρa U64)")) s!"{infosOf l}"
+        -- a method call keeps the block on ω handles
+        let w ← frontend (pre ++ "#lower feral\n  fn f () : U64 := {\n    let mut v := Vec.new;\n    let r := &mut v;\n    r.push 2;\n    0\n  }\nend\n")
+        check ((infosOf w).all (fun i => !has i "Uniq1")) s!"{infosOf w}" },
     { name := "#lower shows the generated Wiz, item by item", run := fun _ => do
         let src := pre ++ "#lower feral\n  fn swap {'a 'b} (x : &'a mut U64) (y : &'b mut U64) : Unit := {\n" ++
           "    let t := *x;\n    *x := *y;\n    *y := t\n  }\nend\n"
         let s ← frontend src
         checkEq "[]" (toString (errorsOf s src))
-        checkEq ("[def swap {ρa ρb : Region} (x : (Uniq ρa U64)) (y : (Uniq ρb U64)) : Result (Unit × ((Uniq ρa U64) × (Uniq ρb U64))) :=\n" ++
-          "  let t := x.val;\n  let x := (Uniq.set x y.val);\n  let y := (Uniq.set y t);\n  Result.ok ((), (x, y))\n]") (toString (infosOf s)) },
+        checkEq ("[-- linear handles (Uniq1, cohesion M4b-1)\n" ++
+          "def swap {ρa ρb : Region} (1 x : (Uniq1 ρa U64)) (1 y : (Uniq1 ρb U64)) : Result1 Unit ((1 _ : (Uniq1 ρa U64)) × (Uniq1 ρb U64)) :=\n" ++
+          "  let 1 (d_2, x) := Uniq1.peek x;\n  let t := d_2;\n  let 1 (d_5, y) := Uniq1.peek y;\n  let 1 x := Uniq1.write x d_5;\n" ++
+          "  let 1 y := Uniq1.write y t;\n  Result1.ok (()) (x, y)\n]") (toString (infosOf s)) },
     { name := "errors point into the block: the line and column of the offending expression", run := fun _ => do
         let e ← firstError (pre ++ "feral\n  fn f (x : U64) : U64 := {\n    let y := x;\n    y := 3;\n    y\n  }\nend\n")
         check (e.startsWith "6:5: " && has e "E0384") e
@@ -156,22 +168,18 @@ def group : Group where
         checkEq "[.ok 2]" (toString (infosOf s))
         let e ← firstError (body "    let w := &mut a;\n")
         check (e.startsWith "7:" && has e "E0502") e },
-    { name := "KNOWN GAP: one local mutably borrowed twice in a call is rejected by the front end only", run := fun _ => do
-        -- The front end reports E0499. Lowered anyway (#unchecked), the program uses one
-        -- handle twice, which the kernel accepts today: handles are ω values, aliasing is
-        -- enforced by the shape of the lowering (LOWERING.md, L21; wishful: linear-case).
-        -- Closed by stage 2 of /workspace/wiz-notes/linear-case-design.md (linear constructor
-        -- fields, handles at quantity 1): this case must then start failing; flip it. Note D8
-        -- there: with exact linearity the error alternatives must hand the handle back, so
-        -- the types of lib/Region.wiz's scopes (and what L5 emits for `.err`) will change.
+    { name := "one local mutably borrowed twice in a call is rejected by the front end and, with linear handles, by the kernel", run := fun _ => do
+        -- The front end reports E0499. Lowered anyway (#unchecked), the program passes one
+        -- handle twice. This used to be a KNOWN GAP (handles were ω values); in linear mode
+        -- (cohesion M4b-1, `Uniq1` on linear-case stage 2) the kernel rejects it too.
         let src := pre ++ "feral\n  fn swap {'a 'b} (x : &'a mut U64) (y : &'b mut U64) : Unit := {\n    let t := *x;\n    *x := *y;\n    *y := t\n  }\n" ++
           "  fn bad () : U64 := {\n    let mut a : U64 := 1;\n    swap (&mut a) (&mut a);\n    a\n  }\nend\n"
         let e ← firstError src
         check (e.startsWith "11:" && has e "E0499") e
         let un := src.replace "\nferal\n" "\n#unchecked feral\n"
         let u ← frontend un
-        checkEq "[]" (toString (errorsOf u un))
-        check ((infosOf u).any (has · "E0499")) "no verdict from the front end" },
+        check ((infosOf u).any (has · "E0499")) "no verdict from the front end"
+        check ((errorsOf u un).any (has · "the generated source was rejected")) s!"the kernel accepts the lowering: {errorsOf u un}" },
     { name := "command macros: errors, info and generated source at a node of the input (Syntax.errorAt …)", run := fun _ => do
         let src := "import Prelude\nsyntax (name := three) \"three!\" ident ident ident : command\n" ++
           "def threeMacro : CommandMacro := fun stx => MacroM.pure (.cons (Syntax.errorAt (.cons 2 .nil) \"second\")\n" ++
