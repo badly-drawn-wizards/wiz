@@ -13,7 +13,7 @@ end
 def show (r : Result (Bool × Vec U64)) : Result (Bool × List Nat) :=
   Result.map (fun (r : Bool × Vec U64) => (r.1, List.map U64.toNat r.2.items)) r
 def run (v : Vec U64) : Result (Bool × List Nat) :=
-  show (Uniq1.borrow Region.static v (fun ρ h v r => zero_first r))
+  show (Uniq.borrow Region.static v (fun ρ h v r => zero_first r))
 #eval run (Vec.ofList (.cons (U64.lit 7) (.cons (U64.lit 8) .nil)))
 -- .ok (.true, [0, 8])
 #eval run Vec.new

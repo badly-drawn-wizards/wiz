@@ -32,4 +32,4 @@ def l123 : LList := .cons (U64.lit 1) (.cons (U64.lit 2) (.cons (U64.lit 3) .nil
 #eval Result.map LList.toNats (reverse l123)
 -- .ok [3, 2, 1]
 #eval Result.map (fun (r : Unit × LList) => LList.toNats r.2)
-  (Uniq1.borrow Region.static l123 (fun ρ h l r => reverse_in_place r))
+  (Uniq.borrow Region.static l123 (fun ρ h l r => reverse_in_place r))

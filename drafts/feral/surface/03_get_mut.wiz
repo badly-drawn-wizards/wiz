@@ -16,7 +16,7 @@ feral
 end
 
 def run (xs : List Nat) : Result (List Nat) :=
-  match Uniq1.borrow Region.static (Vec.ofList (List.map U64.mk xs)) (fun ρ h v r => bump r) with
+  match Uniq.borrow Region.static (Vec.ofList (List.map U64.mk xs)) (fun ρ h v r => bump r) with
   | .ok r => .ok (List.map U64.toNat r.2.items)
   | .err e => .err e
 

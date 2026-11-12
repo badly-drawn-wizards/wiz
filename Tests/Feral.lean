@@ -126,11 +126,11 @@ def group : Group where
         checkEq "[]" (toString (errorsOf s src))
         checkEq "[.ok 5, .ok 8]" (toString (infosOf s))
         let l ← frontend (src.replace "\nferal\n" "\n#lower feral\n")
-        check ((infosOf l).any (has · "Result1 Unit (Uniq1 ρa U64)")) s!"{infosOf l}" },
-    { name := "linear mode (M4b-3c): returned borrows (Mut1, Borrowed), an error exit releases live borrows, field borrows by Uniq1.zoom", run := fun _ => do
-        -- a returned borrow is a `Mut1` in `Borrowed.ok`; `Borrowed.err` hands the lender back
+        check ((infosOf l).any (has · "Result1 Unit (Uniq ρa U64)")) s!"{infosOf l}" },
+    { name := "linear mode (M4b-3c): returned borrows (Mut, Borrowed), an error exit releases live borrows, field borrows by Uniq.zoom", run := fun _ => do
+        -- a returned borrow is a `Mut` in `Borrowed.ok`; `Borrowed.err` hands the lender back
         let w ← frontend (pre ++ "#lower feral\n  fn f {'a} (v : &'a mut Vec U64) (i : USize) : &'a mut U64 := &mut v[i]\nend\n")
-        check ((infosOf w).any (has · "Borrowed (Mut1 ρa U64 (Vec U64)) (Uniq1 ρa (Vec U64))")) s!"{infosOf w}"
+        check ((infosOf w).any (has · "Borrowed (Mut ρa U64 (Vec U64)) (Uniq ρa (Vec U64))")) s!"{infosOf w}"
         -- two lenders; an overflow while the borrow lives: the error path releases it first
         let a := pre ++ "feral\n  fn pick {'a 'b} {'a : 'b} (c : Bool) (x : &'a mut U64) (y : &'b mut U64) : &'b mut U64 :=\n    if c then x else y\n" ++
           "  fn go (n : U64) : U64 × U64 := {\n    let mut a : U64 := n;\n    let mut b : U64 := 2;\n    *pick true (&mut a) (&mut b) += 10;\n    (a, b)\n  }\nend\n" ++
@@ -140,9 +140,9 @@ def group : Group where
         checkEq "[]" (toString (errorsOf s a))
         checkEq "[.ok (11, 2), .err .overflow]" (toString (infosOf s))
         let l ← frontend (a.replace "\nferal\n" "\n#lower feral\n")
-        check ((infosOf l).any (has · "Mut1.alongside")) s!"{infosOf l}"
+        check ((infosOf l).any (has · "Mut.alongside")) s!"{infosOf l}"
         -- (the borrow is finished twice: where it ends, and on the overflow's error path)
-        check ((infosOf l).any (fun i => (i.splitOn "let 1 (a_r0, b_r2) := Mut1.finish v_9;").length == 3)) s!"{infosOf l}"
+        check ((infosOf l).any (fun i => (i.splitOn "let 1 (a_r0, b_r2) := Mut.finish v_9;").length == 3)) s!"{infosOf l}"
         -- `f (&mut s.f)`: a zoom on a handle, on a borrowed local, and beside another handle (zoomIn)
         let z := pre ++ "feral\n  struct P where\n    a : U64\n    b : U64\n  fn bump2 (x : &mut U64) (y : &mut U64) : Unit := { *x += 1; *y += 2 }\n" ++
           "  fn g (p : &mut P) (q : &mut U64) : Unit := { bump2 (&mut p.a) q; *q += 1 }\n" ++
@@ -152,8 +152,8 @@ def group : Group where
         checkEq "[]" (toString (errorsOf t z))
         checkEq "[.ok 15]" (toString (infosOf t))
         let lz ← frontend (z.replace "\nferal\n" "\n#lower feral\n")
-        check ((infosOf lz).any (has · "@Uniq1.zoomIn")) s!"{infosOf lz}"
-        check ((infosOf lz).any (has · "@Uniq1.zoom ")) s!"{infosOf lz}"
+        check ((infosOf lz).any (has · "@Uniq.zoomIn")) s!"{infosOf lz}"
+        check ((infosOf lz).any (has · "@Uniq.zoom ")) s!"{infosOf lz}"
         -- two fields of one struct in one call: not yet (the `let` form, L11, does it)
         let e ← firstError (z.replace "bump2 (&mut p.a) q" "bump2 (&mut p.a) (&mut p.b)")
         check (has e "not supported yet: two fields of `p`") e },
@@ -167,15 +167,15 @@ def group : Group where
         checkEq "[]" (toString (errorsOf t b))
         checkEq "[.ok 5]" (toString (infosOf t))
         let l ← frontend (b.replace "\nferal\n" "\n#lower feral\n")
-        check ((infosOf l).any (has · "Vec.push1 v i")) s!"{infosOf l}" },
+        check ((infosOf l).any (has · "Vec.push v i")) s!"{infosOf l}" },
     { name := "linear mode (M4b-3a): `return` from inside a loop and a join hands the handles back", run := fun _ => do
         let a := pre ++ "feral\n  -- add 1 up to n times, stopping early at 10\n  fn bump_to {'a} (x : &'a mut U64) (n : U64) : Bool := {\n    for i in 0 .. n do {\n      if 9 < *x then { return true } else { () };\n      *x := *x + 1\n    };\n    false\n  }\n  fn go (n : U64) : U64 × Bool := {\n    let mut a := 5;\n    let hit := bump_to (&mut a) n;\n    (a, hit)\n  }\nend\n#eval Result.map (fun (p : U64 × Bool) => (p.1.val, p.2)) (go (U64.lit 3))\n#eval Result.map (fun (p : U64 × Bool) => (p.1.val, p.2)) (go (U64.lit 20))\n"
         let s ← frontend a
         checkEq "[]" (toString (errorsOf s a))
         checkEq "[.ok (8, .false), .ok (10, .true)]" (toString (infosOf s))
         let l ← frontend (a.replace "\nferal\n" "\n#lower feral\n")
-        check ((infosOf l).any (has · "Result1 ((Flow Unit) Bool) (Uniq1 ρa U64)")) s!"{infosOf l}" },
-    { name := "linear mode (M4b-3b): shared borrows and indexing beside live handles (Shr.borrowIn, Uniq1.shareIn)", run := fun _ => do
+        check ((infosOf l).any (has · "Result1 ((Flow Unit) Bool) (Uniq ρa U64)")) s!"{infosOf l}" },
+    { name := "linear mode (M4b-3b): shared borrows and indexing beside live handles (Shr.borrowIn, Uniq.shareIn)", run := fun _ => do
         let a := pre ++ "feral\n  fn total {'a} (v : &'a Vec U64) : U64 := {\n    let mut s := 0;\n    for i in 0 .. v.len do {\n      s := s + v[i]\n    };\n    s\n  }\n  -- push the sum of a shared vector onto a mutable one, and read it back by index\n  fn push_total {'a 'b} (dst : &'a mut Vec U64) (src : &'b Vec U64) : U64 := {\n    let t := total src;\n    dst.push t;\n    dst[0]\n  }\n  fn go () : U64 := {\n    let mut d := Vec.new;\n    let mut s := Vec.new;\n    s.push 3;\n    s.push 4;\n    let r := push_total (&mut d) (&s);\n    r\n  }\nend\n#eval Result.map (fun (u : U64) => u.val) go\n"
         let s ← frontend a
         checkEq "[]" (toString (errorsOf s a))
@@ -185,16 +185,15 @@ def group : Group where
         checkEq "[]" (toString (errorsOf t b))
         checkEq "[.ok (2, 1)]" (toString (infosOf t))
         let l ← frontend (b.replace "\nferal\n" "\n#lower feral\n")
-        check ((infosOf l).any (has · "@Uniq1.shareIn")) s!"{infosOf l}" },
+        check ((infosOf l).any (has · "@Uniq.shareIn")) s!"{infosOf l}" },
     { name := "#lower shows the generated Wiz, item by item", run := fun _ => do
         let src := pre ++ "#lower feral\n  fn swap {'a 'b} (x : &'a mut U64) (y : &'b mut U64) : Unit := {\n" ++
           "    let t := *x;\n    *x := *y;\n    *y := t\n  }\nend\n"
         let s ← frontend src
         checkEq "[]" (toString (errorsOf s src))
-        checkEq ("[-- linear handles (Uniq1, cohesion M4b-1)\n" ++
-          "def swap {ρa ρb : Region} (1 x : (Uniq1 ρa U64)) (1 y : (Uniq1 ρb U64)) : Result1 Unit ((1 _ : (Uniq1 ρa U64)) × (Uniq1 ρb U64)) :=\n" ++
-          "  let 1 (d_2, x) := Uniq1.peek x;\n  let t := d_2;\n  let 1 (d_5, y) := Uniq1.peek y;\n  let 1 x := Uniq1.write x d_5;\n" ++
-          "  let 1 y := Uniq1.write y t;\n  Result1.ok (()) (x, y)\n]") (toString (infosOf s)) },
+        checkEq ("[def swap {ρa ρb : Region} (1 x : (Uniq ρa U64)) (1 y : (Uniq ρb U64)) : Result1 Unit ((1 _ : (Uniq ρa U64)) × (Uniq ρb U64)) :=\n" ++
+          "  let 1 (d_2, x) := Uniq.peek x;\n  let t := d_2;\n  let 1 (d_5, y) := Uniq.peek y;\n  let 1 x := Uniq.write x d_5;\n" ++
+          "  let 1 y := Uniq.write y t;\n  Result1.ok (()) (x, y)\n]") (toString (infosOf s)) },
     { name := "errors point into the block: the line and column of the offending expression", run := fun _ => do
         let e ← firstError (pre ++ "feral\n  fn f (x : U64) : U64 := {\n    let y := x;\n    y := 3;\n    y\n  }\nend\n")
         check (e.startsWith "6:5: " && has e "E0384") e
@@ -227,7 +226,7 @@ def group : Group where
     { name := "one local mutably borrowed twice in a call is rejected by the front end and, with linear handles, by the kernel", run := fun _ => do
         -- The front end reports E0499. Lowered anyway (#unchecked), the program passes one
         -- handle twice. This used to be a KNOWN GAP (handles were ω values); in linear mode
-        -- (cohesion M4b-1, `Uniq1` on linear-case stage 2) the kernel rejects it too.
+        -- (cohesion M4b-1, `Uniq` on linear-case stage 2) the kernel rejects it too.
         let src := pre ++ "feral\n  fn swap {'a 'b} (x : &'a mut U64) (y : &'b mut U64) : Unit := {\n    let t := *x;\n    *x := *y;\n    *y := t\n  }\n" ++
           "  fn bad () : U64 := {\n    let mut a : U64 := 1;\n    swap (&mut a) (&mut a);\n    a\n  }\nend\n"
         let e ← firstError src
