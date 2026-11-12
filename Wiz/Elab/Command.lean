@@ -1258,10 +1258,6 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
       let hint := if e.code != "unknown-identifier" then "" else
         match e.state?.bind fun st => st.infos.findRev? (· matches .done (.unknownIdent ..)) with
         | some (.done (.unknownIdent _ x locals)) =>
-          -- the definition itself: not in scope in its own body
-          if cmd.isOfKind "command.def" && (cmd.getArg 1).getId? == some x then
-            s!"; a definition can't use itself in its body: define {x} by equations (`def {x} : … → …` with `| pattern => …` alternatives, structural recursion), or make it a `partial def`"
-          else
           let h := didYouMean s.globals x locals
           -- a name of the Prelude, which this file doesn't import
           let inPrelude := !s.imported.contains "Prelude" && s.module != "Prelude" &&

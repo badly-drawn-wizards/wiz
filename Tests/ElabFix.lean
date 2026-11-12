@@ -564,7 +564,7 @@ def group : Group where
         failsLib "import Prelude\ndef f (count : Nat) : Nat := cuont" "unknown identifier 'cuont'; did you mean 'count'?"
         failsLib "import Prelude\ndef f (n : Nat) : Nat := Nat.ad n 1" "unknown identifier 'Nat.ad'; did you mean 'Nat.add'?"
         failsLib "import Prelude\ndef f (xs : List Nat) : Nat := List.lenght xs" "unknown identifier 'List.lenght'; did you mean 'List.length'?"
-        failsLib "import Prelude\ndef f (n : Nat) : Nat := f n" "a definition can't use itself in its body"
+        failsLib "import Prelude\ndef f (n : Nat) : Nat := f n" "recursive call to f in a definition without equations"
         failsLib "def f : Nat := 1" "Nat is defined in the Prelude: add `import Prelude`" },
     { name := "messages: fields, patterns, constructors", run := fun _ => do
         failsLib "import Prelude\nstructure P where\n  x : Nat\n  y : Nat\ndef f (p : P) : Nat := p.z" "P has no field 'z' (its fields are x, y)"
