@@ -94,6 +94,7 @@ require('wiz').setup {
     root_markers = { 'grail.wiz', 'wiz-toolchain', 'lakefile.toml', '.git' },
     on_attach = nil,                   -- function(client, bufnr)
     capabilities = nil,                -- merged into the defaults
+    folding = false,                   -- fold with the server's ranges (0.11+)
   },
   abbreviations = {
     enable = true,
@@ -125,6 +126,13 @@ In Wiz buffers (normal mode): `<LocalLeader>i` toggles the infoview, `<LocalLead
 refreshes it, `<LocalLeader>b` is `:WizInfoviewBrowser`, `<LocalLeader>\` is
 `:WizAbbrev` (each with a `desc`, which which-key shows). The usual LSP keymaps (`K` hover,
 `gd`, `grn`, `gra`, `]d`, …) are Neovim's own.
+
+What the server offers, and Neovim's keys for it:
+
+| | |
+|---|---|
+| outline (`gO`), workspace symbols (`:lua vim.lsp.buf.workspace_symbol()`) | the file's declarations (fields and constructors as children); every declaration of the open files and their imports |
+| folding (`lsp.folding`) | commands, `by` blocks, `match`es, block comments |
 
 In the infoview: `K` or `<CR>` shows what the subterm under the cursor is (its text,
 type, kind and, for a constant, where it is declared: `wiz/subtermInfo`); moving the

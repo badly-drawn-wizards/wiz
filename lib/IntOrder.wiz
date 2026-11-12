@@ -1,0 +1,241 @@
+import IntRing
+/-!
+# IntOrder
+
+The order of the integers (`import IntOrder`): `a ≤ b` when `b - a` is not negative,
+`a < b` when `a + 1 ≤ b`; the absolute value and the triangle inequality.
+
+`a ≤ b` and `a < b` (lib/Order.wiz) are `Int.Le a b` and `Int.Lt a b`. Most facts are
+proved by moving to `Int.NonNeg` of a difference and rewriting the difference with
+`int_ring!` (`Int.NonNeg.congr`), so new ones are easy to add in the same way.
+
+Main definitions: `Int.NonNeg`, `Int.Le`, `Int.Lt`; reflexivity, transitivity,
+antisymmetry and totality (`Int.le_total`, `Int.le_or_lt`); monotonicity of `+` and of
+multiplication by a non-negative or positive number, and cancellation of a positive
+factor; `Int.abs` facts: `Int.le_abs`, `Int.abs_le`, the triangle inequality
+`Int.abs_add` and `Int.abs_sub_le`.
+
+```
+import IntOrder
+
+def ex (a b : Int) (h : a ≤ b) : a + 1 ≤ b + 1 := Int.add_le_add_right 1 a b h
+def tri (a b : Int) : Int.abs (a + b) ≤ Int.abs a + Int.abs b := Int.abs_add a b
+```
+-/
+
+/-- `a` is not negative. -/
+def Int.NonNeg (a : Int) : Prop := Int.isNeg a = .false
+/-- `a ≤ b` on integers: `b - a` is not negative. -/
+def Int.Le (a b : Int) : Prop := Int.NonNeg (b - a)
+/-- `a < b` on integers: `a + 1 ≤ b`. -/
+def Int.Lt (a b : Int) : Prop := Int.Le (a + 1) b
+
+/-- `a ≤ b` is `Int.Le a b`. -/
+instance : LE Int := LE.mk Int.Le
+/-- `a < b` is `Int.Lt a b`. -/
+instance : LT Int := LT.mk Int.Lt
+
+/-- Transport `Int.NonNeg` along an equation (`int_ring!` gives the equation). -/
+def Int.NonNeg.congr {ω a b : Int} (e : a = b) (h : Int.NonNeg a) : Int.NonNeg b :=
+  Eq.mp' Int.NonNeg e h
+/-- Transport `≤` along equations of both sides. -/
+def Int.Le.congr {ω a b c d : Int} (e : a = c) (e' : b = d) (h : Int.Le a b) : Int.Le c d :=
+  Eq.mp' (fun (p : Int × Int) => Int.Le p.1 p.2) (congrArg2 (fun x y => (x, y)) e e') h
+
+/-- A natural number is not negative. -/
+def Int.nonneg_ofNat (n : Nat) : Int.NonNeg (Int.ofNat n) := rfl
+/-- `-(n + 1)` is negative. -/
+def Int.not_nonneg_negSucc (n : Nat) (h : Int.NonNeg (Int.negSucc n)) : False := absurd h.1
+/-- A non-negative integer is a natural number. -/
+def Int.nonneg_elim {0 P : Int → Prop} : (a : Int) → Int.NonNeg a → ((n : Nat) → P (Int.ofNat n)) → P a
+  | .ofNat n, _, k => k n
+  | .negSucc n, h, _ => absurd h.1
+
+/-- A sum of non-negative integers is non-negative. -/
+def Int.nonneg_add (a b : Int) (ha : Int.NonNeg a) (hb : Int.NonNeg b) : Int.NonNeg (a + b) :=
+  @Int.nonneg_elim (fun a => Int.NonNeg (a + b)) a ha (fun m =>
+    @Int.nonneg_elim (fun b => Int.NonNeg (Int.ofNat m + b)) b hb (fun n => rfl))
+/-- A product of non-negative integers is non-negative. -/
+def Int.nonneg_mul (a b : Int) (ha : Int.NonNeg a) (hb : Int.NonNeg b) : Int.NonNeg (a * b) :=
+  @Int.nonneg_elim (fun a => Int.NonNeg (a * b)) a ha (fun m =>
+    @Int.nonneg_elim (fun b => Int.NonNeg (Int.ofNat m * b)) b hb (fun n => rfl))
+/-- `a` or `-a` is non-negative. -/
+def Int.nonneg_total : (a : Int) → Int.NonNeg a ∨ Int.NonNeg (-a)
+  | .ofNat _ => Or.inl rfl
+  | .negSucc _ => Or.inr rfl
+/-- If `a` and `-a` are both non-negative, `a = 0`. -/
+def Int.nonneg_antisymm : (a : Int) → Int.NonNeg a → Int.NonNeg (-a) → a = 0
+  | .ofNat .zero, _, _ => rfl
+  | .ofNat (.succ _), _, h => absurd h.1
+  | .negSucc _, h, _ => absurd h.1
+
+/-- `≤` is reflexive. -/
+def Int.le_refl (a : Int) : Int.Le a a := Int.NonNeg.congr (Eq.symm (int_ring! a - a = 0)) rfl
+/-- `≤` is transitive. -/
+def Int.le_trans (a b c : Int) (h : Int.Le a b) (h' : Int.Le b c) : Int.Le a c :=
+  Int.NonNeg.congr (int_ring! (c - b) + (b - a) = c - a) (Int.nonneg_add (c - b) (b - a) h' h)
+/-- `≤` is antisymmetric. -/
+def Int.le_antisymm (a b : Int) (h : Int.Le a b) (h' : Int.Le b a) : a = b :=
+  let e : b - a = 0 := Int.nonneg_antisymm (b - a) h (Int.NonNeg.congr (int_ring! a - b = -(b - a)) h');
+  Eq.trans (int_ring! a = b - (b - a)) (Eq.trans (congrArg (fun z => b - z) e) (int_ring! b - 0 = b))
+/-- `≤` is total. -/
+def Int.le_total (a b : Int) : Int.Le a b ∨ Int.Le b a :=
+  Or.imp (fun h => h) (fun h => Int.NonNeg.congr (int_ring! -(b - a) = a - b) h) (Int.nonneg_total (b - a))
+/-- Adding on the left is monotone. -/
+def Int.add_le_add_left (k a b : Int) (h : Int.Le a b) : Int.Le (k + a) (k + b) :=
+  Int.NonNeg.congr (int_ring! b - a = (k + b) - (k + a)) h
+/-- Adding on the right is monotone. -/
+def Int.add_le_add_right (k a b : Int) (h : Int.Le a b) : Int.Le (a + k) (b + k) :=
+  Int.NonNeg.congr (int_ring! b - a = (b + k) - (a + k)) h
+/-- `a ≤ b → c ≤ d → a + c ≤ b + d`. -/
+def Int.add_le_add (a b c d : Int) (h : Int.Le a b) (h' : Int.Le c d) : Int.Le (a + c) (b + d) :=
+  Int.NonNeg.congr (int_ring! (b - a) + (d - c) = (b + d) - (a + c)) (Int.nonneg_add (b - a) (d - c) h h')
+/-- Cancel a summand on the left of `≤`. -/
+def Int.le_of_add_le_add_left (k a b : Int) (h : Int.Le (k + a) (k + b)) : Int.Le a b :=
+  Int.NonNeg.congr (int_ring! (k + b) - (k + a) = b - a) h
+/-- Negation reverses `≤`. -/
+def Int.neg_le_neg (a b : Int) (h : Int.Le a b) : Int.Le (-b) (-a) :=
+  Int.NonNeg.congr (int_ring! b - a = -a - -b) h
+/-- Multiplying by a non-negative number on the left is monotone. -/
+def Int.mul_le_mul_of_nonneg_left (c a b : Int) (hc : Int.NonNeg c) (h : Int.Le a b) : Int.Le (c * a) (c * b) :=
+  Int.NonNeg.congr (int_ring! c * (b - a) = c * b - c * a) (Int.nonneg_mul c (b - a) hc h)
+/-- Multiplying by a non-negative number on the right is monotone. -/
+def Int.mul_le_mul_of_nonneg_right (c a b : Int) (hc : Int.NonNeg c) (h : Int.Le a b) : Int.Le (a * c) (b * c) :=
+  Int.NonNeg.congr (int_ring! (b - a) * c = b * c - a * c) (Int.nonneg_mul (b - a) c h hc)
+/-- `0 ≤ a → Int.NonNeg a`. -/
+def Int.nonneg_of_le (a : Int) (h : Int.Le 0 a) : Int.NonNeg a := Int.NonNeg.congr (int_ring! a - 0 = a) h
+/-- `Int.NonNeg a → 0 ≤ a`. -/
+def Int.le_of_nonneg (a : Int) (h : Int.NonNeg a) : Int.Le 0 a := Int.NonNeg.congr (int_ring! a = a - 0) h
+
+-- ## Pairs and the order
+
+/-- `b ≤ a → 0 ≤ a - b` for natural numbers. -/
+def Int.ofPair_nonneg (a b : Nat) (h : Nat.Le b a) : Int.NonNeg (Int.ofPair a b) :=
+  Int.ofPair_cases a b Int.NonNeg (fun x _ => rfl)
+    (fun x eb => absurd (Nat.not_add_succ_le a x (Eq.mp' (fun (y : Nat) => Nat.Le y a) eb h)))
+/-- An integer is non-negative, or its negative is positive (`-a - 1 ≥ 0`). -/
+def Int.nonneg_or_pos : (a : Int) → Int.NonNeg a ∨ Int.NonNeg (-a - 1)
+  | .ofNat _ => Or.inl rfl
+  | .negSucc n => Or.inr (Int.NonNeg.congr
+      (Eq.symm (Eq.trans (congrArg (fun z => z - 1) (Int.ofNat_pair (Nat.succ n))) (Int.ofPair_sub (Nat.succ n) 0 1 0)))
+      (Int.ofPair_nonneg (Nat.succ n + 0) (0 + 1) rfl))
+
+/-- `a ≤ b` or `b < a`. -/
+def Int.le_or_lt (a b : Int) : Int.Le a b ∨ Int.Lt b a :=
+  Or.imp (fun h => h) (fun h => Int.NonNeg.congr (int_ring! -(b - a) - 1 = a - (b + 1)) h) (Int.nonneg_or_pos (b - a))
+/-- `<` is irreflexive. (`Int.lt_irrefl` is the same for the Boolean `Int.lt`.) -/
+def Int.Lt.irrefl (a : Int) (h : Int.Lt a a) : False :=
+  Int.not_nonneg_negSucc 0 (Int.NonNeg.congr (int_ring! a - (a + 1) = -1) h)
+/-- `a < b → a ≤ b`. -/
+def Int.le_of_lt (a b : Int) (h : Int.Lt a b) : Int.Le a b :=
+  Int.NonNeg.congr (int_ring! (b - (a + 1)) + 1 = b - a) (Int.nonneg_add (b - (a + 1)) 1 h rfl)
+/-- `a < b → b ≤ c → a < c`. -/
+def Int.lt_of_lt_of_le (a b c : Int) (h : Int.Lt a b) (h' : Int.Le b c) : Int.Lt a c := Int.le_trans (a + 1) b c h h'
+/-- `a ≤ b → b < c → a < c`. -/
+def Int.lt_of_le_of_lt (a b c : Int) (h : Int.Le a b) (h' : Int.Lt b c) : Int.Lt a c :=
+  Int.le_trans (a + 1) (b + 1) c (Int.add_le_add_right 1 a b h) h'
+/-- `<` is transitive. -/
+def Int.lt_trans (a b c : Int) (h : Int.Lt a b) (h' : Int.Lt b c) : Int.Lt a c :=
+  Int.lt_of_lt_of_le a b c h (Int.le_of_lt b c h')
+/-- `a ≤ b` and `b < a` contradict each other. -/
+def Int.not_lt_of_le (a b : Int) (h : Int.Le a b) (h' : Int.Lt b a) : False :=
+  Int.Lt.irrefl a (Int.lt_of_le_of_lt a b a h h')
+/-- Adding on the left is strictly monotone. -/
+def Int.add_lt_add_left (k a b : Int) (h : Int.Lt a b) : Int.Lt (k + a) (k + b) :=
+  Int.NonNeg.congr (int_ring! b - (a + 1) = (k + b) - (k + a + 1)) h
+/-- `a < b → c ≤ d → a + c < b + d`. -/
+def Int.add_lt_add_of_lt_of_le (a b c d : Int) (h : Int.Lt a b) (h' : Int.Le c d) : Int.Lt (a + c) (b + d) :=
+  Int.NonNeg.congr (int_ring! (b - (a + 1)) + (d - c) = (b + d) - (a + c + 1)) (Int.nonneg_add _ _ h h')
+/-- A product of positive integers is positive. -/
+def Int.mul_pos (a b : Int) (ha : Int.Lt 0 a) (hb : Int.Lt 0 b) : Int.Lt 0 (a * b) :=
+  Int.NonNeg.congr (int_ring! (a - (0 + 1)) * (b - (0 + 1)) + (a - (0 + 1)) + (b - (0 + 1)) = a * b - (0 + 1))
+    (Int.nonneg_add _ _ (Int.nonneg_add _ _ (Int.nonneg_mul _ _ ha hb) ha) hb)
+/-- A positive integer is non-negative. -/
+def Int.nonneg_of_pos (a : Int) (h : Int.Lt 0 a) : Int.NonNeg a :=
+  Int.nonneg_of_le a (Int.le_of_lt 0 a h)
+/-- Multiplying by a positive number on the left is strictly monotone. -/
+def Int.mul_lt_mul_of_pos_left (c a b : Int) (hc : Int.Lt 0 c) (h : Int.Lt a b) : Int.Lt (c * a) (c * b) :=
+  Int.NonNeg.congr (int_ring! c * (b - (a + 1)) + (c - (0 + 1)) = c * b - (c * a + 1))
+    (Int.nonneg_add _ _ (Int.nonneg_mul _ _ (Int.nonneg_of_pos c hc) h) hc)
+/-- Cancel a positive factor on the left of `≤`. -/
+def Int.le_of_mul_le_mul_left (c a b : Int) (hc : Int.Lt 0 c) (h : Int.Le (c * a) (c * b)) : Int.Le a b :=
+  Or.elim (Int.le_or_lt a b) (fun h' => h')
+    (fun h' => absurd (Int.not_lt_of_le (c * a) (c * b) h (Int.mul_lt_mul_of_pos_left c b a hc h')))
+/-- Cancel a non-negative factor on the left of `<`. -/
+def Int.lt_of_mul_lt_mul_left (c a b : Int) (hc : Int.NonNeg c) (h : Int.Lt (c * a) (c * b)) : Int.Lt a b :=
+  Or.elim (Int.le_or_lt b a)
+    (fun h' => absurd (Int.not_lt_of_le (c * b) (c * a) (Int.mul_le_mul_of_nonneg_left c b a hc h') h))
+    (fun h' => h')
+/-- `0 < n + 1`. -/
+def Int.ofNat_succ_pos (n : Nat) : Int.Lt 0 (Int.ofNat (Nat.succ n)) :=
+  Int.NonNeg.congr (Eq.symm (Eq.trans (congrArg (fun z => z - (0 + 1)) (Int.ofNat_pair (Nat.succ n))) (Int.ofPair_sub (Nat.succ n) 0 1 0)))
+      (Int.ofPair_nonneg (Nat.succ n + 0) (0 + 1) rfl)
+
+-- ## Absolute value
+
+/-- `0 ≤ |a|`, as `Int.NonNeg`. -/
+def Int.abs_nonneg : (a : Int) → Int.NonNeg (Int.abs a)
+  | .ofNat _ => rfl
+  | .negSucc _ => rfl
+/-- `a ≤ |a|`. -/
+def Int.le_abs : (a : Int) → Int.Le a (Int.abs a)
+  | .ofNat n => Int.le_refl (Int.ofNat n)
+  | .negSucc _ => rfl
+/-- `-a ≤ |a|`. -/
+def Int.neg_le_abs : (a : Int) → Int.Le (-a) (Int.abs a)
+  | .ofNat .zero => rfl
+  | .ofNat (.succ _) => rfl
+  | .negSucc n => Int.le_refl (Int.ofNat (Nat.succ n))
+/-- `a ≤ c → -a ≤ c → |a| ≤ c`. -/
+def Int.abs_le : (a c : Int) → Int.Le a c → Int.Le (-a) c → Int.Le (Int.abs a) c
+  | .ofNat _, _, h, _ => h
+  | .negSucc _, _, _, h => h
+/-- `|a - b| = |b - a|`. -/
+def Int.abs_sub_comm (a b : Int) : Int.abs (a - b) = Int.abs (b - a) :=
+  Eq.trans (congrArg Int.abs (int_ring! a - b = -(b - a))) (Int.abs_neg (b - a))
+/-- The triangle inequality: `|a + b| ≤ |a| + |b|`. -/
+def Int.abs_add (a b : Int) : Int.Le (Int.abs (a + b)) (Int.abs a + Int.abs b) :=
+  Int.abs_le (a + b) (Int.abs a + Int.abs b)
+    (Int.add_le_add a (Int.abs a) b (Int.abs b) (Int.le_abs a) (Int.le_abs b))
+    (Int.Le.congr (int_ring! -a + -b = -(a + b)) (refl (Int.abs a + Int.abs b))
+      (Int.add_le_add (-a) (Int.abs a) (-b) (Int.abs b) (Int.neg_le_abs a) (Int.neg_le_abs b)))
+/-- `|a| ≤ c → a ≤ c`. -/
+def Int.le_of_abs_le (a c : Int) (h : Int.Le (Int.abs a) c) : Int.Le a c := Int.le_trans a (Int.abs a) c (Int.le_abs a) h
+/-- `|a| ≤ c → -a ≤ c`. -/
+def Int.neg_le_of_abs_le (a c : Int) (h : Int.Le (Int.abs a) c) : Int.Le (-a) c := Int.le_trans (-a) (Int.abs a) c (Int.neg_le_abs a) h
+/-- `|a| = a` for a non-negative `a`. -/
+def Int.abs_of_nonneg : (a : Int) → Int.NonNeg a → Int.abs a = a
+  | .ofNat _, _ => rfl
+  | .negSucc _, h => absurd h.1
+/-- The triangle inequality for distances: `|a - c| ≤ |a - b| + |b - c|`. -/
+def Int.abs_sub_le (a b c : Int) : Int.Le (Int.abs (a - c)) (Int.abs (a - b) + Int.abs (b - c)) :=
+  Int.Le.congr (congrArg Int.abs (int_ring! a - b + (b - c) = a - c)) (refl (Int.abs (a - b) + Int.abs (b - c)))
+    (Int.abs_add (a - b) (b - c))
+/-- `|a| · b = |a · b|` for a positive `b`. -/
+def Int.abs_mul_pos (a b : Int) (hb : Int.Lt 0 b) : Int.abs a * b = Int.abs (a * b) :=
+  Eq.symm (Eq.trans (Int.abs_mul a b) (congrArg (fun z => Int.abs a * z) (Int.abs_of_nonneg b (Int.nonneg_of_pos b hb))))
+
+-- ## More order facts
+
+/-- `a = b → a ≤ b`. -/
+def Int.le_of_eq {ω a b : Int} (e : a = b) : Int.Le a b := Int.Le.congr (refl a) e (Int.le_refl a)
+/-- Transport `<` along equations of both sides. -/
+def Int.Lt.congr {ω a b c d : Int} (e : a = c) (e' : b = d) (h : Int.Lt a b) : Int.Lt c d :=
+  Int.Le.congr (congrArg (fun x => x + 1) e) e' h
+/-- Cancel a positive factor: `c · a = c · b → a = b`. -/
+def Int.eq_of_mul_eq_mul_left (c a b : Int) (hc : Int.Lt 0 c) (e : c * a = c * b) : a = b :=
+  Int.le_antisymm a b (Int.le_of_mul_le_mul_left c a b hc (Int.le_of_eq e))
+    (Int.le_of_mul_le_mul_left c b a hc (Int.le_of_eq (Eq.symm e)))
+/-- `0 < b → 1 ≤ b`. -/
+def Int.one_le_of_pos (b : Int) (h : Int.Lt 0 b) : Int.Le 1 b := Int.Le.congr (int_ring! 0 + 1 = 1) (refl b) h
+/-- If `a · d = c · b` with `b, d > 0`, `a ≥ 0` gives `c ≥ 0` (the signs agree). -/
+def Int.nonneg_of_mul_eq (a b c d : Int) (hb : Int.Lt 0 b) (hd : Int.Lt 0 d) (e : a * d = c * b)
+    (ha : Int.NonNeg a) : Int.NonNeg c :=
+  Int.nonneg_of_le c (Int.le_of_mul_le_mul_left b 0 c hb
+    (Int.Le.congr (int_ring! 0 = b * 0) (Eq.trans e (int_ring! c * b = b * c))
+      (Int.le_of_nonneg (a * d) (Int.nonneg_mul a d ha (Int.nonneg_of_pos d hd)))))
+/-- If `a · d = c · b` with `b, d > 0`, `a > 0` gives `c > 0`. -/
+def Int.pos_of_mul_eq (a b c d : Int) (hb : Int.Lt 0 b) (hd : Int.Lt 0 d) (e : a * d = c * b)
+    (ha : Int.Lt 0 a) : Int.Lt 0 c :=
+  Int.lt_of_mul_lt_mul_left b 0 c (Int.nonneg_of_pos b hb)
+    (Int.Lt.congr (int_ring! 0 = b * 0) (Eq.trans e (int_ring! c * b = b * c)) (Int.mul_pos a d ha hd))
