@@ -35,7 +35,7 @@ case $dl in /*) ;; *) dl=$(pwd)/$dl ;; esac
 # several mirrors, and every file last on this repository's release `bundle-inputs`
 here=$(cd "$(dirname "$0")" && pwd)
 ubuntu_mirrors="http://archive.ubuntu.com/ubuntu/pool/main http://mirrors.kernel.org/ubuntu/pool/main http://mirror.math.princeton.edu/pub/ubuntu/pool/main http://ftp.halifax.rwth-aachen.de/ubuntu/pool/main"
-inputs_release=${WIZ_BUNDLE_INPUTS:-https://github.com/badly-drawn-wizards/wiz/releases/download/bundle-inputs}
+inputs_release=${WIZ_BUNDLE_INPUTS:-https://github.com/wiz-pl/wiz/releases/download/bundle-inputs}
 fetch() { # FILE SHA256 URL…
   f=$1 sum=$2; shift 2
   [ -f "$dl/$f" ] && echo "$sum  $dl/$f" | sha256sum -c --quiet - >/dev/null 2>&1 && return 0
