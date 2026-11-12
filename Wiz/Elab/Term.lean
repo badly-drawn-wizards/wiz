@@ -16,8 +16,9 @@ Bidirectional, like the kernel, but on `Syntax` and with metavariables:
 
 Two mechanisms, following elaboration-zoo `04-implicit-args`:
 
-* **Insertion of implicit applications.** (When the implicit argument is a type, its
-  universe is recorded with `addSortConstraint`.) When a term of type `{A : Type} → A → A` is
+* **Insertion of implicit applications.** (Holes are untyped, so the type of an
+  implicit argument is recorded for later when it fixes a universe level:
+  `noteImplicitType`.) When a term of type `{A : Type} → A → A` is
   used where something that isn't an implicit function is expected, `?A` is inserted:
   `id` becomes `id ?A`. This happens before each explicit argument and in `check`'s
   fallback case. `@f` turns it off.
@@ -101,6 +102,16 @@ def lookupLocal (ctx : LocalCtx R) (x : Name) : Option (Nat × VTy R) := Id.run 
     if n == x && x != "_" then return some (i, ty)
   none
 
+/-- (Given) Metas are untyped, so what the type `dom` of the implicit argument `m` of
+`f` says about universe levels is recorded, to be checked once `m` is solved
+(`solveSortConstraints`): its universe, if it is a type (`{A : Type ?u}`), or its type,
+if that mentions a level metavariable of `f` (`{C : Category.{?a, ?b}}`, where nothing
+else may fix `?a` and `?b`). -/
+def noteImplicitType (ctx : LocalCtx R) (f m : Term R) (dom : VTy R) : ElabM R Unit := do
+  if let .sort l ← force dom then addSortConstraint ctx m l; return
+  let some us := (match (Term.spine f).1 with | .const _ us => some us | _ => none) | return
+  if ← us.anyM (fun u => return (← instLevel u).hasMVar) then addTypeConstraint ctx m dom
+
 /-- **Exercise 3.7.** Insert implicit applications: while the type forces to an
 *implicit* Π, apply the term to a fresh metavariable and instantiate the codomain with
 the metavariable's value. -/
@@ -115,7 +126,7 @@ partial def insertImplicits (ctx : LocalCtx R) (t : Term R) (ty : VTy R) :
   match ← force ty with
   | .pi x .implicit _ dom cod _ =>
     let m ← freshMeta ctx s!"implicit argument {x}"
-    if let .sort l ← force dom then addSortConstraint ctx m l
+    noteImplicitType ctx t m dom
     insertImplicits ctx (.app t m) (← instM cod (← evalIn ctx m))
   | _ => pure (t, ty)  -- the type as it was (forcing would lose glued names)
   --|ex
@@ -447,6 +458,9 @@ structure RecCtx where
   cols : Nat := 0
   /-- all the parameters, and whether each is explicit: `@f` passes them all -/
   allParams : List (Name × Bool) := []
+  /-- whether each matched argument is explicit: a call `f k e` of
+  `f : (k : Nat) → {m : Nat} → m = m → Nat` gets a hole for `m`, as `@f k _ e` -/
+  colExplicit : List Bool := []
 
 partial def patView (g : Globals R) (stx : Syntax) : Except String PatView :=
   let ctorOf (n : Name) : Option (Name × Name) :=
@@ -611,7 +625,30 @@ partial def rewriteRecCalls (g : Globals R) (rc : RecCtx) (binds : List (Name ×
             (a.isOfKind "term.ident" && (a.getArg 0).getId? == some p) do
           throw s!"recursive call of {rc.fn} must pass the parameter {p} unchanged"
       args := kept ++ args.extract rc.allParams.length args.size
-    let np := if args.size ≤ rc.cols then 0 else rc.params.length
+    let explicitCols := rc.colExplicit.length == rc.cols && !isExplicitF (stx.getArg 0)
+    let nExpl := if explicitCols then (rc.colExplicit.filter id).length else rc.cols
+    -- (a call that already passes every matched argument, with `_` at the implicit ones,
+    -- as was once required, stays as it is)
+    let allGiven (np : Nat) : Bool :=
+      let given := args.extract np args.size
+      given.size ≥ rc.cols &&
+        (rc.colExplicit.zip (given.extract 0 rc.cols).toList).all fun (e, a) => e || a.isOfKind "term.hole"
+    let np := if args.size ≤ nExpl || (explicitCols && args.size ≤ rc.cols && allGiven 0) then 0
+      else rc.params.length
+    -- (not `@f`) the implicit matched arguments: holes, as `insertImplicits` would make
+    -- them (before each explicit one, and the trailing ones once all explicit ones are given)
+    let given := args.extract np args.size
+    if explicitCols && !allGiven np then
+      let mut full : Array Syntax := args.extract 0 np
+      let mut j := 0
+      for expl in rc.colExplicit do
+        if expl then
+          let some a := given[j]? | break
+          full := full.push a
+          j := j + 1
+        else if j < given.size || (rc.colExplicit.filter id).length ≤ j then
+          full := full.push (.node stx.info "term.hole" #[.atom stx.info "_"])
+      args := full ++ given.extract j given.size
     for p in rc.params.take np, i in [0:np] do
       let ok := match args[i]? with
         | some a => a.isOfKind "term.ident" && (a.getArg 0).getId? == some p
@@ -1915,7 +1952,7 @@ partial def inferAppNamed (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R ×
           pure m
         else do
           let m ← freshMeta ctx s!"implicit argument {x}"
-          if let .sort l ← force dom then addSortConstraint ctx m l
+          noteImplicitType ctx f m dom
           pure m
     f := .app f a
     fty ← instM cod (← evalIn ctx a)
@@ -2463,7 +2500,7 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
           unless ls.size == d.levelParams.length do
             throwAt ctx.info s!"{x} has {d.levelParams.length} universe parameters, {ls.size} given"
           ls.toList.mapM elabLevel
-        | none => d.levelParams.mapM fun _ => freshLevelMeta
+        | none => d.levelParams.mapM fun p => freshLevelMeta ctx.info s!"the universe level {p} of {x}"
       let ty ← evalIn {} (d.type.instLevels d.levelParams us)
       record x {} ty
       return (.const x us, ty)

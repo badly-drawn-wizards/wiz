@@ -219,9 +219,11 @@ def renamePrivate (s : CommandState R) (added : Array Name) : CommandState R :=
   { s with globals := { g with decls, order, builtins := rb g.builtins, assumed := rb g.assumed },
            builtins := rb s.builtins }
 
-/-- Metas are untyped, so `?A : Sort ?u` never learns `?u` from `?A := A`. For each
-recorded constraint whose hole is now solved, ask the kernel for the solution's type
-and unify its level. -/
+/-- Metas are untyped, so `?A : Sort ?u` never learns `?u` from `?A := A`, and
+`?C : Category.{?a, ?b}` never learns `?a`, `?b` from `?C := C`. For each recorded
+constraint (`addSortConstraint`, `addTypeConstraint`) whose hole is now solved, ask the
+kernel for the solution's type and unify it with the recorded one. A solved level may
+complete another constraint's solution, so this runs until nothing changes. -/
 def solveSortConstraints : ElabM R Unit := do
   finishInstances
   -- size metavariables nothing constrained default to `∞`
@@ -230,17 +232,42 @@ def solveSortConstraints : ElabM R Unit := do
     if e.desc == "a size" && e.solution.isNone then
       let sol : Term R := (List.range e.arity).foldl (fun t _ => .lam "_" t) .szInf
       solveMeta m (eval (← getGlobals) [] sol)
-  for _ in [0:2] do
-    for (ctx, t, l) in (← get).sortConstraints do
-      let t ← zonk ctx.lvl t
-      if !t.mvars.isEmpty then continue
-      let kctx : Ctx R := { globals := ← getGlobals, env := ctx.env, names := ctx.names,
-                            qtys := ctx.names.map fun _ => QPoly.const QuantitySyntax.explicitDefault,
-                            types := ctx.types, lvl := ctx.lvl }
-      if let .ok (ty, _) := Wiz.infer kctx t then
-        if let .sort l' ← force ty then
-          try unifyLevel l l' catch e => throwAt ctx.info e.msg
-
+  -- the solution's type, if it is complete and the kernel can infer it (in the context of
+  -- the hole, with the variables' types as they are now: a binder's type may have been a
+  -- hole when it was bound)
+  let typeOf (ctx : LocalCtx R) (t : Term R) : ElabM R (Option (VTy R)) := do
+    let t ← zonk ctx.lvl t
+    if !t.mvars.isEmpty then return none
+    let kctx : Ctx R := { globals := ← getGlobals, env := ctx.env, names := ctx.names,
+                          qtys := ctx.names.map fun _ => QPoly.const QuantitySyntax.explicitDefault,
+                          types := (← zonkedTypes ctx).toList.reverse, lvl := ctx.lvl }
+    match Wiz.infer kctx t with
+    | .ok (ty, _) => return some ty
+    | .error _ => return none
+  let solvedLevels : ElabM R Nat := do
+    return (← get).levelMetas.foldl (fun n l => if l.isSome then n + 1 else n) 0
+  let mut doneSort : Std.HashSet Nat := {}
+  let mut doneType : Std.HashSet Nat := {}
+  repeat
+    let before ← solvedLevels
+    for (ctx, t, l) in (← get).sortConstraints, i in [0:(← get).sortConstraints.size] do
+      if doneSort.contains i then continue
+      let some ty ← typeOf ctx t | continue
+      doneSort := doneSort.insert i
+      if let .sort l' ← force ty then
+        try unifyLevel l l' catch e => throwAt ctx.info e.msg
+    for (ctx, t, A) in (← get).typeConstraints, i in [0:(← get).typeConstraints.size] do
+      if doneType.contains i then continue
+      -- (nothing left to learn once the type's levels are known)
+      let g ← getGlobals
+      unless (← zonk ctx.lvl (quote g ctx.lvl A)).hasLevelMVar do
+        doneType := doneType.insert i; continue
+      let some ty ← typeOf ctx t | continue
+      doneType := doneType.insert i
+      -- (a mismatch is the kernel's to report, with the whole declaration)
+      let s ← get
+      try unify ctx.lvl (← refreshVal ctx A) ty catch _ => set s
+    if (← solvedLevels) == before then break
 /-- Elaborate the header and body of a `def` or `axiom` to closed, zonked terms. -/
 def elabDeclTerms (binders : Array Syntax) (typeStx : Option Syntax) (valStx : Option Syntax)
     (info : SourceInfo) (declName? : Option (Name × SourceInfo × Nat) := none) :
@@ -543,9 +570,11 @@ def elabDefEqns (name : Name) (cmd : Syntax) (isPartial : Bool := false) :
   let mut tyv ← evalIn ctx ty
   let mut vars : List Lvl := []
   let mut names : List Name := []
+  let mut colExplicit : List Bool := []
   for i in [0:n] do
-    let .pi x _ xq A B _ ← force tyv | throwAt tyStx.info s!"{name} takes fewer than {n} arguments"
+    let .pi x xbi xq A B _ ← force tyv | throwAt tyStx.info s!"{name} takes fewer than {n} arguments"
     let x := if x == "_" then s!"a{i}" else x
+    colExplicit := colExplicit ++ [xbi == .default]
     vars := vars ++ [ctx'.lvl]
     names := names ++ [x]
     tyv ← instM B (Val.var ctx'.lvl)
@@ -568,7 +597,7 @@ def elabDefEqns (name : Name) (cmd : Syntax) (isPartial : Bool := false) :
     | [] => xs
   let params := (tele.filterMap fun (x, bi, _, _) => if bi == .default then some x else none).toList
   let allParams := (tele.map fun (x, bi, _, _) => (x, bi == .default)).toList
-  let rc : Option RecCtx := if recursive then some { fn := name, params, pos, cols := n, allParams } else none
+  let rc : Option RecCtx := if recursive then some { fn := name, params, pos, cols := n, allParams, colExplicit } else none
   if let some x := vars.head? then recordMatch cmd.info alts clauses ctx'.types[ctx'.lvl - x - 1]!
   -- a recursive definition whose first argument has a size-variable size: compile to `sfix`
   if rc.isSome && pos == 0 then

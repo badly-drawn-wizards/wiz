@@ -613,11 +613,23 @@ partial def unifyGlued (l : Lvl) (t u : Val R) : ElabM R Bool := do
     if ← isVarSpine sp then
       if ← attempt (solve l m sp v) then return true
     if (← get).approx == .none then return false
-    match sp.back?, sp'.back? with
-    | some .fst, some .fst | some .snd, some .snd =>
-      attempt (unify l (.neutral (.mvar m) sp.pop) (.neutral h' sp'.pop))
-    | _, _ =>
-      if sp.all (· matches .app _) && sp'.all (· matches .app _) && !sp'.isEmpty then
+    -- the same eliminations after the hole's own arguments, projections among them
+    -- (`(?C).2.2.2.1 ?f ?g =?= C.2.2.2.1 f g`, a field of a structure-valued hole applied
+    -- to arguments): unify what is projected, `?C =?= C`, and then the eliminations
+    match sp.findIdx? (!· matches .app _) with
+    | some k =>
+      let rest := sp.extract k sp.size
+      if rest.size > sp'.size then return false
+      let rest' := sp'.extract (sp'.size - rest.size) sp'.size
+      let sameKind : Elim R × Elim R → Bool
+        | (.app _, .app _) | (.fst, .fst) | (.snd, .snd) => true
+        | _ => false
+      unless (rest.zip rest').all sameKind do return false
+      attempt do
+        unify l (.neutral (.mvar m) (sp.extract 0 k)) (.neutral h' (sp'.extract 0 (sp'.size - rest.size)))
+        unifySpine l rest rest'
+    | none =>
+      if !sp'.isEmpty && sp'.all (· matches .app _) then
         unifyFirstOrder l m sp v
       else pure false
   | _, _ => pure false
