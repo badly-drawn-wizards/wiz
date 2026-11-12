@@ -56,6 +56,15 @@ matching on a value's shape. -/
 partial def whnf : Val R → Val R
   | .unfold _ _ _ v => whnf v.get
   | .lazyInd _ _ _ _ _ _ _ _ _ v => whnf v.get
+  | .lazyEq _ _ _ v => whnf v.get
+  | v => v
+
+/-- A value with its suspended inductions on constructors computed (`vInd`): they are
+lazy for speed alone, so wherever a value's shape or read-back is looked at without `whnf`
+(`quote`, the elaborator's unifier) they count as what they compute, as before they were
+lazy. Inductions on numerals stay folded (`Val.lazyInd` since stage 7). -/
+partial def unlazyCon : Val R → Val R
+  | v@(.lazyInd _ _ _ _ _ _ _ x _ val) => if whnf x matches .con _ then unlazyCon val.get else v
   | v => v
 
 /-- **Exercise 4.4b.** First projection. -/
@@ -97,7 +106,7 @@ universe is above `Type` (the tag is then lifted, `true`). -/
 def tagField? (S : Val R) : Option (List Name × Bool) :=
   match whnf S with
   | .enum ls => some (ls, false)
-  | .ulift _ A => match whnf A with
+  | .ulift _ _ A => match whnf A with
     | .enum ls => some (ls, true)
     | _ => none
   | _ => none
@@ -149,20 +158,40 @@ partial def vAbsurd (m : Val R) : Val R → Val R
 
 /-- `(a → b) × (b → a)`: equality of propositions (propositional extensionality) -/
 def vIff (a b : Val R) : Val R :=
-  .sigma "_" (.qlit 0) (.pi "_" .default (.qlit 0) a (.mk [b] (.var 1)) (some 0))
-    (.mk [a, b] (.pi "_" .default (.qlit 0) (.var 2) (.var 2) (some 0))) (some 0)
+  .sigma "_" (.qlit 0) (.pi "_" .default (.qlit 0) a (.mk [b] (.var 1)) ⟨0, 0⟩)
+    (.mk [a, b] (.pi "_" .default (.qlit 0) (.var 2) (.var 2) ⟨0, 0⟩)) ⟨0, 0⟩
+
+/-- Is the sort `s` that of propositions? `some true` if it is `0`, `some false` if it is
+never `0`, `none` if that depends on a level parameter (or the sort is a hole, which the
+kernel never sees). -/
+def sortProp? (s : Level) : Option Bool :=
+  if s.hasHole then none else
+  if s.isZero then some true else if s.isNeverZero then some false else none
 
 /-- Is this type (in weak head normal form) a proposition? `none` when its sort can't be
-seen: a neutral, or a `Π`/`Σ` without a sort or with one that depends on a universe
-parameter. Type equality needs to know: two propositions are equal when equivalent,
-whatever their shapes (`True = (True → True)`), and comparing them by shape instead
-proved `False` (a proposition can be the domain of a function type in `Type`). -/
+seen: a neutral, or a sort that depends on a universe parameter. A `Π` is a proposition
+iff its codomain's sort is `0`, a `Σ` iff both components' are (mandatory sorts: read off
+`BinderSorts`, never inferred). Type equality needs to know: two propositions are equal
+when equivalent, whatever their shapes (`True = (True → True)`), and comparing them by
+shape instead proved `False` (a proposition can be the domain of a function type in
+`Type`). -/
 def propSort? : Val R → Option Bool
-  | .pi _ _ _ _ _ (some s) | .sigma _ _ _ _ (some s) | .unit s | .empty s | .ulift s _ =>
-    if s.equiv 0 then some true else if s.isNeverZero then some false else none
+  | .pi _ _ _ _ _ σ => sortProp? σ.cod
+  | .sigma _ _ _ _ σ => match sortProp? σ.dom, sortProp? σ.cod with
+    | some true, some true => some true
+    | some false, _ | _, some false => some false
+    | _, _ => none
+  | .unit s | .empty s | .ulift _ s _ => sortProp? s
   | .sort _ | .qty | .enum _ | .desc .. | .mu .. | .nu .. | .size | .sizeLt _ => some false
-  | .neutral (.eq ..) #[] | .neutral (.eqTy ..) #[] => some true
+  | .neutral (.eq ..) #[] | .neutral (.eqTy ..) #[] | .lazyEq .. => some true
   | _ => none
+
+/-- `propSort?` of a type not yet in weak head normal form: a glued equation is a
+proposition without computing it; anything else is forced first. -/
+def propSortW? (v : Val R) : Option Bool :=
+  match v with
+  | .lazyEq .. => some true
+  | v => propSort? (whnf v)
 
 /-- The position of the last `absurd` in a spine. What comes before it is a term of an
 empty type; what comes after is typed by its motive. -/
@@ -180,7 +209,7 @@ def outOfSteps : Val R := .neutral (.global " out of steps" []) #[]
 def proofHead (h : Head R) : Bool :=
   match h with
   | .prf .. | .refl .. | .reflTy _ | .transp .. => true
-  | .cast A B _ _ => propSort? (whnf A) == some true && propSort? (whnf B) == some true
+  | .cast A B _ _ => propSortW? A == some true && propSortW? B == some true
   | _ => false
 
 /-- The predecessor of a size, for `con`/`cocon`/`out`: `↑s ↦ s`, `∞ ↦ ∞`; `none`
@@ -217,7 +246,7 @@ compute).
 `vSnd`, `vSplit` and `vAbsurd`. -/
 partial def eval (g : Globals R) (env : Env R) : Term R → Val R
   -- (given) Q4: lifting
-  | .ulift l A => .ulift l (eval g env A)
+  | .ulift k l A => .ulift k l (eval g env A)
   | .up a => .up (eval g env a)
   | .down t => vDown (eval g env t)
   -- (given) P2: a marked term whose sort is `0` is a proof: suspended, never looked into.
@@ -229,8 +258,8 @@ partial def eval (g : Globals R) (env : Env R) : Term R → Val R
   | .var ix => env[ix]?.getD (.neutral (.global "out of scope✝" []) #[])
   | .const n us => if let some v := vBuiltin? g n then v else match g.find? n with
     | some { value := some v, levelParams, inline, .. } =>
-      if inline || g.eager then eval g [] (v.instLevels levelParams us)
-      else .unfold n us #[] (Thunk.mk fun _ => eval g [] (v.instLevels levelParams us))
+      if inline || g.eager then eval g [] (g.instValue n v levelParams us)
+      else .unfold n us #[] (Thunk.mk fun _ => eval g [] (g.instValue n v levelParams us))
     | _ => .neutral (.global n us) #[]
   | .natLit n => .natLit n
   | .natOp op args => vNatOp g op (args.map (eval g env))
@@ -250,7 +279,7 @@ partial def eval (g : Globals R) (env : Env R) : Term R → Val R
   | .tt => .tt
   | .empty l => .empty l
   | .absurd m t => vAbsurd (eval g env m) (eval g env t)
-  | .eq A a b => vEq g (eval g env A) (eval g env a) (eval g env b)
+  | .eq A a b => vEqL g (eval g env A) (eval g env a) (eval g env b)
   | .eqTy A B => vEqType g (eval g env A) (eval g env B)
   | .cast A B e t =>
     let vA := eval g env A
@@ -547,6 +576,32 @@ partial def vNatOp (g : Globals R) (op : Name) (args : Array (Val R)) : Val R :=
     | none, _, _ => unfold ()
   | none => unfold ()
 
+/-- `hyps D X P f i xs` by `Templates.hypsTm`: the definition. -/
+partial def vHypsTemplate (g : Globals R) (l v : Level) (I D X P f i xs : Val R) : Val R :=
+  [I, D, X, P, f, i, xs].foldl (vApp g) (eval g [] (Templates.hypsTm l v))
+
+/-- (given) `hyps D X P f i xs` computed directly on a canonical description, one step of
+`Templates.hypsTm`'s `Desc.elim` at a time, without evaluating the template (most of the
+cost of a data operation: `wiz-notes/kernel-eval.md`, F2):
+
+    ret j        ↦ ()
+    arg q S E    ↦ hyps (E xs.1) xs.2
+    rec q j E    ↦ (f j xs.1, hyps E xs.2)
+    hrec q H j E ↦ (fun h => f (j h) (xs.1 h), hyps E xs.2)
+
+On a description that isn't canonical (stuck), the template from there on, which is what
+the template itself reduces to after the steps already taken. -/
+partial def vHyps (g : Globals R) (l v : Level) (I D X P f i xs : Val R) : Val R :=
+  match whnf D with
+  | .dret _ => .tt
+  | .darg _ _ E => vHyps g l v I (vApp g E (vFst xs)) X P f i (vSnd xs)
+  | .drec _ j E => .pair (vApp g (vApp g f j) (vFst xs)) (vHyps g l v I E X P f i (vSnd xs))
+  | .dhrec _ _ j E =>
+    -- h0 x1 j2 f3
+    .pair (.lam "h" (.mk [vFst xs, j, f] (.app (.app (.var 3) (.app (.var 2) (.var 0))) (.app (.var 1) (.var 0)))))
+      (vHyps g l v I E X P f i (vSnd xs))
+  | _ => vHypsTemplate g l v I D X P f i xs
+
 /-- **Exercise 4.19c.** Induction computes on constructors:
 
     ind P m i (con xs) ↦ m i xs (hyps D (μ D) P (fun j y => ind P m j y) i xs)
@@ -560,7 +615,7 @@ partial def vIndStep (g : Globals R) (l : Level) (I D : Val R) (v : Level) (P m 
     -- y0 j1 m2 P3 D4 I5
     let f : Val R := .lam "j" (.mk [m, P, D, I]
       (.lam "y" (.ind l (.var 5) (.var 4) v (.var 3) (.var 2) (.var 1) (.var 0))))
-    let hyps := [I, D, muFamily l I D, P, f, i, xs].foldl (vApp g) (eval g [] (Templates.hypsTm l v))
+    let hyps := vHyps g l v I D (muFamily l I D) P f i xs
     [i, xs, hyps].foldl (vApp g) m
   | .neutral h sp => .neutral h (sp.push (.ind l I D v P m i))
   | _ => panic! "vInd: ill-typed"
@@ -568,11 +623,19 @@ partial def vIndStep (g : Globals R) (l : Level) (I D : Val R) (v : Level) (P m 
   --| sorry
   --sol>
 
-/-- `ind` on a numeral `n + 1` is computed only when needed (`Val.lazyInd`): its
-hypothesis is `ind` on `n`, so computing eagerly would go all the way down to `0`. -/
+/-- `ind` on a numeral `n + 1`, or on a constructor, is computed only when needed
+(`Val.lazyInd`): the hypotheses of `con xs` are `ind` on its recursive fields, so
+computing them eagerly would go all the way down (to `0`, or to the end of a list) even
+for a method that ignores them (a `match`: `T.casesOn`), which made a `match` on a list
+cost its length (`wiz-notes/kernel-eval.md`). Not for a normal form (`g.eager`, `nf`):
+`ind` on a constructor is a redex, which a normal form must not contain; and not with
+`--eager-proofs` (`!g.lazyProofs`), where the evaluator runs everything as it did before
+(the D1 experiments' loops are loops of that evaluator). -/
 partial def vInd (g : Globals R) (l : Level) (I D : Val R) (v : Level) (P m i x : Val R) : Val R :=
   match whnf x with
   | .natLit (_ + 1) => .lazyInd l I D v P m i x #[] (Thunk.mk fun _ => vIndStep g l I D v P m i x)
+  | .con _ => if g.eager || !g.lazyProofs then vIndStep g l I D v P m i x
+    else .lazyInd l I D v P m i x #[] (Thunk.mk fun _ => vIndStep g l I D v P m i x)
   | _ => vIndStep g l I D v P m i x
 
 /-- **Exercise 4.22a.** Sized recursion unfolds on a constructor, with the recursive
@@ -672,8 +735,8 @@ partial def vEq (g : Globals R) (A a b : Val R) : Val R :=
   let b := vNatView g (whnf b)
   -- (given) Q4: at `ULift A`, by `A`: the boxed values are equal when their contents are;
   -- a lifted proposition has one inhabitant up to η, so the equation is `True`
-  if let .ulift _ A₁ := A then
-    match propSort? (whnf A₁) with
+  if let .ulift k _ A₁ := A then
+    match sortProp? k with
     | some true => .unit 0
     | some false => vEq g A₁ (vDown a) (vDown b)
     | none => .neutral (.eq A a b) #[]
@@ -684,22 +747,27 @@ partial def vEq (g : Globals R) (A a b : Val R) : Val R :=
   -- any two proofs are convertible, so it is `True`; never `False`)
   if propSort? A == some true then .unit 0 else
   match A with
-  | .pi x _ _ A₁ B _ =>
+  | .pi x _ _ A₁ B σ =>
     -- (x :0 A₁) → (B x ∋ a x = b x); env: b, a, B
-    .pi x .default (.qlit 0) A₁ (.mk [b, a, .lam x B] (.eq (.app (v 3) (v 0)) (.app (v 2) (v 0)) (.app (v 1) (v 0)))) (some 0)
-  | .sigma x _ A₁ B _ =>
+    .pi x .default (.qlit 0) A₁ (.mk [b, a, .lam x B] (.eq (.app (v 3) (v 0)) (.app (v 2) (v 0)) (.app (v 1) (v 0)))) ⟨σ.dom, 0⟩
+  | .sigma x _ A₁ B σ =>
     -- env (inside the Σ, after `e`): b, a, B, A₁
     let P : Term R := .lam "y" (.lam "_" (.eqTy (.app (v 5) (.fst (v 4))) (.app (v 5) (v 1))))
     -- (if `A₁` is a proposition, `p.1 ≡ q.1` by irrelevance, so `B p.1 ≡ B q.1`: `reflTy`
     -- proves it, and `transp` along a proposition would be ill typed)
-    let apB : Term R := if propSort? (whnf A₁) == some true then .reflTy (.app (v 3) (.fst (v 2)))
+    -- (mandatory sorts: whether a component is a proposition is read off `σ`, so a
+    -- neutral proposition `P x` is seen as one too)
+    let apB : Term R := if σ.dom.isZero then .reflTy (.app (v 3) (.fst (v 2)))
       else .transp (v 4) (.fst (v 2)) P (.reflTy (.app (v 3) (.fst (v 2)))) (.fst (v 1)) (v 0)
-    let body : Term R := .eq (.app (v 3) (.fst (v 1)))
+    -- (an equation at a proposition is `True`: the second components are proofs when the
+    -- codomain's sort is `0`, and the first's equation is `True` when the domain's is)
+    let body : Term R := if σ.cod.isZero then .unit 0 else .eq (.app (v 3) (.fst (v 1)))
       (.cast (.app (v 3) (.fst (v 2))) (.app (v 3) (.fst (v 1))) apB (.snd (v 2))) (.snd (v 1))
+    let fstEq : Val R := if σ.dom.isZero then .unit 0 else vEq g A₁ (vFst a) (vFst b)
     -- the equation's own type `A` rides along at the end of the environment, unused by
     -- the body: `eqSigmaSides?` reads `A`, `a`, `b` back, so that the elaborator's `rfl`
     -- can prove the whole equation by one `refl` instead of field by field
-    .sigma "e" (.qlit 0) (vEq g A₁ (vFst a) (vFst b)) (.mk [b, a, .lam x B, A₁, A] body) (some 0)
+    .sigma "e" (.qlit 0) fstEq (.mk [b, a, .lam x B, A₁, A] body) ⟨0, 0⟩
   | .unit _ | .empty _ => .unit 0
   | .enum _ => match a, b with
     | .tag _ i, .tag _ j => if i == j then .unit 0 else .empty 0
@@ -720,6 +788,25 @@ partial def vEq (g : Globals R) (A a b : Val R) : Val R :=
   --| sorry
   --sol>
 
+/-- **Glued equations** (`wiz-notes/glued-eq.md`): `a =_A b` as a glued value
+(`Val.lazyEq`), whose `vEq` runs only when the type is forced (`whnf`). Nothing about
+what an equation computes to changes: `vEq` is the definition. What changes is when it
+runs: an equation that is only compared with another one with convertible sides
+(`convGlued`, congruence of `=`), or only asked for its sort (always `Prop`), is never
+computed. Strict for normal forms (`g.eager`), under `--eager-proofs` (`!g.lazyProofs`,
+"evaluate as before") and under `--eager-eqs` (`!g.lazyEqs`, the differential test's
+reference). -/
+partial def vEqL (g : Globals R) (A a b : Val R) : Val R :=
+  if g.eager || !g.lazyProofs || !g.lazyEqs then vEq g A a b
+  -- at a proposition `vEq` is `True` at once; and a folded `a = b` there would read back
+  -- as an ill-typed term (`eq` is for types in `Type u`): keep the computed `True`
+  else if propSort? (whnf A) == some true then vEq g A a b
+  -- (and at a lifted proposition, by its content's sort, as `vEq` decides it)
+  else if let .ulift k _ _ := whnf A then
+    if sortProp? k == some true then vEq g A a b
+    else .lazyEq A a b (Thunk.mk fun _ => vEq g A a b)
+  else .lazyEq A a b (Thunk.mk fun _ => vEq g A a b)
+
 /-- Equality of two payloads `x y : ⟦D⟧ X i`, by the description: constructor by
 constructor, so that `succ m = succ n` is `m = n` (and not, through the Σ rule, an
 equation with a cast along the tags' equation, which without regularity would be stuck):
@@ -735,7 +822,7 @@ equation with a cast along the tags' equation, which without regularity would be
 The choice between rules depends only on `D` and on whether tags are canonical (computed or
 stuck), so it is stable under substitution. -/
 partial def vEqPayload (g : Globals R) (l : Level) (I X i D x y : Val R) : Option (Val R) :=
-  let pairTy (A B : Val R) : Val R := .sigma "_" (.qlit 0) A (.mk [B] (.var 1)) (some 0)
+  let pairTy (A B : Val R) : Val R := .sigma "_" (.qlit 0) A (.mk [B] (.var 1)) ⟨0, 0⟩
   -- a field's equation, and the rest's unless the rest is just `ret` (whose equation is
   -- `True`): decided by the description, so `succ m = succ n` is `m = n` and the
   -- nesting doesn't depend on how a number is written (`2 = 2` is `True`, and so is
@@ -762,7 +849,7 @@ partial def vEqPayload (g : Globals R) (l : Level) (I X i D x y : Val R) : Optio
   | .dhrec q H j E => do
     let r ← vEqPayload g l I X i E (vSnd x) (vSnd y)
     -- h0 j1 X2
-    let F : Val R := .pi "h" .default q H (.mk [j, X] (.app (.var 2) (.app (.var 1) (.var 0)))) none
+    let F : Val R := .pi "h" .default q H (.mk [j, X] (.app (.var 2) (.app (.var 1) (.var 0)))) ⟨.succ l, .succ l⟩
     pure (withRest (vEq g F (vFst x) (vFst y)) E r)
   | _ => none
 
@@ -783,7 +870,7 @@ partial def vEqType (g : Globals R) (X Y : Val R) : Val R :=
   let Y := whnf Y
   -- (given) Q4: `ULift A = ULift B ↦ A = B` (at the same level); `ULift` is a type former
   -- of its own, so `ULift A = B` for any other former `B` is `False` (see `canonical`)
-  if let (.ulift u A, .ulift w B) := (X, Y) then
+  if let (.ulift _ u A, .ulift _ w B) := (X, Y) then
     if propSort? X == some true && propSort? Y == some true then vIff X Y
     else if u.equiv w then vEqType g A B
     else if u.toNat?.isSome && w.toNat?.isSome then .empty 0
@@ -805,15 +892,16 @@ partial def vEqType (g : Globals R) (X Y : Val R) : Val R :=
   if pX.isNone || pY.isNone then .neutral (.eqTy X Y) #[] else
   if pX != pY then .empty 0 else
   match X, Y with
-  | .pi _ _ q A B _, .pi _ _ q' A' B' _ =>
+  | .pi _ _ q A B _, .pi _ _ q' A' B' σ' =>
     if qtyApart q q' then .empty 0 else if sameQty q q' != some true then .neutral (.eqTy X Y) #[] else
-    -- env (inside the Σ, after `e`): B', B, A', A; inside the Π add `x`
+    -- env (inside the Σ, after `e`): B', B, A', A; inside the Π add `x` (of type `A'`,
+    -- in `Sort σ'.dom`)
     .sigma "e" (.qlit 0) (vEqType g A' A) (.mk [.lam "x" B', .lam "x" B, A', A]
-      (.pi "x" .default (.qlit 0) (v 3) (.eqTy (.app (v 3) (.cast (v 4) (v 5) (v 1) (v 0))) (.app (v 2) (v 0))) (some 0))) (some 0)
-  | .sigma _ q A B _, .sigma _ q' A' B' _ =>
+      (.pi "x" .default (.qlit 0) (v 3) (.eqTy (.app (v 3) (.cast (v 4) (v 5) (v 1) (v 0))) (.app (v 2) (v 0))) ⟨σ'.dom, 0⟩)) ⟨0, 0⟩
+  | .sigma _ q A B σ, .sigma _ q' A' B' _ =>
     if qtyApart q q' then .empty 0 else if sameQty q q' != some true then .neutral (.eqTy X Y) #[] else
     .sigma "e" (.qlit 0) (vEqType g A A') (.mk [.lam "x" B', .lam "x" B, A', A]
-      (.pi "x" .default (.qlit 0) (v 4) (.eqTy (.app (v 3) (v 0)) (.app (v 2) (.cast (v 5) (v 4) (v 1) (v 0)))) (some 0))) (some 0)
+      (.pi "x" .default (.qlit 0) (v 4) (.eqTy (.app (v 3) (v 0)) (.app (v 2) (.cast (v 5) (v 4) (v 1) (v 0)))) ⟨σ.dom, 0⟩)) ⟨0, 0⟩
   | .sort u, .sort w | .unit u, .unit w | .empty u, .empty w => levels u w
   | .enum ls, .enum ls' => if ls.length == ls'.length then .unit 0 else .empty 0
   | .desc l I, .desc l' I' => if l.equiv l' then vEqType g I I' else .neutral (.eqTy X Y) #[]
@@ -841,10 +929,11 @@ directly. Quantities must match, or it's stuck. -/
 partial def vCast (g : Globals R) (A B e t : Val R) : Val R :=
   let A := whnf A
   let B := whnf B
-  -- (given) Q4: through `down`, at a level that is never `0` (a lifted type that is a
+  -- (given) Q4: through `down`, at a level that is never `0`, when the contents are in
+  -- one sort (D2: the reduct `cast A₁ B₁` is formed only then; a lifted type that is a
   -- proposition is cast by the equivalence, below)
-  if let (.ulift u A₁, .ulift w B₁) := (A, B) then
-    if u.isNeverZero && u.equiv w then .up (vCast g A₁ B₁ e (vDown t))
+  if let (.ulift k u A₁, .ulift k' w B₁) := (A, B) then
+    if u.isNeverZero && u.equiv w && !k.hasHole && k.equiv k' then .up (vCast g A₁ B₁ e (vDown t))
     else if propSort? A == some true && propSort? B == some true then
       if g.lazyProofs then .neutral (.cast A B e t) #[] else vApp g (vFst e) t
     else .neutral (.cast A B e t) #[]
@@ -856,20 +945,25 @@ partial def vCast (g : Globals R) (A B e t : Val R) : Val R :=
   -- (P2, `lazyProofs`) the cast is a proof itself, so nothing ever needs its value: stuck
   if propSort? A == some true && propSort? B == some true then
     if g.lazyProofs then stuck else vApp g (vFst e) t else
-  -- (given, U5b) at a `Π`/`Σ` whose sort is not known (no annotation, or a level with
-  -- parameters), the equation `e` proves is stuck (`vEqType`), so it is no pair to project:
+  -- (given, U5b) at a `Π`/`Σ` whose sort is not known (a level with parameters that may
+  -- be `0`), the equation `e` proves is stuck (`vEqType`), so it is no pair to project:
   -- the cast is stuck exactly when the equation is. (Computing here gave `e.1` on a
-  -- `reflTy`, a term the kernel then rejected.)
-  let known : Bool := (propSort? A).isSome && (propSort? B).isSome
+  -- `reflTy`, a term the kernel then rejected.) (D2) And the structural rules compute only
+  -- when the two domains are in one sort and the two codomains are: their reducts cast
+  -- between the components, and `cast` is formed only within one sort. Both tests are
+  -- stable under level substitution: `equiv` holds at every instance, and a sort not known
+  -- to be a proposition's or not is stuck.
+  let computes (σ σ' : BinderSorts) : Bool :=
+    propSort? A == some false && propSort? B == some false && !σ.hasHole && σ.equiv σ'
   match A, B with
-  | .pi x _ q A₁ B₁ _, .pi _ _ q' A₂ B₂ _ =>
-    if !known || sameQty q q' != some true then stuck else
+  | .pi x _ q A₁ B₁ σ, .pi _ _ q' A₂ B₂ σ' =>
+    if !computes σ σ' || sameQty q q' != some true then stuck else
     -- env: t, e, B₂, B₁, A₂, A₁; index 0 is the new `x`
     let c : Term R := .cast (v 5) (v 6) (.fst (v 2)) (v 0)
     .lam x (.mk [t, e, .lam x B₂, .lam x B₁, A₂, A₁]
       (.cast (.app (v 4) c) (.app (v 3) (v 0)) (.app (.snd (v 2)) (v 0)) (.app (v 1) c)))
-  | .sigma _ q A₁ B₁ _, .sigma _ q' A₂ B₂ _ =>
-    if !known || sameQty q q' != some true then stuck else
+  | .sigma _ q A₁ B₁ σ, .sigma _ q' A₂ B₂ σ' =>
+    if !computes σ σ' || sameQty q q' != some true then stuck else
     let t₁ := vFst t
     let c₁ := vCast g A₁ A₂ (vFst e) t₁
     .pair c₁ (vCast g (Closure.inst g B₁ t₁) (Closure.inst g B₂ c₁) (vApp g (vSnd e) t₁) (vSnd t))
@@ -901,8 +995,8 @@ partial def inertTy (g : Globals R) (depth : Nat) (A : Val R) : Bool :=
   match whnf A with
   | .enum _ => true
   | .unit l => l.isNeverZero
-  | .ulift l A₁ => l.isNeverZero && inertTy g (depth + 1) A₁
-  | .sigma _ _ A₁ B (some s) => s.isNeverZero && inertTy g (depth + 1) A₁ &&
+  | .ulift _ l A₁ => l.isNeverZero && inertTy g (depth + 1) A₁
+  | .sigma _ _ A₁ B σ => !σ.hasHole && σ.sigmaSort.isNeverZero && inertTy g (depth + 1) A₁ &&
       inertTy g (depth + 1) (Closure.inst g B (groundAtom (1000 + depth)))
   | .mu _ I D _ _ _ => inertTy g (depth + 1) I && inertDesc g (depth + 1) D
   | A@(.pi ..) => singletonTail g depth A
@@ -985,7 +1079,7 @@ partial def groundEqTy (g : Globals R) (d : Nat) (A B : Val R) : Bool :=
   match whnf A, whnf B with
   | .enum ls, .enum ls' => ls.length == ls'.length
   | .unit l, .unit l' => l.isNeverZero && l.equiv l'
-  | .ulift l A₁, .ulift l' B₁ => l.isNeverZero && l.equiv l' && groundEqTy g (d + 1) A₁ B₁
+  | .ulift _ l A₁, .ulift _ l' B₁ => l.isNeverZero && l.equiv l' && groundEqTy g (d + 1) A₁ B₁
   | .sigma _ q A₁ B₁ _, .sigma _ q' A₂ B₂ _ =>
     sameQty q q' == some true && groundEqTy g (d + 1) A₁ A₂ &&
       let x := groundAtom d
@@ -1063,7 +1157,7 @@ partial def groundEqVal (g : Globals R) (d : Nat) (T a b : Val R) : Bool :=
   | .sigma _ _ A₁ B₁ _ =>
     let a₁ := vFst a
     groundEqVal g d A₁ a₁ (vFst b) && groundEqVal g d (Closure.inst g B₁ a₁) (vSnd a) (vSnd b)
-  | .ulift _ A₁ => groundEqVal g d A₁ (vDown a) (vDown b)
+  | .ulift _ _ A₁ => groundEqVal g d A₁ (vDown a) (vDown b)
   | .mu l I D i _ _ => match vNatView g a, vNatView g b with
     | .con x, .con y => groundEqVal g d (vInterp g l I D (muFamily l I D) i) x y
     | a, b => groundAtomEq a b
@@ -1123,10 +1217,10 @@ partial def vEqDesc (g : Globals R) (l : Level) (I D D' : Val R) : Val R :=
   -- (inside `e`: e0 S1 S'2 F3 F'4 T5; inside `x`: one more)
   let along (S S' F F' T : Val R) : Val R :=
     .sigma "e" (.qlit 0) (vEqType g S S') (.mk [S, S', F, F', T]
-      (.pi "x" .default (.qlit 0) (v 1) (.eq (v 6) (.app (v 4) (v 0)) (.app (v 5) (.cast (v 2) (v 3) (v 1) (v 0)))) (some 0))) (some 0)
+      (.pi "x" .default (.qlit 0) (v 1) (.eq (v 6) (.app (v 4) (v 0)) (.app (v 5) (.cast (v 2) (v 3) (v 1) (v 0)))) ⟨.succ l, 0⟩)) ⟨0, 0⟩
   -- `A × (E = E')` (inside `_`: _0 E1 E'2 I3)
   let andRest (A E E' : Val R) : Val R :=
-    .sigma "_" (.qlit 0) A (.mk [E, E', I] (.eq (.desc l (v 3)) (v 1) (v 2))) (some 0)
+    .sigma "_" (.qlit 0) A (.mk [E, E', I] (.eq (.desc l (v 3)) (v 1) (v 2))) ⟨0, 0⟩
   match D, D' with
   | .dret j, .dret j' => vEq g I j j'
   | .darg q S E, .darg q' S' E' => qty q q' fun _ => along S S' E E' (.desc l I)
@@ -1144,8 +1238,8 @@ two `μ`/`ν` types is equality at this type of `(I, D, i)` and `(I', D', i')`, 
 partial def famCodeTy (l : Level) : Val R :=
   let s : Level := .succ (.succ l)
   let ω : Val R := .qlit QuantitySyntax.explicitDefault
-  -- J0
-  .sigma "I" ω (.sort (.succ l)) (.mk [] (.sigma "D" (.qlit QuantitySyntax.explicitDefault) (.desc l (.var 0)) (.var 1) (some s))) (some s)
+  -- J0: `Sort (l+1) : Sort (l+2)`, `Desc_l J : Sort (l+2)`, `J : Sort (l+1)`
+  .sigma "I" ω (.sort (.succ l)) (.mk [] (.sigma "D" (.qlit QuantitySyntax.explicitDefault) (.desc l (.var 0)) (.var 1) ⟨s, .succ l⟩)) ⟨s, s⟩
 
 /-- The payload equation of a cast between two `μ` (or two `ν`) types (4g):
 
@@ -1234,7 +1328,13 @@ two. -/
 partial def quote (g : Globals R) (l : Lvl) : Val R → Term R
   -- (given) a glued value keeps its name
   | .unfold n us sp _ => quote g l (.neutral (.global n us) sp)
-  | .lazyInd lv I D v P m i x sp _ =>
+  -- (glued equations) folded, as written. (The kernel's one syntactic comparison left,
+  -- `convGlued` on two `lazyInd`s, falls back to the computed values when it fails.)
+  | .lazyEq A a b _ => .eq (quote g l A) (quote g l a) (quote g l b)
+  -- (folded only on a numeral, as before kernel-eval: `ind` on a constructor is lazy for
+  -- speed alone and reads back as what it computes, so read-back is unchanged)
+  | .lazyInd lv I D v P m i x sp val =>
+    if (whnf x matches .con _) then quote g l (unlazyCon val.get) else
     sp.foldl (fun t e => match e with
       | .app a => .app t (quote g l a)
       | .fst => .fst t
@@ -1339,7 +1439,7 @@ partial def quote (g : Globals R) (l : Lvl) : Val R → Term R
   | .mu k I D i s h => .mu k (quote g l I) (quote g l D) (quote g l i) (quote g l s) (h.map fun (n, us, as) => (n, us, as.map (quote g l)))
   | .con x => .con (quote g l x)
   | .natLit n => .natLit n
-  | .ulift k A => .ulift k (quote g l A)
+  | .ulift k u A => .ulift k u (quote g l A)
   | .up a => .up (quote g l a)
   | .nu k I D i s h => .nu k (quote g l I) (quote g l D) (quote g l i) (quote g l s) (h.map fun (n, us, as) => (n, us, as.map (quote g l)))
   | .size => .size
@@ -1379,7 +1479,9 @@ from its closure: `(A, a, b)`. A guess by shape (a user's Σ can have such a clo
 whoever uses it must check that `vEq A a b` is the type it has (the elaborator's `rfl`
 compares the two sides, and the kernel checks the `refl` it builds). -/
 def eqSigmaSides? : Val R → Option (Val R × Val R × Val R)
-  | .sigma "e" _ _ (.mk [b, a, _, _, A@(.sigma ..)] (.eq _ (.cast ..) (.snd (.var 1)))) (some _) => some (A, a, b)
+  | .sigma "e" _ _ (.mk [b, a, _, _, A@(.sigma ..)] (.eq _ (.cast ..) (.snd (.var 1)))) _ => some (A, a, b)
+  -- (mandatory sorts: a second component that is a proof, whose equation is `True`)
+  | .sigma "e" _ _ (.mk [b, a, _, _, A@(.sigma ..)] (.unit _)) _ => some (A, a, b)
   | _ => none
 
 /-- Normal form of a closed term (every definition unfolded). -/

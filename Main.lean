@@ -21,7 +21,9 @@ content-addressed), --no-cache, -I DIR (another module root, after lib/)
 experimental kernel options (D1, they turn the cache off): --regularity off|full (full:
 Cast-Refl at every type, decided in conversion; default off),
 --predicative-prop, --eager-proofs (P2: the evaluator runs proofs, as it did before; the
-default never evaluates them),
+default never evaluates them; it also implies --eager-eqs),
+--eager-eqs (an equation's type is computed when it is evaluated, as before glued
+equations; the default computes it only when it is looked at),
 --inert ground|conv (P1: regularity at inert types, decided by conversion (conv, the
 default) or only by the evaluator's fast path (ground))
 compiler option (turns the cache off): --unbox-structs (22i: a structure's last field is
@@ -92,6 +94,8 @@ initialize ppAllOpt : IO.Ref Bool ← IO.mkRef false
 /-- P2: proofs are never evaluated, unless `--eager-proofs` (the old behaviour). -/
 initialize lazyProofsOpt : IO.Ref Bool ← IO.mkRef true
 
+/-- Glued equations: an equation's type is computed only when needed, unless `--eager-eqs`. -/
+initialize lazyEqsOpt : IO.Ref Bool ← IO.mkRef true
 /-- (P2) `--proof-steps N`: the step budget for reading one proof back, outside the kernel
 (`Budget`); and `--trace-proof-steps`, which prints what each read-back took. -/
 initialize proofStepsOpt : IO.Ref (Nat × Bool) ← IO.mkRef (Budget.defaultSteps, false)
@@ -143,6 +147,7 @@ def elaborate (tc : Toolchain) (path : String) (input : String) : IO (CommandSta
   let sources ← Module.cSourceTable ((System.FilePath.mk path).parent.getD ".") input closure
   let (regularity, predicativeProp) ← kernelOpts.get
   let lazyProofs ← lazyProofsOpt.get
+  let lazyEqs ← lazyEqsOpt.get
   let inertReg ← inertOpt.get
   let (proofSteps, traceProofSteps) ← proofStepsOpt.get
   let unboxStructs ← unboxOpt.get
@@ -156,11 +161,11 @@ def elaborate (tc : Toolchain) (path : String) (input : String) : IO (CommandSta
   let init : CommandState ZeroOneMany :=
     { loader := (lib[·]?), cHeaders := (headers[·]?), cSources := some (Module.cSourceResolver sources),
       messages := shadow.toArray,
-      globals := { regularity, predicativeProp, lazyProofs, inertReg, unboxStructs, proofSteps, traceProofSteps,
+      globals := { regularity, predicativeProp, lazyProofs, lazyEqs, inertReg, unboxStructs, proofSteps, traceProofSteps,
                    strictPrivacy := ← strictPrivacyOpt.get, pp := { useNotation := !(← ppAllOpt.get) } },
       trustedModule := own.contains }
   -- the cache doesn't know the experimental options
-  let cache := if regularity == .off && !predicativeProp && lazyProofs && inertReg == .conv && !unboxStructs &&
+  let cache := if regularity == .off && !predicativeProp && lazyProofs && lazyEqs && inertReg == .conv && !unboxStructs &&
       proofSteps == Budget.defaultSteps && !traceProofSteps && !(← strictPrivacyOpt.get) && !(← ppAllOpt.get)
     then tc.cacheDir else none
   match cache with
@@ -229,6 +234,8 @@ def main (args : List String) : IO UInt32 := do
   let args := args.filter (· != "--unbox-structs")
   lazyProofsOpt.set (!args.contains "--eager-proofs")
   let args := args.filter (· != "--eager-proofs")
+  lazyEqsOpt.set (!args.contains "--eager-eqs")
+  let args := args.filter (· != "--eager-eqs")
   let args ← match takeProofSteps args with
     | .ok (k, t, a) => do proofStepsOpt.set (k.getD Budget.defaultSteps, t); pure a
     | .error e => do IO.eprintln e; return 1

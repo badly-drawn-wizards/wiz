@@ -1,4 +1,5 @@
 import Wiz
+import Lean
 import Tests.Harness
 
 /-!
@@ -177,7 +178,7 @@ def termClassify : String → Option (List Nat)
   | "Term R" => some [1, 0]
   | "List (Term R)" | "Array (Term R)" => some [2, 0]
   | "Level" | "Option Level" => some [0, 1]
-  | "List Level" => some [0, 2]
+  | "List Level" | "BinderSorts" => some [0, 2]
   | "Option (Name × List Level × List (Term R))" => some [2, 2]
   | "Name" | "Nat" | "BinderInfo" | "R" | "List Name" => some [0, 0]
   | _ => none
@@ -187,13 +188,13 @@ def termTable : List TermRow := [
   ⟨"var", [], 0, fun _ _ => .var 0⟩,
   ⟨"const", [], 2, fun _ l => .const "c" [l 0, l 1]⟩,
   ⟨"sort", [], 1, fun _ l => .sort (l 0)⟩,
-  ⟨"pi", [0, 0, 1], 1, fun c l => .pi "x" .default (c 0) (c 1) (c 2) (some (l 0))⟩,
+  ⟨"pi", [0, 0, 1], 2, fun c l => .pi "x" .default (c 0) (c 1) (c 2) ⟨l 0, l 1⟩⟩,
   ⟨"lam", [1], 0, fun c _ => .lam "x" (c 0)⟩,
   ⟨"app", [0, 0], 0, fun c _ => .app (c 0) (c 1)⟩,
   ⟨"letE", [0, 0, 0, 1], 0, fun c _ => .letE "x" (c 0) (c 1) (c 2) (c 3)⟩,
   ⟨"ann", [0, 0], 0, fun c _ => .ann (c 0) (c 1)⟩,
   ⟨"mvar", [], 0, fun _ _ => .mvar 0⟩,
-  ⟨"sigma", [0, 0, 1], 1, fun c l => .sigma "x" (c 0) (c 1) (c 2) (some (l 0))⟩,
+  ⟨"sigma", [0, 0, 1], 2, fun c l => .sigma "x" (c 0) (c 1) (c 2) ⟨l 0, l 1⟩⟩,
   ⟨"pair", [0, 0], 0, fun c _ => .pair (c 0) (c 1)⟩,
   ⟨"fst", [0], 0, fun c _ => .fst (c 0)⟩,
   ⟨"snd", [0], 0, fun c _ => .snd (c 0)⟩,
@@ -235,7 +236,7 @@ def termTable : List TermRow := [
   ⟨"coit", [0, 0, 0, 0, 0, 0], 1, fun c l => .coit (l 0) (c 0) (c 1) (c 2) (c 3) (c 4) (c 5)⟩,
   ⟨"natLit", [], 0, fun _ _ => .natLit 3⟩,
   ⟨"natOp", [0, 0], 0, fun c _ => .natOp "nat.add" #[c 0, c 1]⟩,
-  ⟨"ulift", [0], 1, fun c l => .ulift (l 0) (c 0)⟩,
+  ⟨"ulift", [0], 2, fun c l => .ulift (l 0) (l 1) (c 0)⟩,
   ⟨"up", [0], 0, fun c _ => .up (c 0)⟩,
   ⟨"down", [0], 0, fun c _ => .down (c 0)⟩,
   ⟨"prf", [0], 1, fun c l => .prf (l 0) (c 0)⟩
@@ -414,7 +415,7 @@ def valClassify : String → Option (List Nat)
   | "Val R" | "List (Val R)" => some [1, 0, 0]
   | "Closure R" => some [0, 1, 0]
   | "Level" | "Option Level" => some [0, 0, 1]
-  | "List Level" => some [0, 0, 2]
+  | "List Level" | "BinderSorts" => some [0, 0, 2]
   | "Option (Name × List Level × List (Val R))" => some [2, 0, 2]
   -- a head and a spine have their own tables; a thunk is the value of what the other
   -- fields describe (an unfolding, a proof's value); an `ecase`'s branches and a
@@ -429,9 +430,9 @@ def stuck : Val R := .neutral (.global "stuck" []) #[]
 def valTable : List ValRow := [
   ⟨"neutral", 0, [], 0, fun _ _ _ => .neutral (.global "h" []) #[]⟩,
   ⟨"sort", 0, [], 1, fun _ _ l => .sort (l 0)⟩,
-  ⟨"pi", 2, [1], 1, fun c k l => .pi "x" .default (c 0) (c 1) (k 0) (some (l 0))⟩,
+  ⟨"pi", 2, [1], 2, fun c k l => .pi "x" .default (c 0) (c 1) (k 0) ⟨l 0, l 1⟩⟩,
   ⟨"lam", 0, [1], 0, fun _ k _ => .lam "x" (k 0)⟩,
-  ⟨"sigma", 2, [1], 1, fun c k l => .sigma "x" (c 0) (c 1) (k 0) (some (l 0))⟩,
+  ⟨"sigma", 2, [1], 2, fun c k l => .sigma "x" (c 0) (c 1) (k 0) ⟨l 0, l 1⟩⟩,
   ⟨"pair", 2, [], 0, fun c _ _ => .pair (c 0) (c 1)⟩,
   ⟨"unit", 0, [], 1, fun _ _ l => .unit (l 0)⟩,
   ⟨"tt", 0, [], 0, fun _ _ _ => .tt⟩,
@@ -456,10 +457,11 @@ def valTable : List ValRow := [
   ⟨"scofix", 7, [], 1, fun c _ l => .scofix (l 0) (c 0) (c 1) (c 2) (c 3) (c 4) (c 5) (c 6)⟩,
   ⟨"coit", 6, [], 1, fun c _ l => .coit (l 0) (c 0) (c 1) (c 2) (c 3) (c 4) (c 5)⟩,
   ⟨"natLit", 0, [], 0, fun _ _ _ => .natLit 3⟩,
-  ⟨"ulift", 1, [], 1, fun c _ l => .ulift (l 0) (c 0)⟩,
+  ⟨"ulift", 1, [], 2, fun c _ l => .ulift (l 0) (l 1) (c 0)⟩,
   ⟨"up", 1, [], 0, fun c _ _ => .up (c 0)⟩,
   ⟨"unfold", 0, [], 2, fun _ _ l => .unfold "f" [l 0, l 1] #[] (thunk stuck)⟩,
-  ⟨"lazyInd", 6, [], 2, fun c _ l => .lazyInd (l 0) (c 0) (c 1) (l 1) (c 2) (c 3) (c 4) (c 5) #[] (thunk stuck)⟩
+  ⟨"lazyInd", 6, [], 2, fun c _ l => .lazyInd (l 0) (c 0) (c 1) (l 1) (c 2) (c 3) (c 4) (c 5) #[] (thunk stuck)⟩,
+  ⟨"lazyEq", 3, [], 0, fun c _ _ => .lazyEq (c 0) (c 1) (c 2) (thunk stuck)⟩
 ]
 
 def headTable : List ValRow := [
@@ -515,7 +517,7 @@ def valCtorName : Val R → String
   | .nu .. => "nu" | .size => "size" | .szInf => "szInf" | .szSuc _ => "szSuc"
   | .sizeLt _ => "sizeLt" | .cocon _ => "cocon" | .scofix .. => "scofix" | .coit .. => "coit"
   | .natLit _ => "natLit" | .ulift .. => "ulift" | .up _ => "up" | .unfold .. => "unfold"
-  | .lazyInd .. => "lazyInd"
+  | .lazyInd .. => "lazyInd" | .lazyEq .. => "lazyEq"
 
 def headCtorName : Head R → String
   | .local _ => "local" | .global .. => "global" | .mvar _ => "mvar" | .eq .. => "eq"
@@ -574,12 +576,13 @@ def levelTable : List LevelRow := [
   ⟨"max", 2, fun c => .max (c 0) (c 1)⟩,
   ⟨"imax", 2, fun c => .imax (c 0) (c 1)⟩,
   ⟨"param", 0, fun _ => .param "p"⟩,
-  ⟨"mvar", 0, fun _ => .mvar 0⟩
+  ⟨"mvar", 0, fun _ => .mvar 0⟩,
+  ⟨"hole", 0, fun _ => .hole⟩
 ]
 
 def levelCtorName : Level → String
   | .zero => "zero" | .succ _ => "succ" | .max .. => "max" | .imax .. => "imax"
-  | .param _ => "param" | .mvar _ => "mvar"
+  | .param _ => "param" | .mvar _ => "mvar" | .hole => "hole"
 
 def checkLevels : Failures Unit := do
   for row in levelTable do
@@ -859,6 +862,12 @@ def wizFns : List WizFn := [
     exempt := closedConst "constants are compared by name" },
   { fn := "spineSame", ty := "Spine", arg := 1, binary := true, defaultOk := true },
   { fn := "valSame", ty := "Val", arg := 1, binary := true, defaultOk := true },
+  -- (mandatory sorts) the sorts pass skips a term without holes: a hole missed here is
+  -- one the pass does not fill (a kernel error, never unsoundness)
+  { fn := "tmHasHole", ty := "Tm", arg := 0, childTys := ["Tm", "Tms", "Lvl"],
+    exempt := closedConst "a constant's value and type are closed and were filled when it was declared" ++
+      [("const", "levels", "a constant's levels are never holes")] },
+  { fn := "lvlHasHole", ty := "Lvl", arg := 0, childTys := ["Lvl"] },
 ]
 
 /-! ## The lint against a broken traversal
@@ -907,7 +916,7 @@ def panicSites : List (String × Term R) := [
 def hintCarrier (X : Term R) : Decl R :=
   { name := "carrier", value := none
     type := .pi "x" .default (.qlit .one)
-      (.mu 0 (.unit 1) (.dret .tt) .tt .szInf (some ("hint", [], [X]))) (.unit 1) none }
+      (.mu 0 (.unit 1) (.dret .tt) .tt .szInf (some ("hint", [], [X]))) (.unit 1) ⟨1, 1⟩ }
 
 /-- `tests --panic-probe MODE SITE`: check `hintCarrier` of the site's term (`eval`: just
 evaluate `fst ()` and print the constructor of the value; `eval:SITE`: evaluate the site's
@@ -931,12 +940,71 @@ def panicProbe (mode site : String) : IO UInt32 := do
   | .error e => IO.println s!"rejected: {e}"
   return 0
 
+/-! ## `isoKey`: every setting of `Globals` is in the key
+
+`runFrontend` keeps the modules it elaborated in isolation for the whole process, keyed by
+`isoKey`: the texts and the settings of the base state. A setting left out of the key lets a
+module elaborated under one value be reused under another (`lazyEqs` was: a test's
+`--eager-eqs` run got the glued Prelude). Every field of `Globals` is listed here, either as
+a setting, with a way to change it (the key must change), or as state, with why it isn't
+one. A new field fails the test until it is listed. -/
+
+open Lean Elab Term in
+/-- The fields of `Wiz.Globals`, in order, as the compiler sees them. -/
+elab "globalsFields%" : term => do
+  return toExpr ((getStructureFields (← getEnv) ``Wiz.Globals).toList.map toString)
+
+/-- The settings, each with a change of it. -/
+def globalsSettings : List (String × (Globals R → Globals R)) := [
+  ("eager", fun g => { g with eager := !g.eager }),
+  ("regularity", fun g => { g with regularity := match g.regularity with | .full => .off | _ => .full }),
+  ("lazyProofs", fun g => { g with lazyProofs := !g.lazyProofs }),
+  ("lazyEqs", fun g => { g with lazyEqs := !g.lazyEqs }),
+  ("inertReg", fun g => { g with inertReg := match g.inertReg with | .conv => .ground | _ => .conv }),
+  ("unboxStructs", fun g => { g with unboxStructs := !g.unboxStructs }),
+  ("pushCalls", fun g => { g with pushCalls := !g.pushCalls }),
+  ("predicativeProp", fun g => { g with predicativeProp := !g.predicativeProp }),
+  ("strictPrivacy", fun g => { g with strictPrivacy := !g.strictPrivacy }),
+  ("builtins", fun g => { g with builtins := ("nat", "N") :: g.builtins }),
+  ("strictProofs", fun g => { g with strictProofs := !g.strictProofs }),
+  ("proofSteps", fun g => { g with proofSteps := g.proofSteps + 1 }),
+  ("traceProofSteps", fun g => { g with traceProofSteps := !g.traceProofSteps }),
+  ("sortHolesOk", fun g => { g with sortHolesOk := !g.sortHolesOk }),
+  ("pp", fun g => { g with pp := { g.pp with useNotation := !g.pp.useNotation } })]
+
+/-- The other fields: what a module's elaboration builds, or what is never set on a base
+state. -/
+def globalsState : List (String × String) := [
+  ("decls", "the declarations (a base state has none: `isoKey` requires it)"),
+  ("order", "the declarations' order (likewise)"),
+  ("assumed", "unchecked `builtin`s, made by the module itself"),
+  ("quoteErasesProofs", "set by the kernel's own comparisons, inside one call, never on a state"),
+  ("privates", "made by the module's private declarations"),
+  ("opaques", "made by the module's private constructors"),
+  ("module", "the module being elaborated, set per module"),
+  ("instCache", "derived from the declarations by `insert`"),
+  ("budget", "the budget of a read-back in progress, set inside one call, never on a state"),
+  ("declModule", "made per declaration")]
+
 /-! ## The group -/
 
 def lintGroup : Group where
   name := "lint"
   exercise := "kernel hygiene (wiz-notes/kernel-lint.md)"
   cases := [
+    { name := "isoKey: every setting of Globals is in the key (the cache of imported modules)", run := fun _ => do
+        let all := globalsFields%
+        let listed := globalsSettings.map (·.1) ++ globalsState.map (·.1)
+        for f in all do
+          unless listed.contains f do
+            throw (IO.userError s!"Globals.{f} is not listed: a setting goes in `isoKey` and globalsSettings, state in globalsState")
+        for f in listed do
+          unless all.contains f do throw (IO.userError s!"globalsSettings/globalsState list {f}, which Globals has no more")
+        let base : CommandState R := { loader := fun m => if m == "M" then some "def x : Unit := ()\n" else none }
+        let some k := isoKey base "M" | throw (IO.userError "no key for a pristine base")
+        for (f, change) in globalsSettings do
+          let some k' := isoKey { base with globals := change base.globals } "M" | throw (IO.userError s!"{f}: no key")
+          unless k != k' do throw (IO.userError s!"Globals.{f} is not in isoKey: changing it leaves the key as it was") },
     { name := "Term: every constructor in the source has a witness row, with the source's children", run := fun _ => do
         let ctors ← readCtors "Wiz/Core/Term.lean" "Term"
         report "Term table" do

@@ -44,7 +44,7 @@ def closed (t : Term R) : B R := fun _ => t
 def app (f : B R) (as : List (B R)) : B R := fun d => as.foldl (fun acc a => .app acc (a d)) (f d)
 def lam (x : Name) (body : B R → B R) : B R := fun d => .lam x (body (bvar d) (d + 1))
 def pi (x : Name) (bi : BinderInfo) (q : B R) (A : B R) (body : B R → B R) : B R :=
-  fun d => .pi x bi (q d) (A d) (body (bvar d) (d + 1)) none
+  fun d => .pi x bi (q d) (A d) (body (bvar d) (d + 1)) .hole
 def fst (t : B R) : B R := fun d => .fst (t d)
 def snd (t : B R) : B R := fun d => .snd (t d)
 def pair (a b : B R) : B R := fun d => .pair (a d) (b d)
