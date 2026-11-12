@@ -217,14 +217,27 @@ def within {α : Type} (secs mb : Nat) (act : Unit → IO α) : IO α := do
     throw (IO.userError s!"took {ms} ms and {peak} MB (bounds: {secs} s, {mb} MB)")
   pure a
 
+/-- A structure of `n` numbers and a function adding every field (`s.f0 + … + s.f(n-1)`). -/
+def wideSum (n : Nat) : String :=
+  s!"structure W{n} where\n" ++ String.join ((List.range n).map (s!"  f{·} : Nat\n")) ++
+  s!"def sum{n} (s : W{n}) : Nat := " ++ " + ".intercalate ((List.range n).map (s!"s.f{·}")) ++ "\n"
+
+/-- The projections in an IR body. -/
+partial def projCount : IR.Body → Nat
+  | .vdecl _ (.proj _ _) b => projCount b + 1
+  | .vdecl _ _ b | .dup _ b | .drop _ b => projCount b
+  | .case _ alts => alts.foldl (fun n a => n + projCount a) 0
+  | .jdecl _ _ body k => projCount body + projCount k
+  | _ => 0
+
 /-- A bundle `Bn` of `n` leaves, `deriving Bundle` alone. -/
 def plainBundle (n : Nat) : String :=
   s!"structure B{n} (r : HwTy → Type) where\n" ++ String.join ((List.range n).map (s!"  l{·} : r (HwTy.bits 8)\n")) ++
   "  deriving Bundle\n"
 
 /-- The number of instructions of an IR body, without the projections. (Reading field k
-of a structure, a right-nested Σ, is k projections in the IR wherever it is written: so
-`S.pack` still has a quadratic number of projections, the lowering's to remove.) -/
+of a structure, a right-nested Σ, is k projections wherever it is written; the simplifier
+shares them since 15j: see `projCount`.) -/
 partial def bodySize : IR.Body → Nat
   | .vdecl _ (.proj _ _) b => bodySize b
   | .vdecl _ _ b | .dup _ b | .drop _ b => bodySize b + 1
@@ -472,6 +485,17 @@ def group : Group where
         unless bad.isEmpty do throw (IO.userError "they differ on the projection chain") },
     { name := "the IR of a step over bundles of 8, 16 and 32 fields (reuse was exponential: 20 took 115 s)", run := fun _ =>
         checksLibsWithin 240 ("import Hdl.Core\n" ++ String.join ([8, 16, 32].map wideBundle)) },
+    -- field k of a structure (a right-nested Σ) is k projections: reading every field
+    -- was n²/2 of them; the simplifier shares the projections already bound (15j)
+    { name := "reading every field of a 32- and a 64-field structure takes a linear number of projections (15j)", run := fun _ => do
+        let st ← elabOk ("import Prelude\n" ++ wideSum 32 ++ wideSum 64)
+        let counts ← [32, 64].mapM fun n => do
+          let ds ← loweredOf st [s!"sum{n}"]
+          match ds.find? (·.name == s!"sum{n}") with
+          | some d => pure (projCount d.body)
+          | none => throw (IO.userError s!"no IR for sum{n}")
+        -- one projection to each field and one to each of the n - 1 tails reached
+        checkEq [63, 127] counts },
     -- `deriving Bundle` wrote field k of `S.unpack` as `Hw.fst (Hw.snd^k x)`, and each
     -- `Hw.pair`/`Hw.snd` took the literal code of the rest of the product as an implicit
     -- argument, which is relevant (`{ω a b : HwTy}`): quadratic code (cubic in `unpack`),
