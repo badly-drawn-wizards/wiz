@@ -5482,6 +5482,17 @@ def stdGroup : Group where
           ["2", "Q.mul_inv : (p : Q) → ¬p.1 = 0 → p * Q.inv p ≈ 1",
            "Q.abs_sub_le : (p : Q) → (q : Q) → (r : Q) → Q.abs (p - r) ≤ Q.abs (p - q) + Q.abs (q - r)",
            "'Q.lt_ceil' does not depend on any axioms"] },
+    { name := "ring: the tactic reads the goal (Nat, Int, ≈ at Q; binders introduced)", run := fun _ =>
+        okLibs ("import RingTactic\ndef a (x y : Int) : (x - y) * (x + y) = x * x - y * y := by ring\n" ++
+          "def b : (m n : Nat) → Nat.succ m * n = n + m * n := by ring\n" ++
+          "def c (p q : Q) : (p + q) * (p - q) ≈ p * p - q * q := by ring\n" ++
+          "def d (f : Int → Int) (x : Int) : f x * (x + 1) - f (x) = x * f x := by ring\n" ++
+          "def e (x : Int) : (x + 2) * (x - 3) = x * x - x - 6 := by ring\n#print axioms c")
+          ["'c' does not depend on any axioms"] },
+    { name := "ring: a false identity is reported with both sides", run := fun _ =>
+        failsLibs "import RingTactic\ndef bad (a b : Int) : a - b = b - a := by ring" "ring: not an identity of commutative rings" },
+    { name := "ring: a goal that is not an equation of a ring", run := fun _ =>
+        failsLibs "import RingTactic\ndef bad (x : Bool) : x = x := by ring" "ring: the goal is an equation, but not at Nat or Int" },
     { name := "machine types: operators at UInt64 and Float64", run := fun _ =>
         okLibs "import IO\ndef f (a b : UInt64) : UInt64 := a * b + 1\ndef g (x : Float64) : Float64 := x * x - 2 / 3" },
     { name := "arrays, updated in place", run := fun _ =>
