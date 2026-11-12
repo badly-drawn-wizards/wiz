@@ -74,7 +74,23 @@ back (the Aeneas reading), so the specification of `swap_vals` is about values, 
 proved by computation:
 
 ```
-def swap_vals_spec (a b : U64) : Result.Holds (fun (p : U64 × U64) => p = (b, a)) (swap_vals a b) := rfl
+feral
+  …
+  spec swap ensures (final x = old y) ensures (final y = old x)
+  spec swap_vals ensures (result = (b, a))
+end
+def swap_ok {ρa ρb : Region} (x : Uniq ρa U64) (y : Uniq ρb U64) : swap.Spec x y := (rfl, rfl)
+def swap_vals_spec (a b : U64) : swap_vals.Spec a b := rfl
+```
+
+A `spec` item states a function's specification as a Wiz proposition, `f.Spec`, which
+is then proved in Wiz. In a clause an argument stands for its value, `result` for the
+returned value, and `old x`/`final x` for an `&mut` argument's value on entry and when
+the borrow ends. `final x` is the handed-back handle, so no prophecy is needed.
+`swap.Spec x y` is
+
+```
+Result.Holds (fun (r : Unit × (Uniq ρa U64 × Uniq ρb U64)) => (r.2.1.val = y.val) × (r.2.2.val = x.val)) (swap x y)
 ```
 
 `Result.Holds P r` is total correctness (the call doesn't panic and `P` holds of its
