@@ -7,7 +7,8 @@ open Wiz
 def usage : String := "usage:
   wiz --version           print the version (and, for a release, its commit)
   wiz parse FILE          print the syntax tree of every command
-  wiz check FILE          elaborate and type check (quantities: 0, 1, ω)
+  wiz check [-I DIR] FILE elaborate and type check (quantities: 0, 1, ω); -I DIR: another
+                          module root (a package's src/), before or after FILE
   wiz build FILE -o OUT [--llvm]   compile the definition `main` to an executable (via C or LLVM)
   wiz build FILE -o OUT --lib      … or the exported functions to an object file, with OUT.h
   wiz build FILE -o OUT --no-main  … or the exported functions, linked without a `main`
