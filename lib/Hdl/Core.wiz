@@ -1684,7 +1684,8 @@ def Circuit.bundled {S I O : (HwTy → Type) → Type} (bs : Bundle S) (bi : Bun
 -- `deriving Bundle` for a structure `S Δ (r : HwTy → Type)` (the representation is the
 -- last parameter) whose fields are leaves `r T` or nested bundles `G … r` (which must
 -- have been derived too: their code is `G.code …`). It defines
---   `S.code Δ : HwTy`                     the product of `named "field" T`
+--   `S.code Δ : HwTy`                     the product of `named "field" T` (its tails
+--                                         named `S.code.tail1 Δ`, …: see `HdlDerive.code`)
 --   `S.pack Δ : S Δ r → r (S.code Δ)`     and `S.unpack Δ`
 --   `S.bundle Δ : Bundle (S Δ)`
 -- (the parameters Δ explicit).
@@ -1773,21 +1774,28 @@ def HdlDerive.fieldUnpack (r : String) (x : Syntax) (f : FieldView) : Syntax :=
   | .true => `(term| Hw.untag $x)
   | .false => let g := HdlDerive.suffixed ".unpack" sp.1; `(term| $g (Hw.untag $x))
 
-/-- The code of a structure: the product of its fields' codes. -/
-def HdlDerive.code (r : String) : List FieldView → Syntax
-  | .nil => `(term| HwTy.bits 0)
-  | .cons f .nil => HdlDerive.fieldCode r f
-  | .cons f fs => let a := HdlDerive.fieldCode r f; let b := HdlDerive.code r fs; `(term| HwTy.prod $a $b)
-/-- Packing a structure: the pair of its fields, packed. -/
-def HdlDerive.pack (r : String) (s : Syntax) : List FieldView → Syntax
-  | .nil => `(term| Hw.lit 0 0)
-  | .cons f .nil => HdlDerive.fieldPack r s f
-  | .cons f fs => let a := HdlDerive.fieldPack r s f; let b := HdlDerive.pack r s fs; `(term| Hw.pair $a $b)
-/-- The fields of `x`, unpacked, as arguments of the constructor. -/
-def HdlDerive.unpackArgs (r : String) : Syntax → List FieldView → List Syntax
-  | x, .nil => .nil
-  | x, .cons f .nil => .cons (HdlDerive.fieldUnpack r x f) .nil
-  | x, .cons f fs => .cons (HdlDerive.fieldUnpack r `(term| Hw.fst $x) f) (HdlDerive.unpackArgs r `(term| Hw.snd $x) fs)
+-- Unpacking `x✝0 : r (S.code Δ)` walks down the product once: the tails are bound in a
+-- chain `let ω x✝1 := Hw.snd x✝0; …; let ω x✝(n-1) := Hw.snd x✝(n-2)`, and field i is
+-- `Hw.fst x✝i` (the last one `x✝(n-1)` itself). So `S.unpack` is linear in the number of
+-- fields (`Hw.snd` applied i times for field i was quadratic, and slow to elaborate and
+-- compile for wide bundles). `ω`: a plain let, not auto-shared (the body is a structure).
+def HdlDerive.tail (i : Nat) : Syntax := Derive.var "x✝" i
+-- the fields, as arguments of the constructor
+def HdlDerive.unpackArgs (r : String) : Nat → List FieldView → List Syntax
+  | i, .nil => .nil
+  | i, .cons f .nil => .cons (HdlDerive.fieldUnpack r (HdlDerive.tail i) f) .nil
+  | i, .cons f fs => .cons (HdlDerive.fieldUnpack r (Syntax.mkApp (Syntax.mkVar "Hw.fst") (.cons (HdlDerive.tail i) .nil)) f)
+    (HdlDerive.unpackArgs r (Nat.succ i) fs)
+-- the chain of tails around `b`
+def HdlDerive.unpackLets : Nat → List FieldView → Syntax → Syntax
+  | i, .nil, b => b
+  | i, .cons _ fs, b => match fs with
+    | .nil => b
+    | .cons _ _ =>
+      let y := Syntax.mkIdent (Derive.name "x✝" (Nat.succ i));
+      let x := HdlDerive.tail i;
+      let rest := HdlDerive.unpackLets (Nat.succ i) fs b;
+      `(term| let ω $y := Hw.snd $x; $rest)
 
 /-- `(x : T) → …` for each parameter. -/
 def HdlDerive.explicitPis : List ParamView → Syntax → Syntax
@@ -1812,6 +1820,53 @@ def HdlDerive.implicitPis : List ParamView → Syntax → Syntax
     let t := ParamView.type p;
     let b := HdlDerive.implicitPis ps' rest;
     `(term| {ω $x : $t} → $b)
+
+-- The code is a chain of definitions, one for each tail of the fields:
+--   `S.code Δ := HwTy.prod (named "f₀" T₀) (S.code.tail1 Δ)`, …, `S.code.tailₙ₋₁ Δ := named "fₙ₋₁" Tₙ₋₁`.
+-- Unfolding `S.code.tailᵢ Δ` once gives the next name, so the `Hw.pair`s of `pack` and the
+-- `Hw.snd`s of `unpack` get codes of constant size for their implicit arguments (a
+-- literal product would put the whole rest of the code there, at each step: quadratic
+-- code, and the codes are built at run time, `{ω a b : HwTy}`).
+def HdlDerive.tailName (n : String) (i : Nat) : String := match i with
+  | .zero => String.append n ".code"
+  | .succ _ => Derive.name (String.append n ".code.tail") i
+-- the definitions of the tails from the `i`-th on, the last first
+def HdlDerive.codeDefs (n r : String) (ps : List ParamView) (delta : List Syntax) : Nat → List FieldView → List Syntax
+  | i, .nil => .nil
+  | i, .cons f fs =>
+    let nm := Syntax.mkIdent (HdlDerive.tailName n i);
+    let ty := HdlDerive.explicitPis ps `(term| HwTy);
+    let a := HdlDerive.fieldCode r f;
+    match fs with
+    | .nil => let val := HdlDerive.lams ps a; .cons `(command| def $nm : $ty := $val) .nil
+    | .cons _ _ =>
+      let b := Syntax.mkApp (Syntax.mkVar (HdlDerive.tailName n (Nat.succ i))) delta;
+      let val := HdlDerive.lams ps `(term| HwTy.prod $a $b);
+      List.append (HdlDerive.codeDefs n r ps delta (Nat.succ i) fs) (.cons `(command| def $nm : $ty := $val) .nil)
+-- (no fields: `S.code Δ := HwTy.bits 0`)
+def HdlDerive.code (n r : String) (ps : List ParamView) (delta : List Syntax) (fs : List FieldView) : List Syntax :=
+  match fs with
+  | .nil =>
+    let nm := Syntax.mkIdent (HdlDerive.tailName n 0);
+    let ty := HdlDerive.explicitPis ps `(term| HwTy);
+    let val := HdlDerive.lams ps `(term| HwTy.bits 0);
+    .cons `(command| def $nm : $ty := $val) .nil
+  | .cons _ _ => HdlDerive.codeDefs n r ps delta 0 fs
+
+-- `pack`: `Hw.pair f₀ (Hw.pair f₁ … : r (S.code.tail1 Δ))`, each rest ascribed its tail's
+-- name, so that the `Hw.pair`s' codes are names too (inferred from the parts, they would
+-- be the literal products)
+def HdlDerive.pack (n r : String) (delta : List Syntax) (s : Syntax) : Nat → List FieldView → Syntax
+  | i, .nil => `(term| Hw.lit 0 0)
+  | i, .cons f fs => match fs with
+    | .nil => HdlDerive.fieldPack r s f
+    | .cons _ _ =>
+      let a := HdlDerive.fieldPack r s f;
+      let b := HdlDerive.pack n r delta s (Nat.succ i) fs;
+      let rv := Syntax.mkVar r;
+      let t := Syntax.mkApp (Syntax.mkVar (HdlDerive.tailName n (Nat.succ i))) delta;
+      `(term| Hw.pair $a ($b : $rv $t))
+
 
 /-- `deriving Bundle` for a structure `S Δ (r : HwTy → Type)` (the representation is the
 last parameter) whose fields are leaves `r T` or nested bundles `G … r` (which must
@@ -1840,28 +1895,27 @@ def deriveBundle : Deriver := fun n => do
     let fs := CtorView.fields c;
     let tyF := Syntax.mkApp (Syntax.mkVar n) delta;
     let tyS := Syntax.mkApp tyF (.cons rv .nil);
-    let codeN := Syntax.mkIdent (String.append n ".code");
     let packN := Syntax.mkIdent (String.append n ".pack");
     let unpackN := Syntax.mkIdent (String.append n ".unpack");
     let codeApp := Syntax.mkApp (Syntax.mkVar (String.append n ".code")) delta;
     let packApp := Syntax.mkApp (Syntax.mkVar (String.append n ".pack")) delta;
     let unpackApp := Syntax.mkApp (Syntax.mkVar (String.append n ".unpack")) delta;
-    let codeTy := HdlDerive.explicitPis ps `(term| HwTy);
-    let codeVal := HdlDerive.lams ps (HdlDerive.code r fs);
     let s := Syntax.mkIdent "s✝";
     let sv := Syntax.mkVar "s✝";
     let x := Syntax.mkIdent "x✝";
     let xv := Syntax.mkVar "x✝";
     let packTy := HdlDerive.explicitPis ps `(term| {$rid : HwTy → Type} → [Hw $rv] → $tyS → $rv $codeApp);
-    let packBody := HdlDerive.pack r sv fs;
+    let packBody := HdlDerive.pack n r delta sv 0 fs;
     let packVal := HdlDerive.lams ps `(term| fun $s => $packBody);
     let unpackTy := HdlDerive.explicitPis ps `(term| {$rid : HwTy → Type} → [Hw $rv] → $rv $codeApp → $tyS);
-    let mk := Syntax.mkApp (Syntax.mkVar (Derive.ctorName v c)) (HdlDerive.unpackArgs r xv fs);
-    let unpackVal := HdlDerive.lams ps `(term| fun $x => $mk);
+    let mk := Syntax.mkApp (Syntax.mkVar (Derive.ctorName v c)) (HdlDerive.unpackArgs r 0 fs);
+    let x0 := Syntax.mkIdent (Derive.name "x✝" 0);
+    let unpackBody := HdlDerive.unpackLets 0 fs mk;
+    let unpackVal := HdlDerive.lams ps `(term| fun $x0 => $unpackBody);
     let bundleN := Syntax.mkIdent (String.append n ".bundle");
     let bundleTy := HdlDerive.explicitPis ps `(term| Bundle $tyF);
     let bundleVal := HdlDerive.lams ps `(term| Bundle.mk $codeApp (fun $s => $packApp $sv) (fun $x => $unpackApp $xv));
-    MacroM.pure (.cons `(command| def $codeN : $codeTy := $codeVal)
+    MacroM.pure (List.append (HdlDerive.code n r ps delta fs)
       (.cons `(command| def $packN : $packTy := $packVal)
       (.cons `(command| def $unpackN : $unpackTy := $unpackVal)
       (.cons `(command| def $bundleN : $bundleTy := $bundleVal) .nil))))
