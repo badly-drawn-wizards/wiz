@@ -2,6 +2,7 @@ import Wiz.Core.Check
 import Wiz.Syntax.Basic
 import Wiz.Syntax.Children
 import Wiz.Compiler.Run
+import Wiz.Smt.Process
 
 /-!
 # The elaborator monad
@@ -242,6 +243,14 @@ structure ElabState (R : Type) where
   while the globals stay as they are (the elaborator clears it when it changes them). -/
   unifyFails : Std.HashMap UInt64 (List (Term R × Term R × String)) := {}
   unifyFailCount : Nat := 0
+  /-- (28) how tactics reach solvers (`--sat-solver`, …) -/
+  smt : Smt.Config := {}
+  /-- (28) the definition being elaborated, which names the axioms a tactic adds (`""`:
+  not in a definition, where a tactic can't add one) -/
+  smtDecl : Name := ""
+  /-- (28) axioms a tactic added: already in `globals`, and added to the
+  command's globals before the definition that uses them -/
+  sideDecls : Array (Decl R) := #[]
 
 structure ElabError (R : Type) where
   info : SourceInfo
@@ -350,7 +359,10 @@ partial def term (tys : Array (VTy R)) (env : Env R) : Term R → Term R
   | .letE x q T v b =>
     let T := (type tys env T).1
     let v := term tys env v
-    .letE x (term tys env q) T v (term (tys.push (eval g env T)) (eval g env v :: env) b)
+    -- (P2: a `let`-bound proof is bound suspended, not evaluated, as in the kernel)
+    let vT := eval g env T
+    let val := if g.lazyProofs && isProp g tys vT then suspend g env v else eval g env v
+    .letE x (term tys env q) T v (term (tys.push vT) (val :: env) b)
   | t => Id.run <| t.mapChildrenM pure fun k c => pure (if k == 0 then term tys env c else c)
 
 /-- `t` has type `ty`: like `term`, also under the `fun`s that `ty` gives types to. -/

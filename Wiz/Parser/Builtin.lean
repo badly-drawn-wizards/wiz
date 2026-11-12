@@ -130,6 +130,7 @@ def anonCtor : ParserDescr := seqs ["‚ü®", withoutPosition (sepBy term ","), "‚ü
 | `term.eq` (trailing) | 50   | a "=" b |
 | `term.refl`          | lead | "refl" term |
 | `term.rfl`           | max  | "rfl" |
+| `term.nativeRefl`    | max  | "native_refl" (27a: the whole body of a `def`, with `--trust-native`) |
 | `term.cast`          | lead | "cast" term term |
 | `term.transp`        | lead | "transp" term term term |
 | `term.enum`          | max  | "Enum" "[" [idents] "]" |
@@ -192,6 +193,8 @@ def termLeading : List LeadingParser := [
   { kind := "term.absurd", prec := leadPrec, p := seqs ["absurd", term maxPrec] },
   { kind := "term.refl", prec := leadPrec, p := seqs ["refl", term maxPrec] },
   { kind := "term.rfl", prec := maxPrec, p := "rfl" },
+  -- (27a) only as the whole body of a definition (`Command.lean`), with `--trust-native`
+  { kind := "term.nativeRefl", prec := maxPrec, p := "native_refl" },
   { kind := "term.cast", prec := leadPrec, p := seqs ["cast", term maxPrec, term maxPrec] },
   { kind := "term.transp", prec := leadPrec, p := seqs ["transp", term maxPrec, term maxPrec, term maxPrec] },
   { kind := "term.enum", prec := maxPrec, p := seqs [nonReserved "Enum", "[", sepBy ident ",", "]"] },

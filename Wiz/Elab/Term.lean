@@ -3,6 +3,7 @@ import Wiz.Elab.Macro
 import Wiz.Elab.Tactic
 import Wiz.Elab.Class
 import Wiz.Elab.Struct
+import Wiz.Smt.Sat
 
 /-!
 # Elaborating terms
@@ -1540,8 +1541,15 @@ partial def elabLet (ctx : LocalCtx R) (stx : Syntax) (expected : Option (VTy R)
     | none =>
       let (val, vty) ← infer ctx (stx.getArg 5)
       pure (quote (← getGlobals) ctx.lvl vty, val)
-  recordBinder ctx (stx.getArg 2).info x (← evalIn ctx ty)
-  let ctx' := ctx.define x (← evalIn ctx ty) (← evalIn ctx val)
+  -- (P2) a `let`-bound proof is bound suspended, as the kernel binds it: the elaborator
+  -- does not run it either (a proof need not have a normal form, and a short one can
+  -- take a tower of exponentials of steps)
+  let vTy ← evalIn ctx ty
+  recordBinder ctx (stx.getArg 2).info x vTy
+  let g ← getGlobals
+  let vVal ← if g.lazyProofs && isProp g ctx.types.reverse.toArray vTy then pure (suspend g ctx.env val)
+    else evalIn ctx val
+  let ctx' := ctx.define x vTy vVal
   let body := stx.getArg 7
   match expected with
   | some e =>
@@ -2683,6 +2691,8 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
     return (← check ctx stx ty, ty)
   | "term.letPair" | "term.letTuple" | "term.absurd" | "term.rfl" =>
     throwAt ctx.info "cannot infer the type of this expression; add a type ascription"
+  | "term.nativeRefl" =>
+    throwAt ctx.info "native_refl can only be the whole body of a definition, `def X : a = b := native_refl` (with --trust-native)"
   -- (13g–i) as-patterns, anonymous constructors, pattern `let`, structure update
   | "term.asPat" => throwAt ctx.info "an as-pattern `x@p` is only allowed in a pattern"
   | "term.anon" => throwAt ctx.info "cannot infer the type of an anonymous constructor ⟨…⟩; add a type ascription"
@@ -2810,9 +2820,34 @@ partial def runTac (code : Code) (info : SourceInfo) (st : TacState R) (v : RVal
       | some _ => mkCon 1 [encodeBool false]
       | none => mkCon 0 []
     return ← runTac code info st (apply code (fld 1) ans)
+  if tag == TacTag.satSolve then
+    -- (28b) untrusted: the proof is checked by the kernel
+    let some cs := decodeList (fld 1) | throwAt info "tactic: malformed clauses"
+    let clauses ← cs.mapM fun c => do
+      let some ls := decodeList c | throwAt info "tactic: malformed clause"
+      ls.mapM num
+    let ans := match Smt.satSolve (← get).smt (← num (fld 0)) clauses with
+      | .unsat p => mkCon 0 [encodeList (p.map fun (id, ls, hs) =>
+          encodePair (.nat id) (encodePair (encodeList (ls.map .nat)) (encodeList (hs.map .nat))))]
+      | .sat m => mkCon 1 [encodeList (m.map .nat)]
+      | .error e => mkCon 2 [encodeString e]
+    return ← runTac code info st (apply code (fld 2) ans)
   -- the rest are about a goal, the first field
   let gl ← goalOf (fld 0)
   let lvl := gl.ctx.lvl
+  if tag == TacTag.eqView then
+    -- (28b) inside an equation: `a = b` at `A`
+    let t ← zonk lvl (← reify st.handles (fld 1) lvl)
+    let t ← match t with
+      | .eq .. => pure t
+      | _ => do pure (quote g lvl (whnf (← evalIn gl.ctx t)))
+    match t with
+    | .eq A a b =>
+      let (rA, st) ← refl st gl A
+      let (ra, st) ← refl st gl a (some (← evalIn gl.ctx A))
+      let (rb, st) ← refl st gl b (some (← evalIn gl.ctx A))
+      return ← runTac code info st (apply code (fld 2) (mkCon 1 [encodePair rA (encodePair ra rb)]))
+    | _ => return ← runTac code info st (apply code (fld 2) (mkCon 0 []))
   if tag == TacTag.ppGoal then
     return ← runTac code info st (apply code (fld 1) (encodeString (← gl.show)))
   if tag == TacTag.ppExpr then

@@ -49,7 +49,9 @@ runtime (`runtime/wiz.c`), which needs GMP; programs from the self-hosted compil
 need the Boehm GC. The release toolchains (what tower installs) bring all of that in
 `share/wiz/cc` (docs/stages/26-tower.md, 26f): clang, a glibc 2.27 sysroot, and GMP and the
 GC as static libraries (the bundled clang needs glibc 2.30 or later; programs it builds
-need glibc 2.27 or later and nothing else). A checkout uses `cc` and the system's GMP unless you pass
+need glibc 2.27 or later and nothing else), and CaDiCaL, the SAT solver of `sat_decide`
+(docs/stages/28-solvers.md, 28b; the Lean toolchain's copy, MIT licence, in
+`share/wiz/cc/LICENSES/lean4-LICENSES` with Lean's third-party licences). A checkout uses `cc` and the system's GMP unless you pass
 `--cc`/`--cflags`/`--ldflags` (the Nix dev shell writes them to `grail.local.wiz`).
 
 **Licences of what is linked into your programs.** The Wiz Runtime Library Exception
