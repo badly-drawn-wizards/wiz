@@ -1305,6 +1305,56 @@ def caseShapeRest : String :=
 
 def caseShapeExpected : String := s!".cons 1 ({caseShapeRest})"
 
+/-- (15i) Closed top-level definitions (CAFs): a table read in a loop, a definition that
+diverges but is used only in a branch never taken, a memoised suspension, a big number, a
+proof and a type (erased), one whose evaluation fails (an axiom) in the same branch, a function value, an alias of another constant, and codata
+that refers to itself. -/
+def cafSrc : String := "import Prelude
+def range : Nat → List Nat → List Nat
+  | .zero, acc => acc
+  | .succ n, acc => range n (.cons n acc)
+def sum : List Nat → Nat
+  | .nil => 0
+  | .cons x xs => x + sum xs
+def table : List Nat := range 1000 .nil
+partial def forever (n : Nat) : Nat := forever (n + 1)
+def diverge : Nat := forever 0
+axiom bad : Nat
+def failing : Nat := bad + 1
+def pick : Bool → Nat
+  | .true => diverge + failing
+  | .false => 1
+def addTen : Nat → Nat := Nat.add 10
+def lazySum : Unit → Nat := memo (fun _ => sum table)
+def big : Nat := Nat.pow 3 100
+def four : 2 + 2 = 4 := refl 4
+def Tab : Type := List Nat
+def len : List Nat → Nat
+  | .nil => 0
+  | .cons _ ys => len ys + 1
+def tab : Tab := table
+coinductive Stream (A : Type) where
+  head : A
+  tail : Stream A
+def ones : Stream Nat
+  | .head => 1
+  | .tail => ones
+def loop : Nat → Nat → Nat
+  | .zero, acc => acc
+  | .succ n, acc => loop n (acc + sum table + lazySum () + addTen 0 + pick .false + ones.tail.tail.head)
+def main : List Nat := .cons (loop 2000 (Nat.mod big 7)) (.cons (len tab) (.cons big .nil))
+"
+
+def cafExpected : String :=
+  ".cons 1998024004 (.cons 1000 (.cons 515377520732011331036461129765621272702107522001 .nil))"
+
+/-- (15i) An `IO` action as a closed definition: a description, run at each use. -/
+def cafIOSrc : String := "import IO
+def hello : IO Unit := IO.println \"hello\"
+def twice : IO Unit := IO.bind hello (fun _ => hello)
+def main : IO Unit := IO.bind twice (fun _ => twice)
+"
+
 def backendGroup : Group where
   name := "backend"
   exercise := "Exercise 8.1"
@@ -1405,7 +1455,18 @@ def backendGroup : Group where
         -- the default of `orElse` is not computed for `some`; and (HD9's inlining) `pick`
         -- and `orElse` are inlined into `s4`, whose `case` on the known `.some 4` then
         -- picks its branch, so the `.some` cell isn't built either
-        checkEq [151, 100] [← allocs "s4" false, ← allocs "s4" true] }
+        checkEq [151, 100] [← allocs "s4" false, ← allocs "s4" true] },
+    { name := "closed definitions that do work are cached (CAFs, 15i); aliases, erased ones and the entry are not", run := fun _ => do
+        let s := runFrontend (R := ZeroOneMany) cafSrc { loader := ← preludeLoader }
+        let (decls, _) ← match Build.irProgram s "main" with
+          | .ok r => pure r
+          | .error e => throw (IO.userError e)
+        let cafs := IR.cafs decls
+        for n in ["table", "diverge", "failing", "lazySum", "big", "ones"] do
+          check (cafs.contains n) s!"{n} is not cached"
+        -- `tab` is `table` again, `four` and `Tab` are erased, `addTen` is a function
+        for n in ["tab", "four", "Tab", "addTen", "wiz.entry", "range", "loop"] do
+          check (!cafs.contains n) s!"{n} is cached" }
   ]
 
 /-- Programs for the reuse tests: functions that take a cell apart and rebuild it after one
@@ -5093,9 +5154,25 @@ def toolingGroup : Group where
         check ((out[0]!.compress.splitOn "Nat : Type").length > 1) s!"no hover: {out[0]!.compress}" }
   ]
 
+/-- Build and run `main` with the whole library (`IO` …), through C or LLVM. -/
+def cRunIO (src : String) (expected : String) (llvm : Bool := false) : IO Unit := do
+  let s := runFrontend (R := ZeroOneMany) src { trustedModule := Tests.libModule, loader := ← libLoader }
+  let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
+  unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
+  let dir ← IO.FS.createTempDir
+  match ← Build.runGlobal (← toolchain) s "main" dir llvm with
+  | .ok v => checkEq expected v
+  | .error e =>
+    let missing := ["gmp.h", "llc:", "No such file"].any fun m => (e.splitOn m).length > 1
+    if missing then skip "no toolchain" else throw (IO.userError e)
+
 /-- Programs for the native backends (C, or LLVM). -/
 def nativeCases (llvm : Bool) : List Case :=
 [
+    { name := "closed definitions (CAFs, 15i): computed once, on first use (a diverging one never), no leaks", run := fun _ =>
+        cRun (llvm := llvm) cafSrc cafExpected },
+    { name := "a closed IO action is a description: cached, run at each use (15i)", run := fun _ =>
+        cRunIO (llvm := llvm) cafIOSrc "hello\nhello\nhello\nhello\n" },
     { name := "memoised codata: no leaks, also when dropped part-way", run := fun _ =>
         cRun (llvm := llvm) memoStreamSrc "14946" },
     { name := "numbers, with GMP for big ones", run := fun _ =>
@@ -7155,6 +7232,37 @@ def main : IO Unit := IO.bind (MVar.new (A := Nat)) (fun r =>
       IO.println (Nat.toString (a + sumN 2000 s))))))
 "
 
+/-- (15i) Closed definitions first used by several threads at once: each may build the
+table (the first to publish wins), and the memoised suspension inside the constant is
+forced under the lock. -/
+def concCaf : String := "import IO
+import Session
+import MVar
+def range : Nat → List Nat → List Nat
+  | .zero, acc => acc
+  | .succ n, acc => range n (.cons n acc)
+def sum : List Nat → Nat
+  | .nil => 0
+  | .cons x xs => x + sum xs
+def table : List Nat := range 2000 .nil
+def lazySum : Unit → Nat := memo (fun _ => sum table)
+def work : Nat → Nat → Nat
+  | .zero, acc => acc
+  | .succ k, acc => work k (acc + sum table + lazySum ())
+def spawnN (done : MVar Nat) : Nat → IO Unit
+  | .zero => IO.pure ()
+  | .succ k => Chan.fork Proto.done (fun c => Chan.close c (MVar.put done (work 100 0)))
+      (fun c => Chan.close c (spawnN done k))
+def waitN (done : MVar Nat) : Nat → Nat → IO Nat
+  | .zero, acc => IO.pure acc
+  | .succ k, acc => IO.bind (MVar.take done) (fun n => waitN done k (acc + n))
+def main : IO Unit := do1
+  done ← MVar.new (A := Nat);
+  spawnN done 8;
+  n ← waitN done 8 0;
+  IO.println (Nat.toString n)
+"
+
 def concGroup : Group where
   name := "conc"
   exercise := "lib/Session.wiz, lib/MVar.wiz, runtime threads (stage 25)"
@@ -7178,6 +7286,8 @@ def concGroup : Group where
         cRunLibs concCounter "8000\n" },
     { name := "a lazy stream shared between threads", run := fun _ =>
         cRunLibs concStream "3998000\n" },
+    { name := "closed definitions (CAFs, 15i) used by eight threads at once: a table and a memoised suspension in it", run := fun _ =>
+        cRunLibs concCaf "3198400000\n" },
     { name := "an endpoint can't be used twice, dropped, or closed twice", run := fun _ => do
         failsLibs (concSum ++ "def twice (1 c : Chan sumProto) : IO Nat :=\n" ++
           "  Chan.send c 1 (fun c' => runClient 1 c)") "quantity 1"
