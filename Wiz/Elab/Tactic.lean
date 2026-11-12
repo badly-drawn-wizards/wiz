@@ -166,7 +166,13 @@ partial def reify (handles : Array (Term R × Nat)) (v : RVal) (depth : Nat) : E
   | some 0 => return .var (← nat (v.conField 0))
   | some 1 =>
     let n ← str (v.conField 0)
-    let some d := (← getGlobals).find? n | throwAt {} s!"tactic: unknown constant {n}"
+    let g ← getGlobals
+    let some d := g.find? n | throwAt {} s!"tactic: unknown constant {n}"
+    -- a tactic names only what source could: not another module's private declaration
+    -- (13b), not a brand (22m, which no source file can write)
+    if let some m := g.privateTo? n then
+      throwAt {} s!"tactic: '{Globals.privateBase n}' is private to module {m}"
+    if (brandOf? n).isSome then throwAt {} s!"tactic: {n} is a brand, which no term can name"
     return .const n (← d.levelParams.mapM fun _ => freshLevelMeta)
   | some 2 => return .sort (Level.ofNat (← nat (v.conField 0)))
   | some 3 =>

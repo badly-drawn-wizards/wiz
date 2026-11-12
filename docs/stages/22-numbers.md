@@ -520,11 +520,33 @@ stage types were structural: two declarations of the same shape were one type, s
 * singleton tails are inert (C1, `docs/CoreSpec.md` §8.4), so ground regularity at
   declared types is unchanged.
 
-**`sealed` is deprecated**: it warns and does nothing more. A native representation
+**`sealed` is deprecated**: it does nothing more (a warning comes with the self-hosted
+frontend's brands, B3). A native representation
 (22d) is found by the brand (`brandIx?`), and needs a private constructor, as before.
 Layer 3 (22k) gains one refusal: erasure refuses a `cast` between a type with a native
 representation and a different type (it computes on constructors under a false
 hypothesis or a user's axiom, and the two are built differently).
+
+**Known gap (trust): type equations given by axioms.** Compiled code assumes that a type
+equation it is handed holds of the representations. The refusal above sees only a literal
+`cast`. Generic code (`Eq.cast`, or any `{A B : Type} (h : A = B) → A → B`) casts at type
+variables, so the instantiation is erased before the check could see it. An axiom equating
+a type with a native representation with another type is consistent: the equation between
+two brands is stuck, not `False`. Such an axiom can make compiled and interpreted code
+disagree:
+
+```
+import Word
+inductive L (w : Nat) where
+  | mk (toNat : Nat)
+axiom e : L 8 = UIntN 8
+def forge : UIntN 8 := Eq.cast e (L.mk 300)
+def main : Nat := (UIntN.not forge).toNat   -- wiz run: 255; #eval: 0
+```
+
+Native code reads the constructor object as `UIntN`'s bits. The gap is not silent:
+`#print axioms main` lists `e`. A trusted program contains no such axiom. There is no
+compiler check for it yet.
 
 What keeps structural identity: `def`/`abbrev` aliases, a hand-written `μ` or Σ, and
 an `axiom T : Type` (already nominal).
