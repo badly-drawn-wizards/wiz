@@ -120,16 +120,43 @@ def group : Group where
         for n in ["forge_handle", "lengthen_borrow"] do
           let src ← IO.FS.readFile s!"drafts/feral/rejected/{n}.wiz"
           check (!(errorsOf (← frontend src) src).isEmpty) s!"{n} is accepted" },
-    { name := "linear mode (M4b-1): a join and an error path hand the handle back; a block outside the fragment stays on ω handles", run := fun _ => do
+    { name := "linear mode (M4b-1): a join and an error path hand the handle back", run := fun _ => do
         let src := pre ++ "feral\n  fn bump {'a} (x : &'a mut U64) (c : Bool) : Unit := {\n    if c then { *x := *x + 1 } else { () };\n    *x := *x + 1\n  }\n  fn twice (n : U64) : U64 := {\n    let mut v := n;\n    bump (&mut v) (U64.lt n 5);\n    v\n  }\nend\n#eval Result.map (fun (u : U64) => u.val) (twice (U64.lit 3))\n#eval Result.map (fun (u : U64) => u.val) (twice (U64.lit 7))\n"
         let s ← frontend src
         checkEq "[]" (toString (errorsOf s src))
         checkEq "[.ok 5, .ok 8]" (toString (infosOf s))
         let l ← frontend (src.replace "\nferal\n" "\n#lower feral\n")
-        check ((infosOf l).any (has · "Result1 Unit (Uniq1 ρa U64)")) s!"{infosOf l}"
-        -- a returned borrow (outside the fragment) keeps the block on ω handles
+        check ((infosOf l).any (has · "Result1 Unit (Uniq1 ρa U64)")) s!"{infosOf l}" },
+    { name := "linear mode (M4b-3c): returned borrows (Mut1, Borrowed), an error exit releases live borrows, field borrows by Uniq1.zoom", run := fun _ => do
+        -- a returned borrow is a `Mut1` in `Borrowed.ok`; `Borrowed.err` hands the lender back
         let w ← frontend (pre ++ "#lower feral\n  fn f {'a} (v : &'a mut Vec U64) (i : USize) : &'a mut U64 := &mut v[i]\nend\n")
-        check ((infosOf w).all (fun i => !has i "Uniq1")) s!"{infosOf w}" },
+        check ((infosOf w).any (has · "Borrowed (Mut1 ρa U64 (Vec U64)) (Uniq1 ρa (Vec U64))")) s!"{infosOf w}"
+        -- two lenders; an overflow while the borrow lives: the error path releases it first
+        let a := pre ++ "feral\n  fn pick {'a 'b} {'a : 'b} (c : Bool) (x : &'a mut U64) (y : &'b mut U64) : &'b mut U64 :=\n    if c then x else y\n" ++
+          "  fn go (n : U64) : U64 × U64 := {\n    let mut a : U64 := n;\n    let mut b : U64 := 2;\n    *pick true (&mut a) (&mut b) += 10;\n    (a, b)\n  }\nend\n" ++
+          "#eval Result.map (fun (r : U64 × U64) => (r.1.val, r.2.val)) (go (U64.lit 1))\n" ++
+          "#eval Result.map (fun (r : U64 × U64) => (r.1.val, r.2.val)) (go (U64.lit 18446744073709551610))\n"
+        let s ← frontend a
+        checkEq "[]" (toString (errorsOf s a))
+        checkEq "[.ok (11, 2), .err .overflow]" (toString (infosOf s))
+        let l ← frontend (a.replace "\nferal\n" "\n#lower feral\n")
+        check ((infosOf l).any (has · "Mut1.alongside")) s!"{infosOf l}"
+        -- (the borrow is finished twice: where it ends, and on the overflow's error path)
+        check ((infosOf l).any (fun i => (i.splitOn "let 1 (a_r0, b_r2) := Mut1.finish v_9;").length == 3)) s!"{infosOf l}"
+        -- `f (&mut s.f)`: a zoom on a handle, on a borrowed local, and beside another handle (zoomIn)
+        let z := pre ++ "feral\n  struct P where\n    a : U64\n    b : U64\n  fn bump2 (x : &mut U64) (y : &mut U64) : Unit := { *x += 1; *y += 2 }\n" ++
+          "  fn g (p : &mut P) (q : &mut U64) : Unit := { bump2 (&mut p.a) q; *q += 1 }\n" ++
+          "  fn go (p0 : P) : U64 := {\n    let mut p := p0;\n    let mut q : U64 := 5;\n    bump2 (&mut p.b) (&mut q);\n    g (&mut p) (&mut q);\n    p.a + p.b + q\n  }\nend\n" ++
+          "#eval Result.map U64.toNat (go (P.mk (U64.lit 1) (U64.lit 2)))\n"
+        let t ← frontend z
+        checkEq "[]" (toString (errorsOf t z))
+        checkEq "[.ok 15]" (toString (infosOf t))
+        let lz ← frontend (z.replace "\nferal\n" "\n#lower feral\n")
+        check ((infosOf lz).any (has · "@Uniq1.zoomIn")) s!"{infosOf lz}"
+        check ((infosOf lz).any (has · "@Uniq1.zoom ")) s!"{infosOf lz}"
+        -- two fields of one struct in one call: not yet (the `let` form, L11, does it)
+        let e ← firstError (z.replace "bump2 (&mut p.a) q" "bump2 (&mut p.a) (&mut p.b)")
+        check (has e "not supported yet: two fields of `p`") e },
     { name := "linear mode (M4b-2): for and while loops take and hand back their handles; a method on a &mut (push)", run := fun _ => do
         let a := pre ++ "feral\n  fn bump_n {'a} (x : &'a mut U64) (n : U64) : Unit := {\n    for i in 0 .. n do {\n      *x := *x + 1\n    }\n  }\n  fn halve {'a} (x : &'a mut U64) : Unit := {\n    while 1 < *x do {\n      *x := *x - 1\n    }\n  }\n  fn go (n : U64) : U64 × U64 := {\n    let mut a := 0;\n    let mut b := 9;\n    bump_n (&mut a) n;\n    halve (&mut b);\n    (a, b)\n  }\nend\n#eval Result.map (fun (p : U64 × U64) => (p.1.val, p.2.val)) (go (U64.lit 4))\n"
         let s ← frontend a

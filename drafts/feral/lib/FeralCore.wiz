@@ -130,6 +130,11 @@ def U64.div (a b : U64) : Result U64 := match Nat.beq b.val 0 with
   | .false => .ok (U64.mk (Nat.div a.val b.val))
 -- `v.get_mut i` with the receiver first
 def Vec.get_mut {ρ : Region} {A : Type} (v : Uniq ρ (Vec A)) (i : U64) : MutOpt ρ A (Vec A) := Vec.getMut i v
+-- the same on a linear handle (Feral's linear mode, cohesion M4b-3c)
+def Vec.get_mut1 {ρ : Region} {A : Type} (1 v : Uniq1 ρ (Vec A)) (i : U64) : MutOpt1 ρ A (Vec A) :=
+  match Mut1.ofPLens v (Vec.indexMut i) with
+  | .ok m => .some m
+  | .err _ v => .none v
 -- `o.ok_or e`: a Feral `Result T E` is `Except E T` (L2)
 def Option.ok_or {A E : Type} (o : Option A) (e : E) : Except E A := match o with
   | .some a => .ok a
