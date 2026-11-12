@@ -1557,10 +1557,15 @@ match, a 0 field used at run time).
   outside erased positions. Unlike K2a it never discharges an obligation: whatever `u`
   uses is counted, and `u` is used up by being evaluated.
 * **Run time.** In the kernel's evaluator (types, conversion) it computes to `b` by η.
-  Erasure keeps the evaluation of `u`: `let _ := u'; b'`, a strict `let` of a call, which
-  the backend's dead-code pass keeps (it drops only pure values). So a consumer that
-  computed `u` (`useU t`) runs exactly once: tested with a C consumer that releases a lock
-  guard, after which a second `acquire` succeeds (C and LLVM, reference counting).
+  Erasure compiles it to `let _ := u'; b'`, a strict `let` that dead-code elimination
+  keeps when `u'` is a call (it drops only pure values). What this guarantees, and no
+  more: **an effect is never lost by erasure**, because no effect can live in an
+  erasable-typed term (the next point: foreign functions can't return `Unit` or another
+  erasable type outside `IO`, and their calls are kept even at an erasable type). It does
+  *not* promise that every unit-valued computation is evaluated: a pure one may be
+  skipped, which is unobservable. Tested with a lock released in `IO` through a linear
+  ticket (C and LLVM: a skipped release would hang the second acquire, a doubled one
+  would show in the count).
 * **Side effects live in `IO`, never in an erasable or contentless value.** Erasure drops
   whatever has an erasable type (a proof, a type, an erased function into `Unit`), and an
   erased head applied computes nothing, so a consumer hidden there (`(fun (0 k) =>
@@ -1572,6 +1577,10 @@ match, a 0 field used at run time).
   depth, erasure keeps the call of a foreign function even where its type is erasable
   (a polymorphic native instantiated at an erasable type): `let _ := call; ◾`
   (`externCall`, Erase.lean).
+* **Tokens must not be named units.** `let () := t` consumes any `t` whose type reduces
+  to `Unit`, so a library must not use a named unit type (`def Tk : Type := Unit`, or anything
+  that reduces to `Unit`) as a linear token: anyone can discard one. Linear tokens are
+  axioms (`Pts`, `Owned`) or opaque types.
 * **Only `Unit` itself.** `checkUnit` requires the `whnf` of `u`'s type to be `Unit_l`,
   never a type that is a singleton by η: a function into `Unit` may be a closure holding
   a resource, and consuming it would mean applying it, to an argument nobody may have.
