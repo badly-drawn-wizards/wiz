@@ -569,6 +569,10 @@ structure Globals (R : Type) where
   /-- (13b) structures with a private constructor, with their module: elsewhere the
   elaborator sees them as opaque (`Globals.elabView`). The kernel ignores this. -/
   opaques : Std.HashMap Name String := {}
+  /-- (13b) the definitions `elabView` hid (the opaque types of other modules), kept so
+  that conversion can compare two *values* of such a type in the full view (`conv`; only
+  a Bool comes out, so nothing of the definition is exposed) -/
+  hidden : Std.HashMap Name (Decl R) := {}
   /-- the module being elaborated (`""`: the main file), for `privates` and `opaques` -/
   module : String := ""
   /-- (11r) how terms print as notation: unexpanders and the grammar (`Syntax/PPTable.lean`).
@@ -608,8 +612,13 @@ def elabView (g : Globals R) : Globals R :=
   g.opaques.fold (init := g) fun g' n m =>
     if m == g.module then g' else
     match g'.decls[n]? with
-    | some d => { g' with decls := g'.decls.insert n { d with value := none } }
+    | some d => { g' with decls := g'.decls.insert n { d with value := none }, hidden := g'.hidden.insert n d }
     | none => g'
+
+/-- (13b) The environment with the definitions `elabView` hid put back. -/
+def fullView (g : Globals R) : Globals R :=
+  if g.hidden.isEmpty then g else
+  { g with decls := g.hidden.fold (fun m n d => m.insert n d) g.decls, hidden := {} }
 
 /-- (13b) Is `T` opaque here (a structure, inductive or coinductive type with private
 constructors, fields or observations, of another module)? Its module, if so. -/
