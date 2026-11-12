@@ -105,13 +105,13 @@ def elaborate (srv : Server) (doc : Doc) : Doc :=
   { doc with state := s, engine := eng }
 
 /-- The modules `import` can reach, with their sources (for code actions). -/
-def Server.modules (srv : Server) : List (String × String) :=
+def Server.importable (srv : Server) : List (String × String) :=
   srv.libs.toList.map fun (n, (_, src)) => (n, src)
 
 def diagnostic (srv : Server) (doc : Doc) (m : Msg) : Json :=
   let code := if m.code.isEmpty then [] else
     [("code", Json.str m.code),
-     ("data", Json.mkObj ((Actions.messageData doc.state m doc.text srv.modules).map fun (k, vs) =>
+     ("data", Json.mkObj ((Actions.messageData doc.state m doc.text srv.importable).map fun (k, vs) =>
         (k, if k == "name" then Json.str (vs.headD "") else Json.arr (vs.map Json.str).toArray)))]
   Json.mkObj ([("range", range doc.text m.info),
                ("severity", (match m.severity with | .error => 1 | .warning => 2 | .info => 3 : Nat)),
@@ -606,7 +606,7 @@ def handle (srv : Server) (msg : Json) : Server × Array Json := Id.run do
   | "textDocument/codeAction" =>
     let some doc := srv.docs.get? uri | return (srv, #[reply (Json.arr #[])])
     let pos (k : String) := ofPos doc.text (getNat msg ["params", "range", k, "line"]) (getNat msg ["params", "range", k, "character"])
-    let acts := Actions.actionsAt doc.state doc.text (pos "start") (pos "end") srv.modules
+    let acts := Actions.actionsAt doc.state doc.text (pos "start") (pos "end") srv.importable
     let base := doc.actions.size
     let json := acts.mapIdx fun i a => codeAction srv uri doc a (if srv.resolveEdits then some (base + i) else none)
     ({ srv with docs := srv.docs.insert uri { doc with actions := doc.actions ++ acts } }, #[reply (Json.arr json)])
