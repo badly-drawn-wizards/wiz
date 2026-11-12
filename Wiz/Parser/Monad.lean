@@ -22,12 +22,17 @@ namespace Wiz
 structure ParseError where
   pos : Nat := 0
   expected : Array String := #[]
+  /-- a token that could not be read there (a bad escape, an unexpected character): it
+  is the message, rather than what was expected -/
+  lexical : Option String := none
   deriving Repr, Inhabited
 
 def ParseError.render (input : String) (e : ParseError) : String :=
   let (l, c) := lineCol input e.pos
-  let exp := if e.expected.isEmpty then "parse error" else
-    "expected " ++ ", ".intercalate e.expected.toList
+  let exp := match e.lexical with
+    | some m => m
+    | none => if e.expected.isEmpty then "parse error" else
+      "expected " ++ ", ".intercalate e.expected.toList
   s!"{l + 1}:{c + 1}: {exp}"
 
 structure MemoKey where
@@ -83,6 +88,12 @@ def failAt (pos : Nat) (expected : String) : P α := fun _ s =>
     else s.err
   .error { s with err }
 
+/-- Fail at `pos` because no token can be read there (`msg` says why). -/
+def failLexAt (pos : Nat) (msg : String) : P α := fun _ s =>
+  let err := if pos > s.err.pos then { pos, lexical := some msg }
+    else if pos == s.err.pos then { s.err with lexical := some msg } else s.err
+  .error { s with err }
+
 /-- Ordered choice with backtracking. (Only the position is kept for backtracking:
 keeping `s` itself while `p` runs would share its memo table with `p`'s state, so that
 every `memoStore` in `p` copied the whole table, quadratic in the input's length.) -/
@@ -122,7 +133,8 @@ def peekToken : P (Option TokInfo) := fun c s =>
   if i ≥ c.input.size then .ok none s
   else match r with
     | .ok t => .ok (some t) s
-    | .error msg => failAt i msg c s
+    -- a bad escape is reported where it is, not at the literal's start
+    | .error msg => failLexAt (if c.input[i]? == some '"' then strErrorPos c.input i else i) msg c s
 
 /-- Consume the next token. -/
 def nextToken (expected : String) : P TokInfo := do

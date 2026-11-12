@@ -631,3 +631,16 @@ test and its catch-all check in its match compiler), hex/binary numerals in
 `selfhost/Lex.wiz`, structure update at all (13i: the `term.structUpdate` grammar and
 its elaboration over the structure's layout), nor the printer's read-back. Its own
 sources use none of these, so the bootstrap is unaffected.
+
+## 13r: string escapes ✅
+
+A string literal reads the escapes `\n`, `\t`, `\r`, `\0`, `\\`, `\"`, `\'`, `\xHH` (two
+hexadecimal digits) and `\u{H}` (one to six hexadecimal digits, a Unicode scalar value:
+at most `10FFFF` and not a surrogate), in both lexers (`readEscape` in
+`Wiz/Parser/Token.lean`, `readEscape` in `selfhost/Lex.wiz`, with the same messages).
+A bad escape is reported at its backslash ("2:22: error: unknown escape sequence \q"),
+not at the start of the literal, and an unterminated literal at its opening quote. A
+token that can't be read is the parse error's message by itself (`ParseError.lexical`),
+not "expected unknown escape sequence …". Strings print with Lean's escapes (`\x0d` for
+a carriage return). Tests: `language` ("string escapes …"); `selfhost` ("the lexer in
+Wiz agrees with the Lean lexer", whose input now has every escape and a bad one).
