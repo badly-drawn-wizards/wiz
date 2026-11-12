@@ -127,8 +127,8 @@ def group : Group where
         checkEq "[.ok 5, .ok 8]" (toString (infosOf s))
         let l ← frontend (src.replace "\nferal\n" "\n#lower feral\n")
         check ((infosOf l).any (has · "Result1 Unit (Uniq1 ρa U64)")) s!"{infosOf l}"
-        -- a method outside the fragment (`len`) keeps the block on ω handles
-        let w ← frontend (pre ++ "#lower feral\n  fn f () : U64 := {\n    let mut v := Vec.new;\n    let r := &mut v;\n    r.push 2;\n    v.len\n  }\nend\n")
+        -- a returned borrow (outside the fragment) keeps the block on ω handles
+        let w ← frontend (pre ++ "#lower feral\n  fn f {'a} (v : &'a mut Vec U64) (i : USize) : &'a mut U64 := &mut v[i]\nend\n")
         check ((infosOf w).all (fun i => !has i "Uniq1")) s!"{infosOf w}" },
     { name := "linear mode (M4b-2): for and while loops take and hand back their handles; a method on a &mut (push)", run := fun _ => do
         let a := pre ++ "feral\n  fn bump_n {'a} (x : &'a mut U64) (n : U64) : Unit := {\n    for i in 0 .. n do {\n      *x := *x + 1\n    }\n  }\n  fn halve {'a} (x : &'a mut U64) : Unit := {\n    while 1 < *x do {\n      *x := *x - 1\n    }\n  }\n  fn go (n : U64) : U64 × U64 := {\n    let mut a := 0;\n    let mut b := 9;\n    bump_n (&mut a) n;\n    halve (&mut b);\n    (a, b)\n  }\nend\n#eval Result.map (fun (p : U64 × U64) => (p.1.val, p.2.val)) (go (U64.lit 4))\n"
@@ -148,6 +148,17 @@ def group : Group where
         checkEq "[.ok (8, .false), .ok (10, .true)]" (toString (infosOf s))
         let l ← frontend (a.replace "\nferal\n" "\n#lower feral\n")
         check ((infosOf l).any (has · "Result1 ((Flow Unit) Bool) (Uniq1 ρa U64)")) s!"{infosOf l}" },
+    { name := "linear mode (M4b-3b): shared borrows and indexing beside live handles (Shr.borrowIn, Uniq1.shareIn)", run := fun _ => do
+        let a := pre ++ "feral\n  fn total {'a} (v : &'a Vec U64) : U64 := {\n    let mut s := 0;\n    for i in 0 .. v.len do {\n      s := s + v[i]\n    };\n    s\n  }\n  -- push the sum of a shared vector onto a mutable one, and read it back by index\n  fn push_total {'a 'b} (dst : &'a mut Vec U64) (src : &'b Vec U64) : U64 := {\n    let t := total src;\n    dst.push t;\n    dst[0]\n  }\n  fn go () : U64 := {\n    let mut d := Vec.new;\n    let mut s := Vec.new;\n    s.push 3;\n    s.push 4;\n    let r := push_total (&mut d) (&s);\n    r\n  }\nend\n#eval Result.map (fun (u : U64) => u.val) go\n"
+        let s ← frontend a
+        checkEq "[]" (toString (errorsOf s a))
+        checkEq "[.ok 7]" (toString (infosOf s))
+        let b := pre ++ "feral\n  fn copy_len {'a 'b} (a : &'a mut Vec U64) (b : &'b mut Vec U64) : Unit := {\n    b.push a.len;\n    a.push b.len\n  }\n  fn go () : U64 × U64 := {\n    let mut x := Vec.new;\n    let mut y := Vec.new;\n    x.push 9;\n    copy_len (&mut x) (&mut y);\n    (x.len, y.len)\n  }\nend\n#eval Result.map (fun (p : U64 × U64) => (p.1.val, p.2.val)) go\n"
+        let t ← frontend b
+        checkEq "[]" (toString (errorsOf t b))
+        checkEq "[.ok (2, 1)]" (toString (infosOf t))
+        let l ← frontend (b.replace "\nferal\n" "\n#lower feral\n")
+        check ((infosOf l).any (has · "@Uniq1.shareIn")) s!"{infosOf l}" },
     { name := "#lower shows the generated Wiz, item by item", run := fun _ => do
         let src := pre ++ "#lower feral\n  fn swap {'a 'b} (x : &'a mut U64) (y : &'b mut U64) : Unit := {\n" ++
           "    let t := *x;\n    *x := *y;\n    *y := t\n  }\nend\n"

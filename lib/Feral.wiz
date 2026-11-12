@@ -853,11 +853,13 @@ def Fe.resTy (hs : List Fe.Ty) (t : Fe.Ty) : Fe.Out := match hs with
   | .nil => Fe.Out.s "Result " ⊕ Fe.Out.t t
   | _ => Fe.Out.s "Result1 " ⊕ Fe.Out.t t ⊕ Fe.Out.s " " ⊕ Fe.packHT hs
 -- a step whose result hands handles back, `Result1 v hs`: both alternatives rebind them
-def Fe.okMatch1 (cx : Fe.Cx) (call : Fe.Out) (v hsv : String) (hs : List String) (body : Fe.Out) : Fe.Out :=
+def Fe.okMatch1R (cx : Fe.Cx) (call : Fe.Out) (v hsv : String) (rebind : Fe.Out) (body : Fe.Out) : Fe.Out :=
   Fe.Out.s "(match " ⊕ call ⊕ Fe.Out.s " with" ⊕ Fe.Out.nl ⊕ Fe.Out.s ("| .ok " +++ v +++ " " +++ hsv +++ " =>")
-    ⊕ Fe.Out.ind (Fe.Out.nl ⊕ Fe.unpackH hsv hs 0 ⊕ body)
-    ⊕ Fe.Out.nl ⊕ Fe.Out.s ("| .err e_ " +++ hsv +++ " =>") ⊕ Fe.Out.ind (Fe.Out.nl ⊕ Fe.unpackH hsv hs 0 ⊕ Fe.o (Fe.errExit cx))
+    ⊕ Fe.Out.ind (Fe.Out.nl ⊕ rebind ⊕ body)
+    ⊕ Fe.Out.nl ⊕ Fe.Out.s ("| .err e_ " +++ hsv +++ " =>") ⊕ Fe.Out.ind (Fe.Out.nl ⊕ rebind ⊕ Fe.o (Fe.errExit cx))
     ⊕ Fe.Out.s ")"
+def Fe.okMatch1 (cx : Fe.Cx) (call : Fe.Out) (v hsv : String) (hs : List String) (body : Fe.Out) : Fe.Out :=
+  Fe.okMatch1R cx call v hsv (Fe.unpackH hsv hs 0) body
 def Fe.peekO (d x : String) : Fe.Out := Fe.Out.s ("let 1 (" +++ d +++ ", " +++ x +++ ") := Uniq1.peek " +++ x +++ ";") ⊕ Fe.Out.nl
 def Fe.alt (pat : String) (body : Fe.Out) : Fe.Out :=
   Fe.Out.nl ⊕ Fe.Out.s ("| " +++ pat +++ " =>") ⊕ Fe.Out.ind (Fe.Out.nl ⊕ body)
@@ -1196,7 +1198,11 @@ def Fe.expr (cx : Fe.Cx) (env : Fe.Env) (p : List Nat) (s : Syntax) (exp : Fe.Ty
           i ← Fe.flow cx (Fe.sub p 2) i ti Fe.tU64;
           x ← Fe.freshName "x";
           body ← k (Fe.o x) a e2;
-          Fe.pure (Fe.okMatch cx (Fe.Out.s "Vec.index " ⊕ Fe.derefO v t ⊕ Fe.Out.s " " ⊕ i) x body))))) ▸
+          (match cx.lin, (t : Fe.Ty), Fe.outName v with
+          | .true, .ref .true _ _, .some hx => do
+            d ← Fe.freshName "d";
+            Fe.pure (Fe.peekO d hx ⊕ Fe.okMatch cx (Fe.Out.s ("Vec.index " +++ d +++ " ") ⊕ i) x body)
+          | _, _, _ => Fe.pure (Fe.okMatch cx (Fe.Out.s "Vec.index " ⊕ Fe.derefO v t ⊕ Fe.Out.s " " ⊕ i) x body)))))) ▸
     -- L9: `?` is a direct match; the error case returns from the function
     ("feral_expr.try", fun _ => do
       tv ← Fe.freshVar;
@@ -2177,10 +2183,12 @@ def Fe.scope1 (cx : Fe.Cx) (env : Fe.Env) (p : List Nat) (rq : Fe.Req) (ment aft
     -- the statement uses are threaded through it (`Uniq1.borrowIn`) and come back beside
     -- the result; only the other variables leave in the value
     let linS := Bool.and cx.lin (Nat.beq rq.kind 0);
-    let notH := Fe.the (List Fe.Var → List Fe.Var) (fun (vs : List Fe.Var) => (match linS with
+    -- (and a shared borrow, M4b-3b: `Shr.borrowIn` / `Uniq1.share(In)`)
+    let linSh := Bool.and cx.lin (Bool.or (Nat.beq rq.kind 1) (Nat.beq rq.kind 3));
+    let notH := Fe.the (List Fe.Var → List Fe.Var) (fun (vs : List Fe.Var) => (match Bool.or linS linSh with
       | .true => Fe.filter (fun (w : Fe.Var) => Bool.not (Fe.isHandleTy w.ty)) vs
       | .false => vs));
-    let thr := Fe.the (List Fe.Var) (match linS with
+    let thr := Fe.the (List Fe.Var) (match Bool.or linS linSh with
       | .true => Fe.filter (fun (w : Fe.Var) => Fe.isHandleTy w.ty) outsR
       | .false => List.nil);
     let thrN := Fe.names thr;
@@ -2188,9 +2196,10 @@ def Fe.scope1 (cx : Fe.Cx) (env : Fe.Env) (p : List Nat) (rq : Fe.Req) (ment aft
     let hPack := Fe.the String (match thrN with
       | .nil => hname
       | _ => "(" +++ Fe.packH thrN +++ ", " +++ hname +++ ")");
-    let wrapH2 := Fe.the (Fe.Out → Fe.Out) (fun (b : Fe.Out) => (match linS with
-      | .true => Fe.Out.s "Result1.ok " ⊕ b ⊕ Fe.Out.s (" " +++ hPack)
-      | .false => wrapH b));
+    let wrapH2 := Fe.the (Fe.Out → Fe.Out) (fun (b : Fe.Out) => (match linS, linSh with
+      | .true, _ => Fe.Out.s "Result1.ok " ⊕ b ⊕ Fe.Out.s (" " +++ hPack)
+      | _, .true => Fe.okO thrN b
+      | _, _ => wrapH b));
     let fin := ((fun rem v t e => do
       ok ← Fe.unify tau t;
       let fl := Fe.flush env "" e;
@@ -2220,9 +2229,11 @@ def Fe.scope1 (cx : Fe.Cx) (env : Fe.Env) (p : List Nat) (rq : Fe.Req) (ment aft
     let from := Fe.the String (match onHandle, Fe.regionOf lt with
       | .true, .rg r0 => r0
       | _, _ => cx.sigma);
-    let cx1 := Fe.the Fe.Cx (match linS with
-      | .true => Fe.Cx.setErr (Fe.Cx.scope cx rho hv rq.lender from hname) hPack
-      | .false => Fe.Cx.scope cx rho hv rq.lender from hname);
+    let cx1 := Fe.the Fe.Cx (match linS, linSh, thrN with
+      | .true, _, _ => Fe.Cx.setErr (Fe.Cx.scope cx rho hv rq.lender from hname) hPack
+      | _, .true, .nil => Fe.Cx.setErr (Fe.Cx.scope cx rho hv rq.lender from hname) ""
+      | _, .true, _ => Fe.Cx.setErr (Fe.Cx.scope cx rho hv rq.lender from hname) (Fe.packH thrN)
+      | _, _, _ => Fe.Cx.scope cx rho hv rq.lender from hname);
     let cx2 := Fe.the Fe.Cx (match early with
       | .false => cx1
       | .true => Fe.Cx.setRet cx1 (fun v t e =>
@@ -2239,11 +2250,12 @@ def Fe.scope1 (cx : Fe.Cx) (env : Fe.Env) (p : List Nat) (rq : Fe.Req) (ment aft
       | .true => Fe.tFlow bt (Fe.packT cx.retTy (notH outsR)));
     r ← Fe.freshName "r";
     v ← Fe.freshName "v";
-    let b := Fe.the String (match Nat.beq rq.kind 1 with
+    let b := Fe.the String (match Bool.or (Nat.beq rq.kind 1) linSh with
       | .true => r
       | .false => r +++ "s");
     rest ← k c.1 (Fe.o v) tau (List.append c.2 env);
     let lam := Fe.the String (match shared, linS, thrN with
+      | .true, _, .cons _ _ => "(fun " +++ rho +++ " " +++ hv +++ " " +++ oName +++ " " +++ rq.lender +++ " =>"
       | .true, _, _ => "(fun " +++ rho +++ " " +++ hv +++ " " +++ rq.lender +++ " =>"
       | .false, .true, .cons _ _ => "(fun " +++ rho +++ " " +++ hv +++ " " +++ rq.lender +++ " " +++ oName +++ " " +++ hname +++ " =>"
       | .false, _, _ => "(fun " +++ rho +++ " " +++ hv +++ " " +++ rq.lender +++ " " +++ hname +++ " =>");
@@ -2255,10 +2267,16 @@ def Fe.scope1 (cx : Fe.Cx) (env : Fe.Env) (p : List Nat) (rq : Fe.Req) (ment aft
       | .zero, .true, _ => Fe.Out.s "@Uniq1.borrowIn " ⊕ Fe.Out.t sty ⊕ Fe.Out.s " " ⊕ Fe.Out.t bty ⊕ Fe.Out.s " "
           ⊕ Fe.packHT (Fe.map (fun (w : Fe.Var) => w.ty) thr) ⊕ Fe.Out.s (" " +++ cx.sigma +++ " " +++ rq.lender +++ " " +++ Fe.packH thrN +++ " ")
       | .zero, _, _ => Fe.Out.s "@Uniq.borrow " ⊕ Fe.Out.t sty ⊕ Fe.Out.s " " ⊕ Fe.Out.t bty ⊕ Fe.Out.s (" " +++ cx.sigma +++ " " +++ rq.lender +++ " ")
+      | .succ .zero, _, .cons _ _ => Fe.Out.s "@Shr.borrowIn " ⊕ Fe.Out.t sty ⊕ Fe.Out.s " " ⊕ Fe.Out.t bty ⊕ Fe.Out.s " "
+          ⊕ Fe.packHT (Fe.map (fun (w : Fe.Var) => w.ty) thr) ⊕ Fe.Out.s (" " +++ cx.sigma +++ " " +++ rq.lender +++ " " +++ Fe.packH thrN +++ " ")
+      | .succ (.succ (.succ .zero)), _, .cons _ _ => Fe.Out.s "@Uniq1.shareIn " ⊕ Fe.Out.t (Fe.regionOf lt) ⊕ Fe.Out.s " " ⊕ Fe.Out.t sty ⊕ Fe.Out.s " " ⊕ Fe.Out.t bty ⊕ Fe.Out.s " "
+          ⊕ Fe.packHT (Fe.map (fun (w : Fe.Var) => w.ty) thr) ⊕ Fe.Out.s (" " +++ rq.lender +++ " " +++ Fe.packH thrN +++ " ")
       | .succ .zero, _, _ => Fe.Out.s "@Shr.borrow " ⊕ Fe.Out.t sty ⊕ Fe.Out.s " " ⊕ Fe.Out.t bty ⊕ Fe.Out.s (" " +++ cx.sigma +++ " " +++ rq.lender +++ " ")
-      | .succ (.succ (.succ .zero)), _, _ => Fe.Out.s "@Uniq.share " ⊕ Fe.Out.t (Fe.regionOf lt) ⊕ Fe.Out.s " " ⊕ Fe.Out.t sty ⊕ Fe.Out.s " " ⊕ Fe.Out.t bty ⊕ Fe.Out.s (" " +++ rq.lender +++ " ")
+      | .succ (.succ (.succ .zero)), _, _ => Fe.Out.s (match cx.lin with
+          | .true => "@Uniq1.share "
+          | .false => "@Uniq.share ") ⊕ Fe.Out.t (Fe.regionOf lt) ⊕ Fe.Out.s " " ⊕ Fe.Out.t sty ⊕ Fe.Out.s " " ⊕ Fe.Out.t bty ⊕ Fe.Out.s (" " +++ rq.lender +++ " ")
       | _, _, _ => Fe.Out.s "@Uniq.reborrow " ⊕ Fe.Out.t (Fe.regionOf lt) ⊕ Fe.Out.s " " ⊕ Fe.Out.t sty ⊕ Fe.Out.s " " ⊕ Fe.Out.t bty ⊕ Fe.Out.s (" " +++ rq.lender +++ " "));
-    let opn := Fe.the Fe.Out (match Nat.beq rq.kind 1 with
+    let opn := Fe.the Fe.Out (match Bool.or (Nat.beq rq.kind 1) linSh with
       | .true => Fe.o ""
       | .false => Fe.Out.s ("let (" +++ b +++ ", " +++ rq.lender +++ ") := " +++ r +++ ";") ⊕ Fe.Out.nl);
     after2 ← Fe.asOut (match early with
@@ -2268,9 +2286,13 @@ def Fe.scope1 (cx : Fe.Cx) (env : Fe.Env) (p : List Nat) (rq : Fe.Req) (ment aft
         ro ← cx.ret (Fe.o v2) cx.retTy env;
         Fe.pure (opn ⊕ Fe.Out.s ("(match " +++ b +++ " with") ⊕ Fe.alt (".brk " +++ b +++ "b") (Fe.unpack (b +++ "b") v ons 0 ⊕ rest)
           ⊕ Fe.alt (".ret " +++ b +++ "r") (Fe.unpack (b +++ "r") v2 (Fe.names (notH outsR)) 0 ⊕ ro) ⊕ Fe.Out.s ")"));
-    (match thrN with
-    | .nil => Fe.pure (Fe.okMatch cx (head ⊕ Fe.Out.s lam ⊕ Fe.Out.ind (Fe.Out.nl ⊕ pre1 ⊕ body) ⊕ Fe.Out.s ")") r after2)
-    | _ => Fe.pure (Fe.okMatch1 cx (head ⊕ Fe.Out.s lam ⊕ Fe.Out.ind (Fe.Out.nl ⊕ pre1 ⊕ body) ⊕ Fe.Out.s ")") r (r +++ "o") thrN after2))
+    let callS := head ⊕ Fe.Out.s lam ⊕ Fe.Out.ind (Fe.Out.nl ⊕ pre1 ⊕ body) ⊕ Fe.Out.s ")";
+    (match linSh, Nat.beq rq.kind 3, thrN with
+    | .true, .true, .nil => Fe.pure (Fe.okMatch1 cx callS r (r +++ "o") (.cons rq.lender .nil) after2)
+    | .true, .true, _ => Fe.pure (Fe.okMatch1R cx callS r (r +++ "o")
+        (Fe.Out.s ("let 1 (" +++ r +++ "t, " +++ rq.lender +++ ") := " +++ r +++ "o;") ⊕ Fe.Out.nl ⊕ Fe.unpackH (r +++ "t") thrN 0) after2)
+    | _, _, .nil => Fe.pure (Fe.okMatch cx callS r after2)
+    | _, _, _ => Fe.pure (Fe.okMatch1 cx callS r (r +++ "o") thrN after2))
 end
 
 -- ## Items (L1)
@@ -2569,9 +2591,9 @@ mutual
 -- a borrow expression that is not `&mut x` of a plain variable
 def Fe.otherBorrow : Syntax → Bool
   | .node k args => (match Fe.seq k "feral_expr.borrow" with
-    | .true => (match Fe.nonEmpty (Syntax.getArg (.node k args) 1), Fe.seq (Fe.plainVar (Syntax.getArg (.node k args) 2)) "" with
-      | .true, .false => Fe.otherBorrowL args
-      | _, _ => .true)
+    | .true => (match Fe.seq (Fe.plainVar (Syntax.getArg (.node k args) 2)) "" with
+      | .false => Fe.otherBorrowL args
+      | .true => .true)
     | .false => Fe.otherBorrowL args)
   | _ => .false
 def Fe.otherBorrowL : SyntaxF .false → Bool
@@ -2580,17 +2602,14 @@ def Fe.otherBorrowL : SyntaxF .false → Bool
 end
 def Fe.linKinds : List String :=
   ["feral_expr.whileLet",
-   "feral_expr.matchE", "feral_expr.ifLet", "feral_expr.dot", "feral_expr.index"]
-def Fe.sigLinOK (s : Fe.Sig) : Bool :=
-  Bool.and (Fe.isNil s.lenders) (Bool.not (Fe.any (fun (q : String × Fe.Ty) => (match q.2 with
-    | .ref .false _ _ => .true
-    | _ => .false)) s.params))
+   "feral_expr.matchE", "feral_expr.ifLet", "feral_expr.dot"]
+def Fe.sigLinOK (s : Fe.Sig) : Bool := Fe.isNil s.lenders
 mutual
 -- a call of a method (`v.push x`, a dotted name on a lowercase prefix) other than `mem.…`
 def Fe.hasMethod : Syntax → Bool
   | .ident x => (match Fe.hasDot x, Fe.chars x with
     | .true, .cons c _ => Bool.and (Bool.and (Nat.le 97 (Char.code c)) (Nat.le (Char.code c) 122))
-        (Bool.not (Bool.or (Fe.seq (Fe.split x).1 "mem") (Fe.seq (Fe.split x).2 "push")))
+        (Bool.not (Bool.or (Fe.seq (Fe.split x).1 "mem") (Fe.mem (Fe.split x).2 ["push", "len", "checked_add", "ok_or"])))
     | _, _ => .false)
   | .node _ args => Fe.hasMethodL args
   | _ => .false
