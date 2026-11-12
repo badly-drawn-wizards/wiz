@@ -692,6 +692,12 @@ where
                 let dup := (errs.find? (·.code == "duplicate-declaration")).map (·.text) |>.getD msg.text
                 s := { s with messages := s.messages.push { msg with text := dup, code := "duplicate-declaration" } ++ warns,
                               imported := m :: s.imported, pristine := false }
+                -- in a module, that is the end of it: its later commands were checked
+                -- (and their effects cached) with `m` imported, and replayed without it
+                -- they would refer to declarations that aren't there, or to the other
+                -- module's (the macro interpreter then ran a deriver of lib/Deriving.wiz
+                -- with lib/Text.wiz dropped, and panicked). The importer drops the module.
+                unless stack.isEmpty do break
               else
               s := { inner with messages := (if errs.isEmpty then s.messages else s.messages.push msg) ++ warns,
                                 module := s.module, infos := s.infos }

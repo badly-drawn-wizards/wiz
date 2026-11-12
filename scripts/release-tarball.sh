@@ -7,7 +7,7 @@
 # BINDIR (default .lake/build/bin) holds the built wiz, grail and tower; the standard
 # library, the nvim plugin and the docs come from this checkout. CCDIR is the C toolchain
 # made by scripts/bundle-cc.sh (stage 26f; the release job passes it); WEBDIR the web
-# infoview built by web/build.sh (11r: `wiz lsp` serves it). The tarball is one
+# infoview built by web/build.sh (11w: `wiz lsp` serves it). The tarball is one
 # directory, wiz-ARCH-linux/:
 #
 #   bin/wiz, bin/grail       wrappers: the binary with -I share/wiz/lib (no other flags:

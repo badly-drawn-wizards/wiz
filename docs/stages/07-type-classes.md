@@ -208,4 +208,4 @@ with instances for `Nat` that are the natively computed functions (`Add.mk Nat.a
 Heterogeneous `HAdd A B C` (Lean's) is not here: it needs default instances, which the
 class mechanism lacks; see /workspace/wiz-notes/num-classes.md for the design.
 Types are structural (two declarations of the same shape are one type), so an instance
-for a look-alike type applies too; numerals and patterns: numerals are not patterns yet.
+for a look-alike type applies too; numerals as patterns: see 13q (`docs/stages/13-language.md`).

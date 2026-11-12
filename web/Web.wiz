@@ -29,7 +29,7 @@ structure WSt where
   goals : Option TacView
   term : Option Goal
   sel : Nat
-  -- (11r) what else is at the cursor (`wiz/interactiveInfo`)
+  -- (11w) what else is at the cursor (`wiz/interactiveInfo`)
   items : List InfoItem
 
 def WSt.empty : WSt := WSt.mk .nil 1 .nil "" 0 0 0 0 .none .none 0 .nil
@@ -156,7 +156,7 @@ def WSt.onEvent (s : WSt) (ev : String) : IO WSt :=
       WSt.notify "textDocument/didOpen" (Json.mkObj (.cons (Json.field "textDocument" (Web.textDoc s1 q.2)) .nil));
       WSt.refresh s2
     | .false => match String.eq kind "follow" with
-    -- (11r) `follow\nURI`: show another editor's document (the page follows its cursor,
+    -- (11w) `follow\nURI`: show another editor's document (the page follows its cursor,
     -- `wiz/infoview/cursor`, which the page turns into `follow` and `cursor`)
     | .true => IO.pure (WSt.setDoc s (String.mk rest) s.line s.col s.version)
     | .false => match String.eq kind "change" with

@@ -130,6 +130,18 @@ def group : Group where
           let s ← elabSrc src ti
           checkEq "(some (double, Nat → Nat))" (toString (Query.hoverAt s (offAfter src "double 2" (-3))))
           checkEq "(some (n, Nat))" (toString (Query.hoverAt s (offAfter src ":= n" (-1)))) },
+    { name := "13p–q: an updated field's hover and definition; a numeral pattern's variable", run := fun _ => do
+        let src := "import Prelude\nstructure In where\n  x : Nat\n  y : Nat\nstructure Out where\n  i : In\n  n : Nat\n" ++
+          "def f (o : Out) : Out := { o with n := 0, i.y := 1 }\ndef g : Nat → Nat\n  | 0 => 0\n  | k + 1 => k\n"
+        let s ← elabSrc src
+        checkEq "(some (Out.n, Nat))" (toString (Query.hoverAt s (offAfter src "with n" (-1))))
+        checkEq "(some (In.y, Nat))" (toString (Query.hoverAt s (offAfter src "i.y" (-1))))
+        let line (n : Name) : Option Nat := (Query.definitionAt s (offAfter src (if n == "n" then "with n" else "i.y") (-1))).map
+          fun (_, i, _) => ((src.toList.take i.start).count '\n')
+        -- (a projection is declared by its structure)
+        checkEq (some 4) (line "n")
+        checkEq (some 1) (line "y")
+        checkEq "(some (k, Nat))" (toString (Query.hoverAt s (offAfter src "| k" (-1)))) },
     { name := "info tree: tactic states before, between and after tactics", run := fun _ => do
         let s ← elabSrc tacticSrc
         -- on `by`: the goal the block started with
@@ -585,7 +597,20 @@ def serverGroup : Group where
         check ((LSP.getStr r ["uri"]).endsWith "lib/Prelude.wiz") s!"import: {r.compress}"
         let (_, r) := ask srv "textDocument/hover" src (offAfter src "import Pre" (-1))
         check (has r "module `Prelude`") s!"import hover: {r.compress}" },
-    { name := "11r: hovers, expected types and definitions inside tactic arguments and list literals", run := fun _ => do
+    { name := "11w: at the start of a tactic, the goals before it (inside it, after)", run := fun _ => do
+        let src := "import Prelude\ndef k : (A : Type) → A → Nat → A := by\n  intro A\n  intro x\n  intro n\n  exact x\n"
+        let (srv, _) ← openDoc src
+        let at_ := offAfter src "  exact" (-5)
+        let (srv, r) := ask srv "wiz/plainGoal" src at_
+        checkEq "[\"A : Type\\nx : A\\nn : Nat\\n⊢ A\"]" (LSP.get? r ["goals"] |>.get!).compress
+        let (srv, r) := ask srv "wiz/interactiveGoals" src at_
+        check (has r "\"names\":[\"A\"]") s!"interactive: {r.compress}"
+        let (srv, r) := ask srv "wiz/plainGoal" src (at_ + 2)
+        checkEq "no goals" (LSP.getStr r ["rendered"])
+        -- the first tactic: before it, the block's goal
+        let (_, r) := ask srv "wiz/plainGoal" src (offAfter src "  intro A" (-7))
+        checkEq "[\"⊢ (A : Type) → A → Nat → A\"]" (LSP.get? r ["goals"] |>.get!).compress },
+    { name := "11w: hovers, expected types and definitions inside tactic arguments and list literals", run := fun _ => do
         let src := "import Prelude\ndef f (n : Nat) : Nat := by\n  exact Nat.add n 1\ndef xs (k : Nat) : List Nat := [k, 2]\n"
         let (srv, _) ← openDoc src
         let (srv, r) := ask srv "textDocument/hover" src (offAfter src "add n" (-1))
@@ -656,7 +681,7 @@ def serverGroup : Group where
         -- an unmasked frame from a client breaks the protocol
         WebSocket.sendText w "x"
         checkEq none (← WebSocket.recvText r' w') },
-    { name := "11r: the web infoview's files over HTTP on the WebSocket's port (fixed list, local origins)", run := fun _ => do
+    { name := "11w: the web infoview's files over HTTP on the WebSocket's port (fixed list, local origins)", run := fun _ => do
         let dir ← IO.FS.createTempDir
         IO.FS.writeFile (dir / "infoview.html") "<p>page</p>"
         IO.FS.writeFile (dir / "secret.txt") "no"

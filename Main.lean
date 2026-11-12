@@ -86,7 +86,7 @@ def lspOptions : List String → Option (LSP.Listen × Bool)
   | "--web" :: dir :: rest => do let (l, io) ← lspOptions rest; pure ({ l with web := some dir }, io)
   | _ => none
 
-/-- (11r) The web infoview's files (`web/build.sh`'s output) beside the toolchain's
+/-- (11w) The web infoview's files (`web/build.sh`'s output) beside the toolchain's
 library: `share/wiz/web` in a release, `web/out` in a checkout. -/
 def webDir : IO (Option String) := do
   let lib ← Module.toolchainLib

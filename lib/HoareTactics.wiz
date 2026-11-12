@@ -227,6 +227,25 @@ def xw.app {V A : Type} (c : Prog V A) (0 P : HProp V) (0 Q' : A → HProp V) (t
         Entails.trans (star.mono_r (Q' r) (hforall.elim (fun (r' : A) => Q' r' −∗ Q r') r))
           (wand.cancel (Q' r) (Q r))))))
 
+-- The parts of a command, read off the program as it is written: when what a program
+-- computes to can't be put in a proof term (see `XT.hasOpaque`), the x-tactics name its
+-- parts through these, and conversion computes them.
+def Prog.loc {V A : Type} : Prog V A → Nat
+  | .get l _ => l
+  | .set l _ _ => l
+  | .free l _ => l
+  | _ => 0
+def Prog.getK {V A : Type} : Prog V A → V → Prog V A
+  | .get _ k, v => k v
+  | c, _ => c
+def Prog.setV {V A : Type} (d : V) : Prog V A → V
+  | .set _ v _ => v
+  | _ => d
+def Prog.next {V A : Type} : Prog V A → Prog V A
+  | .set _ _ k => k
+  | .free _ k => k
+  | c => c
+
 -- ## Tactics: reading goals
 --
 -- The tactics read a goal as an `Expr` (lib/Prelude.wiz), take it apart by the names of
@@ -994,6 +1013,29 @@ def XT.withCell (w : XT.WpGoal) (l : Expr) (k : Nat → Expr → List Expr → T
         TacticM.pure (.again w'.1 w'.2)
       | .none => XT.failWith g "xstep: the precondition has no cell at" l
 
+-- What a program computes to can contain kernel forms that tactics see as opaque
+-- handles: a structure's tuple, a projection (the `Uniq` handles a Feral function's
+-- lowering passes around, whose constructor is private to lib/Region.wiz). A proof term
+-- built from such a part can't have its type inferred in the module the proof is in
+-- (13b: "cannot infer a type for (a, fun phantom✝ fields✝ => ())"). So a part with a
+-- handle is named through the program as it is written (`Prog.loc c`, `Prog.getK c v`,
+-- `Prog.setV u c`, `Prog.next c`), and conversion computes it.
+def XT.hasOpaque : Expr → Bool
+  | .opaque _ => .true
+  | .app f a => Bool.or (XT.hasOpaque f) (XT.hasOpaque a)
+  | .lam _ b => XT.hasOpaque b
+  | .pi _ _ q d b => Bool.or (XT.hasOpaque q) (Bool.or (XT.hasOpaque d) (XT.hasOpaque b))
+  | _ => .false
+-- `e` under one more binder
+def XT.shift : Nat → Expr → Expr
+  | c, .var i => XT.sel (Nat.lt i c) (Expr.var i) (Expr.var (Nat.succ i))
+  | c, .app f a => .app (XT.shift c f) (XT.shift c a)
+  | c, .lam x b => .lam x (XT.shift (Nat.succ c) b)
+  | c, .pi x i q d b => .pi x i (XT.shift c q) (XT.shift c d) (XT.shift (Nat.succ c) b)
+  | _, e => e
+-- a part as computed, or (if it has a handle) named through the program
+def XT.orPart (e : Expr) (folded : Expr) : Expr := XT.sel (XT.hasOpaque e) folded e
+
 /-- One command (with fuel for nested binds and unfoldings); the new goals. -/
 def XT.step1 : Nat → XT.WpGoal → List String → TacticM (List Nat × List String)
   | .zero, _, _ => TacticM.fail "xstep: too many nested binds or unfoldings"
@@ -1009,14 +1051,21 @@ def XT.step1 : Nat → XT.WpGoal → List String → TacticM (List Nat × List S
         Qa ← XT.beta g Q a;
         g' ← XT.restate g V L Qa;
         TacticM.pure (g' ∷ .nil, ns)
-      | .get l k => do
+      | .get l₀ k₀ => do
+        let l := XT.orPart l₀ (XT.mk "Prog.loc" (V ∷ A ∷ c ∷ .nil));
+        let folded := XT.hasOpaque k₀;
+        let k := XT.sel folded (Expr.lam "v" (XT.mk "Prog.getK" (V ∷ A ∷ XT.shift 0 c ∷ .var 0 ∷ .nil))) k₀;
         cr ← XT.withCell w l (fun g₁ v rest => do
-          kv ← XT.beta g₁ k v;
+          kv₁ ← XT.beta g₁ k₀ v;
+          let kv := XT.sel folded (XT.mk "Prog.getK" (V ∷ A ∷ c ∷ v ∷ .nil)) kv₁;
           XT.apply g₁ "xw.get" (.val V ∷ .val A ∷ .val l ∷ .val v ∷ .val (XT.lstV V rest) ∷ .val k ∷ .val Q ∷
             .goalAt (XT.ent V (XT.sl V (XT.pts V l v ∷ rest)) (XT.wpOf V A kv Q)) ∷ .nil)) ns;
         again cr
-      | .set l v k => do
+      | .set l₀ v₀ k₀ => do
+        let l := XT.orPart l₀ (XT.mk "Prog.loc" (V ∷ A ∷ c ∷ .nil));
+        let k := XT.orPart k₀ (XT.mk "Prog.next" (V ∷ A ∷ c ∷ .nil));
         cr ← XT.withCell w l (fun g₁ u rest =>
+          let v := XT.orPart v₀ (XT.mk "Prog.setV" (V ∷ A ∷ u ∷ c ∷ .nil));
           XT.apply g₁ "xw.set" (.val V ∷ .val A ∷ .val l ∷ .val u ∷ .val v ∷ .val (XT.lstV V rest) ∷ .val k ∷ .val Q ∷
             .goalAt (XT.ent V (XT.sl V (XT.pts V l v ∷ rest)) (XT.wpOf V A k Q)) ∷ .nil)) ns;
         again cr
@@ -1024,7 +1073,9 @@ def XT.step1 : Nat → XT.WpGoal → List String → TacticM (List Nat × List S
         g₁ ← XT.apply1 g "xw.alloc" (.val V ∷ .val A ∷ .val v ∷ .val L ∷ .val k ∷ .val Q ∷ .goal ∷ .nil);
         r ← XT.introAs g₁ (XT.binder "l" k) ns;
         TacticM.pure (r.2.1 ∷ .nil, r.2.2)
-      | .free l k => do
+      | .free l₀ k₀ => do
+        let l := XT.orPart l₀ (XT.mk "Prog.loc" (V ∷ A ∷ c ∷ .nil));
+        let k := XT.orPart k₀ (XT.mk "Prog.next" (V ∷ A ∷ c ∷ .nil));
         cr ← XT.withCell w l (fun g₁ u rest =>
           XT.apply g₁ "xw.free" (.val V ∷ .val A ∷ .val l ∷ .val u ∷ .val (XT.lstV V rest) ∷ .val k ∷ .val Q ∷
             .goalAt (XT.ent V (XT.sl V rest) (XT.wpOf V A k Q)) ∷ .nil)) ns;
