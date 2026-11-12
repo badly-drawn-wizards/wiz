@@ -659,6 +659,20 @@ def group : Group where
           "  let x := if mx then a else Hw.lit 1 0;\n  x\n" ++
           "def g {r : HwTy → Type} [Hw r] (mx : Bool) : r (HwTy.bits 1) :=\n" ++
           "  let x := if mx then Hw.lit 1 1 else Hw.lit 1 0;\n  x\n") },
+    { name := "signal `if`s without type annotations: in a bundle constructor, a `let`, nested (icestick B6)", run := fun _ =>
+        okLibs (
+          "import Hdl.Core\n" ++
+          "structure Ctl (n : Nat) (r : HwTy → Type) where\n" ++
+          "  a : r (HwTy.bits 6)\n" ++
+          "  b : r (HwTy.bits n)\n" ++
+          "def c1 {r : HwTy → Type} [Hw r] (ready : r HwTy.bit) (x : r (HwTy.bits 6)) (y : r (HwTy.bits 3)) : Ctl 3 r :=\n" ++
+          "  Ctl.mk (if ready then Hw.lit 6 1 else x) y\n" ++
+          "def c2 {r : HwTy → Type} [Hw r] (light : r HwTy.bit) : r (HwTy.bits 16) :=\n" ++
+          "  let fl := if light then Hw.lit 16 1 else Hw.lit 16 2;\n" ++
+          "  fl\n" ++
+          "def c3 {r : HwTy → Type} [Hw r] (p q : r HwTy.bit) (a b c : Nat) : r (HwTy.bits 21) :=\n" ++
+          "  let w := if p then Hw.lit 21 a else if q then Hw.lit 21 b else Hw.lit 21 c;\n" ++
+          "  w\n") },
     { name := "a broken module's errors are reported once, not nested in every importer (wiz-reals P9)", run := fun _ => do
         let prelude ← IO.FS.readFile "lib/Prelude.wiz"
         let mods : List (String × String) := [("Prelude", prelude),
