@@ -1,5 +1,7 @@
 import Wiz.Elab.Recursor
+import Wiz.Elab.Mark
 import Wiz.Compiler.Run
+import Wiz.Compiler.Native
 import Wiz.Compiler.IRRun
 import Wiz.Compiler.Lower
 import Wiz.FFI.CParse
@@ -125,6 +127,11 @@ structure CommandState (R : Type) where
   /-- the modules whose `builtin` registrations are trusted: the toolchain's library
   (`lib/`). The main file never is, nor a module from a `-I` directory. -/
   trustedModule : String → Bool := fun _ => false
+  /-- (27a) `--trust-native`: `native_refl` may decide a closed equation by running it
+  (off by default: it trusts the compiler, see `Native.lean`) -/
+  trustNative : Bool := false
+  /-- (27a) `--native-fuel N`: the interpreter steps `native_refl` may take -/
+  nativeFuel : Nat := NativeRun.defaultFuel
   /-- macro rules, latest first -/
   macros : List MacroRule := []
   /-- (11q) where each syntax kind and syntax category was declared (the command's range,
@@ -160,6 +167,25 @@ structure CommandState (R : Type) where
 /-- (11s) The doc comment of a declaration, if it has one. -/
 def CommandState.docOf? (s : CommandState R) (n : Name) : Option String :=
   (s.declDocs.get? n).bind (·.doc)
+
+/-- Run a kernel entry on a declaration, with the proof markers the kernel requires
+(`Mark`) **when it asks for them**. The marking pass is a typed traversal of the whole
+term, about as much work as the kernel's own check, and most declarations need at most a
+marker on their body. So the kernel is tried on, in turn:
+
+1. the declaration with a marker on its body, if the body is a proof that is not
+   neutral-shaped (`Decl.withTopMarks`: a theorem; any other declaration is left as it is);
+2. the declaration marked by the pass (`Decl.withMarks`), only if the kernel answered
+   "unmarked proof" to the first.
+
+The error reported is the last attempt's, and the kernel has accepted exactly the term
+that is stored. -/
+def withMarksOnDemand (g : Globals R) (d : Decl R) (k : Decl R → TCM (Globals R)) : TCM (Globals R) :=
+  match k (d.withTopMarks g) with
+  | .error (.unmarkedProof t ty l) =>
+    let go := fun (_ : Unit) => k (d.withMarks g)
+    if g.traceProofSteps then dbgTrace s!"marks-on-demand {d.name}: {(t.take 80).replace "\n" " "} : {(ty.take 60).replace "\n" " "} in Sort {l}" go else go ()
+  | r => r
 
 /-- "'n' has already been declared", naming the module that declared it if that is not
 the one being elaborated (two modules, or a module and the file importing it). -/
@@ -212,15 +238,17 @@ def privacyCheck (g : Globals R) (d : Decl R) (kind : Globals R → Decl R → T
     throw (.other (s!"{d.name} depends on the definition of {", ".intercalate (used.map show1)}, which is hidden outside " ++
       s!"its module (it has private parts): with the definition hidden, {e}"))
 
-/-- `addDecl` with the sorts of the elaborator's `Π`/`Σ` filled in first (`Sorts`), and then
-the privacy check. -/
+/-- `addDecl` with the sorts of the elaborator's `Π`/`Σ` filled in first (`Sorts`), the
+proof markers the kernel requires (`withMarksOnDemand`), and then the privacy check (with
+the markers too: an unmarked proof is not a privacy failure). -/
 def addDeclSorted (g : Globals R) (d : Decl R) : TCM (Globals R) := do
   -- the kernel's own check is against the full environment: never the elaborator's view,
   -- whose `hidden` definitions (13b) `conv` would consult
   unless g.hidden.isEmpty do throw (.other s!"internal error: {d.name} checked against the elaborator's view")
   let d := d.withSorts g
-  let g' ← addDecl g d
-  privacyCheck g d
+  let kind := fun (g' : Globals R) (d' : Decl R) => withMarksOnDemand g' d' (addDecl g')
+  let g' ← kind g d
+  privacyCheck g d kind
   pure g'
 
 /-- Replace each const `n` by `f n`. -/
@@ -263,7 +291,7 @@ def solveSortConstraints : ElabM R Unit := do
       if !t.mvars.isEmpty then continue
       let kctx : Ctx R := { globals := ← getGlobals, env := ctx.env, names := ctx.names,
                             qtys := ctx.names.map fun _ => QPoly.const QuantitySyntax.explicitDefault,
-                            types := ctx.types, lvl := ctx.lvl }
+                            types := ctx.types, lvl := ctx.lvl, proof := true }
       if let .ok (ty, _) := Wiz.infer kctx t then
         if let .sort l' ← force ty then
           try unifyLevel l l' catch e => throwAt ctx.info e.msg
@@ -834,7 +862,8 @@ def runElabH (g : Globals R) (x : ElabM R α) (levelParams : List Name := [])
   let runProcMacro f stx scope := match compileCode [f, "Macro.run"] with
     | .ok code => Elab.runProcMacro code f stx scope (macroEnv g)
     | .error e => (#[], .error e)
-  let kernelInfer (ctx : Ctx R) (t : Term R) := (Wiz.infer ctx t).map (·.1) |>.mapError toString
+  -- (the elaborator's terms carry no proof markers yet: `proof`)
+  let kernelInfer (ctx : Ctx R) (t : Term R) := (Wiz.infer { ctx with proof := true } t).map (·.1) |>.mapError toString
   -- (13b) structures with a constructor private to another module don't unfold here
   match x.run { globals := g.elabView, levelParams, macros, builtins, procMacros, runProcMacro, tactics, compileCode,
                 kernelInfer, classes, instances, termInfo } with
@@ -1357,6 +1386,56 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     let valStx := if cmd.isOfKind "command.def" then some (cmd.getArg 6) else none
     if s.globals.contains name then
       reportDup (cmd.getArg 1).info name
+    else if let some nr := valStx.filter (·.isOfKind "term.nativeRefl") then
+      -- (27a) `def X : a = b := native_refl`: decided by running `a` and `b`
+      if !s.trustNative then
+        report .error nr.info "native evaluation is not enabled: `native_refl` decides an equation by running compiled code, which the kernel does not check; run with --trust-native to allow it"
+      else if !binders.isEmpty || !levelParams.isEmpty || typeStx.isNone then
+        report .error nr.info "native_refl proves a closed equation: `def X : a = b := native_refl`, with a type and without parameters or universe parameters"
+      else match runElabH (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) (termInfo := s.termInfo) s.globals (elabDeclTerms binders typeStx none cmd.info (declName? := some (name, (cmd.getArg 1).info, declInsertAt cmd))) [] with
+      | (.error e, hv) => addInfos hv; reportErr e
+      | (.ok (ty, _), hv) =>
+        addInfos hv
+        let g := s.globals
+        -- (as written: the kernel's equality computes, observationally, at data types)
+        match ty with
+        | .eq A a b =>
+          match Native.decideNative g s.builtins A a b s.nativeFuel with
+          | .error e => report .error nr.info s!"native_refl: {e}"
+          | .ok v =>
+            let ax := name ++ ".native✝"
+            -- (`addDeclSorted` without `withSorts`' evaluation of the type, which is for
+            -- checking a value against it: evaluating an equation computes both sides, F5)
+            -- (nor `Sorts.type`'s: an equation's sort is `Prop`; its sides get their sorts)
+            -- (P2: and the proof markers of its sides, `Mark.type`, which does not evaluate it
+            -- either; `Decl.withMarks` would, for checking a value)
+            let axD : Decl R := { name := ax, type := (Mark.type { globals := g } (Sorts.term g #[] [] ty)).1, value := none }
+            match (do let g' ← addDecl g axD; privacyCheck g axD; pure g' : TCM (Globals R)) with
+            | .error e => report .error cmd.info s!"kernel rejected {ax}: {e}"
+            | .ok g' =>
+              -- the value mentions the native implementations the run can reach (erased
+              -- `let`s), so that `#print axioms` walks what they reach too
+              let one := Level.succ .zero
+              let val := v.natives.foldr (fun m body => match g'.find? m with
+                | some d => .letE "_" (.qlit 0) (d.type.instLevels d.levelParams (d.levelParams.map fun _ => one))
+                    (.const m (d.levelParams.map fun _ => one)) body
+                | none => body) (Term.const ax [])
+              -- Added without the kernel's check: checking `val` against the type evaluates
+              -- the equation, and the kernel's `vEq` computes both sides (F5 of
+              -- wiz-notes/kernel-eval.md), which is what native evaluation is for. The
+              -- check is the constant rule: `X.native✝` was declared (just above, by the
+              -- kernel) at this very type, and each `let` binds a constant at its own
+              -- declared type, erased, which the body does not mention.
+              -- (The header is the kernel's: the type is checked to be a well-formed type,
+              -- `a b : T`, which does not evaluate the equation.)
+              let axTy := ((g'.find? ax).map (·.type)).getD ty
+              let d : Decl R := { name, type := axTy, value := some val }
+              match checkHeader g' d with
+              | .error e => report .error cmd.info s!"kernel rejected {name}: {e}"
+              | .ok () =>
+                modify fun s => { s with globals := g'.insert d }
+                report .warning nr.info s!"{name} is accepted on the strength of native evaluation (--trust-native, {v.steps} steps), not checked by the kernel: its proof is the axiom {ax}, which `#print axioms` lists for everything that uses {name}"
+        | _ => report .error nr.info "native_refl proves an equation `a = b`; this type is not one"
     else match runElabH (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) (termInfo := s.termInfo) s.globals (elabDeclTerms binders typeStx valStx cmd.info (declName? := some (name, (cmd.getArg 1).info, declInsertAt cmd))) levelParams with
       | (.ok (ty, val), hv) =>
         addInfos hv
@@ -1409,9 +1488,10 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
             return
           | .error e => report .error e.info e.msg; return
         let pd := Decl.withSorts g { name, levelParams, type := ty, value := none, witness := some w }
+        let addP := fun (g' : Globals R) (d' : Decl R) => withMarksOnDemand g' d' (addPartialDecl g')
         match (do
             unless g.hidden.isEmpty do throw (.other s!"internal error: {pd.name} checked against the elaborator's view")
-            let g' ← addPartialDecl g pd; privacyCheck g pd addPartialDecl; pure g' : TCM (Globals R)) with
+            let g' ← addP g pd; privacyCheck g pd addP; pure g' : TCM (Globals R)) with
         | .ok g' => g := g'
         | .error e => report .error (d.getArg 1).info s!"kernel rejected {name}: {e}"; return
         sigs := sigs.push (d, name, levelParams)
@@ -1431,7 +1511,13 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
         let v := match g.find? name with
           | some d => Sorts.value g #[] [] v (eval g [] d.type)
           | none => v
-        match addPartialImpl g name v with
+        -- (the proof markers, if the kernel asks for them: `withMarksOnDemand`)
+        let r := match addPartialImpl g name v with
+          | .error (.unmarkedProof ..) => match g.find? name with
+            | some d => addPartialImpl g name (Mark.check { globals := g } v (eval g [] d.type))
+            | none => addPartialImpl g name v
+          | r => r
+        match r with
         | .ok g' => g := g'
         | .error e => report .error d.info s!"kernel rejected {name}: {e}"; return
       | (.error e, hv) => addInfos hv; reportErr e; return
@@ -1457,8 +1543,10 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
       solveSortConstraints
       let t ← zonk 0 t
       ensureNoMVars t
+      -- (P2) with its proofs marked: `nf` suspends them, and reads each back within the
+      -- step budget (a proof need not have a normal form)
       let g ← getGlobals
-      pure ((nf g t).pretty [] (some g))
+      pure ((nf g (Mark.infer { globals := g } t).1).pretty [] (some g))
     match r with
     | .ok text => report .info cmd.info text
     | .error e => report .error e.info e.msg
@@ -1731,6 +1819,9 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
         -- never run it, compiled code does)
         let note := if as.any (·.startsWith "native ") then
           "\n(native: an implementation that compiled code runs, trusted to agree with its definition)" else ""
+        -- (27a) a `native_refl` axiom
+        let note := note ++ if as.any (·.endsWith ".native✝") then
+          "\n(.native✝: an equation decided by running it (native_refl, --trust-native): trusted are erasure, the interpreter and the native implementations listed)" else ""
         report .info cmd.info s!"'{n}' depends on axioms: [{", ".intercalate as}]{note}"
   | "command.foreignType" =>
     -- an opaque C pointer type; values are released with the finalizer
@@ -2360,7 +2451,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     match r with
     | .error e => report .error e.info e.msg
     | .ok t =>
-      let ctx : Ctx R := { globals := s.globals }
+      let ctx : Ctx R := { globals := s.globals, proof := true }
       let result := do
         let (ty, _) ← Wiz.infer ctx t
         let e ← eraseTop ctx t ty
@@ -2385,7 +2476,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     match r with
     | .error e => report .error e.info e.msg
     | .ok t =>
-      let ctx : Ctx R := { globals := s.globals }
+      let ctx : Ctx R := { globals := s.globals, proof := true }
       let result : Except String (VTy R × RVal) := do
         let (ty, _) ← (Wiz.infer ctx t).mapError toString
         let e ← (eraseTop ctx t ty).mapError toString

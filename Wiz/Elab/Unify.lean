@@ -230,7 +230,24 @@ partial def rename (m : Nat) (p : PRen) (v : Val R) : ElabM R (Term R) := do
       (← rename m p b) (← rename m p e)) sp
   -- (P2) a suspended proof is evaluated for a solution (a normal form, which the kernel
   -- can check)
-  | .neutral (.prf _ _ _ pv) sp => do rename m p (vElims (← getGlobals) pv.get sp)
+  -- within a step budget (`Budget`): a proof need not have one
+  | .neutral (.prf env t) sp => do
+    let g ← getGlobals
+    match g.budget with
+    | some _ => rename m p (vElims g (eval g env t) sp)
+    | none =>
+      -- (the monadic read-back is a pure function of the state: it runs inside the budget)
+      let st ← get
+      let (r, used) := Budget.run g.proofSteps fun b =>
+        let g' := { g with budget := some b }
+        match (rename m p (vElims g' (eval g' env t) sp)).run { st with globals := g' } with
+        | .ok (tm, st') => (some tm, some st', none)
+        | .error e => (none, none, some e)
+      if used > g.proofSteps then throwAt {} (Budget.message g.proofSteps)
+      match r with
+      | (some tm, some st', _) => set { st' with globals := g }; pure tm
+      | (_, _, some e) => throw e
+      | _ => throwAt {} "internal error: read-back of a proof"
   | .neutral (.mvar m') sp =>
     if m == m' then throwAt {} s!"occurs check: ?m{m} would have to contain itself"
     else
@@ -541,7 +558,21 @@ partial def unify (l : Lvl) (t u : Val R) : ElabM R Unit := do
       solve l m' sp' (.neutral (.mvar m) sp)
   | .neutral (.mvar m) sp, t' => solve l m sp t'
   | t', .neutral (.mvar m) sp => solve l m sp t'
-  | .neutral h sp, .neutral h' sp' => unifyHead l h h'; unifySpine l sp sp'
+  | .neutral h sp, .neutral h' sp' =>
+    -- (P2) two proofs with only applications and projections after them are equal, with
+    -- nothing to compare (as in `convNe`): their spines need not agree (a suspended
+    -- proof on one side, a `transp` applied to a phantom tail's argument on the other).
+    -- This is what makes two values that differ only in an erased proof field equal
+    -- where the type isn't seen (an opaque type, 13b), e.g. two closed words.
+    let lazy := (← getGlobals).lazyProofs
+    let isProof : Head R → Bool
+      | .refl .. | .reflTy _ | .transp .. | .prf .. => true
+      | h => lazy && proofHead h
+    let onProofs (sp : Array (Elim R)) : Bool := sp.all fun
+      | .app _ | .fst | .snd | .down => true
+      | _ => false
+    if isProof h && isProof h' && onProofs sp && onProofs sp' then pure () else
+    unifyHead l h h'; unifySpine l sp sp'
   | _, _ => throwAt {} "rigid mismatch"
   --|ex
   --| sorry

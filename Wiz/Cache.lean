@@ -142,6 +142,7 @@ partial def term : Term R → Sx
   | .ulift l A => node "ulift" [level l, term A]
   | .up a => node "up" [term a]
   | .down t => node "down" [term t]
+  | .prf l t => node "prf" [level l, term t]
 where
   optLevel : Option Level → Sx
     | none => .a "none"
@@ -243,6 +244,7 @@ partial def dterm : Sx → Option (Term R)
     | "ulift" => return .ulift (← lv 1) (← t 2)
     | "up" => return .up (← t 1)
     | "down" => return .down (← t 1)
+    | "prf" => return .prf (← lv 1) (← t 2)
     | "scofix" => return .scofix (← lv 1) (← t 2) (← t 3) (← t 4) (← t 5) (← t 6) (← t 7) (← t 8)
     | "coit" => return .coit (← lv 1) (← t 2) (← t 3) (← t 4) (← t 5) (← t 6) (← t 7)
     | "nat" => return .natLit (← n 1)
@@ -494,7 +496,7 @@ def Effect.ofSx? (x : Sx) : Option (Effect R) := do
 /-- The cache's version: change it whenever the format or the elaborator's output changes.
 (The directory store also mixes in the binary's own hash, `binaryId`, so two builds of
 wiz never share entries; the salt is for invalidating by hand.) -/
-def salt : UInt64 := hash "wiz-cache-14-builtin-once"  -- 14: a builtin key is registered once; 13: witnesses, assumed registrations, warnings; 12: private constructors, observations, fields (13b); 11: 22i, marked structure tails; 9: private names (13b); 8: Q4
+def salt : UInt64 := hash "wiz-cache-15-prf"  -- 15: proof markers (P2: declarations are stored marked); 14: a builtin key is registered once; 13: witnesses, assumed registrations, warnings; 12: private constructors, observations, fields (13b); 11: 22i, marked structure tails; 9: private names (13b); 8: Q4
 
 /-! ## Keys and atomic writes (stage 23c)
 
@@ -618,11 +620,17 @@ partial def elaborateWith (store : Store R) (input : String) (init : CommandStat
   let keys ← IO.mkRef ({} : Std.HashMap Name UInt64)
   -- recording every term's expected type changes the effects: a different chain
   let salt' := if init.termInfo then mixHash salt 1 else salt
+  -- (27a) so does `--trust-native` (and its fuel): a `native_refl` accepted with it is
+  -- never replayed without it, nor the error without it replayed with it. (What it ran is
+  -- already in the key: the binary, and the text of the file and of everything imported.)
+  let salt' := if init.trustNative then mixHash salt' (nativeKey init) else salt'
   go keys init [] input init (mixHash salt' (mixHash toolchain key₀)) .write
 where
+  nativeKey (s : CommandState R) : UInt64 := mixHash (hash "trust-native") (hash s.nativeFuel)
   keyOf (keys : IO.Ref (Std.HashMap Name UInt64)) (m : Name) : IO UInt64 := do
     -- (term info changes what a module elaborates to, like the main file's chain)
     let tc := if init.termInfo then mixHash toolchain 1 else toolchain
+    let tc := if init.trustNative then mixHash tc (nativeKey init) else tc
     let memo := moduleKeys init.loader init.cHeaders tc [m] (← keys.get) init.trustedModule
     keys.set memo
     pure ((memo.get? m).getD 0)
