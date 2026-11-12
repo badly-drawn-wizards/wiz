@@ -204,9 +204,11 @@ it for every input of the domain, and `allBelow_sound` turns that into a `∀`.
 | bit-serial root (Blobs, 7 cycles, 14 bits) | `h = ⌊√m⌋` | all 2¹³ | native |
 | Blobs stage A (squares, × 4, root) | `ρ = 2⌊√(4(ax² + ay²))⌋` | all 2¹⁰ | native |
 | smooth-min table | entry i = (4i)²/256 (i ≤ 16), else 0 | all 32 | kernel |
-| smooth-min correction by e = abs(d₂ − d₁) | g = max(64 − e, 0), c ≤ g²/256 < c + 2 | all 2¹² | kernel |
+| smooth-min correction by e = abs(d₂ − d₁) | g = max(64 − e, 0), c ≤ g²/256 < c + 2 | e < 64 | kernel |
+| | | all 2¹² | native |
 | smooth minimum (`sminK`) | `min(d₁, d₂) − c − 1`, c as above | d₁, d₂ ∈ [−64, 960) (the march's) | native |
-| octagonal length (`norm2`), its 11/16 | 16t ≤ 11s < 16t + 38 | all 2¹² | kernel |
+| octagonal length (`norm2`), its 11/16 | 16t ≤ 11s < 16t + 38 | s < 2048 (a, c < 1024) | kernel |
+| | | all 2¹² | native |
 | octagonal length | n² ≤ a² + c² ≤ 1.21 (n + 2)² | a, c < 1024 | native |
 
 Two structure lemmas tie the 24-bit units to the kernel-checked pieces by definition

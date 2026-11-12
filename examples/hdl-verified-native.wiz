@@ -18,4 +18,8 @@ def norm_full : allBelow Hv.normOk 1048576 = .true := native_refl
 -- the smooth minimum, every d₁, d₂ in [-64, 960): min − c − 1, c ≤ g²/256 < c + 2
 def smin_full : allBelow Hv.sminOk 1048576 = .true := native_refl
 
+-- the kernel's pieces, at every 12-bit input
+def corr_full : allBelow Hv.corrOk 4096 = .true := native_refl
+def eleven_full : allBelow Hv.octOk 4096 = .true := native_refl
+
 #print axioms smin_full

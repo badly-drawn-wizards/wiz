@@ -12,7 +12,7 @@ import Hdl.Verified
 -- the smooth minimum is min(d₁, d₂) − c(|d₂ − d₁|) − 1, c from the table
 def sminK_eq (d1 d2 : BitVec 12) :
     @sminK HwTy.El _ d1 d2 = BitVec.sub (BitVec.sub (@smin12 HwTy.El _ d1 d2)
-      (@zext HwTy.El _ 7 5 (@sminCorr HwTy.El _ (@abs12 HwTy.El _ (BitVec.sub d2 d1))))) (BitVec.ofNat 12 1) := rfl
+      (@zext HwTy.El _ 5 7 (@sminCorr HwTy.El _ (@abs12 HwTy.El _ (BitVec.sub d2 d1))))) (BitVec.ofNat 12 1) := rfl
 -- the length estimate is max(max(a, c), t(a + c)), t the 11/16 by shifts
 def norm2_eq (a c : BitVec 12) :
     @norm2 HwTy.El _ a c = @max12 HwTy.El _ (@max12 HwTy.El _ a c) (@elevenOf HwTy.El _ (BitVec.add a c)) := rfl
@@ -33,14 +33,16 @@ def root (n : Nat) (h : Nat.lt n 401 = .true) :
 
 -- the 17-entry table is (4 i)² / 256, and 0 beyond
 def table_all : allBelow Hv.romOk 32 = .true := rfl
--- the correction by e = |d₂ − d₁| (every 12-bit e): g = max(64 − e, 0) and
--- c ≤ g²/256 < c + 2, so smin(a, b) = min(a, b) − g²/(4k) is computed less 1 to 3 units
-def corr_all : allBelow Hv.corrOk 4096 = .true := rfl
+-- the correction by e = |d₂ − d₁|, for e < 64 (where it is not 0; every 12-bit e in
+-- examples/hdl-verified-native.wiz): g = 64 − e and c ≤ g²/256 < c + 2, so
+-- smin(a, b) = min(a, b) − g²/(4k) is computed less 1 to 3 units
+def corr_all : allBelow Hv.corrOk 64 = .true := rfl
 
 -- ## The octagonal length bound (Blobs)
 
--- 11/16 by shifts, for every 12-bit s: 16 t ≤ 11 s < 16 t + 38
-def eleven_all : allBelow Hv.octOk 4096 = .true := rfl
+-- 11/16 by shifts, for s = a + c < 2048 (a, c < 1024; every 12-bit s in
+-- examples/hdl-verified-native.wiz): 16 t ≤ 11 s < 16 t + 38
+def eleven_all : allBelow Hv.octOk 2048 = .true := rfl
 
 -- a use: the root of 400 is 20, and of 399 is 19
 #eval ((rtRun (BitVec.ofNat 11 400)).toNat, (rtRun (BitVec.ofNat 11 399)).toNat)
