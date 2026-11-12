@@ -232,7 +232,9 @@ def termTrailing : List TrailingParser := [
   { kind := "term.eq", prec := 50, lhsPrec := 51, p := seqs ["=", term 51] },
   { kind := "term.proj", prec := maxPrec, lhsPrec := maxPrec, p := seqs [noWs, ".", noWs, num] },
   { kind := "term.field", prec := maxPrec, lhsPrec := maxPrec, p := seqs [noWs, ".", noWs, ident] },
-  { kind := "term.sized", prec := maxPrec, lhsPrec := maxPrec, p := seqs [noWs, "^", term maxPrec] },
+  -- (a priority: `T^s` without spaces is a sized type, not the operator `^` of
+  -- lib/Prelude.wiz, which parses the same text as far, 7f)
+  { kind := "term.sized", prec := maxPrec, lhsPrec := maxPrec, priority := 1, p := seqs [noWs, "^", term maxPrec] },
   -- 13g: an as-pattern `x@p` (no space around `@`; only in patterns)
   { kind := "term.asPat", prec := maxPrec, lhsPrec := maxPrec, p := seqs [noWs, "@", noWs, term maxPrec] }
 ]
