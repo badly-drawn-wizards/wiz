@@ -636,6 +636,33 @@ function M.goto_definition()
 end
 
 ------------------------------------------------------------------------------
+-- The infoview in a browser (11w): the buffer's own server listens on a WebSocket and
+-- serves the web infoview's page on the same port (`wiz/browserInfoview`); the page
+-- follows this editor's cursor.
+
+--- Open the web infoview for `buf`'s server (default: the current buffer). The result
+--- (`{ port, url, message? }`) is kept in `M.state.browser`, for tests.
+function M.open_browser(buf)
+  buf = buf or vim.api.nvim_get_current_buf()
+  lsp.request(buf, 'wiz/browserInfoview', vim.empty_dict(), function(err, result)
+    vim.schedule(function()
+      if err then
+        vim.notify('wiz.nvim: ' .. (err.message or 'wiz/browserInfoview failed'), vim.log.levels.WARN)
+        return
+      end
+      S.browser = result
+      if not result or result.url == nil or result.url == vim.NIL then
+        vim.notify('wiz.nvim: ' .. ((result and result.message ~= vim.NIL and result.message) or 'no web infoview'),
+          vim.log.levels.WARN)
+        return
+      end
+      vim.ui.open(result.url)
+      vim.notify('wiz.nvim: web infoview at ' .. result.url, vim.log.levels.INFO)
+    end)
+  end)
+end
+
+------------------------------------------------------------------------------
 
 local attached_group = nil
 
