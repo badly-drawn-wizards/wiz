@@ -142,6 +142,7 @@ partial def term : Term R → Sx
   | .ulift l A => node "ulift" [level l, term A]
   | .up a => node "up" [term a]
   | .down t => node "down" [term t]
+  | .prf l t => node "prf" [level l, term t]
 where
   optLevel : Option Level → Sx
     | none => .a "none"
@@ -243,6 +244,7 @@ partial def dterm : Sx → Option (Term R)
     | "ulift" => return .ulift (← lv 1) (← t 2)
     | "up" => return .up (← t 1)
     | "down" => return .down (← t 1)
+    | "prf" => return .prf (← lv 1) (← t 2)
     | "scofix" => return .scofix (← lv 1) (← t 2) (← t 3) (← t 4) (← t 5) (← t 6) (← t 7) (← t 8)
     | "coit" => return .coit (← lv 1) (← t 2) (← t 3) (← t 4) (← t 5) (← t 6) (← t 7)
     | "nat" => return .natLit (← n 1)
@@ -329,7 +331,8 @@ def Effect.apply (e : Effect R) (s : CommandState R) : CommandState R :=
                                            code := "duplicate-declaration" },
              pristine := false }
   | none =>
-  let globals := e.decls.foldl (·.insert ·) s.globals
+  -- (the declarations belong to the module being replayed: `Globals.declModule`)
+  let globals := e.decls.foldl (·.insert ·) { s.globals with module := s.module }
   let globals := { globals with builtins := e.builtins ++ globals.builtins,
                                 assumed := e.assumed ++ globals.assumed,
                                 privates := e.privates.foldl (fun m (n, md) => m.insert n md) globals.privates,
@@ -493,7 +496,7 @@ def Effect.ofSx? (x : Sx) : Option (Effect R) := do
 /-- The cache's version: change it whenever the format or the elaborator's output changes.
 (The directory store also mixes in the binary's own hash, `binaryId`, so two builds of
 wiz never share entries; the salt is for invalidating by hand.) -/
-def salt : UInt64 := hash "wiz-cache-14-builtin-once"  -- 14: a builtin key is registered once; 13: witnesses, assumed registrations, warnings; 12: private constructors, observations, fields (13b); 11: 22i, marked structure tails; 9: private names (13b); 8: Q4
+def salt : UInt64 := hash "wiz-cache-15-prf"  -- 15: proof markers (P2: declarations are stored marked); 14: a builtin key is registered once; 13: witnesses, assumed registrations, warnings; 12: private constructors, observations, fields (13b); 11: 22i, marked structure tails; 9: private names (13b); 8: Q4
 
 /-! ## Keys and atomic writes (stage 23c)
 

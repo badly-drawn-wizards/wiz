@@ -230,10 +230,41 @@ partial def rename (m : Nat) (p : PRen) (v : Val R) : ElabM R (Term R) := do
       (← rename m p b) (← rename m p e)) sp
   -- (P2) a suspended proof is evaluated for a solution (a normal form, which the kernel
   -- can check)
-  | .neutral (.prf _ _ _ pv) sp => do rename m p (vElims (← getGlobals) pv.get sp)
+  -- within a step budget (`Budget`): a proof need not have one
+  | .neutral (.prf env t) sp => do
+    let g ← getGlobals
+    match g.budget with
+    | some _ => rename m p (vElims g (eval g env t) sp)
+    | none =>
+      -- (the monadic read-back is a pure function of the state: it runs inside the budget)
+      let st ← get
+      let (r, used) := Budget.run g.proofSteps fun b =>
+        let g' := { g with budget := some b }
+        match (rename m p (vElims g' (eval g' env t) sp)).run { st with globals := g' } with
+        | .ok (tm, st') => (some tm, some st', none)
+        | .error e => (none, none, some e)
+      if used > g.proofSteps then throwAt {} (Budget.message g.proofSteps)
+      match r with
+      | (some tm, some st', _) => set { st' with globals := g }; pure tm
+      | (_, _, some e) => throw e
+      | _ => throwAt {} "internal error: read-back of a proof"
   | .neutral (.mvar m') sp =>
     if m == m' then throwAt {} s!"occurs check: ?m{m} would have to contain itself"
-    else goSp (.mvar m') sp
+    else
+      -- **pruning**: another hole applied to distinct variables, some of them out of the
+      -- solution's scope (`?A n x` in a `match` branch, solving `?T n`): it can't depend
+      -- on those, so it becomes a new hole over the others
+      match ← pruneArgs? p sp with
+      | some keep =>
+        let m'' := (← get).metas.size
+        let info := (← lookupMeta m').info
+        modify fun s => { s with metas := s.metas.push { info, desc := "a pruned hole", arity := keep.size } }
+        let n := sp.size
+        let body : Term R := keep.foldl (fun t i => .app t (.var (n - i - 1))) (.mvar m'')
+        let sol := (List.range n).foldl (fun t i => Term.lam s!"x{n - i - 1}" t) body
+        solveMeta m' (eval (← getGlobals) [] sol)
+        goSp (.mvar m'') (keep.filterMap fun i => sp[i]?)
+      | none => goSp (.mvar m') sp
   | .sort l => pure (.sort l)
   | .pi x bi q a b s =>
     return .pi x bi (← rename m p q) (← rename m p a) (← rename m p.lift (← instM b (Val.var p.cod))) s
@@ -271,6 +302,20 @@ partial def rename (m : Nat) (p : PRen) (v : Val R) : ElabM R (Term R) := do
   | .coit l I D S st i s =>
     return .coit l (← rename m p I) (← rename m p D) (← rename m p S) (← rename m p st) (← rename m p i) (← rename m p s)
 where
+  /-- For a spine of distinct variables of which some are out of `p`'s scope: the
+  positions of those in scope. `none` if nothing is to be pruned (or it isn't such a
+  spine). -/
+  pruneArgs? (p : PRen) (sp : Array (Elim R)) : ElabM R (Option (Array Nat)) := do
+    let mut keep : Array Nat := #[]
+    let mut seen : Std.HashSet Lvl := {}
+    for e in sp, i in [0:sp.size] do
+      let .app a := e | return none
+      let .neutral (.local x) #[] ← force a | return none
+      if seen.contains x then return none
+      seen := seen.insert x
+      if p.ren.contains x || p.downs.contains x then keep := keep.push i
+    if keep.size == sp.size then return none
+    return some keep
   renameHint : Option (Name × List Level × List (Val R)) → ElabM R (Option (Name × List Level × List (Term R)))
     | some (n, us, as) => return some (n, us, ← as.mapM (rename m p))
     | none => pure none
@@ -513,7 +558,21 @@ partial def unify (l : Lvl) (t u : Val R) : ElabM R Unit := do
       solve l m' sp' (.neutral (.mvar m) sp)
   | .neutral (.mvar m) sp, t' => solve l m sp t'
   | t', .neutral (.mvar m) sp => solve l m sp t'
-  | .neutral h sp, .neutral h' sp' => unifyHead l h h'; unifySpine l sp sp'
+  | .neutral h sp, .neutral h' sp' =>
+    -- (P2) two proofs with only applications and projections after them are equal, with
+    -- nothing to compare (as in `convNe`): their spines need not agree (a suspended
+    -- proof on one side, a `transp` applied to a phantom tail's argument on the other).
+    -- This is what makes two values that differ only in an erased proof field equal
+    -- where the type isn't seen (an opaque type, 13b), e.g. two closed words.
+    let lazy := (← getGlobals).lazyProofs
+    let isProof : Head R → Bool
+      | .refl .. | .reflTy _ | .transp .. | .prf .. => true
+      | h => lazy && proofHead h
+    let onProofs (sp : Array (Elim R)) : Bool := sp.all fun
+      | .app _ | .fst | .snd | .down => true
+      | _ => false
+    if isProof h && isProof h' && onProofs sp && onProofs sp' then pure () else
+    unifyHead l h h'; unifySpine l sp sp'
   | _, _ => throwAt {} "rigid mismatch"
   --|ex
   --| sorry

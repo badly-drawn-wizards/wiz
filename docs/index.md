@@ -1,6 +1,7 @@
 # Wiz documentation
 
 * [building.md](building.md)
+* [ci-runner.md](ci-runner.md): a self-hosted runner for the heavy CI shards
 * [exercises.md](exercises.md): generating the exercise tree from this one
 * [CoreSpec.md](CoreSpec.md)
 * [Status.md](Status.md)

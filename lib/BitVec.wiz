@@ -14,13 +14,14 @@ import Word
 -- allocation below 2^63) and Word's natives, through the operation each one calls.
 --
 -- Operations that compute `2^n` take the width at runtime (`{ω n : Nat}`); the others
--- (`toNat`, comparisons, `ofVec`) take it erased.
+-- (`toNat`, comparisons) take it erased.
 
 def BitVec (n : Nat) : Type := UIntN n
 
--- the bits as a number, and a number below `2^n` as bits (`mk` doesn't reduce; `ofNat` does)
+-- the bits as a number, and a number as bits (modulo `2^n`; `mk` is `ofNat` with the
+-- width inferred)
 def BitVec.toNat {0 n : Nat} (a : BitVec n) : Nat := UIntN.toNat a
-def BitVec.mk {0 n : Nat} (x : Nat) : BitVec n := @UIntN.mk n x
+def BitVec.mk {ω n : Nat} (x : Nat) : BitVec n := UIntN.ofNat n x
 
 def BitVec.ofNat (n x : Nat) : BitVec n := UIntN.ofNat n x
 
@@ -66,7 +67,7 @@ def BitVec.sle {ω n : Nat} (a b : BitVec n) : Bool := IntN.le (UIntN.toIntN a) 
 
 -- Widths.
 -- `hi` on top of `lo`
-def BitVec.concat {0 m : Nat} {ω n : Nat} (hi : BitVec m) (lo : BitVec n) : BitVec (m + n) :=
+def BitVec.concat {ω m n : Nat} (hi : BitVec m) (lo : BitVec n) : BitVec (m + n) :=
   BitVec.mk (Nat.shiftLeft hi.toNat n + lo.toNat)
 -- bits `hi` down to `lo` (inclusive), as in Verilog `a[hi:lo]`
 def BitVec.extract {0 n : Nat} (hi lo : Nat) (a : BitVec n) : BitVec (hi + 1 - lo) :=
@@ -86,7 +87,7 @@ def BitVec.toVec {ω n : Nat} (a : BitVec n) : Vec Bool n := BitVec.toVecAux n a
 def BitVec.bitValue : Bool → Nat
   | .false => 0
   | .true => 1
-def BitVec.ofVec {0 n : Nat} (v : Vec Bool n) : BitVec n :=
+def BitVec.ofVec {ω n : Nat} (v : Vec Bool n) : BitVec n :=
   BitVec.mk (Vec.foldr (fun b acc => BitVec.bitValue b + acc + acc) 0 v)
 
 -- Theorems. A bit vector is a word, by definition: the operations are Word's.
@@ -98,3 +99,12 @@ def BitVec.toNat_eq {0 n : Nat} (a : BitVec n) : BitVec.toNat a = UIntN.toNat (B
   refl (BitVec.toNat a)
 def BitVec.add_comm {ω n : Nat} (a b : BitVec n) : BitVec.add a b = BitVec.add b a :=
   congrArg (UIntN.ofNat n) (Nat.add_comm a.toNat b.toNat)
+-- A one-bit word is 0 or 1 (its bits are below 2: `UIntN.toNat_lt`).
+def BitVec.lt2_cases : (n : Nat) → Nat.lt n 2 = .true → (n = 0) ∨ (n = 1)
+  | .zero, _ => Or.inl rfl
+  | .succ .zero, _ => Or.inr rfl
+  | .succ (.succ .zero), h => absurd h.1
+  | .succ (.succ (.succ _)), h => absurd h.1
+def UIntN.cases1 (x : UIntN 1) : x = 0 ∨ x = 1 :=
+  Or.elim (BitVec.lt2_cases x.toNat (UIntN.toNat_lt x))
+    (fun e => Or.inl (UIntN.ext x 0 e)) (fun e => Or.inr (UIntN.ext x 1 e))

@@ -336,7 +336,8 @@ def unfoldCases? (g : Globals R) (t : Term R) : Option (Term R) := do
   let rec arity : Term R → Nat
     | .lam _ b => arity b + 1
     | _ => 0
-  let v := v.instLevels d.levelParams us
+  -- (P2: without the markers of the level-generic eliminator, which mark nothing here)
+  let v := (v.instLevels d.levelParams us).stripMarks
   let k := arity v
   if args.length < k then none
   let b ← beta v (d.type.instLevels d.levelParams us) (args.take k)
@@ -372,11 +373,36 @@ def isNatTy (g : Globals R) (ty : Val R) : Bool :=
     (match hint with | some (T, _, _) => T == N | none => false) || natShaped g I D
   | _, _ => false
 
-/-- The native representation of a `μ` type, if its name has one. -/
-def reprOfTy? (g : Globals R) (ty : Val R) : Option ReprInfo :=
-  match whnf ty with
-  | .mu _ _ _ _ _ (some (T, _, _)) => reprOf? g.builtins T
+/-- The sealed type a `μ`'s index type names (22k): `sealed inductive T` puts its seal, the
+axiom `T.seal✝`, among the erased domains of the index tail (after the indices of an
+indexed family). A constant without a value is compared by name, so this is a function
+of the type up to conversion, unlike the display name on the `μ`. -/
+partial def sealedIx? (g : Globals R) (I : Val R) (lvl : Nat := 2000000) : Option Name :=
+  match whnf I with
+  | .sigma _ _ _ B _ => sealedIx? g (Closure.inst g B (.var lvl)) (lvl + 1)
+  | .pi _ _ _ dom cod _ =>
+    let here : Option Name := match whnf dom with
+      | .neutral (.global k _) sp =>
+        if sp.isEmpty then g.builtins.findSome? fun (key, x) =>
+          if x == k && key.startsWith "seal:" then some (key.drop 5).toString else none
+        else none
+      | _ => none
+    here <|> sealedIx? g (Closure.inst g cod (.var lvl)) (lvl + 1)
   | _ => none
+
+/-- The type with a native representation that `ty` is, with the representation: found
+by the seal of a sealed type (a native representation needs `sealed`), never by the
+display name. -/
+def nativeTy? (g : Globals R) (ty : Val R) : Option (Name × ReprInfo) :=
+  match whnf ty with
+  | .mu _ I _ _ _ _ =>
+    match sealedIx? g I with
+    | some T => (reprOf? g.builtins T).map (T, ·)
+    | none => none
+  | _ => none
+
+/-- The native representation of a `μ` type, if it has one. -/
+def reprOfTy? (g : Globals R) (ty : Val R) : Option ReprInfo := (nativeTy? g ty).map (·.2)
 
 /-- The start of the message with which erasure refuses a description whose first field
 has an abstract type (`neutralFieldTy`). Unlike a term erasure can't handle yet, this is
@@ -392,6 +418,41 @@ def neutralFieldTy (S : Val R) : Bool :=
     | .neutral .. => true
     | _ => false
   | _ => false
+
+/-- The start of the message with which erasure refuses to build or take apart a value
+with a native representation outside its type's module (`nativeHome?`). Fatal, like
+`abstractFieldMsg`. -/
+def nativeHomeMsg : String := "cannot compile: a value of a type with a native representation is built or taken apart outside the type's module"
+
+/-- **Native values come from their module** (layer 3 of `wiz-notes/repr-shape.md` §4C.6).
+If `ty` has a native representation and its constructor is private (R5: the module keeps
+an invariant the natives rely on, as `n < 2^w` for words), then a `con` at `ty` and an
+eliminator on a value of `ty` may be erased only in a declaration of the type's own
+module. The elaborator already refuses them elsewhere (13b); this is the same rule on
+the kernel's terms, whatever the elaborator did, because compiled code's agreement with
+the definitions rests on it. Returns the type's name and module when the declaration
+being erased (`g.module`, set by `eraseDecl`) is not of that module. -/
+def nativeHome? (g : Globals R) (ty : Val R) : Option (Name × String) :=
+  match nativeTy? g ty with
+  | some (T, _) =>
+    let ctorPrivate := g.privates.fold (init := false) fun acc n _ =>
+      acc || (n.startsWith (T ++ ".") && n != T ++ ".desc" && n != sealName T)
+    let home := (g.declModule[T]?).getD ""
+    if ctorPrivate && home != g.module then some (T, home) else none
+  | none => none
+
+def nativeHomeError (T : Name) (home : String) : TypeError :=
+  .other (nativeHomeMsg ++ s!" ({T}, of module {home}): use {T}'s functions")
+
+/-- Does a seal (`isSeal`) occur in `t` outside a complete `μ` type? (Layer 3, (i): the
+seal of a type with a native representation as a type argument, or the type's
+description as an argument, is how generic code would come to handle a native value as
+the model's object.) -/
+partial def sealOutsideMu (isSeal : Name → Bool) : Term R → Bool
+  | .const n _ => isSeal n
+  | .mu .. => false
+  | t => (t.forChildren (m := StateM Bool) (fun _ => pure ())
+      (fun _ c => modify (· || sealOutsideMu isSeal c)) |>.run false).2
 
 /-- Does a description start with a choice of tag, `Desc.arg (Enum ls) F`? Then the
 tag is the flat object's tag. -/
@@ -518,6 +579,8 @@ partial def eraseCheck (ctx : Ctx R) (t : Term R) (ty : VTy R) (inDesc : Bool :=
   if erasable ctx ty then return .erased
   -- (given) Q4: `ULift` has no runtime content: `up a` is `a`
   if let (.up a, .ulift _ A) := (t, whnf ty) then return ← eraseCheck ctx a A
+  -- (given) P2: a marked proof is erased; another marker is transparent
+  if let .prf l x := t then return ← (if l.isZero then pure .erased else eraseCheck ctx x ty)
   --<sol
   let g := ctx.globals
   match t, whnf ty with
@@ -537,6 +600,7 @@ partial def eraseCheck (ctx : Ctx R) (t : Term R) (ty : VTy R) (inDesc : Bool :=
     let b' ← eraseCheck ctx b (ctx.instArg B a)
     return .obj 0 #[a', b']
   | .con x, .mu l I D i s _ =>
+    if let some (T, home) := nativeHome? g ty then throw (nativeHomeError T home)
     let x' ← eraseCheck ctx x (vInterp g l I D (muFamilyAt l I D ((sizePred? s).getD .szInf)) i)
     -- a native representation: the native constructor, applied to the runtime field
     if let some ri := reprOfTy? g ty then
@@ -604,6 +668,9 @@ partial def eraseCheck (ctx : Ctx R) (t : Term R) (ty : VTy R) (inDesc : Bool :=
   `sfix` becomes a `fix`, and `scase` applies its method to the payload. -/
 partial def eraseInfer (ctx : Ctx R) (t : Term R) (known : Option (VTy R) := none) (inDesc : Bool := false) :
     TCM (ETerm × VTy R) := do
+  -- (given) P2: a marker that is not a proof's is transparent
+  if let .prf l x := t then
+    if !l.isZero then return ← eraseInfer ctx x known inDesc
   -- (`known`: the type, when the caller has it. Otherwise `quickType`, which off the
   -- elimination spine asks the kernel's `infer`: that checks the whole term again, once
   -- per enclosing node, quadratic in the depth of a `match`'s tree of `split`s)
@@ -685,6 +752,7 @@ partial def eraseInfer (ctx : Ctx R) (t : Term R) (known : Option (VTy R) := non
         | _ => false
       let D' ← eraseCheck ctx D (.desc l vI)
       let xty ← quickType ctx x
+      if let some (T, home) := nativeHome? g xty then throw (nativeHomeError T home)
       if isCases then pure (.apps m' [← eraseCheck ctx i vI, viewOf g vD xty D' (← eraseE ctx x), .erased])
       else
         let D' := if isNatTy g xty then .obj 5 #[D'] else D'
@@ -725,6 +793,7 @@ partial def eraseInfer (ctx : Ctx R) (t : Term R) (known : Option (VTy R) := non
       let mTy := scaseMethodTy g l vI vD vP (ctx.eval s) QuantitySyntax.explicitDefault
       let _ := v
       let xty ← quickType ctx x
+      if let some (T, home) := nativeHome? g xty then throw (nativeHomeError T home)
       let D' ← eraseCheck ctx D (.desc l vI)
       pure (.apps (← eraseCheck ctx m mTy) [.erased, ← eraseCheck ctx i vI, viewOf g vD xty D' (← eraseE ctx x)])
     | .tag _ i => pure (.obj i #[])
@@ -896,8 +965,10 @@ where
 def eraseDecl (g : Globals R) (d : Decl R) : TCM ETerm := do
   -- the compiler's version (direct recursion), if the elaborator made one
   let some v := d.impl <|> d.value | return .prim .unreachable #[]
-  -- (the kernel has checked it, like the value: `checkImpl`, `addPartialImpl`)
-  let ctx : Ctx R := { globals := g }
+  -- (the kernel has checked it, like the value: `checkImpl`, `addPartialImpl`; it has
+  -- accepted the term: nothing to require of its markers, `proof`)
+  -- (`module`: the declaration's own, for `nativeHome?`)
+  let ctx : Ctx R := { globals := { g with module := (g.declModule[d.name]?).getD "" }, proof := true }
   -- compiled equations (derived from the value, `deriveImpl`): the calls a nested split
   -- reverted go into its branches, and a constructor rebuilt from a branch's fields is the
   -- scrutinee (`Push`), if the result checks (else the step before, else the impl as is)
@@ -913,7 +984,8 @@ def eraseDecl (g : Globals R) (d : Decl R) : TCM ETerm := do
   -- universe polymorphism has no runtime content, but `Sort 0` would make motives
   -- propositions (and everything erasable): erase the `Type` instance
   let us := d.levelParams.map fun _ => Level.succ .zero
-  let e ← eraseTop ctx (v.instLevels d.levelParams us) (ctx.eval (d.type.instLevels d.levelParams us)) (isNuDesc g d)
+  -- (P2: the markers of level-generic terms mark nothing at this instance)
+  let e ← eraseTop ctx (v.instLevels d.levelParams us).stripMarks (ctx.eval (d.type.instLevels d.levelParams us)) (isNuDesc g d)
   return if derived then e.inlineCalls d.name else e
 
 end Wiz
