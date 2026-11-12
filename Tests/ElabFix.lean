@@ -180,8 +180,8 @@ def group : Group where
     { name := "the unifier meets an equation with its computed form (unify-computed-equations)", run := fun _ =>
         okOptic ("import Optic\n" ++
           "def t3 (x : Nat) (xs ys : List Nat) (h : xs = ys) : List.cons x xs = List.cons x ys :=\n" ++
-          "  Optic.congrArg (List.cons x) h\n" ++
-          "def t4 (a b : Nat) (h : a = b) : Nat.succ a = Nat.succ b := Optic.congrArg Nat.succ h") },
+          "  Eq.congrArg (List.cons x) h\n" ++
+          "def t4 (a b : Nat) (h : a = b) : Nat.succ a = Nat.succ b := Eq.congrArg Nat.succ h") },
     -- agent/elab-stretch
     { name := "numerals and notation in class field types (numerals-in-class-decls)", run := fun _ =>
         okLib ("import Prelude\ninductive HwTy where\n  | bits (n : Nat)\nclass Hw (r : HwTy → Type) where\n" ++
@@ -565,6 +565,16 @@ def group : Group where
         -- (since agent/elab-bugs the inner `Ex.intro` waits for nothing better and no
         -- ill-typed guess is made: `rfl` meets the unsolved motive `?P ?w`)
         failsLibs "import Logic\ndef t := Ex.intro _ 3 (Ex.intro _ 3 rfl)" "rfl: the expected type is not an equation" },
+    { name := "a failing unification under a binder fails fast (wiz-reals S1: one unfolding order per layer)", run := fun _ =>
+        -- each `Int.ofPair` is `Nat.sub` five definitions deep; trying both unfolding orders
+        -- at every layer took 17 s
+        failsLibsWithin 8 ("import Int\nimport Logic\n" ++
+          "def Int.ofPair (a b : Nat) : Int := Int.subNatNat a b\n" ++
+          "axiom ofPair_negate (a b : Nat) : -(Int.ofPair a b) = Int.ofPair b a\n" ++
+          "axiom ofPair_add (a b c d : Nat) : Int.ofPair a b + Int.ofPair c d = Int.ofPair (a + c) (b + d)\n" ++
+          "def r (a b c d : Nat) : Int.ofPair a b + -(Int.ofPair c d) = Int.ofPair (a + d) (b + c) :=\n" ++
+          "  Eq.trans (Eq.congrArg (fun y => Int.ofPair _ _ + y) (ofPair_negate _ _)) (ofPair_add _ _ _ _)\n")
+          "outside the pattern fragment" },
     -- agent/bugfix-elab
     { name := "a module reaching a duplicate declaration through an import stops there: an error, not a run of its macros (dup-import-macro-panic)", run := fun _ => do
         -- `DupMap` declares lib/Text.wiz's `List.map`; lib/Deriving.wiz imports Text and then
@@ -660,7 +670,19 @@ def group : Group where
         failsLibW "import Prelude\ndef x : Option Nat := Option.bind (.some 1) (fun n => .some n)\n" "unknown identifier 'Option.bind'"
         failsLibW "import Prelude\ndef x : Nat := Nat.nope 3\n" "unknown identifier 'Nat.nope'"
         -- a field of a value is still a field
-        failsLibW "import Prelude\nstructure P where\n  a : Nat\ndef p : P := P.mk 1\ndef x : Nat := p.b\n" "no field 'b'" }
+        failsLibW "import Prelude\nstructure P where\n  a : Nat\ndef p : P := P.mk 1\ndef x : Nat := p.b\n" "no field 'b'" },
+    { name := "#250: the body of an impossible arm is type checked; an empty match", run := fun _ => do
+        let hdr := "import Prelude\ninductive T : Bool → Type where\n  | mk : T .true\n"
+        failsLibW (hdr ++ "def f (t : T .false) : False := match t with\n  | .mk => \"hello\"\n") "type mismatch"
+        -- a well-typed body on an impossible arm is still accepted
+        okLib (hdr ++ "def f (t : T .false) (h : False) : False := match t with\n  | .mk => h\n")
+        -- no arms when every case is impossible
+        okLib (hdr ++ "def f (t : T .false) : False := match t with\n" ++
+          "def g : T .false → False := fun t => match t with\n" ++
+          "def h (n : Nat) : (b : Bool) → T b → b = .false → Nat\n  | _, .mk, e => absurd e.1\n" ++
+          "def k : {b : Bool} → T b → b = .false → False\n  | _, .mk, e => absurd e.1\n")
+        failsLibW (hdr ++ "def f (t : T .true) : False := match t with\n") "missing case for constructor mk"
+        failsLibW (hdr ++ "def g : (b : Bool) → T b → False := fun b t => match t with\n") "missing case for constructor mk" }
   ]
 
 /-- This module's test groups, which `Tests/Main.lean` runs: one per line, in sorted
