@@ -653,6 +653,23 @@ def serverGroup : Group where
         let (_, r) := ask srv "wiz/interactiveInfo" src (offAfter src "2 *" (-1))
         checkEq ["Mul Nat"] ((item r "instance").map fun i => flatten (LSP.get? i ["type"]).get!)
         check ((item r "syntax").length == 1 && (item r "expansion").length == 1) s!"syntax items: {r.compress}" },
+    { name := "signature help: the binders of the function being applied (11u)", run := fun _ => do
+        let src := "import Prelude\ndef a : Nat := Nat.add 1 \ndef b (xs : List Nat) : Nat := List.length \n" ++
+          "def c (f : Nat → Bool → Nat) : Nat := Nat.succ (f 2 \n"
+        let (srv, _) ← openDoc src
+        let (srv, r) := ask srv "textDocument/signatureHelp" src (offAfter src "Nat.add 1 ")
+        checkEq "Nat.add (_ : Nat) (_ : Nat) : Nat" (LSP.getStr ((LSP.get? r ["signatures"]).get!.getArrVal? 0 |>.toOption.get!) ["label"])
+        checkEq (1 : Nat) (LSP.getNat r ["activeParameter"])
+        let (srv, r) := ask srv "textDocument/signatureHelp" src (offAfter src "List.length ")
+        let sig := (LSP.get? r ["signatures"]).get!.getArrVal? 0 |>.toOption.get!
+        checkEq "List.length {A : Type} (_ : List A) : Nat" (LSP.getStr sig ["label"])
+        let some (.arr ps) := LSP.get? sig ["parameters"] | throw (IO.userError s!"{sig.compress}")
+        checkEq 1 ps.size
+        checkEq (0 : Nat) (LSP.getNat r ["activeParameter"])
+        -- inside parentheses, a local function
+        let (_, r) := ask srv "textDocument/signatureHelp" src (offAfter src "(f 2 ")
+        check (has r "Bool") s!"f: {r.compress}"
+        checkEq (1 : Nat) (LSP.getNat r ["activeParameter"]) },
     { name := "document symbols, workspace symbols and folding ranges (11v)", run := fun _ => do
         let src := "import Prelude\n/- a block\n   comment -/\nstructure Point where\n  px : Nat\n  py : Nat\n" ++
           "def Point.norm (p : Point) : Nat := p.px\ndef k : Nat → Nat := by\n  intro n\n  exact n\n"

@@ -3,6 +3,7 @@ import Wiz.Query
 import Wiz.Rig.Instances
 import Wiz.Infoview
 import Wiz.Actions
+import Wiz.Signature
 import Wiz.Symbols
 import Wiz.Socket
 import Wiz.WebSocket
@@ -85,14 +86,19 @@ def range (text : String) (info : SourceInfo) : Json :=
 -- (the whole elaborator is specialised to `ZeroOneMany` here; the default limit of
 -- 200000 heartbeats no longer covers compiling that)
 set_option maxHeartbeats 800000 in
-/-- Elaborate a document (incrementally) with the libraries available to `import`. -/
-def elaborate (srv : Server) (doc : Doc) : Doc :=
+/-- Elaborate a text (incrementally, reusing `eng`) with the libraries available to `import`. -/
+def elabText (srv : Server) (eng : Query.Engine ZeroOneMany) (text : String) : St × Query.Engine ZeroOneMany :=
   let libs := srv.libs
   let trusted := srv.trusted
   let init : St := { loader := fun m => (libs.get? m).map (·.2), termInfo := true,
                      trustedModule := trusted.contains }
   let key₀ := hash (libs.toList.map (·.2.2) |>.toString)
-  let (s, eng) := Query.elaborate doc.engine doc.text init key₀
+  Query.elaborate eng text init key₀
+
+set_option maxHeartbeats 800000 in
+/-- Elaborate a document (incrementally) with the libraries available to `import`. -/
+def elaborate (srv : Server) (doc : Doc) : Doc :=
+  let (s, eng) := elabText srv doc.engine doc.text
   { doc with state := s, engine := eng }
 
 def diagnostic (doc : Doc) (m : Msg) : Json :=
@@ -120,6 +126,7 @@ def capabilities : Json :=
     -- (answered with null; asked for so that editors report cursor moves, for `--infoview`)
     ("documentHighlightProvider", true),
     ("completionProvider", Json.mkObj [("triggerCharacters", Json.arr #["."])]),
+    ("signatureHelpProvider", Json.mkObj [("triggerCharacters", Json.arr #[" ", "("]), ("retriggerCharacters", Json.arr #[" "])]),
     ("documentSymbolProvider", true), ("workspaceSymbolProvider", true), ("foldingRangeProvider", true),
     ("codeActionProvider", Json.mkObj [("codeActionKinds", Json.arr #["quickfix", "refactor.rewrite"]),
                                        ("resolveProvider", true)]),
@@ -527,6 +534,15 @@ def handle (srv : Server) (msg : Json) : Server × Array Json := Id.run do
     match infoview srv uri doc method msg with
     | .ok (doc, j) => ({ srv with docs := srv.docs.insert uri doc }, #[reply j])
     | .error (c, m) => (srv, #[replyError c m])
+  | "textDocument/signatureHelp" =>
+    let some doc := srv.docs.get? uri | return (srv, #[reply Json.null])
+    let off := ofPos doc.text (getNat msg ["params", "position", "line"]) (getNat msg ["params", "position", "character"])
+    match Signature.helpAt doc.state doc.text off (fun t => (elabText srv doc.engine t).1) with
+    | some h =>
+      let ps := h.params.map fun (a, b) => Json.mkObj [("label", Json.arr #[(a : Nat), (b : Nat)])]
+      (srv, #[reply (Json.mkObj [("signatures", Json.arr #[Json.mkObj [("label", Json.str h.label), ("parameters", Json.arr ps)]]),
+                                 ("activeSignature", (0 : Nat)), ("activeParameter", h.active)])])
+    | none => (srv, #[reply Json.null])
   | "textDocument/hover" | "textDocument/definition" | "textDocument/declaration" | "textDocument/completion" =>
     let some doc := srv.docs.get? uri | return (srv, #[reply Json.null])
     let off := ofPos doc.text (getNat msg ["params", "position", "line"]) (getNat msg ["params", "position", "character"])

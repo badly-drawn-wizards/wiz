@@ -131,6 +131,7 @@ What the server offers, and Neovim's keys for it:
 
 | | |
 |---|---|
+| signature help (`<C-s>` in insert mode) | the binders of the function being applied, the next explicit one highlighted |
 | outline (`gO`), workspace symbols (`:lua vim.lsp.buf.workspace_symbol()`) | the file's declarations (fields and constructors as children); every declaration of the open files and their imports |
 | folding (`lsp.folding`) | commands, `by` blocks, `match`es, block comments |
 
