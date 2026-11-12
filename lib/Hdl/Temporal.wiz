@@ -82,6 +82,15 @@ def TL.past {A : Type} (n : Nat) (p : A → Prop) : TL A :=
 def TL.sat {A : Type} (σ : Trace A) (φ : TL A) : Prop := φ σ 0
 def TL.valid {A : Type} (φ : TL A) : Prop := (σ : Trace A) → φ σ 0
 
+-- Notation (docs/dsls.md, 13o): `□ φ`, `◇ φ`, `○ φ` (prefix, like `¬`), `p ~> q`, and
+-- SVA's `a |-> φ` and `a |=> φ` (right-associative, below `∧`/`∨`). Formulas print this way.
+notation:max "□ " φ:40 => TL.always φ
+notation:max "◇ " φ:40 => TL.eventually φ
+notation:max "○ " φ:40 => TL.next φ
+infixr:25 " ~> " => TL.leadsTo
+infixr:25 " |-> " => TL.implies
+infixr:25 " |=> " => TL.impliesNext
+
 ------------------------------------------------------------------------------------
 -- Laws
 
