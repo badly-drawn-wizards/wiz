@@ -3,6 +3,7 @@ import Wiz.Query
 import Wiz.Rig.Instances
 import Wiz.Infoview
 import Wiz.Actions
+import Wiz.Symbols
 import Wiz.Socket
 import Wiz.WebSocket
 import Std.Sync.Channel
@@ -119,6 +120,7 @@ def capabilities : Json :=
     -- (answered with null; asked for so that editors report cursor moves, for `--infoview`)
     ("documentHighlightProvider", true),
     ("completionProvider", Json.mkObj [("triggerCharacters", Json.arr #["."])]),
+    ("documentSymbolProvider", true), ("workspaceSymbolProvider", true), ("foldingRangeProvider", true),
     ("codeActionProvider", Json.mkObj [("codeActionKinds", Json.arr #["quickfix", "refactor.rewrite"]),
                                        ("resolveProvider", true)]),
     ("experimental", Json.mkObj [("wizInfoview", Json.mkObj [("version", (1 : Nat)),
@@ -151,8 +153,8 @@ def goalJson (g : TaggedGoal) (tj : TT → Json) : Json :=
     ("type", tj g.target), ("goalPrefix", "⊢ "),
     ("userName", match g.userName with | some n => Json.str n | none => Json.null)]
 
-def plainGoals (gs : Array (GoalView ZeroOneMany)) (traces : Array String := #[]) : Json :=
-  let shown := gs.map (·.show)
+def plainGoals (gs : Array (GoalView ZeroOneMany)) (traces : Array String := #[]) (g : Option (Globals ZeroOneMany) := none) : Json :=
+  let shown := gs.map (·.show g)
   let rendered := if shown.isEmpty then "no goals" else s!"```wiz\n{"\n\n".intercalate shown.toList}\n```"
   let rendered := if traces.isEmpty then rendered else s!"{rendered}\n\n{"\n\n".intercalate traces.toList}"
   Json.mkObj [("rendered", rendered), ("goals", Json.arr (shown.map Json.str)), ("messages", Json.arr (traces.map Json.str))]
@@ -220,6 +222,17 @@ def expansionText (e : Syntax) : String :=
   let t := e.reprint
   if t.length > 600 then (t.take 597).toString ++ "…" else t
 
+/-- How a hover names the identifier at `off`: its name, except for a local a macro
+introduced at the range of other source (Feral's `v_26` for a call `double (v.len)`, at
+the call: Elab/ProcMacro.lean, `locateMarked`), which is named by that source when it
+is short and on one line. -/
+def identLabel (doc : Doc) (off : Nat) (n : Name) : String :=
+  match Query.identAt doc.state off with
+  | some (.ident i _ true _ _) =>
+    let src := String.ofList ((doc.text.toList.drop i.start).take (i.stop - i.start))
+    if src != n && !src.contains '\n' && src.length ≤ 60 && !src.isEmpty then src else n
+  | _ => n
+
 /-- The hover of a use of syntax or an `import` (`Query.syntaxAt`), as Markdown. -/
 def syntaxHover (srv : Server) (uri : String) (doc : Doc) (es : Array (Info ZeroOneMany)) : Option String := do
   let e ← es[0]?
@@ -227,7 +240,11 @@ def syntaxHover (srv : Server) (uri : String) (doc : Doc) (es : Array (Info Zero
   let mut parts : Array String := #[]
   -- the syntax and its type (the expected type where it was checked), as Lean shows it
   let ty := st.infos.findSome? fun
-    | .term r g _ => if r.start == e.info.start && r.stop == e.info.stop then some (g.target.pretty g.names) else none
+    | .term r g _ => if r.start == e.info.start && r.stop == e.info.stop then some (g.target.pretty g.names (some st.globals)) else none
+    | _ => none
+  -- else an identifier there (not checked against a type: a function applied, say)
+  let ty := ty.orElse fun _ => st.infos.findSome? fun
+    | .ident r _ _ names t => if r.start == e.info.start && r.stop == e.info.stop then some (t.pretty names (some st.globals)) else none
     | _ => none
   for x in es do
     match x with
@@ -261,7 +278,7 @@ def syntaxHover (srv : Server) (uri : String) (doc : Doc) (es : Array (Info Zero
   for i in st.infos do
     if let .inst r ns cls t := i then
       if r.start == e.info.start && r.stop == e.info.stop then
-        parts := parts.push s!"instance `{t.pretty ns} : {cls.pretty ns}`"
+        parts := parts.push s!"instance `{t.pretty ns (some st.globals)} : {cls.pretty ns (some st.globals)}`"
   if parts.isEmpty then none else some ("\n\n".intercalate parts.toList)
 
 /-- Names a command declares that the infoview doesn't list: what the elaborator makes
@@ -303,14 +320,14 @@ def infoItems (srv : Server) (uri : String) (doc : Doc) (off : Nat) :
   for i in Query.instancesAt st off do
     if let .inst r ns cls t := i then
       let (nsr, tys) := (ns, ns.map fun _ => (none : Option (Term ZeroOneMany)))
-      items := items.push ("instance", r, s!"instance {t.pretty ns}", some (t.pretty ns),
-        some (← cls.prettyTagged nsr tys), Json.null)
+      items := items.push ("instance", r, s!"instance {t.pretty ns (some st.globals)}", some (t.pretty ns (some st.globals)),
+        some (← cls.prettyTagged nsr tys (some st.globals)), Json.null)
   -- the declarations of the command at the cursor
   for n in Query.declsAt st off do
     if auxiliaryDecl n then continue
     let some d := st.globals.find? n | continue
     let some (r, _) := st.declSites.get? n | continue
-    items := items.push ("declaration", r, n, none, some (← d.type.prettyTagged [] []),
+    items := items.push ("declaration", r, n, none, some (← d.type.prettyTagged [] [] (some st.globals)),
       targetJson srv uri doc (.site r ""))
   -- the messages at the cursor (`#check`, `#eval`, traces, errors)
   for m in st.messages do
@@ -323,7 +340,7 @@ def infoItems (srv : Server) (uri : String) (doc : Doc) (off : Nat) :
 def subtermType (g : Globals ZeroOneMany) (sub : Subterm ZeroOneMany) : Option (Term ZeroOneMany) := do
   let tys ← sub.types.reverse.mapM id
   let ctx := (sub.names.reverse.zip tys).foldl (fun (ctx : Ctx ZeroOneMany) (x, ty) =>
-    ctx.bind x (QPoly.const QuantitySyntax.explicitDefault) (Wiz.eval g ctx.env ty)) { globals := g, erased := true }
+    ctx.bind x (QPoly.const QuantitySyntax.explicitDefault) (Wiz.eval g ctx.env ty)) { globals := g, erased := true, proof := true }
   match Wiz.infer ctx sub.term with
   | .ok (ty, _) => some (quote g ctx.lvl ty)
   | .error _ => none
@@ -354,11 +371,11 @@ def infoview (srv : Server) (uri : String) (doc : Doc) (method : String) (msg : 
   match method with
   | "wiz/plainGoal" =>
     pure (doc, match Query.goalsAt st off with
-      | some (_, info, gs) => plainGoals gs (tracesAt st info)
+      | some (_, info, gs) => plainGoals gs (tracesAt st info) (some st.globals)
       | none => Json.null)
   | "wiz/plainTermGoal" =>
     pure (doc, match Query.termGoalAt st off with
-      | some (info, g) => Json.mkObj [("goal", g.show), ("range", range doc.text info)]
+      | some (info, g) => Json.mkObj [("goal", g.show (some st.globals)), ("range", range doc.text info)]
       | none => Json.null)
   | "wiz/interactiveGoals" =>
     match Query.goalsAt st off with
@@ -367,14 +384,14 @@ def infoview (srv : Server) (uri : String) (doc : Doc) (method : String) (msg : 
       let k (tgs : Array TaggedGoal) (tj : TT → Json) : Json :=
         Json.mkObj [("goals", Json.arr (tgs.map (goalJson · tj))), ("range", range doc.text info),
                     ("session", doc.session), ("messages", Json.arr ((tracesAt st info).map Json.str))]
-      pure (memo s!"goals {key}" (withTable doc (gs.mapM (·.tagged)) k))
+      pure (memo s!"goals {key}" (withTable doc (gs.mapM (·.tagged (some st.globals))) k))
   | "wiz/interactiveTermGoal" =>
     match Query.termGoalAt st off with
     | none => pure (doc, Json.null)
     | some (info, g) =>
       let k (tg : TaggedGoal) (tj : TT → Json) : Json :=
         Json.mkObj [("goal", goalJson tg tj), ("range", range doc.text info), ("session", doc.session)]
-      pure (memo s!"term {info.start} {info.stop}" (withTable doc g.tagged k))
+      pure (memo s!"term {info.start} {info.stop}" (withTable doc (g.tagged (some st.globals)) k))
   | "wiz/interactiveInfo" =>
     let k (items : Array (String × SourceInfo × String × Option String × Option TT × Json)) (tj : TT → Json) : Json :=
       if items.isEmpty then Json.null else
@@ -394,11 +411,11 @@ def infoview (srv : Server) (uri : String) (doc : Doc) (method : String) (msg : 
       | "const", some n => location srv uri doc n
       | _, _ => Json.null
     let k (ty : Option TT) (tj : TT → Json) : Json :=
-      Json.mkObj [("text", sub.term.pretty sub.names), ("kind", sub.kind),
+      Json.mkObj [("text", sub.term.pretty sub.names (some st.globals)), ("kind", sub.kind),
         ("name", match sub.name with | some n => Json.str n | none => Json.null),
         ("type", match ty with | some t => tj t | none => Json.null),
         ("definition", defn), ("session", doc.session)]
-    pure (memo s!"sub {r}" (withTable doc ((subtermType st.globals sub).mapM (·.prettyTagged sub.names sub.types)) k))
+    pure (memo s!"sub {r}" (withTable doc ((subtermType st.globals sub).mapM (·.prettyTagged sub.names sub.types (some st.globals))) k))
 
 /-- A code action as JSON: with its edit, or (`resolveId`) with what `codeAction/resolve` needs. -/
 def codeAction (uri : String) (doc : Doc) (a : Actions.Action) (resolveId : Option Nat) : Json :=
@@ -413,6 +430,37 @@ def codeAction (uri : String) (doc : Doc) (a : Actions.Action) (resolveId : Opti
                     ("newText", e.text)]
       [("edit", Json.mkObj [("changes", Json.mkObj [(uri, Json.arr edits)])])]
   Json.mkObj ([("title", Json.str a.title), ("kind", Json.str a.kind)] ++ diags ++ rest)
+
+/-! ## Symbols and folding (11v) -/
+
+partial def symbolJson (doc : Doc) (sym : Symbols.Symbol) : Json :=
+  Json.mkObj ([("name", Json.str sym.name), ("kind", sym.kind), ("range", range doc.text sym.range),
+               ("selectionRange", range doc.text sym.range)] ++
+              (if sym.detail.isEmpty then [] else [("detail", Json.str sym.detail)]) ++
+              (if sym.children.isEmpty then [] else [("children", Json.arr (sym.children.map (symbolJson doc)))]))
+
+/-- `workspace/symbol`: the declarations of the open documents and their imports whose
+name contains `query` (ignoring case), at most 300. -/
+def workspaceSymbols (srv : Server) (query : String) : Json := Id.run do
+  let q := query.toLower
+  let mut seen : Std.HashSet String := {}
+  let mut out : Array Json := #[]
+  -- the documents' own declarations, then the libraries'
+  for own in [true, false] do
+    for (uri, doc) in srv.docs.toList do
+      for n in doc.state.globals.order do
+        if out.size ≥ 300 then break
+        let m := match doc.state.declSites.get? n with
+          | some (_, m) => m
+          | none => ""
+        if m.isEmpty != own || Symbols.hidden n || seen.contains n then continue
+        if !q.isEmpty && (n.toLower.splitOn q).length < 2 then continue
+        let loc := location srv uri doc n
+        if loc == Json.null then continue
+        seen := seen.insert n
+        out := out.push (Json.mkObj ([("name", Json.str n), ("kind", Symbols.kindOf doc.state.globals n false), ("location", loc)] ++
+          (if m.isEmpty then [] else [("containerName", Json.str m)])))
+  Json.arr out
 
 /-- Handle one message; returns the replies (and notifications) to send. -/
 def handle (srv : Server) (msg : Json) : Server × Array Json := Id.run do
@@ -449,6 +497,15 @@ def handle (srv : Server) (msg : Json) : Server × Array Json := Id.run do
     ({ srv with docs := srv.docs.insert uri doc, sessions := session },
      #[diagnostics uri doc] ++ (if srv.elaboratedNotes then #[note] else #[]))
   | "textDocument/didClose" => ({ srv with docs := srv.docs.erase uri }, #[])
+  | "textDocument/documentSymbol" =>
+    let some doc := srv.docs.get? uri | return (srv, #[reply (Json.arr #[])])
+    (srv, #[reply (Json.arr ((Symbols.documentSymbols doc.state).map (symbolJson doc)))])
+  | "textDocument/foldingRange" =>
+    let some doc := srv.docs.get? uri | return (srv, #[reply (Json.arr #[])])
+    let rs := (Symbols.foldingRanges doc.state doc.text).map fun (a, b, k) =>
+      Json.mkObj ([("startLine", (a : Json)), ("endLine", (b : Json))] ++ (if k.isEmpty then [] else [("kind", Json.str k)]))
+    (srv, #[reply (Json.arr rs)])
+  | "workspace/symbol" => (srv, #[reply (workspaceSymbols srv (getStr msg ["params", "query"]))])
   | "textDocument/codeAction" =>
     let some doc := srv.docs.get? uri | return (srv, #[reply (Json.arr #[])])
     let pos (k : String) := ofPos doc.text (getNat msg ["params", "range", k, "line"]) (getNat msg ["params", "range", k, "character"])
@@ -477,7 +534,7 @@ def handle (srv : Server) (msg : Json) : Server × Array Json := Id.run do
     | "textDocument/hover" =>
       let md? := match syntaxHover srv uri doc (Query.syntaxAt doc.state off) with
         | some md => some md
-        | none => (Query.hoverAt doc.state off).map fun (n, ty) => s!"```wiz\n{n} : {ty}\n```"
+        | none => (Query.hoverAt doc.state off).map fun (n, ty) => s!"```wiz\n{identLabel doc off n} : {ty}\n```"
       match md? with
       | some md => (srv, #[reply (Json.mkObj [("contents", Json.mkObj [("kind", "markdown"), ("value", md)])])])
       | none => (srv, #[reply Json.null])
@@ -603,6 +660,9 @@ structure Listen where
   infoview : Option String := none
   /-- `--ws [ADDR:]PORT`: a WebSocket (§8.2) on (address, port); port 0 takes a free one -/
   ws : Option (UInt32 × UInt16) := none
+  /-- (11w) the directory of the web infoview's files (`web/build.sh`'s output), which the
+  WebSocket's port also serves over HTTP (`WebSocket.webAssets`) -/
+  web : Option String := none
 
 /-- Handle a message from a WebSocket client: like an infoview's, but documents may be
 opened and edited, and every request is answered. Its `initialize` changes only its own
@@ -643,7 +703,7 @@ partial def serveWith (libs : Std.HashMap String (String × String)) (stdio : Op
   -- a WebSocket: the handshake (on this connection's own thread), then a message per frame
   let wsConn (fd : UInt32) (r w : IO.FS.Handle) : IO Unit := do
     let (r, w) := (IO.FS.Stream.ofHandle r, IO.FS.Stream.ofHandle w)
-    unless ← (try WebSocket.accept r w catch _ => pure false) do Socket.shutdown fd; return
+    unless ← (try WebSocket.accept r w listen.web catch _ => pure false) do Socket.shutdown fd; return
     let k ← fresh
     ch.send (.connected k { fd, send := fun j => WebSocket.sendText w j.compress, editing := true })
     readLoop k do
@@ -659,9 +719,27 @@ partial def serveWith (libs : Std.HashMap String (String × String)) (stdio : Op
   if let (some fd, some _) := (unixFd, listen.infoview) then
     let _ ← IO.asTask (prio := .dedicated) (acceptLoop fd unixConn)
   let wsFd ← listen.ws.mapM fun (addr, port) => Socket.tcpListen addr port
+  -- the WebSocket listener: from `--ws`, or (11w) started by `wiz/browserInfoview`
+  let wsRef ← IO.mkRef wsFd
   if let some (fd, port) := wsFd then
     let _ ← IO.asTask (prio := .dedicated) (acceptLoop fd wsConn)
     ready port
+  -- (11w) `wiz/browserInfoview` from the editor: listen on a WebSocket (on 127.0.0.1, a
+  -- free port) unless already listening, and say where the page is
+  let browser (msg : Json) : IO Json := do
+    let port ← match ← wsRef.get with
+      | some (_, p) => pure p
+      | none =>
+        let (fd, p) ← Socket.tcpListen Socket.loopback 0
+        wsRef.set (some (fd, p))
+        let _ ← IO.asTask (prio := .dedicated) (acceptLoop fd wsConn)
+        ready p
+        pure p
+    let res : Json := match listen.web with
+      | some _ => Json.mkObj [("port", port.toNat), ("url", s!"http://127.0.0.1:{port}/infoview.html?port={port}&follow=1")]
+      | none => Json.mkObj [("port", port.toNat), ("url", Json.null),
+          ("message", "the web infoview is not built: run web/build.sh in a checkout, or use a release toolchain")]
+    pure (Json.mkObj [("jsonrpc", "2.0"), ("id", (msg.getObjVal? "id").toOption.getD Json.null), ("result", res)])
   if let some (input, _) := stdio then
     let _ ← IO.asTask (prio := .dedicated) (readEditor input)
   let rec loop (srv : Server) (conns : Std.HashMap Nat Conn) : IO (Std.HashMap Nat Conn) := do
@@ -680,6 +758,12 @@ partial def serveWith (libs : Std.HashMap String (String × String)) (stdio : Op
     | .editorDone => pure conns
     | .editor msg =>
       if getStr msg ["method"] == "exit" then return conns
+      if getStr msg ["method"] == "wiz/browserInfoview" then
+        let r ← try browser msg catch e =>
+          pure (Json.mkObj [("jsonrpc", "2.0"), ("id", (msg.getObjVal? "id").toOption.getD Json.null),
+            ("error", Json.mkObj [("code", (-32603 : Int)), ("message", s!"cannot listen: {e}")])])
+        if let some (_, output) := stdio then writeMessage output r
+        return ← loop srv conns
       let (srv, out) := handle srv msg
       if let some (_, output) := stdio then
         for j in out do writeMessage output j
@@ -710,7 +794,7 @@ partial def serveWith (libs : Std.HashMap String (String × String)) (stdio : Op
   let conns ← loop { libs, trusted } {}
   -- stop the other threads: the acceptors and every infoview's reader see the end
   if let (some fd, some sock) := (unixFd, listen.infoview) then Socket.close fd sock
-  if let some (fd, _) := wsFd then Socket.closeFd fd
+  if let some (fd, _) ← wsRef.get then Socket.closeFd fd
   for (_, c) in conns do Socket.shutdown c.fd
 
 /-- `serveWith` for the editor on `input`/`output` and infoviews on the Unix socket `sock`. -/
@@ -724,15 +808,8 @@ partial def serve (libs : Std.HashMap String (String × String)) (listen : Liste
     (trusted : List String := []) : IO Unit := do
   let stdin ← IO.getStdin
   let stdout ← IO.getStdout
-  if listen.infoview.isSome || listen.ws.isSome || !stdio then
-    let ready (port : UInt16) := IO.eprintln s!"wiz lsp: WebSocket on port {port}"
-    return ← serveWith libs (if stdio then some (stdin, stdout) else none) listen ready trusted
-  let rec loop (srv : Server) : IO Unit := do
-    let some msg ← readMessage stdin | return
-    if getStr msg ["method"] == "exit" then return
-    let (srv, out) := handle srv msg
-    for j in out do writeMessage stdout j
-    loop srv
-  loop { libs, trusted }
+  -- (11w) always through `serveWith`: `wiz/browserInfoview` may start a WebSocket later
+  let ready (port : UInt16) := IO.eprintln s!"wiz lsp: WebSocket on port {port}"
+  serveWith libs (if stdio then some (stdin, stdout) else none) listen ready trusted
 
 end Wiz.LSP

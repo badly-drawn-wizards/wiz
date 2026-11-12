@@ -1,3 +1,4 @@
+import Wiz.Version
 import Wiz.Rig
 import Wiz.Rig.Instances
 import Wiz.Core.Term
@@ -47,6 +48,7 @@ import Wiz.FFI.CGlue
 import Wiz.Query
 import Wiz.Infoview
 import Wiz.Actions
+import Wiz.Symbols
 import Wiz.LSP
 import Wiz.Toolchain
 import Wiz.Module

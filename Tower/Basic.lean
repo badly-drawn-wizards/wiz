@@ -27,11 +27,11 @@ structure Settings where
   /-- where installs come from: `auto`, `nix`, `release` or `source` -/
   source : String := "auto"
   /-- the flake (`nix` installs): `github:O/R` or a `git+…`/path flake URL -/
-  flake : String := "github:badly-drawn-wizards/wiz"
+  flake : String := "github:wiz-pl/wiz"
   /-- the git repository (`source` installs, and resolving refs to commits) -/
-  git : String := "https://github.com/badly-drawn-wizards/wiz"
+  git : String := "https://github.com/wiz-pl/wiz"
   /-- release tarballs: `BASE/TAG/wiz-ARCH-linux.tar.gz` (a URL or a directory) -/
-  releases : String := "https://github.com/badly-drawn-wizards/wiz/releases/download"
+  releases : String := "https://github.com/wiz-pl/wiz/releases/download"
   /-- the branch `nightly` follows -/
   nightlyRef : String := "master"
   /-- shims install a missing toolchain on first use -/
