@@ -161,6 +161,24 @@ owned handle are not checked either. Making the handles themselves linear (direc
 with lib/Sys.wiz and lib/Serial.wiz moved onto this module) waits for linear Σ fields
 (linear-case stage 2). Trusted: two natives (`wiz_handle_own`/`wiz_handle_disown`).
 
+**Direct style (`IO1`, cohesion M6 part 2).** `IO1 A` (lib/IO.wiz) is an action whose result
+is used once. In `do1`, `x ⇐ e;` binds an `IO1` result at quantity 1, and `(x, y) ⇐ e;` takes a
+pair apart, so an owned handle's token is threaded through straight-line code. The
+operations: `File.writeOwned`, `readLineOwned`, `readAllOwned` and `flushOwned`;
+`Fd.writeOwned` and `Fd.readOwned`; the generic `Handle.use1`. Each returns
+`(result, token)`. The releases are `File.closeOwned`, `Fd.closeOwned` and
+`Child.waitOwned`.
+
+```
+File.withOwned p "w" (fun f o => do1
+  (r1, o) ⇐ File.writeOwned f o "one\n";
+  (r2, o) ⇐ File.writeOwned f o "two\n";
+  File.closeOwned f o)
+```
+
+`IO` is unchanged and so is lib/Sys.wiz's ω API; only the owned variants are `IO1`.
+Acquisition stays in continuation style until linear `match` lands (linear-case stage 2).
+
 ## Functors and Booleans
 
 `lib/Functor.wiz` (`import Functor`): `Functor`, `Applicative`, `<$>`, `<*>`; every `Monad`

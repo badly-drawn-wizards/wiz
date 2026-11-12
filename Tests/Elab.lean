@@ -7161,6 +7161,21 @@ def concGroup : Group where
         failsLibs "import Handle\ndef forge (f : File) : IO (Owned f) := Owned.mint" "private"
         failsLibs "import Handle\n-- a second token for an owned handle (natives-review M6-1): Handle.own is private\ndef twice (p : String) : EIO Unit := File.withOwned p \"w\" (fun f o => Handle.own f (fun o2 =>\n  File.releaseOwned f o (fun _ => Handle.use f o2 (fun f => File.write f \"after release\\n\") (fun r o2 =>\n  File.releaseOwned f o2 (fun r => IO.pure r)))))" "private"
         failsLibs "import Handle\n-- re-owning an existing handle through `with` (natives-review M6-1): Handle.with is private\ndef again (f : File) : EIO Unit := Handle.with (EIO.pure f) (fun g o => File.releaseOwned g o (fun r => IO.pure r))" "private" },
+    { name := "IO1: actions with a linear result, `x ⇐ e` in do1; owned handles in direct style", run := fun _ => do
+        cRunLibs ("import Handle\n" ++
+          "-- direct style: the token is threaded through `do1`\n" ++
+          "def writeLog (p : String) : EIO Unit :=\n" ++
+          "  File.withOwned p \"w\" (fun f o => do1\n" ++
+          "    (r1, o) ⇐ File.writeOwned f o \"one\\n\";\n" ++
+          "    (r2, o) ⇐ File.writeOwned f o \"two\\n\";\n" ++
+          "    File.closeOwned f o)\n" ++
+          "def main : IO Unit := EIO.toIO (EIO.bind FS.createTempDir (fun d =>\n" ++
+          "  let p := Path.join d \"log.txt\";\n" ++
+          "  EIO.bind (writeLog p) (fun _ => EIO.bind (FS.readFile p) (fun s =>\n" ++
+          "    EIO.bind (FS.removeAll d) (fun _ => EIO.lift (IO.print s))))))\n") "one\ntwo\n"
+        okLibs "import IO\naxiom Tok : Type\naxiom Tok.new : IO1 Tok\naxiom Tok.use : (1 t : Tok) → (n : Nat) → IO1 ((r : Nat) × Tok)\naxiom Tok.close : (1 t : Tok) → IO Unit\ndef prog : IO Nat := do1\n  t ⇐ Tok.new;\n  (r, t) ⇐ Tok.use t 3;\n  Tok.close t;\n  IO.pure r"
+        failsLibs "import IO\naxiom Tok : Type\naxiom Tok.new : IO1 Tok\naxiom Tok.close : (1 t : Tok) → IO Unit\n-- the token is dropped\ndef leak : IO Nat := do1\n  t ⇐ Tok.new;\n  IO.pure 3" "quantity 1"
+        failsLibs "import Handle\n-- the token is not given back to a release (a leak)\ndef leak (p : String) : EIO Unit :=\n  File.withOwned p \"w\" (fun f o => do1\n    (r1, o) ⇐ File.writeOwned f o \"one\\n\";\n    IO.pure r1)" "quantity 1" },
     { name := "MVars and locks: eight threads, one counter", run := fun _ =>
         cRunLibs concCounter "8000\n" },
     { name := "a lazy stream shared between threads", run := fun _ =>
