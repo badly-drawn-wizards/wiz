@@ -226,7 +226,9 @@ The toy CPU's finding C1 (no memories: a ROM as a chain of multiplexers, RAM as
 flip-flops). A memory is a code, `HwTy.mem aw dw` (2^aw words of dw bits), and at values
 a function `BitVec aw → BitVec dw`, so reasoning about it is pointwise. `Hw.memRead m a`
 reads a word (combinationally); `Hw.memWrite m we a d` is the memory with word `a`
-replaced by `d` when `we` is high. A memory that is part of a circuit's state takes the
+replaced by `d` when `we` is high (a disabled write is the memory itself, so a value
+simulation's read costs the number of enabled writes so far, not the number of cycles).
+A memory that is part of a circuit's state takes the
 writes of its next value at the clock edge; a read of the written value in the same
 cycle sees the write (the netlist adds the bypass). `Hw.const (HwTy.mem aw dw) f` is a
 ROM. Lemmas: `HwTy.El.memRead_write_miss` (another address: the old word),
