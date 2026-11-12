@@ -94,8 +94,13 @@ def group : Group where
         fails "def f : (1 x : Type) → Type := fun (ω x) => x" "quantity" },
     { name := "linear identity checks", run := fun _ =>
         ok "def lid {A : Type} (1 x : A) : A := x" },
-    { name := "self-application escapes the hole's scope", run := fun _ =>
-        fails "def w (A : Type) := fun f => f f" "scope" },
+    { name := "self-application escapes the hole's scope", run := fun _ => do
+        -- (with pruning, the escaping variable is pruned away and the occurs check fires
+        -- instead: either is right)
+        let errs := errors "def w (A : Type) := fun f => f f"
+        unless errs.size == 1 do throw (IO.userError s!"expected one error, got {errs.size}: {errs}")
+        unless (errs[0]!.splitOn "scope").length > 1 || (errs[0]!.splitOn "occurs check").length > 1 do
+          throw (IO.userError s!"error mentions neither the scope nor the occurs check:\n{errs[0]!}") },
     { name := "occurs check", run := fun _ =>
         fails "def o (A : Type) (g : _ → A) := g g" "occurs" },
     { name := "not a function", run := fun _ =>
@@ -4740,7 +4745,7 @@ def languageGroup : Group where
     { name := "... an importer may define the same notation at another meaning", run := fun _ =>
         okLoc locMod "import Loc\ninfixr:67 \" & \" => List.append\n#eval [1] & [2]\nsyntax (name := shout) \"shout\" term : term\nmacro_rules\n  | `(term| shout $x) => `(term| [$x])\n#eval shout 1"
           [".cons 1 (.cons 2 .nil)", ".cons 1 .nil"] },
-    { name := "local instance: found in its module, not by importers (11r)", run := fun _ => do
+    { name := "local instance: found in its module, not by importers (11w)", run := fun _ => do
         let m := "import Prelude\nclass Dflt (A : Type) where\n  dflt : A\nlocal instance : Dflt Nat := Dflt.mk 7\ndef seven : Nat := Dflt.dflt\n"
         okLoc m "import Loc\n#eval seven" ["7"]
         failsLoc m "import Loc\ndef x : Nat := Dflt.dflt" "failed to synthesize an instance of Dflt Nat"
@@ -6064,6 +6069,13 @@ def seplogicGroup : Group where
            "Prog.incrAll.spec : (L : List Nat) → (f : Nat) → Nat.lt (List.length Nat L) f = .true → (p : Nat) → Triple Nat Unit (MList L p) (Prog.incrAll f p) (fun _ => MList (List.incr L) p)",
            "Prog.freeAll.spec : (L : List Nat) → (f : Nat) → Nat.lt (List.length Nat L) f = .true → (p : Nat) → Triple Nat Unit (MList L p) (Prog.freeAll f p) (fun _ => emp Nat)",
            ".some (1, .cons (.some 1) .nil)", ".some (3, .nil)"] },
+    { name := "xgo steps through values computed through private structures (Region's Uniq, as Feral lowers)", run := fun _ => do
+        let src := "import HoareTactics\nimport Region\n" ++
+          "def incrU {ρ : Region} (r : Uniq ρ Nat) : Result (Unit × Uniq ρ Nat) := .ok ((), Uniq.set r (Nat.succ r.val))\n" ++
+          "def back (p : Nat) : Result (Unit × Nat) → Prog Nat Unit\n  | .ok x => .set p x.2 (.ret ())\n  | .err e => .fail\n" ++
+          "def bumpCell (p : Nat) : Prog Nat Unit :=\n  .get p (fun a => back p (Uniq.borrow Region.static a (fun ρ h l r => incrU r)))\n"
+        okLibs (src ++ "def bumpCell_spec (p a : Nat) : Triple (p ↦ a) (bumpCell p) (fun _ => p ↦ Nat.succ a) := by xgo")
+        failsLibs (src ++ "def bad (p a : Nat) : Triple (p ↦ a) (bumpCell p) (fun _ => p ↦ a) := by xgo") "unsolved goals" },
     { name := "a wrong specification is not proved by the x-tactics", run := fun _ =>
         failsLibs "import HoareExamples\ndef bad (p n : Nat) : Triple (p ↦ n) (Prog.incr p) (fun _ => p ↦ n) := by xgo" "unsolved goals" }
   ]
@@ -7258,7 +7270,7 @@ def infoviewGroup : Group where
           [r#".cons "Tactic state" (.cons "A : Type" (.cons "f : Nat → Nat → Nat → Nat" (.cons "⊢ Nat → A" (.cons "" (.cons "Messages" (.cons "hello" (.cons "" (.cons "n : Nat" (.cons "⊢ Nat" .nil)))))))))"#,
            r#""<h3>Tactic state</h3><div class=\"no-goals\">No goals</div><h3>Messages</h3><pre class=\"message\">a&lt;b</pre>""#,
            r#".cons "one" (.cons "two" .nil)"#] },
-    { name := "11r: what else is at the cursor (wiz/interactiveInfo): sections, as text and HTML", run := fun _ =>
+    { name := "11w: what else is at the cursor (wiz/interactiveInfo): sections, as text and HTML", run := fun _ =>
         okInfoview (goalPrelude ++ r#"def items : List InfoItem := .cons (.mk "syntax" "syntax term.twice" "syntax \"twice\" term : term" .none)
   (.cons (.mk "expansion" "expanded by macro rule" "Nat.add a\nb" .none)
   (.cons (.mk "instance" "instance i" "i" (.some (nat 1)))

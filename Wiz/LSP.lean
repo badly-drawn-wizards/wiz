@@ -603,7 +603,7 @@ structure Listen where
   infoview : Option String := none
   /-- `--ws [ADDR:]PORT`: a WebSocket (§8.2) on (address, port); port 0 takes a free one -/
   ws : Option (UInt32 × UInt16) := none
-  /-- (11r) the directory of the web infoview's files (`web/build.sh`'s output), which the
+  /-- (11w) the directory of the web infoview's files (`web/build.sh`'s output), which the
   WebSocket's port also serves over HTTP (`WebSocket.webAssets`) -/
   web : Option String := none
 
@@ -662,12 +662,12 @@ partial def serveWith (libs : Std.HashMap String (String × String)) (stdio : Op
   if let (some fd, some _) := (unixFd, listen.infoview) then
     let _ ← IO.asTask (prio := .dedicated) (acceptLoop fd unixConn)
   let wsFd ← listen.ws.mapM fun (addr, port) => Socket.tcpListen addr port
-  -- the WebSocket listener: from `--ws`, or (11r) started by `wiz/browserInfoview`
+  -- the WebSocket listener: from `--ws`, or (11w) started by `wiz/browserInfoview`
   let wsRef ← IO.mkRef wsFd
   if let some (fd, port) := wsFd then
     let _ ← IO.asTask (prio := .dedicated) (acceptLoop fd wsConn)
     ready port
-  -- (11r) `wiz/browserInfoview` from the editor: listen on a WebSocket (on 127.0.0.1, a
+  -- (11w) `wiz/browserInfoview` from the editor: listen on a WebSocket (on 127.0.0.1, a
   -- free port) unless already listening, and say where the page is
   let browser (msg : Json) : IO Json := do
     let port ← match ← wsRef.get with
@@ -751,7 +751,7 @@ partial def serve (libs : Std.HashMap String (String × String)) (listen : Liste
     (trusted : List String := []) : IO Unit := do
   let stdin ← IO.getStdin
   let stdout ← IO.getStdout
-  -- (11r) always through `serveWith`: `wiz/browserInfoview` may start a WebSocket later
+  -- (11w) always through `serveWith`: `wiz/browserInfoview` may start a WebSocket later
   let ready (port : UInt16) := IO.eprintln s!"wiz lsp: WebSocket on port {port}"
   serveWith libs (if stdio then some (stdin, stdout) else none) listen ready trusted
 

@@ -134,6 +134,23 @@ jobs:
         with:
           path: .lake
           key: lake-${{ runner.os }}${{ runner.arch != 'X64' && format('-{0}', runner.arch) || '' }}-${{ needs.build.outputs.lake-hash }}
+          # the exact entry can be gone already: the build job saved it minutes ago, but
+          # the repository's 10 GB cache evicts the least recently used entries, and
+          # with many PRs a 740 MB Lake cache lasts only minutes (#103, #134: the late
+          # shards of a run found nothing and ran without wiz and grail). Then the
+          # newest older build of the same toolchain, and the next step catches up.
+          restore-keys: lake-${{ runner.os }}${{ runner.arch != 'X64' && format('-{0}', runner.arch) || '' }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-
+      # `lake test` builds only the test driver: build the executables the tests run too
+      # (a no-op after an exact hit), and stop if they're missing rather than run without
+      - name: lake build (unless restored)
+        run: |
+          if [ "${{ steps.lake-cache.outputs.cache-hit }}" != true ]; then
+            echo "::warning title=Lake cache::no exact Lake build for this commit (evicted?): building wiz, grail and tests here"
+          fi
+          lake build wiz grail tests
+          for b in wiz grail tests; do
+            [ -x ".lake/build/bin/$b" ] || { echo "::error::.lake/build/bin/$b is missing after lake build"; exit 1; }
+          done
       # What the suite builds from Wiz programs, kept between runs: the elaboration cache
       # (`--cache`, which the grail-selfhost test uses), grail's `.grail` (the test's
       # build of the self-hosted checker) and the self-hosted checker and compiler that
@@ -225,13 +242,13 @@ jobs:
           nix run "$GITHUB_WORKSPACE#grail" -- 2>&1 | head -2
 
   # (11s) The standard library's documentation (`wiz doc`, scroll), with the Wasm module
-  # that makes its signatures interactive, as the artifact `wiz-docs`. Not a required
-  # check (not in `result`); publishing it to GitHub Pages is a proposal
-  # (docs/stages/11-tooling.md, 11s).
+  # that makes its signatures interactive, as the artifact `wiz-docs`: on master only (a
+  # push), kept 3 days (artifact storage). Not a required check (not in `result`);
+  # publishing it to GitHub Pages is a proposal (docs/stages/11-tooling.md, 11s).
   docs:
     name: docs (wiz doc --lib)
     needs: build
-    if: github.event_name != 'schedule'
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -258,7 +275,7 @@ jobs:
         with:
           name: wiz-docs
           path: doc-site
-          retention-days: 14
+          retention-days: 3
 
   # One check for branch protection, and the whole suite's summary.
   result:

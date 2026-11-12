@@ -170,7 +170,7 @@ def Infoview.wrap (width indent : Nat) (pieces : List Piece) : List (List Piece)
 inductive View where
   | mk (lines : List (List Piece)) (tags : List TagInfo)
 
--- ## Everything else at the cursor (`wiz/interactiveInfo`, stage 11q–r)
+-- ## Everything else at the cursor (`wiz/interactiveInfo`, stages 11q, 11w)
 
 -- `{"kind", "title", "text"?, "type"?}`: a use of syntax or its expansion, an import, an
 -- instance, a declaration of the command, a message (`text` and `type` may be null)
