@@ -280,8 +280,9 @@ partial def conv (g : Globals R) (tys : Array (VTy R)) (ty : VTy R) (a b : Val R
   if let .ulift l A := ty then l.equiv 0 || conv g tys A (vDown a) (vDown b) else
   --<sol
   if isProp g tys ty then true else
-  let a := unCast a
-  let b := unCast b
+  -- regularity (InReg_conv): a stuck cast between convertible types is its argument
+  let a := unCast g tys a
+  let b := unCast g tys b
   match ty with
   | .pi _ _ _ dom cod _ =>
     let v := Val.var tys.size
@@ -332,20 +333,6 @@ partial def conv (g : Globals R) (tys : Array (VTy R)) (ty : VTy R) (a b : Val R
       conv full tys (vElims full (eval full [] (v.instLevels levelParams us)) sp) a b
     | _ => false
   | _ => (convNe g tys a b).isSome
-where
-  unCast (v : Val R) : Val R :=
-    match v with
-    | .neutral (.cast A B e t) sp =>
-      let ok := sp.isEmpty && match g.regularity with
-        | .full => true
-        | .nonProp => !isProp g tys A
-        | .refl => reflProof e
-        | .off => false
-      -- (P1, `inertReg = conv`) InReg decided by conversion: at an inert `A` with `A ≡ B`,
-      -- `cast A B e t` is `t`, also under eliminations (InReg_conv)
-      let inert := g.inertReg == .conv && inertTy g 0 A
-      if (ok || inert) && convTy g tys A B then unCast (whnf (vElims g t sp)) else v
-    | v => v
   --|ex
   --| sorry
   --sol>
@@ -365,6 +352,10 @@ partial def convTy (g : Globals R) (tys : Array (VTy R)) (a b : VTy R) : Bool :=
   if let some r := convGlued g tys a b then r || convTy g tys (whnf a) (whnf b) else
   let a := whnf a
   let b := whnf b
+  -- (given) regularity (InReg_conv), for a type that is stuck on a cast (`P (cast …)` by
+  -- an eliminator: the neutral is the cast, with the elimination in its spine)
+  let a := unCast g tys a
+  let b := unCast g tys b
   -- (given) Q4
   if let (.ulift l A, .ulift l' A') := (a, b) then l.equiv l' && convTy g tys A A' else
   --<sol
@@ -392,6 +383,34 @@ where
   --|ex
   --| sorry
   --sol>
+
+/-- **Regularity, decided by conversion** (InReg_conv; `wiz-notes/conv-regularity.md`).
+
+    A inert     A ≡ B
+    ───────────────────────
+    cast A B e t ≡ t
+
+[PLT25]'s Cast-Refl, restricted to inert types. It is a rule of conversion, not of
+evaluation: a cast on a canonical value takes a structural rule in `vCast`, and a cast
+that stays *stuck* is removed here, on either side of a comparison, when its two types
+are convertible. The neutral may carry eliminations (`ind … (cast …)`): they are applied
+to the argument. The evaluator's `groundEqTy` decides a fragment of the same rule
+without conversion.
+
+* "Inert" is asked of either endpoint: `inertTy` reads a `Σ`'s sort annotation, which is
+  optional, so of two convertible types one can be inert and the other not.
+* Termination: `convTy A B` is a comparison of two components of the neutral, as the
+  congruence rule for two casts already makes; each step removes one cast.
+* `--regularity full` (an experiment) is the rule at every type.
+
+The value comes back in weak head normal form. -/
+partial def unCast (g : Globals R) (tys : Array (VTy R)) (v : Val R) : Val R :=
+  match v with
+  | .neutral (.cast A B _ t) sp =>
+    let applies := g.regularity == .full ||
+      (g.inertReg == .conv && (inertTy g 0 A || inertTy g 0 B))
+    if applies && convTy g tys A B then unCast g tys (whnf (vElims g t sp)) else v
+  | v => v
 
 /-- Two glued values (`Val.unfold`) with the same global head: are their spines
 convertible? `none` unless both are glued with the same head. -/
