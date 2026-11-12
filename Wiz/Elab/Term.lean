@@ -2053,7 +2053,15 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
       | .ok (r, extra) => rhs := r; binds := binds ++ extra
       | .error e => throwAt cl.rhs.info e
     let mut ctx' := ctx
-    for (n, ty, val) in binds do ctx' := ctx'.define n ty val
+    for (n, ty, val) in binds do
+      -- (linear-case stage 2) a pattern variable naming a linear variable (a field taken
+      -- at 1) is linear too: a `match` on it is `casesOn1` again
+      let lin := match val with
+        | .neutral (.local l) #[] => ctx'.linearLvls.contains l
+        | _ => false
+      let lvl := ctx'.lvl
+      ctx' := ctx'.define n ty val
+      if lin then ctx' := { ctx' with linearLvls := lvl :: ctx'.linearLvls }
     -- (11q) the pattern variables, in the arm's context
     for v in views, x in vars, p in cl.pats do
       if let .var n := v then recordBinder ctx' p.info n (typeOf x)

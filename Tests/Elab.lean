@@ -582,8 +582,9 @@ def dataGroup : Group where
     { name := "unknown tag", run := fun _ =>
         fails (dataPrelude ++ "def bad : Nat := con ('three, (), ())") "not one of the tags" },
     { name := "an erased field drops a linear variable", run := fun _ =>
-        fails ("def BoxD : Desc Unit := Desc.arg 0 Unit (fun _ => Desc.ret ())\n" ++
-               "def box (1 u : Unit) : μ BoxD () := con (u, (), ())") "quantity" },
+        -- (a token, not `Unit`: an unused `Unit` is fine, K2a)
+        fails ("axiom Tok : Type\ndef BoxD : Desc Unit := Desc.arg 0 Tok (fun _ => Desc.ret ())\n" ++
+               "def box (1 u : Tok) : μ BoxD () := con (u, (), ())") "quantity" },
     { name := "a linear field keeps it", run := fun _ =>
         ok ("def BoxD : Desc Unit := Desc.arg 1 Unit (fun _ => Desc.ret ())\n" ++
             "def box (1 u : Unit) : μ BoxD () := con (u, (), ())") },
@@ -3774,7 +3775,6 @@ def quantityDecls : List (String × Bool) := [
   ("def dup (ω x : Nat) : Nat := Nat.add x x\ndef ax2 (0 A : Type) (1 a : A) : A := a\n", true),
   ("def twice (1 x : Nat) (f : Nat → Nat → Nat) : Nat := f x x\n", false),
   ("def drop (1 x : Nat) : Nat := Nat.zero\n", false),
-  ("def m2 (1 x : Nat) : Nat := match x with\n  | .zero => 0\n  | .succ k => k\n", false),
   ("def imp {n : Nat} (x : Nat) : Nat := n\n", false),
   ("def er (0 x : Nat) : Nat := x\n", false),
   ("def bad2 (2 x : Nat) : Nat := x\n", false),
@@ -3789,8 +3789,12 @@ def quantityDecls : List (String × Bool) := [
 /-- (stage 21m) The pinned differences, `(declaration, Lean accepts, self-hosted accepts)`
 (docs/CoreSpec.md §15): the self-hosted kernel's descriptions have no quantities, so a
 constructor field written with one is an error there. (A linear variable used once in
-each branch of a `match` was one until 21v: `linearMatchDecls`.) -/
+each branch of a `match` was one until 21v: `linearMatchDecls`.) A `match` on a linear
+scrutinee (4h): the Lean frontend takes it apart with `T.casesOn1` (the case at 1, `Nat`'s
+ω field `k` comes out at `1·ω`), the self-hosted frontend's match is the case at ω, which
+uses the scrutinee ω times. -/
 def quantityDiffs : List (String × Bool × Bool) := [
+  ("def m2 (1 x : Nat) : Nat := match x with\n  | .zero => 0\n  | .succ k => k\n", true, false),
   ("structure P1 where\n  1 a : Nat\n", true, false),
   ("inductive V0 where\n  | mk (0 n : Nat)\n", true, false)]
 
@@ -7272,8 +7276,8 @@ def linearCaseGroup : Group where
         failsLibs "import Prelude\nstructure Tok where\ndef drop (1 t : Tok) : Nat := 0\n" "used 0" },
     { name := "the linear match runs, compiled", run := fun _ =>
         ioRun ("import IO\ninductive Res1 (A : Type) where\n  | ok (1 a : A)\n  | err (e : Nat) (1 back : A)\n" ++
-          "def get (1 r : Res1 Nat) : Nat := match r with\n  | .ok n => n\n  | .err e n => Nat.add e n\n" ++
-          "def main : IO Unit := do\n  IO.println (Nat.toString (get (.ok 3)));\n  IO.println (Nat.toString (get (.err 4 5)))\n") "3\n9\n" }
+          "def get (1 r : Res1 Nat) : Nat := match r with\n  | .ok n => n\n  | .err e n => n\n" ++
+          "def main : IO Unit := do\n  IO.println (Nat.toString (get (.ok 3)));\n  IO.println (Nat.toString (get (.err 4 5)))\n") "3\n5\n" }
   ]
 
 def concGroup : Group where

@@ -1868,6 +1868,7 @@ Commands: `#eval` is `#reduce` here, and `attribute [inline]` is checked and ign
 
 | program | Lean frontend | self-hosted frontend |
 |---|---|---|
+| a `match` on a linear scrutinee (`def m2 (1 x : Nat) : Nat := match x with \| .zero => 0 \| .succ k => k`) | accepts (4h): `T.casesOn1`, the case at 1; `k` is an ω field, so it comes out at `1·ω` | **rejects**: the match is the kernel's case at ω, which uses `x` ω times (the Kernel.wiz rule is the same; only the frontend does not emit `scase` at 1) |
 | a constructor field with a quantity (`\| mk (0 n : Nat)`, a structure's `1 a : Nat`) | accepts (`Desc.arg q S D`) | **rejects** with an error: `darg S D` has no quantity, every field is stored at ω |
 | an implicit constructor field (`\| cons {n : Nat} …`) | a field at 0, filled in at the call | an explicit field at ω (the frontend has no implicit constructor fields; a call that leaves it out is rejected) |
 | `%t` quantity terms, quantity variables | yes | an error |
