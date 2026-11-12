@@ -2163,7 +2163,20 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
   let varTm (l : Lvl) : Term R := .var (ctx.lvl - l - 1)
   let typeOf (l : Lvl) : VTy R := ctx.types[ctx.lvl - l - 1]!
   let nameOf (l : Lvl) : Name := ctx.names[ctx.lvl - l - 1]!
-  let some cl := clauses.head? | throwAt ctx.info "missing cases" "missing-case"
+  let some cl := clauses.head? | do
+    -- (#250) an empty match: split the first variable whose constructors are all
+    -- impossible (a pattern naming no constructor, so every branch must close itself)
+    let noCtor : Syntax := .node {} "term.dotIdent" #[.atom {} ".", .ident {} "✝none"]
+    let mut firstErr : Option (ElabError R) := none
+    for x in vars, k in [0:vars.length] do
+      if let .mu _ _ _ _ _ (some _) ← force (typeOf x) then
+        let pats := (List.range vars.length).map fun i => if i == k then noCtor else holeStx
+        try
+          return ← compileMatch ctx vars [{ pats, rhs := holeStx }] goal rc top
+        catch e => if firstErr.isNone then firstErr := some e
+    match firstErr with
+    | some e => throw e
+    | none => throwAt ctx.info "missing cases" "missing-case"
   -- A catch-all last row of a multi-column match would be copied into every leaf of the
   -- split (one per pair of constructors, say): elaborate it once, as a local function
   -- of the scrutinees, and make the row call it. If it doesn't check generically (its
@@ -2406,9 +2419,10 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
       ctx' := ctx'.bind "e✝" E
       if let some prf := findAbsurd g (← force E) (Val.var eLvl) then
         absurdBody := some (.absurd (quote g ctx'.lvl mt) (quote g ctx'.lvl prf))
-    let body ← match absurdBody with
-      | some b => pure b
-      | none =>
+    -- (#250) the arms' branch for constructor `c` (when it is possible, the method's body)
+    let elabBranch (clauses : List (MClause R)) : ElabM R (Term R) := do
+        let mut ctx' := ctx'
+        let mut mt := mt
         -- the solution rule with an equation: find `y = t` (or `t = y`) with `y` a field
         -- of this constructor, and substitute it in the later fields by re-binding them
         let mut solution : Option (Lvl × Val R × Bool × Val R × Val R) := none
@@ -2525,6 +2539,24 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
           let castTm : Term R := .cast Gdt Gd (if yFirst then eqPrf else eqPrf) F
           -- `body0` was built under the re-bound fields, which sit after `e` in the context
           pure (deps.foldl (fun acc d => .app acc (vt d)) castTm)
+    -- (#250) an impossible constructor's branch is closed with `absurd`, but the arms that
+    -- name it are still elaborated here (and the result dropped), so that their right-hand
+    -- sides are type checked; a structural failure of this check (a missing nested case,
+    -- an equation that can't be solved) is not reported, only an error inside a body
+    let clausesHere ← if absurdBody.isNone then pure clauses else clauses.filterM fun cl' => do
+      match patViewAs g (cl'.pats[k]!) with
+      | .ok (_, pv) => match ← natPatView T (cl'.pats[k]!) pv with
+        | .ctor _ c' _ => pure (c' == c)
+        | _ => pure false
+      | .error _ => pure false
+    let inRhs (i : SourceInfo) : Bool := !i.synthetic && clausesHere.any fun cl' =>
+      let r := cl'.rhs.info
+      !r.synthetic && r.start ≤ i.start && i.stop ≤ r.stop && r.start < r.stop
+    let body ← if let some b := absurdBody then
+        if clausesHere.isEmpty then pure b else
+        tryCatch (do let _ ← elabBranch clausesHere; pure b) fun err =>
+          if inRhs err.info then throw err else pure b
+      else elabBranch clausesHere
     -- lambdas for fields, hypotheses and the equation
     let names := (if sized then ["_j"] else []) ++ fieldInfos.map (·.1) ++ (List.replicate nRec "_ih") ++
       (if modeA then [] else ["e"])
