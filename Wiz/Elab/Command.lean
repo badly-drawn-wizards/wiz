@@ -55,6 +55,20 @@ def Msg.render (input : String) (m : Msg) : String :=
   let sev := match m.severity with | .error => "error" | .warning => "warning" | .info => "info"
   s!"{l + 1}:{c + 1}: {sev}: {m.text}"
 
+/-- (11s) A declaration, for documentation: what made it (`def`, `inductive`,
+`structure`, `class`, `instance`, `axiom`, `coinductive`, `extern`, …, or `constructor`
+and `field` for those of a type, `auxiliary` for what the elaborator adds for its own
+use), its doc comment (`/-- … -/`, Markdown, delimiters and indentation removed), and,
+for a constructor or field, its type. -/
+structure DeclDoc where
+  kind : String
+  doc : Option String := none
+  parent : Option Name := none
+  /-- where it is declared (its command, constructor or field; an offset in its module):
+  a `mutual` block's definitions each have their own -/
+  start : Nat := 0
+  deriving Inhabited, Repr, BEq
+
 structure CommandState (R : Type) where
   globals : Globals R := {}
   tables : ParserTables := Builtin.tables
@@ -105,6 +119,9 @@ structure CommandState (R : Type) where
   /-- record the expected type of every checked term (the language server turns it on) -/
   termInfo : Bool := false
   declSites : Std.HashMap Name (SourceInfo × String) := {}
+  /-- (11s) what each declaration is and its doc comment (`/-- … -/`), for `wiz doc` and
+  hovers: filled by the frontend (`runFrontend.step`), replayed by the cache -/
+  declDocs : Std.HashMap Name DeclDoc := {}
   /-- the module being elaborated (`""` for the main file) -/
   module : String := ""
   /-- the modules whose `builtin` registrations are trusted: the toolchain's library
@@ -136,6 +153,9 @@ structure CommandState (R : Type) where
   localCats : List Name := []
   localRules : List Nat := []
   localProcs : List Nat := []
+  /-- (11w) `local instance`s: their positions in `instances` (numbered from the oldest) -/
+  localInsts : List Nat := []
+
   /-- (11r) unexpanders declared with `app_unexpander c` and `attribute [app_unexpander c] f`,
   latest first, and which of them are `local` (numbered from the oldest) -/
   ppUser : List UnexpanderEntry := []
@@ -162,6 +182,10 @@ def withMarksOnDemand (g : Globals R) (d : Decl R) (k : Decl R → TCM (Globals 
     let go := fun (_ : Unit) => k (d.withMarks g)
     if g.traceProofSteps then dbgTrace s!"marks-on-demand {d.name}: {(t.take 80).replace "\n" " "} : {(ty.take 60).replace "\n" " "} in Sort {l}" go else go ()
   | r => r
+
+/-- (11s) The doc comment of a declaration, if it has one. -/
+def CommandState.docOf? (s : CommandState R) (n : Name) : Option String :=
+  (s.declDocs.get? n).bind (·.doc)
 
 /-- "'n' has already been declared", naming the module that declared it if that is not
 the one being elaborated (two modules, or a module and the file importing it). -/
@@ -218,6 +242,9 @@ def privacyCheck (g : Globals R) (d : Decl R) (kind : Globals R → Decl R → T
 proof markers the kernel requires (`withMarksOnDemand`), and then the privacy check (with
 the markers too: an unmarked proof is not a privacy failure). -/
 def addDeclSorted (g : Globals R) (d : Decl R) : TCM (Globals R) := do
+  -- the kernel's own check is against the full environment: never the elaborator's view,
+  -- whose `hidden` definitions (13b) `conv` would consult
+  unless g.hidden.isEmpty do throw (.other s!"internal error: {d.name} checked against the elaborator's view")
   let d := d.withSorts g
   let kind := fun (g' : Globals R) (d' : Decl R) => withMarksOnDemand g' d' (addDecl g')
   let g' ← kind g d
@@ -1128,12 +1155,16 @@ def CommandState.endModule (inner outer : CommandState R) : CommandState R :=
   let cats := inner.localCats.take (inner.localCats.length - outer.localCats.length)
   let rules := inner.localRules.take (inner.localRules.length - outer.localRules.length)
   let procs := inner.localProcs.take (inner.localProcs.length - outer.localProcs.length)
+  let insts := inner.localInsts.take (inner.localInsts.length - outer.localInsts.length)
   let pps := inner.localPP.take (inner.localPP.length - outer.localPP.length)
   -- (11r) `set_option pp.…` is the module's own
   let reset := { inner with localKinds := outer.localKinds, localCats := outer.localCats,
                             localRules := outer.localRules, localProcs := outer.localProcs,
-                            localPP := outer.localPP,
+                            localInsts := outer.localInsts, localPP := outer.localPP,
                             globals := { inner.globals with pp := { inner.globals.pp with useNotation := outer.globals.pp.useNotation } } }
+  -- (11w) a `local instance` is found only in its module (its definition stays: a name)
+  let reset := if insts.isEmpty then reset else
+    { reset with instances := (reset.instances.zipIdx.filter fun (_, i) => !insts.contains i).map (·.1) }
   if kinds.isEmpty && cats.isEmpty && rules.isEmpty && procs.isEmpty && pps.isEmpty then reset else
   let t := inner.tables
   let cats' := t.cats.fold (init := ({} : Std.HashMap Name Category)) fun acc c cat =>
@@ -1334,8 +1365,8 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     -- (13m) grammar that stays in this module: remember what the command adds
     let inner := cmd.getArg 1
     unless ["command.syntax", "command.declareSyntaxCat", "command.notation", "command.infix",
-            "command.macroRules", "command.attrMacro", "command.appUnexpander", "command.attrUnexpander"].contains inner.kind do
-      report .error cmd.info "only `syntax`, `declare_syntax_cat`, `notation`, `infixl`/`infixr`/`infix`, `macro_rules`, `attribute [macro …]` and unexpanders can be `local`"
+            "command.macroRules", "command.attrMacro", "command.instance", "command.appUnexpander", "command.attrUnexpander"].contains inner.kind do
+      report .error cmd.info "only `syntax`, `declare_syntax_cat`, `notation`, `infixl`/`infixr`/`infix`, `macro_rules`, `attribute [macro …]`, `instance` and unexpanders can be `local`"
       return
     let before ← get
     elabCommand inner
@@ -1345,6 +1376,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
       { s with localKinds := kinds ++ s.localKinds, localCats := cats ++ s.localCats
                localRules := (List.range' before.macros.length (s.macros.length - before.macros.length)).reverse ++ s.localRules
                localProcs := (List.range' before.procMacros.length (s.procMacros.length - before.procMacros.length)).reverse ++ s.localProcs
+               localInsts := (List.range' before.instances.size (s.instances.size - before.instances.size)).reverse ++ s.localInsts
                localPP := (List.range' before.ppUser.length (s.ppUser.length - before.ppUser.length)).reverse ++ s.localPP }
   | "command.def" | "command.axiom" =>
     let name := ((cmd.getArg 1).getId?).getD "_"
@@ -1457,7 +1489,9 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
           | .error e => report .error e.info e.msg; return
         let pd := Decl.withSorts g { name, levelParams, type := ty, value := none, witness := some w }
         let addP := fun (g' : Globals R) (d' : Decl R) => withMarksOnDemand g' d' (addPartialDecl g')
-        match (do let g' ← addP g pd; privacyCheck g pd addP; pure g' : TCM (Globals R)) with
+        match (do
+            unless g.hidden.isEmpty do throw (.other s!"internal error: {pd.name} checked against the elaborator's view")
+            let g' ← addP g pd; privacyCheck g pd addP; pure g' : TCM (Globals R)) with
         | .ok g' => g := g'
         | .error e => report .error (d.getArg 1).info s!"kernel rejected {name}: {e}"; return
         sigs := sigs.push (d, name, levelParams)

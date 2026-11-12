@@ -1,7 +1,9 @@
 #!/bin/sh
 # Build the web infoview: web/Web.wiz → C (the Wiz compiler) → WebAssembly (Emscripten),
 # with the reference-counting runtime and mini-gmp (GMP's portable subset) for bignums.
-#   usage: web/build.sh [OUT]       (default web/out; needs .lake/build/bin/wiz)
+#   usage: web/build.sh [OUT] [--gmp-src GMP.tar.xz]
+#   (OUT default web/out; needs .lake/build/bin/wiz. --gmp-src: mini-gmp from that GMP
+#   source tarball instead of nixpkgs', for builds without nix, such as the release job)
 # wasm64 (-sMEMORY64) keeps the runtime's 64-bit words and 62-bit small numbers as they
 # are. Web.wiz is a library (stage 9g): the page calls its exports `wiz_web_init` and
 # `wiz_web_step` on every event, so nothing waits inside Wasm (no Asyncify).
@@ -9,13 +11,15 @@ set -e
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 # without emcc on the PATH, run again with Emscripten from nixpkgs
 if ! command -v emcc >/dev/null; then exec nix shell nixpkgs#emscripten -c "$0" "$@"; fi
+GMPSRC=
+case "${2:-}" in --gmp-src) GMPSRC=$(cd "$(dirname "$3")" && pwd)/$(basename "$3") ;; esac
 OUT=$(mkdir -p "${1:-$ROOT/web/out}" && cd "${1:-$ROOT/web/out}" && pwd)
 WIZ=${WIZ:-$ROOT/.lake/build/bin/wiz}
 
 # 1. mini-gmp from GMP's source tarball, behind a <gmp.h>
 if [ ! -f "$OUT/gmp/mini-gmp.c" ]; then
   mkdir -p "$OUT/gmp"
-  SRC=$(nix build --no-link --print-out-paths nixpkgs#gmp.src)
+  SRC=${GMPSRC:-$(nix build --no-link --print-out-paths nixpkgs#gmp.src)}
   tar -C "$OUT/gmp" --strip-components=2 -xf "$SRC" --wildcards '*/mini-gmp/mini-gmp.[ch]'
   printf '#include "mini-gmp.h"\n' > "$OUT/gmp/gmp.h"
 fi

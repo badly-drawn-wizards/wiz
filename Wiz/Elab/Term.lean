@@ -2709,7 +2709,7 @@ partial def runTac (code : Code) (info : SourceInfo) (st : TacState R) (v : RVal
   let str (r : RVal) : ElabM R String := match r.toString? with
     | some s => pure s
     | none => throwAt info "tactic: malformed string"
-  let stxOf (r : RVal) : ElabM R Syntax := match decodeSyntax info r with
+  let stxOf (r : RVal) : ElabM R Syntax := match decodeLocated info r with
     | some s => pure s
     | none => throwAt info "tactic: malformed syntax"
   let goalOf (r : RVal) : ElabM R (Goal R) := do
