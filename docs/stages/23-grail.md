@@ -19,11 +19,15 @@ One module reached by several paths (a diamond) is the same declaration and fine
 module is imported once per file. Two modules with identical declarations still clash,
 as in Lean; put the definition in one module that the others import. A private
 function, axiom or foreign function (`private def helper`) is not a global name: its
-kernel name is `_private.M.A.0.helper` (as in Lean), which `helper` resolves to in M.A
+kernel name is `_private.M.A._0.helper` (as in Lean), which `helper` resolves to in M.A
 only, so two modules' private `helper`s never clash, and the file importing them may
-declare a `helper` of its own. Messages show `helper`. Private *types* (`private
-inductive`, `private structure`) keep their names, since their constructors, fields and
-recursors are looked up by name, so two of one name still clash. The kernel's `addDecl` refuses a name that is already declared, behind all
+declare a `helper` of its own. Messages show `helper`. So do private *types*
+(`private inductive`, `private structure`, `private class`, `private coinductive`, a
+`mutual` block of inductives): the command is elaborated with the type's name rewritten
+to its kernel name (`T` and `T.f` wherever they occur in it), so its constructors,
+fields, recursors, description and instances' names are all under it, and in the module
+`T`, `T.mk`, `.mk`, patterns, `p.x`, `deriving` and `instance : C T` find them. A derived
+`Repr` shows `T.c`. The kernel's `addDecl` refuses a name that is already declared, behind all
 of this.
 
 ## 23c: a key per module, atomic writes ✅

@@ -521,4 +521,7 @@ agree with the definitions. Bitwise or and xor have no such bound from an argume
 `Nat.bitwise` does). `BitVec.concat` and `BitVec.ofVec` take their widths at runtime
 (`{ω m n}`; the HDL's `Hw.cat` already did) and go through `ofNat`, and `BitVec.mk` is
 `ofNat` with the width inferred. `IntN.min`/`IntN.max` are `ofNat` too (at width 0 they
-used to be out of range). Group `word`.
+used to be out of range). The kernel compares erased fields like any other, so every word
+is built through one private constructor whose proof is canonical (`Word.canon`: for
+closed numbers it computes to `refl`), and two closed words with the same bits are equal
+by `rfl` however their range was proved. Groups `word`, `vec`.

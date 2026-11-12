@@ -74,7 +74,7 @@ def identAt (s : CommandState R) (off : Nat) : Option (Info R) :=
 
 def hoverAt (s : CommandState R) (off : Nat) : Option (Name × String) := do
   let .ident _ n _ names ty ← identAt s off | none
-  pure (n, ty.pretty names)
+  pure (n, ty.pretty names (some s.globals))
 
 /-- The tactic state at a character offset: inside a `by` block, the goals after the
 innermost tactic containing `off` (its end included); between tactics, after the last one
@@ -102,6 +102,17 @@ def goalsAt (s : CommandState R) (off : Nat) : Option (Nat × SourceInfo × Arra
       | some (j, _) => if r.stop > j.info.stop || (r.stop == j.info.stop && size r ≥ size j.info) then some (i, k) else acc
       | none => some (i, k)
     else acc) none
+  -- (11w) at the very start of a tactic: the goals before it (the outermost starting there),
+  -- as Lean shows them; `exact x` with the cursor in front of `exact` shows what it solves
+  let starting : Option (Info R × Nat) := inside.foldl (fun acc (i, k) =>
+    let r := i.info
+    if r.start == off then
+      match acc with
+      | some (j, _) => if size r > size j.info then some (i, k) else acc
+      | none => some (i, k)
+    else acc) none
+  if let some (.tactic r _ before _, k) := starting then
+    return (k + 2 * s.infos.size, r, before)
   match (containing.orElse fun _ => before : Option (Info R × Nat)) with
   | some (.tactic r _ _ after, k) => pure (k, r, after)
   | _ =>

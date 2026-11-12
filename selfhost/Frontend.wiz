@@ -774,7 +774,8 @@ def addCtors (T : String) (ps : List String) (pts : Tms) (nidx : Nat) (I : Tm) (
           | .tnil => match I with
             | .unit _ => .star
             | _ => .eqRefl (shiftTm n 0 I) (phantomVal I);
-        let v := tLams (np + n) (.con (.pair (.tag k i) (payloadP proof n (n - 1))));
+        -- (the index equation's proof gets its marker, P2)
+        let v := markClosed (tLams (np + n) (.con (.pair (.tag k i) (payloadP proof n (n - 1))))) ty;
         match check empty v (eval .nil ty) with
         | .err _ => .err
         | .ok _ _ => match addCtors T ps pts nidx I Tc TcI k (Globals.add gs (.mk (String.append (String.append T ".") (ctorName c)) ty v v
@@ -939,11 +940,11 @@ def inductiveCmdS (gs : Globals) (stx0 : Syntax) (seal : Option Tm) : Step := ma
                 | .none => .nil) pts (match sig with
                 | .indexed _ => .pi I (.univ 0)
                 | _ => .univ 0));
-              let val := tLams np (body (mkD ds));
+              let val := markClosed (tLams np (body (mkD ds))) ty;
               match check empty val (eval .nil ty) with
               | .err m => errStep gs m
               | .ok _ _ =>
-                let valI := tLams np (body (mkD dsI));
+                let valI := markClosed (tLams np (body (mkD dsI))) ty;
                 let gs1 := Globals.add gs (.mk T ty val valI .nil);
                 match addCtors T ps pts nidx I (.const T .nil .nil val ty) valI k gs1 0 ctors with
                 | .err => errStep gs "ill-typed constructor"
@@ -2877,6 +2878,7 @@ def inlineTm (gs : Globals) : Tm → Tm
   | .ecase m sc bs => .ecase m (inlineTm gs sc) (inlineTms gs bs)
   | .ind l I D v P m i x => .ind l I D v P (inlineTm gs m) i (inlineTm gs x)
   | .scase l I D v P m sz i x => .scase l I D v P (inlineTm gs m) sz i (inlineTm gs x)
+  | .prf l t => .prf l (inlineTm gs t)
   | t => t
 def inlineTms (gs : Globals) : Tms → Tms
   | .tnil => .tnil
@@ -2999,10 +3001,10 @@ def matchDefCmd (gs : Globals) (stx : Syntax) : Step := match kid stx 1 with
                     match compileM gs mc ES.empty cxP (eval (TCtx.env (Cx.c cxP)) R) cols useInd .nil cls with
                     | .err m => errStep gs m
                     | .ok t _ =>
-                      let fn := tLams n t;
-                      match check empty fn (eval .nil tyT) with
-                      | .err m => errStep gs m
-                      | .ok _ _ => .mk (String.append f (String.append " : " (show .nil 0 tyT)))
+                      -- (with its proof markers, if the kernel asks for them)
+                      match checkMarking (tLams n t) tyT with
+                      | .bad m => errStep gs m
+                      | .good fn => .mk (String.append f (String.append " : " (show .nil 0 tyT)))
                           (Globals.add gs (.mk f tyT fn (inlineTm gs fn) (paramMask (kids (kid stx 3)))))
     | _ => errStep gs "a definition needs a type"
   | _ => errStep gs "a definition needs a name"
@@ -3024,11 +3026,13 @@ def command (gs : Globals) (stx : Syntax) : Step :=
           | .none => errStep gs "could not infer an implicit argument"
           | .some tyZ => let tyT := sortTy tyZ; match zonk es 0 v0 with
             | .none => errStep gs "could not infer an implicit argument"
-            | .some v => match inferUniv empty tyT with
+            | .some v0z => match inferUniv empty tyT with
               | .err m => errStep gs m
-              | .ok _ _ => match check empty v (eval .nil tyT) with
-                | .err m => errStep gs m
-                | .ok _ _ => .mk (String.append x (String.append " : " (show .nil 0 tyT)))
+              | .ok _ _ =>
+                -- (P2) with the proof markers the kernel requires, if it asks for them
+                match checkMarking v0z tyT with
+                | .bad m => errStep gs m
+                | .good v => .mk (String.append x (String.append " : " (show .nil 0 tyT)))
                     (Globals.add gs (.mk x tyT v (inlineTm gs v) (paramMask (kids (kid stx 3)))))
       | _ => errStep gs "a definition needs a type"
     | _ => errStep gs "a definition needs a name"
@@ -3045,7 +3049,7 @@ def command (gs : Globals) (stx : Syntax) : Step :=
     | .none => errStep gs "could not elaborate a constructor argument"
     | .some es => match zonk es 0 t0 with
       | .none => errStep gs "could not infer an implicit argument"
-      | .some t => match infer empty t with
+      | .some t0z => let t := MR.tm (markInfer empty t0z); match infer empty t with
         | .err m => errStep gs m
         | .ok ty _ => match strEq (kindOf stx) "command.check" with
           | .true => .mk (show .nil 0 (quote 0 ty)) gs
@@ -3167,7 +3171,7 @@ def addMCtors (members ps : List String) (pts : Tms) (m k : Nat) : Globals → N
         -- (a field typed by a member is recursive)
         let fs := markRec members ps fs0 fs1;
         let ty := sortTy (piTeleZ pts (ctorType (tApps Tc (pvars np (np + n))) fs));
-        let v := tLams (np + n) (.con (.pair (.tag k ci) (payloadP (.eqRefl (.enum m) (.tag m j)) n (n - 1))));
+        let v := markClosed (tLams (np + n) (.con (.pair (.tag k ci) (payloadP (.eqRefl (.enum m) (.tag m j)) n (n - 1))))) ty;
         match check empty v (eval .nil ty) with
         | .err e => .err e
         | .ok _ _ => match addMCtors members ps pts m k (Globals.add gs (.mk (String.append (String.append T ".") (ctorName c)) ty v v
@@ -3210,11 +3214,11 @@ def mutualInductiveCmd (gs : Globals) (defs : List Syntax) : Step := match mutua
         -- `fun ps i => μ D i` (the description moved under `i`)
         let body := fun (D : Tm) => tLams np (.lam (.mu 0 I (nfAt (np + 1) (tApps (tLams np D) (pvars np (np + 1)))) (.var 0)));
         let fty := sortTy (piTele pts (.pi I (.univ 0)));
-        let fval := body (mkD ds);
+        let fval := markClosed (body (mkD ds)) fty;
         match check empty fval (eval .nil fty) with
         | .err e => errStep gs e
         | .ok _ _ =>
-          let fvalI := body (mkD dsI);
+          let fvalI := markClosed (body (mkD dsI)) fty;
           let gs1 := Globals.add gs (.mk F fty fval fvalI .nil);
           let Fc : Tm := .const F .nil .nil fval fty;
           let gs2 := addMembers Fc fvalI np pts m gs1 0 members;
@@ -3660,7 +3664,7 @@ def applyGlobal (we : WEnv) (c : TCtx) (ty : Val) (f : Nat) (asg : List (Option 
       | .some v => applyGlobal we c ty f rest cod (.cons v env) (.app acc (quote (TCtx.lvl c) v))
       | .none => applyFound we c ty f rest dom cod env acc
     | .nil => applyFound we c ty f .nil dom cod env acc
-  | .done => match check (TCtx.erase c) acc ty with
+  | .done => match check (TCtx.erase c) (markCheck c acc ty) ty with
     | .ok _ _ => .some acc
     | .err _ => .none
 -- an argument the conclusion doesn't fix: found by the search
@@ -3719,7 +3723,7 @@ def addPartials : Globals → List Syntax → AxR
     | .err m => .err m
     | .ok f ty => match witnessOf gs d f ty with
       | .err m => .err m
-      | .ok _ w => match checkPartial ty w with
+      | .ok _ w => match checkPartial ty (markClosed w ty) with
         | .err m => .err (String.append (String.append "the witness of " f) (String.append ": " m))
         | .ok _ _ => addPartials (Globals.add gs (.mk f ty (.axiomC f ty) (.axiomC f ty) (paramMask (kids (kid (unwrapDef d) 3))))) rest
 -- `axiom f (bs) : T` (stage 19c), printed like a definition

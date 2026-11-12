@@ -73,6 +73,10 @@ covers only Wiz's own runtime. Other libraries keep their licences:
 * glibc is linked dynamically, as with any C program. The compiler-rt builtins clang
   links in (Apache-2.0 with LLVM exception) need no notice.
 
+A release toolchain's `share/wiz/NOTICE` says the same, and also lists the third-party
+code linked into `wiz`, `grail` and `tower` themselves; the licence texts are in
+`share/wiz/LICENSES/` and `share/wiz/cc/LICENSES/`.
+
 ## Continuous integration
 
 `nix develop` gives the toolchain the tests need besides Lean (see `flake.nix`): GMP and
@@ -125,7 +129,7 @@ cached between runs.
   On a master push whose tests all passed and whose balance drifted, the `CI result`
   job uploads the regenerated baseline as the `test-timings-baseline` artifact. It also
   prints the command that applies it, in the warning and in the summary:
-  `gh run download RUN -R badly-drawn-wizards/wiz -n test-timings-baseline -D .github`.
+  `gh run download RUN -R wiz-pl/wiz -n test-timings-baseline -D .github`.
   Commit the result in a small PR. CI does not open that PR itself. A PR opened with the
   workflow's token runs no CI (GitHub does not trigger workflows from it), so it could
   not merge on green, and the workflow would also need write permissions.
@@ -157,23 +161,61 @@ cached between runs.
   is made of (the `.lean` files, Lean, `flake.lock`), and partial hits only come from the
   same compiler (the elaboration cache's own keys include the wiz binary's hash, but the
   test driver's grail runs use a fixed binary id and the `/tmp` programs a timestamp).
+* **Storage.** The repository's Actions cache holds 10 GB and evicts the least recently
+  used entries, so pull requests don't keep big entries: the elan toolchain (~770 MB) is
+  saved only by `master` (pull requests restore master's), and a pull request's (or merge
+  queue entry's) `lake-*` and `exercises-*` entries (~500 MB each), saved only to hand
+  the build to its test shards, are deleted by the `CI result` job when the run ends
+  (not when it is cancelled). The next push restores master's build and catches up.
+  Artifacts are short-lived: test logs 3 days, `test-timings` 7 days on master (2
+  elsewhere), `test-timings-baseline` 7 days, the release tarball 90 days for a tag,
+  7 for a snapshot (both are also release assets) and 3 for a pull request.
+  To see the usage: `gh api repos/wiz-pl/wiz/actions/cache/usage` and
+  `gh cache list -R wiz-pl/wiz -S size_in_bytes`.
+
+* **Path filters.** On a pull request the `changes` job (`scripts/ci.py changes`) reads
+  the files the PR changes and decides what runs: nothing but `changes` and `CI result`
+  for a docs-only PR (`docs/`, `*.md`, LICENSE); every shard when a Lean file, the build,
+  the runtime, `scripts/` or `.github/` changed; otherwise each shard with `"inputs"` in
+  `.github/test-shards.json` only when one of its inputs changed (a `lib/X.wiz` input
+  brings the lib files it imports), and the shards without `"inputs"` (backends,
+  library) for any non-docs change. So a PR touching only, say, `lib/Json.wiz` skips
+  `core` and the selfhost shards. `CI result` counts a job the filter skipped as fine
+  and a job it wanted only if it succeeded. Pushes to `master`, the merge queue and
+  manual runs always run everything, so a missing input shows up there at the latest.
+  A test that starts reading a new file belongs in a shard without `"inputs"`, or add
+  the file to its shard's `"inputs"`.
+* **A self-hosted runner** for the heavy shards (`"heavy": true` in
+  `.github/test-shards.json`): set the repository variable `WIZ_RUNNER_HEAVY` to its
+  label; unset, everything runs on `ubuntu-latest`. Pull requests from forks never run
+  there. Setup, security and aarch64 notes: [ci-runner.md](ci-runner.md).
+* **Merging: the merge queue.** CI also runs on `merge_group` events, so `master` can
+  have a GitHub merge queue (it needs an organization-owned repository): a queued PR is
+  tested merged onto `master` *and the PRs queued ahead of it* (up to 3 entries build at
+  once), and lands only if that run's `CI result` passes. Two PRs that are green alone
+  but break together (the selfhost/*.wiz case of 2026-11-11) then never both land. To
+  queue a green PR: `gh pr merge N -R wiz-pl/wiz --merge --auto` (it enters
+  the queue once its own checks pass; `gh pr merge N --disable-auto` takes it out). A
+  queue run that fails drops that PR from the queue and rebuilds the ones behind it
+  without it. Without a queue (a user-owned repository), `--auto` waits for the required
+  check and merges, and "require branches to be up to date" serialises merges instead.
 
 To run Wiz without a checkout or a Lean toolchain, with the binaries from Cachix:
 
 ```
 nix run --option extra-substituters https://badlydrawnwizards.cachix.org \
   --option extra-trusted-public-keys badlydrawnwizards.cachix.org-1:TxG+RHY8RMC/AXc0LJbYtYm9LW/XRjfQwgz+EEaAjBI= \
-  github:badly-drawn-wizards/wiz#wiz -- check hello.wiz
+  github:wiz-pl/wiz#wiz -- check hello.wiz
 ```
 
 or `cachix use badlydrawnwizards` once and then `nix run
-github:badly-drawn-wizards/wiz#wiz -- …` (`#grail` for grail; `wiz build FILE -o OUT`
+github:wiz-pl/wiz#wiz -- …` (`#grail` for grail; `wiz build FILE -o OUT`
 works out of the box). Without a branch the flake reference means the default branch,
 `master`, whose binaries are on Cachix once its `nix package` job has run. The
 `--option`s count only for a trusted Nix user (or with the cache in `nix.conf`);
 otherwise Nix builds wiz from source, which takes a few minutes.
 
 `#nvim-wiz` is Neovim with the Wiz plugin (editors/nvim, docs/stages/11-tooling.md
-11p) and this wiz on `PATH`: `nix run github:badly-drawn-wizards/wiz#nvim-wiz --
+11p) and this wiz on `PATH`: `nix run github:wiz-pl/wiz#nvim-wiz --
 file.wiz`. `packages.<system>.wiz-nvim` is the plugin alone, for a Neovim
 configuration in Nix.

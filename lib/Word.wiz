@@ -165,17 +165,29 @@ def IntN.toNat_lt {0 w : Nat} : (a : IntN w) → Nat.lt a.toNat (Nat.pow 2 w) = 
 -- two words with the same bits are equal (the proofs don't count)
 def UIntN.ext {0 w : Nat} : (a b : UIntN w) → a.toNat = b.toNat → a = b
   | .mk _ _, .mk _ _, e => (e, (), (), ())
+-- Every word is built with `mkR`, whose proof is `Word.canon`'s: for closed numbers it
+-- computes to `refl`, so two closed words with the same bits are convertible however
+-- their range was proved (the kernel compares erased fields too).
+def Word.canonAux (x M : Nat) : (b : Bool) → Nat.lt x M = b → b = .true → Nat.lt x M = .true
+  | .true, e, _ => e
+  | .false, _, h => absurd h.1
+def Word.canon (x M : Nat) (h : Nat.lt x M = .true) : Nat.lt x M = .true :=
+  Word.canonAux x M (Nat.lt x M) (refl (Nat.lt x M)) h
+private def UIntN.mkR {0 w : Nat} (x : Nat) (0 h : Nat.lt x (Nat.pow 2 w) = .true) : UIntN w :=
+  .mk x (Word.canon x (Nat.pow 2 w) h)
+private def IntN.mkR {0 w : Nat} (x : Nat) (0 h : Nat.lt x (Nat.pow 2 w) = .true) : IntN w :=
+  .mk x (Word.canon x (Nat.pow 2 w) h)
 -- `x`, or `b` if that is smaller: below `2^w` when `b` is. Every word this module builds
 -- that `ofNat` doesn't is `below x b` with `x ≤ b`, so it is `x`.
 private def UIntN.below {0 w : Nat} (x b : Nat) (0 h : Nat.lt b (Nat.pow 2 w) = .true) : UIntN w :=
-  .mk (Word.min x b) (Word.min_lt x b (Nat.pow 2 w) h)
+  UIntN.mkR (Word.min x b) (Word.min_lt x b (Nat.pow 2 w) h)
 private def IntN.below {0 w : Nat} (x b : Nat) (0 h : Nat.lt b (Nat.pow 2 w) = .true) : IntN w :=
-  .mk (Word.min x b) (Word.min_lt x b (Nat.pow 2 w) h)
+  IntN.mkR (Word.min x b) (Word.min_lt x b (Nat.pow 2 w) h)
 
 def UIntN.ofNat (w n : Nat) : UIntN w :=
   UIntN.below (Nat.mod n (Nat.pow 2 w)) (Nat.sub (Nat.pow 2 w) 1) (Word.pow_pred_lt w)
-def UIntN.zero (w : Nat) : UIntN w := .mk 0 (Word.pow_pos w)
-def UIntN.max (w : Nat) : UIntN w := .mk (Nat.sub (Nat.pow 2 w) 1) (Word.pow_pred_lt w)
+def UIntN.zero (w : Nat) : UIntN w := UIntN.mkR 0 (Word.pow_pos w)
+def UIntN.max (w : Nat) : UIntN w := UIntN.mkR (Nat.sub (Nat.pow 2 w) 1) (Word.pow_pred_lt w)
 
 -- Wrapping arithmetic.
 def UIntN.add {ω w : Nat} (a b : UIntN w) : UIntN w := UIntN.ofNat w (a.toNat + b.toNat)
@@ -194,9 +206,9 @@ def UIntN.le {w : Nat} (a b : UIntN w) : Bool := Nat.le a.toNat b.toNat
 -- `wrapping_shl` shifts by `k % w`).
 def UIntN.land {w : Nat} (a b : UIntN w) : UIntN w := UIntN.below (Nat.land a.toNat b.toNat) a.toNat a.toNat_lt
 def UIntN.lor {w : Nat} (a b : UIntN w) : UIntN w :=
-  .mk (Nat.lor a.toNat b.toNat) (Word.lor_lt (Nat.add a.toNat b.toNat) w a.toNat b.toNat a.toNat_lt b.toNat_lt)
+  UIntN.mkR (Nat.lor a.toNat b.toNat) (Word.lor_lt (Nat.add a.toNat b.toNat) w a.toNat b.toNat a.toNat_lt b.toNat_lt)
 def UIntN.xor {w : Nat} (a b : UIntN w) : UIntN w :=
-  .mk (Nat.xor a.toNat b.toNat) (Word.xor_lt (Nat.add a.toNat b.toNat) w a.toNat b.toNat a.toNat_lt b.toNat_lt)
+  UIntN.mkR (Nat.xor a.toNat b.toNat) (Word.xor_lt (Nat.add a.toNat b.toNat) w a.toNat b.toNat a.toNat_lt b.toNat_lt)
 def UIntN.not {ω w : Nat} (a : UIntN w) : UIntN w :=
   UIntN.below (Nat.pow 2 w - 1 - a.toNat) (Nat.sub (Nat.pow 2 w) 1) (Word.pow_pred_lt w)
 def UIntN.shiftLeft {ω w : Nat} (a : UIntN w) (k : Nat) : UIntN w := UIntN.ofNat w (Nat.shiftLeft a.toNat k)
@@ -207,8 +219,8 @@ def UIntN.msb {ω w : Nat} (a : UIntN w) : Bool := Nat.testBit a.toNat (w - 1)
 -- Conversions: to another width (zero-extending or truncating), and the same bits as
 -- a signed number (Rust's `as`).
 def UIntN.resize {w : Nat} (ω v : Nat) (a : UIntN w) : UIntN v := UIntN.ofNat v a.toNat
-def UIntN.toIntN {w : Nat} (a : UIntN w) : IntN w := .mk a.toNat a.toNat_lt
-def IntN.toUIntN {w : Nat} (a : IntN w) : UIntN w := .mk a.toNat a.toNat_lt
+def UIntN.toIntN {w : Nat} (a : UIntN w) : IntN w := IntN.mkR a.toNat a.toNat_lt
+def IntN.toUIntN {w : Nat} (a : IntN w) : UIntN w := UIntN.mkR a.toNat a.toNat_lt
 
 -- Signed numbers: `n` and `-n`, the sign, and the magnitude.
 def IntN.ofNat (w n : Nat) : IntN w :=
@@ -231,16 +243,16 @@ def IntN.neg {ω w : Nat} (a : IntN w) : IntN w := (UIntN.neg a.toUIntN).toIntN
 def IntN.beq {w : Nat} (a b : IntN w) : Bool := Nat.beq a.toNat b.toNat
 def IntN.land {w : Nat} (a b : IntN w) : IntN w := IntN.below (Nat.land a.toNat b.toNat) a.toNat a.toNat_lt
 def IntN.lor {w : Nat} (a b : IntN w) : IntN w :=
-  .mk (Nat.lor a.toNat b.toNat) (Word.lor_lt (Nat.add a.toNat b.toNat) w a.toNat b.toNat a.toNat_lt b.toNat_lt)
+  IntN.mkR (Nat.lor a.toNat b.toNat) (Word.lor_lt (Nat.add a.toNat b.toNat) w a.toNat b.toNat a.toNat_lt b.toNat_lt)
 def IntN.xor {w : Nat} (a b : IntN w) : IntN w :=
-  .mk (Nat.xor a.toNat b.toNat) (Word.xor_lt (Nat.add a.toNat b.toNat) w a.toNat b.toNat a.toNat_lt b.toNat_lt)
+  IntN.mkR (Nat.xor a.toNat b.toNat) (Word.xor_lt (Nat.add a.toNat b.toNat) w a.toNat b.toNat a.toNat_lt b.toNat_lt)
 def IntN.not {ω w : Nat} (a : IntN w) : IntN w := (UIntN.not a.toUIntN).toIntN
 def IntN.shiftLeft {ω w : Nat} (a : IntN w) (k : Nat) : IntN w := (UIntN.shiftLeft a.toUIntN k).toIntN
 
 -- Division truncates towards zero and the remainder takes the dividend's sign, as in
 -- Rust: `-7 / 2 = -3`, `-7 % 2 = -1`; `min / -1` wraps to `min` (`wrapping_div`).
 def IntN.div {ω w : Nat} (a b : IntN w) : IntN w := match Nat.beq b.toNat 0 with
-  | .true => .mk 0 (Word.pow_pos w)
+  | .true => IntN.mkR 0 (Word.pow_pos w)
   | .false =>
     let q := Nat.div (IntN.natAbs a) (IntN.natAbs b);
     match Bool.xor (IntN.isNeg a) (IntN.isNeg b) with
@@ -287,6 +299,13 @@ instance {ω w : Nat} : Mul (IntN w) := Mul.mk IntN.mul
 instance {ω w : Nat} : Neg (IntN w) := Neg.mk IntN.neg
 instance {ω w : Nat} : Div (IntN w) := Div.mk IntN.div
 instance {ω w : Nat} : Mod (IntN w) := Mod.mk IntN.rem
+-- bitwise (H14 S2): `&&& ||| ^^^ ~~~ <<< >>>` on unsigned words
+instance {ω w : Nat} : AndOp (UIntN w) := AndOp.mk UIntN.land
+instance {ω w : Nat} : OrOp (UIntN w) := OrOp.mk UIntN.lor
+instance {ω w : Nat} : XorOp (UIntN w) := XorOp.mk UIntN.xor
+instance {ω w : Nat} : Complement (UIntN w) := Complement.mk UIntN.not
+instance {ω w : Nat} : ShiftLeft (UIntN w) := ShiftLeft.mk UIntN.shiftLeft
+instance {ω w : Nat} : ShiftRight (UIntN w) := ShiftRight.mk UIntN.shiftRight
 
 -- Rust's fixed widths. Operations come from the width-indexed types (`x.add y`).
 def U8 : Type := UIntN 8
