@@ -268,6 +268,8 @@ continue onto a line starting at the command's column.
 | `command.deriving`           | "deriving" "instance" C,+ "for" T,+ |
 | `command.attrDeriver`        | "attribute" "[" "deriver" ident "]" ident |
 | `command.attrInline`         | "attribute" "[" "inline" "]" ident |
+| `command.attrDefaultInstance`| "attribute" "[" "default_instance" [num] "]" ident (7f) |
+| `command.attrBinop`          | "attribute" "[" "binop" "]" ident (7f) |
 | `command.coinductive`        | like `structure`; the fields are observations |
 | `command.defEqns`            | "def" ident [".{" us "}"] [binders] ":" T [alts] |
 | `command.partial`            | "partial" ["(" "default" ":=" w ")"] command (a `def`) |
@@ -342,6 +344,12 @@ def commandLeading : List LeadingParser := [
   -- 22i: compiled code inlines the definition where it is applied (to all its arguments)
   { kind := "command.attrInline", prec := maxPrec,
     p := seqs ["attribute", "[", nonReserved "inline", "]", ident] },
+  -- 7f: a default instance (with a priority), and an operator whose numeral operands take
+  -- the type of the others (Lean's `binop%`)
+  { kind := "command.attrDefaultInstance", prec := maxPrec,
+    p := seqs ["attribute", "[", nonReserved "default_instance", optional num, "]", ident] },
+  { kind := "command.attrBinop", prec := maxPrec,
+    p := seqs ["attribute", "[", nonReserved "binop", "]", ident] },
   -- HD8: `deriving`
   { kind := "command.attrDeriver", prec := maxPrec,
     p := seqs ["attribute", "[", nonReserved "deriver", ident, "]", ident] },
@@ -367,6 +375,8 @@ def commandLeading : List LeadingParser := [
       "where", many (structureField)] },
   { kind := "command.instance", prec := maxPrec,
     p := seqs ["instance", optional (seqs ["(", nonReserved "priority", ":=", num, ")"]),
+      -- (7f) an optional name (`instance instHAdd [Add A] : HAdd A A A`)
+      optional ident,
       many (bracketedBinder false), ":", term,
       orelse (seqs [":=", term])
         (seqs ["where", withPosition (many1 (node "instance.field" (seqs [colGe, ident, ":=", term])))])] },

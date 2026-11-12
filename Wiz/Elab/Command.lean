@@ -318,8 +318,9 @@ def elabDeclTerms (binders : Array Syntax) (typeStx : Option Syntax) (valStx : O
   -- the type's instance problems that are already determined, solved before the body is
   -- checked: an equation stuck on such a hole then computes when it meets the body's type
   -- (`unifyAt`). (The type isn't zonked here: an equation that stays as written lets
-  -- `rfl` be `refl` of its sides.)
-  while ← synthPending do pure ()
+  -- `rfl` be `refl` of its sides.) (7f) Stuck problems get their default instances here:
+  -- the type is complete before the body is checked (`theorem t : 1 + 1 = 2 := rfl`).
+  synthDefaults
   -- (7e) with the instances solved, the type's instance holes are replaced by their
   -- solutions: the kernel's native arithmetic (`vNatOp`) can't see a solved hole, so
   -- `Nat.land a (b + 5)` with `+`'s instance a hole would unfold `Nat.land`'s unary
@@ -1788,11 +1789,13 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
   | "command.instance" =>
     let prioOpt := cmd.getArg 1
     let priority := if prioOpt.isNone then 1000 else ((prioOpt.getArg 3).getNat?).getD 1000
-    let binders := (cmd.getArg 2).args
-    let typeStx := cmd.getArg 4
-    -- `:= v` or `where fields` (the branch's items are inline: `cmd[5]` is the keyword)
-    let isWhere := (cmd.getArg 5) matches .atom _ "where"
-    let body := cmd.getArg 6
+    -- (7f) an optional name
+    let nameOpt := cmd.getArg 2
+    let binders := (cmd.getArg 3).args
+    let typeStx := cmd.getArg 5
+    -- `:= v` or `where fields` (the branch's items are inline: `cmd[6]` is the keyword)
+    let isWhere := (cmd.getArg 6) matches .atom _ "where"
+    let body := cmd.getArg 7
     -- `instAddNat` from the identifiers of the type
     let rec idents (stx : Syntax) : List Name := match stx with
       | .ident _ n => [n]
@@ -1804,8 +1807,12 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     -- ((13b) this module's private types and classes by their kernel names, so that two
     -- modules' instances for their private `Color`s have different names)
     let base := "inst" ++ String.join ((idents (concl typeStx)).map fun n => ((s.globals.resolve (stripScope n)).replace "." "").capitalize)
-    let name := if !s.globals.contains base then base else
-      ((List.range 1000).map (s!"{base}_{·}")).find? (!s.globals.contains ·) |>.getD base
+    let given? : Option Name := if nameOpt.isNone then none else
+      (if nameOpt.isOfKind "null" then nameOpt.getArg 0 else nameOpt).getId?
+    let name := match given? with
+      | some n => n
+      | none => if !s.globals.contains base then base else
+        ((List.range 1000).map (s!"{base}_{·}")).find? (!s.globals.contains ·) |>.getD base
     -- `where f := v …` builds the class's constructor applied to the fields, in order
     let rec headIdent (stx : Syntax) : Option Name :=
       match stx.kind with
@@ -1835,6 +1842,9 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
         else as.toList.flatMap levelNames
       | _ => []
     let levelParams := (binders.toList.flatMap levelNames ++ levelNames typeStx).eraseDups
+    match valStx with
+    | .error e => report .error cmd.info e
+    | .ok _ => if given?.isSome && s.globals.contains name then reportDup nameOpt.info name else
     match valStx with
     | .error e => report .error cmd.info e
     | .ok valStx =>
@@ -2571,6 +2581,24 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
       else
         modify fun s => { s with builtins := s.builtins ++ [(inlineKey, f)],
                                  globals := { s.globals with builtins := s.globals.builtins ++ [(inlineKey, f)] } }
+  | "command.attrDefaultInstance" =>
+    -- (7f) `attribute [default_instance p] i`: when instance problems are stuck, the
+    -- instance `i` is tried on those of its class, highest `p` (default 1000) first
+    -- (`applyDefaultInstance`)
+    let prio := if (cmd.getArg 3).isNone then 1000 else
+      (((if (cmd.getArg 3).isOfKind "null" then (cmd.getArg 3).getArg 0 else cmd.getArg 3).getNat?).getD 1000)
+    let iStx := cmd.getArg 5
+    let i := s.globals.resolve ((iStx.getId?).getD "_")
+    match s.instances.find? fun j => j.name == i && !j.isDefault with
+    | none => report .error iStx.info s!"{i} is not an instance"
+    | some j => modify fun s => { s with instances := s.instances.push { j with priority := prio, isDefault := true } }
+  | "command.attrBinop" =>
+    -- (7f) `attribute [binop] C.f`: numeral operands of `C.f` take the type of the others
+    let fStx := cmd.getArg 4
+    let f := s.globals.resolve ((fStx.getId?).getD "_")
+    match s.classes.find? fun c => c.fields.any fun x => c.name ++ "." ++ x == f with
+    | none => report .error fStx.info s!"{f} is not a method of a class"
+    | some c => modify fun s => { s with classes := s.classes.map fun c' => if c'.name == c.name then { c' with binop := true } else c' }
   | "command.attrDeriver" =>
     let C := ((cmd.getArg 3).getId?).getD "_"
     let f := ((cmd.getArg 5).getId?).getD "_"

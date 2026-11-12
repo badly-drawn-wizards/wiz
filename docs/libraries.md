@@ -522,9 +522,12 @@ instead of copies of their own (two modules declaring one name are an error at i
 
 ## Numbers: classes, integers, words ✅
 
-(Stage doc: docs/stages/07-type-classes.md, 7e.) The Prelude's `Add`, `Sub`, `Mul`,
+(Stage doc: docs/stages/07-type-classes.md, 7e and 7f.) The Prelude's `Add`, `Sub`, `Mul`,
 `Div`, `Mod`, `Neg` and `OfNat` give `+ - * / %`, prefix `-` and numerals at every
-numeric type:
+numeric type. The operators themselves are the heterogeneous classes `HAdd A B C` … (7f,
+as in Lean), which default to the homogeneous ones (`instHAdd [Add A] : HAdd A A A`), so a
+library gives an `Add` instance and gets `+`; it may also give a mixed one (`HMul Nat V V`).
+`x ^ k` is `HPow`, with `Pow Nat Nat`. A numeral that meets no type is a `Nat`.
 
 | type | where | numerals | operators |
 |------|-------|----------|-----------|

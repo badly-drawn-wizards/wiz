@@ -364,6 +364,11 @@ second component's type with the first projection. Throw if the field isn't foun
 Returns the projected term and its type. -/
 partial def elabFields (ctx : LocalCtx R) (t : Term R) (ty : VTy R) (fields : List Name) :
     ElabM R (Term R × VTy R) := do
+  -- (given, 7f) a value of a type not known yet (`(2 + 3).succ`): the stuck instance
+  -- problems take their default instances first, which may decide it
+  if !fields.isEmpty then
+    if (← force ty) matches .neutral (.mvar _) _ then
+      unless (← get).pendingInsts.isEmpty do synthDefaults
   -- (given, 13b) a structure with a constructor private to another module is opaque
   -- here: `t.f` is its projection function `S.f t`
   if let f :: rest := fields then
@@ -1042,8 +1047,16 @@ where
           | some t => pure t
           | none => throwAt ctx.info s!"numerals are for {N}, not {T}"
         | none => throwAt ctx.info "numerals need `builtin nat := …`"
-      -- an unsolved type: the numeral is a `Nat` (its default type)
-      | .neutral (.mvar _) _ => do let (t, ty) ← infer ctx stx; unifyAt ctx stx expected ty; pure t
+      -- (7f) an unsolved type: `@OfNat.ofNat ?T n ?i`, with a pending problem `OfNat ?T n`,
+      -- so the type may still be decided by what follows; if nothing does, the default
+      -- instance `OfNat Nat n` makes it a `Nat` (`applyDefaultInstance`), and zonking turns
+      -- it back into the literal. Without an `OfNat` class (or a default instance for
+      -- it) the numeral is a `Nat` at once.
+      | .neutral (.mvar _) _ => do
+        let s ← get
+        if s.instances.any (fun i => i.isDefault && i.cls == "OfNat") then
+          if let some t ← ofNatLit? ctx n expected then return t
+        let (t, ty) ← infer ctx stx; unifyAt ctx stx expected ty; pure t
       -- (HD9) any other type (an axiom, a type variable with an instance): `OfNat`
       | _ => do
         match ← ofNatLit? ctx n expected with
@@ -1755,23 +1768,62 @@ fixed (`Add ?A` in `a + 5`, now `Add Nat`) are solved now, not at the next insta
 problem or the end of the command, so that the value computes when it meets a type
 (`refl (a + 5) : Nat.lor a 5 = a + 5`: native arithmetic can't see an unsolved hole). -/
 partial def solveReady : ElabM R Unit := do
-  unless (← get).pendingInsts.isEmpty do discard synthPending
+  unless (← get).instReadyQ.isEmpty do discard synthPending
 
 /-- (7e) A numeral, possibly negated or in parentheses (`3`, `-3`, `(3)`). -/
 partial def numLike (stx : Syntax) : Bool :=
   stx.isOfKind "term.num" ||
   ((stx.isOfKind "term.paren" || stx.isOfKind "term.neg") && numLike (stx.getArg 1))
 
+/-- (7f) A constructor of the expected type (`.succ n`, `.zero`), possibly in parentheses. -/
+partial def dotLike (stx : Syntax) : Bool :=
+  stx.isOfKind "term.dotIdent" || (stx.isOfKind "term.app" && (stx.getArg 0).isOfKind "term.dotIdent") ||
+  (stx.isOfKind "term.paren" && dotLike (stx.getArg 1))
+
+/-- (7f) Is the head of this application an operator marked `attribute [binop]` (`HAdd.hAdd`)? -/
+partial def binopHead (ctx : LocalCtx R) (stx : Syntax) : ElabM R Bool := do
+  unless stx.isOfKind "term.app" do return false
+  let h := stx.getArg 0
+  unless h.isOfKind "term.ident" do return false
+  let s ← get
+  unless s.classes.any (·.binop) do return false
+  let x := stripScope (((h.getArg 0).getId?).getD "_")
+  if (lookupLocal ctx x).isSome then return false
+  let x := s.globals.resolve x
+  return s.classes.any fun c => c.binop && c.fields.any fun f => c.name ++ "." ++ f == x
+
+/-- (7f) A closed numeric expression: a numeral, or a `binop` applied to such (`10 * 2`,
+`(1 + 2)`), seen through one macro step (the operator's notation). -/
+partial def numTree (ctx : LocalCtx R) (stx : Syntax) : ElabM R Bool := do
+  if numLike stx then return true
+  if stx.isOfKind "term.paren" then return ← numTree ctx (stx.getArg 1)
+  -- (a notation's node, which a macro rule expands; not an identifier, a literal, …)
+  unless stx matches .node .. do return false
+  if stx.isOfKind "term.ident" || stx.isOfKind "term.str" || stx.isOfKind "term.tuple" then return false
+  let s ← get
+  let stx' := if stx.isOfKind "term.app" then stx else (expandMacro? s.macros stx s.nextScope).getD stx
+  unless stx'.isOfKind "term.app" && (← binopHead ctx stx') do return false
+  for a in (stx'.getArg 1).args do
+    unless ← numTree ctx a do return false
+  return true
+
 /-- (7e) An application of a class method to a numeral (`Add.add x 1`, `1 + x`, `-3`):
 its numerals are elaborated after its other arguments and the expected type, which may
 fix their type (`0 + a` with `a : Int`, `(-3 : Int)`), as Lean's `binop%` does. -/
 partial def numOperands (ctx : LocalCtx R) (stx : Syntax) : ElabM R Bool := do
-  unless stx.isOfKind "term.app" && (stx.getArg 1).args.any numLike do return false
+  unless stx.isOfKind "term.app" do return false
   let h := stx.getArg 0
   unless h.isOfKind "term.ident" do return false
   let x := stripScope (((h.getArg 0).getId?).getD "_")
   if (lookupLocal ctx x).isSome then return false
-  return (← get).classes.any fun c => c.fields.any fun f => c.name ++ "." ++ f == x
+  if (stx.getArg 1).args.any numLike then
+    if (← get).classes.any fun c => c.fields.any fun f => c.name ++ "." ++ f == x then return true
+  -- (7f) a constructor operand of a `binop` waits too (`m * .succ n`), and a closed
+  -- numeric operand (`(250 : U8) + 10 * 2`)
+  if ← binopHead ctx stx then
+    for a in (stx.getArg 1).args do
+      if dotLike a || (← numTree ctx a) then return true
+  return false
 
 /-- A `fun` with a binder whose type isn't given: as an argument, it is elaborated after
 the others (`checkApp`). -/
@@ -1877,12 +1929,33 @@ partial def checkApp (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : Elab
   -- (7e) the numerals of a class method's application wait too (`1 + x`); elsewhere a
   -- numeral may be what fixes a postponed lambda's domain (`mealy (fun s i => …) 0 xs`)
   let numPostpone ← numOperands ctx stx
+  -- (7f) an operator marked `binop` (`HAdd.hAdd`): a numeral operand whose type is still a
+  -- hole takes the type of the other operands, or else of the result (Lean's `binop%`,
+  -- without coercions), so `x + 1` at `x : U8` is `HAdd U8 U8 ?C` at once, and `1 + x` too
+  let binop ← if numPostpone then binopHead ctx stx else pure false
   for pass in [0:2] do
     for (arg, m, dom, used) in (if pass == 0 then pending else postponed) do
       if pass == 0 && ((postponable arg && (← unknownDomains ctx.lvl dom (lambdaArity arg))) ||
-          (numPostpone && numLike arg && (← force dom) matches .neutral (.mvar _) _)) then
+          (numPostpone && (numLike arg || (binop && (dotLike arg || (← numTree ctx arg)))) &&
+            (← force dom) matches .neutral (.mvar _) _)) then
         postponed := postponed.push (arg, m, dom, used)
         continue
+      if pass == 1 && binop && (numLike arg || dotLike arg || (← numTree ctx arg)) then
+        if (← force dom) matches .neutral (.mvar _) _ then
+          let others ← pending.filterMapM fun (a, _, d, _) => do
+            if numLike a || dotLike a || (← numTree ctx a) then return none
+            return some (d, !((← force d) matches .neutral (.mvar _) _))
+          -- a known operand type, else the result type if known, else an operand's hole
+          let target := match others.find? (·.2) with
+            | some (d, _) => some d
+            | none => none
+          let target ← match target with
+            | some d => pure (some d)
+            | none =>
+              if !((← force fty) matches .neutral (.mvar _) _) then pure (some fty)
+              else pure ((others[0]?).map (·.1))
+          if let some T := target then
+            discard <| tryCatch (do unify ctx.lvl dom T; pure true) (fun _ => pure false)
       let a ← check ctx arg dom
       args := args.push (m, a)
       -- solving the placeholder evaluates the argument: along a nested spine
@@ -2899,7 +2972,11 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
   | "term.paren" => infer ctx (stx.getArg 1)
   | "term.namedArg" => throwAt ctx.info "a named argument `(x := e)` is only allowed as an argument of an application"
   | "term.ascription" =>
+    let from_ := (← get).nextInst
     let (ty, _) ← checkType ctx (stx.getArg 3)
+    -- (7f) the type's own stuck problems get their default instances now, as in Lean (a
+    -- type is elaborated to the end): `(rfl : 1 + 1 = 2)`
+    if (← get).nextInst > from_ then synthDefaults from_
     let vty ← evalIn ctx ty
     let t ← check ctx (stx.getArg 1) vty
     return (.ann t ty, vty)
