@@ -155,7 +155,7 @@ clauses hold under `σ` itself). No axioms.
   expected type costs as much as the check. Faster: a checker for the kernel's evaluator
   (arrays or maps for the clause database).
 
-## 28d: `bv_decide`: words, bit-blasted ✅ (bitwise fragment)
+## 28d: `bv_decide`: words, bit-blasted ✅
 
     import BvDecide
     def t (x y z : UIntN 8) : UIntN.land x (UIntN.lor y z) = UIntN.lor (UIntN.land x y) (UIntN.land x z) := by bv_decide
@@ -176,8 +176,27 @@ lib/BitBlast.wiz has the lemmas, all at any width: `n = 2 (half n) + odd n`, `Na
 and extensionality. `Bits.bit` itself runs on the native `Nat.isOdd`/`Nat.div`, so the bits
 of a numeral compute fast.
 
-**Fragment**: `land/lor/xor` (`BitVec.and/or/xor`) and closed words. Not yet: `~~~`, `+`,
-`-`, shifts, `<ᵤ` (they need lemmas about `mod 2^w`, subtraction and carries).
+**Arithmetic.** `x + y` is a ripple-carry adder: bit `i` of the sum is `a_i ^^ b_i ^^ c_i`,
+where the carry `c_i` is the node `Bits.carry i false A B` (`c_{i+1} = maj a_i b_i c_i`,
+`Bits.carry_step`, by `refl` on the numeral `i`), proved by `Bits.wadd_bit` from `(x + y)
+mod 2^w`'s low bits. `x - y` is `x + ~~~y + 1` (`Bits.wsub_bit`, carry in `true`, over
+`2^w - 1 - y`'s bits, `Bits.compl_bit`); `-x` is `0 - x`; `~~~x` is `Bits.wnot_bit`.
+Shifts by a numeral `k` move bits (`Bits.wshl_hi`/`wshr_in`) and fill with `false`
+(`wshl_lo`/`wshr_out`). Each lemma's side condition `i < w` is a closed comparison of
+numerals, which the kernel computes, so the tactic passes `Sat.trivial`.
+
+**Comparisons.** A goal may also be an equation of booleans (as for `sat_decide`) that
+compares words: `UIntN.lt/le` (`BitVec.ult/ule`) become a chain from the low bit up,
+`Bits.ltc c A B (i+1) = (¬a_i ∧ b_i) ∨ (a_i = b_i ∧ ltc c A B i)`, and
+`Bits.wlt_bits`/`wle_bits` (by induction on the width, through `n = 2 (half n) + odd n`)
+say the chain is `<` (`c = false`) or `≤` (`c = true`) of numbers below `2^w`. The
+comparisons become nodes first, and `sat_decide`'s reflection of the connectives finds them.
+
+    def c (x : UIntN 8) : UIntN.lt x (UIntN.add x (UIntN.ofNat 8 1)) = Bool.not (UIntN.le (UIntN.ofNat 8 255) x) := by bv_decide
+
+**Fragment**: `land/lor/xor/not/add/sub/neg`, `shiftLeft/shiftRight` by numerals,
+`lt/le`, under their `BitVec` names too, and closed words. Not yet: `*`, `/`, `%`, signed
+comparisons, shifts by a word.
 
 **Kernel cost** (light probes, noise-level; distributivity of `&&&` over `|||`, three
 words, over the time to import the libraries): 4 bits ≈ 2 s, 8 bits ≈ 10 s, 16 bits ≈ 58 s.

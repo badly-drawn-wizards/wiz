@@ -112,6 +112,35 @@ def group : Group where
         check (!(has ms "smt✝") && !(has ms "native✝")) s!"bv_decide used an axiom: {ms}"
         let ms ← msgs ("import BvDecide\ndef bad (x y : UIntN 4) : UIntN.land x y = UIntN.lor x y := by bv_decide\n")
         expect ms "the goal is false; a counterexample" },
+    { name := "bv_decide (28d): + - ~~~ neg and shifts, at widths 1, 3 and 4", run := fun _ => needs "cadical" do
+        let ms ← msgs ("import BvDecide\nimport BitVec\n" ++
+          "def a1 (x y : UIntN 4) : UIntN.add x y = UIntN.add y x := by bv_decide\n" ++
+          "def a2 (x : UIntN 4) : UIntN.not (UIntN.not x) = x := by bv_decide\n" ++
+          "def a3 (x y : UIntN 3) : UIntN.sub (UIntN.add x y) y = x := by bv_decide\n" ++
+          "def a4 (x : UIntN 4) : UIntN.add x (UIntN.neg x) = UIntN.zero 4 := by bv_decide\n" ++
+          "def a5 (x : UIntN 3) : UIntN.shiftLeft x 1 = UIntN.add x x := by bv_decide\n" ++
+          "def a6 (x : UIntN 4) : UIntN.shiftRight (UIntN.shiftLeft x 2) 2 = UIntN.land x (UIntN.ofNat 4 3) := by bv_decide\n" ++
+          "def a7 (x : UIntN 4) : UIntN.add x (UIntN.not x) = UIntN.ofNat 4 15 := by bv_decide\n" ++
+          "def a8 (x y : UIntN 1) : UIntN.add x y = UIntN.xor x y := by bv_decide\n" ++
+          "def a9 (x y : BitVec 4) : BitVec.sub x y = BitVec.add x (BitVec.neg y) := by bv_decide\n" ++
+          "#print axioms a3\n#print axioms Bits.wadd_bit\n#print axioms Bits.wsub_bit\n#print axioms Bits.wshr_out\n")
+        noErrors ms
+        check (!(has ms "smt✝") && !(has ms "native✝") && !(has ms "sorry")) s!"bv_decide used an axiom: {ms}"
+        expect ms "info: 'a3' depends on axioms: [native UIntN.add"
+        let ms ← msgs ("import BvDecide\ndef bad (x y : UIntN 4) : UIntN.add x y = UIntN.sub x y := by bv_decide\n")
+        expect ms "the goal is false; a counterexample" },
+    { name := "bv_decide (28d): unsigned comparisons in boolean goals", run := fun _ => needs "cadical" do
+        let ms ← msgs ("import BvDecide\nimport BitVec\n" ++
+          "def c1 (x y : UIntN 4) : Bool.or (UIntN.lt x y) (UIntN.le y x) = .true := by bv_decide\n" ++
+          "def c2 (x : UIntN 4) : UIntN.lt x x = .false := by bv_decide\n" ++
+          "def c3 (x : UIntN 4) : UIntN.lt x (UIntN.add x (UIntN.ofNat 4 1)) = Bool.not (UIntN.le (UIntN.ofNat 4 15) x) := by bv_decide\n" ++
+          "def c4 (x y : UIntN 3) : UIntN.le (UIntN.land x y) x = .true := by bv_decide\n" ++
+          "def c5 (x y : BitVec 4) : BitVec.ult x y = Bool.not (BitVec.ule y x) := by bv_decide\n" ++
+          "#print axioms c3\n#print axioms Bits.wlt_bits\n")
+        noErrors ms
+        check (!(has ms "smt✝") && !(has ms "native✝") && !(has ms "sorry")) s!"bv_decide used an axiom: {ms}"
+        let ms ← msgs ("import BvDecide\ndef bad (x y : UIntN 4) : UIntN.lt x (UIntN.add x y) = .true := by bv_decide\n")
+        expect ms "the goal is false; a counterexample" },
     { name := "sat_decide: a false goal fails with a counterexample", run := fun _ => needs "cadical" do
         let ms ← msgs ("import SatTactic\ndef wrong (a b : Bool) : Bool.and a b = Bool.or a b := by sat_decide\n")
         expect ms "sat_decide: the goal is false; a counterexample:" },
