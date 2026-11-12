@@ -442,6 +442,7 @@ partial def printNode (env : Option (Globals R)) (names : List Name) (tys : List
     | some 1 => "Empty"
     | _ => s!"Empty.\{{l}}"))
   | .absurd _ u => pure (paren (prec > 1022) (cat [txt "absurd ", ← sub 1023 u]))
+  | .letUnit u b => pure (paren (prec > 0) (cat [txt "let () := ", ← sub 0 u, txt "; ", ← sub 0 b]))
   | .eq _ a b | .eqTy a b => pure (paren (prec > 50) (cat [← sub 51 a, txt " = ", ← sub 51 b]))
   | .refl _ a | .reflTy a => pure (paren (prec > 1022) (cat [txt "refl ", ← sub 1023 a]))
   | .cast _ _ e u => pure (paren (prec > 1022) (cat [txt "cast ", ← sub 1023 e, txt " ", ← sub 1023 u]))

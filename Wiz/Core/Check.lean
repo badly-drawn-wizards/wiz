@@ -80,6 +80,10 @@ Two mutually recursive judgments, each also producing a **usage vector**:
 
     Γ ⊢ Unit_l ⇒ Sort l      Γ ⊢ () ⇐ Unit_l      Γ ⊢ Empty_l ⇒ Sort l
 
+    Γ ⊢ u ⇒ Unit_l ⊣ U₁     Γ ⊢ b ⇒ B ⊣ U₂
+    ──────────────────────────────── letUnit   (1-elimination; computes to b by η, but
+    Γ ⊢ let () := u; b ⇒ B ⊣ U₁ + U₂             compiled code evaluates u first)
+
     Γ ⊢ M type     Γ⁰ ⊢ t ⇒ Empty_l
     ──────────────────────────────── absurd    (`t` is never evaluated: an erased position)
     Γ ⊢ absurd M t ⇒ M ⊣ 0ₙ
@@ -277,43 +281,6 @@ def popUsage (x : Name) (q : QPoly R) : Usage R → TCM (Usage R)
   --| | u => sorry
   --sol>
 
-/-- (K2a) Does a value of this type have no content: is it `Unit`, or a function with
-erased arguments into such, `(0 x₁ : D₁) → … → (0 xₙ : Dₙ) → Unit` (a phantom tail, a
-structure's marker tail)? Each has one value up to η (`()`, `fun _ … _ => ()`), the shape
-erasure already compiles to nothing (`erasedFunTy`, by the quantities and the final
-`Unit`, never by a name). `lvl` is a level above every variable of the type.
-
-**A named type is never unit-shaped**: the test does not unfold a global definition
-(`Val.unfold`), so a type that only *unfolds* to `Unit` (`def Tok : Type := Unit`, a
-structure without fields, a brand) is not exempt, and a linear token of such a type
-still must be used. The marker tail of a structure qualifies because it is a literal Π
-in the structure's definition, reached by unfolding the *structure* type at the `split`,
-not a name of its own. (This makes the rule depend on how the type is written, which
-only ever rejects more: `(1 x : Tok)` must be used where `(1 x : Unit)` need not.) -/
-partial def unitShaped (g : Globals R) (ty : VTy R) (lvl : Nat) : Bool :=
-  match ty with
-  | .unfold .. => false
-  | _ =>
-  match whnf ty with
-  | .unit _ => true
-  | .pi _ _ q _ cod _ =>
-    (match q.toPoly? with | some p => p.isErased | none => false) &&
-      unitShaped g (Closure.inst g cod (.var lvl)) (lvl + 1)
-  | _ => false
-
-/-- Leave the scope of a binder `x :q ty` (`lam`, `let`, `split`): `popUsage`, and the
-rule K2a of the linear-case design: **a variable whose type is unit-shaped
-(`unitShaped`) may go unused at any quantity**. By η, `b` is convertible to
-`let () := x; b`, which would use `x` once; a unit value holds no resource. (Only *unused*:
-a unit-shaped variable used twice at quantity 1 is still a mismatch.) `ctx` is the
-context the binder is in scope in. -/
-def popBinder (ctx : Ctx R) (x : Name) (q : QPoly R) (ty : VTy R) (u : Usage R) : TCM (Usage R) :=
-  match u with
-  | used :: rest =>
-    if QPoly.le used (QPoly.const 0) && unitShaped ctx.globals ty ctx.lvl then pure rest
-    else popUsage x q u
-  | [] => popUsage x q u
-
 /-- A `Π`/`Σ`'s sort, when it gives one, must be its sort: type equality trusts it to
 tell propositions from other types. -/
 def checkSortNote (s : Option Level) (l : Level) : TCM Unit := do
@@ -364,7 +331,7 @@ def projUsage (ctx : Ctx R) (t : Term R) (ty : Val R) (field : String) (u : Usag
   let fail {α} (x : Name) (q : String) : TCM α := throw (.other <|
     s!"cannot project {match t with | .var _ => st | _ => s!"({st})"}{field}: a projection needs an unrestricted pair (it keeps one component and drops the other), but this one uses {x}, which has quantity {q}; " ++
     (if endsInStructTail ctx ty 0 then
-      s!"this is a field of a structure: take the structure apart with `let {q} ⟨x, y, …⟩ := {st}; …` instead"
+      s!"this is a field of a structure, and a structure can't be held at a quantity other than ω yet (it has no destructuring form); use a tuple `A × B` instead, taken apart with `let {q} (x, y) := …`, or a one-constructor `inductive` taken apart by `match`"
     else s!"take the pair apart with `let {q} (x, y) := {st}; …` instead"))
   match QRig.many? (R := R) with
   | some m =>
@@ -409,17 +376,15 @@ partial def check (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM (Usage R) :=
   --<sol
   | .lam x body, .pi _ _ q dom cod _ => do
     let q ← qtyPoly ctx q
-    let ctx' := ctx.bind x q dom
-    let u ← check ctx' body (Closure.inst ctx.globals cod (Val.var ctx.lvl))
-    popBinder ctx' x q dom u
+    let u ← check (ctx.bind x q dom) body (Closure.inst ctx.globals cod (Val.var ctx.lvl))
+    popUsage x q u
   | .letE x q tty val body, _ => do
     let q ← checkQty ctx q
     let _ ← checkType ctx tty
     let vty := ctx.eval tty
     let uv ← check (ctx.erasedAt q) val vty
-    let ctx' := ctx.define x q vty (ctx.eval val)
-    let ub ← check ctx' body ty
-    let ub ← popBinder ctx' x q vty ub
+    let ub ← check (ctx.define x q vty (ctx.eval val)) body ty
+    let ub ← popUsage x q ub
     pure (q • uv + ub)
   | .pair a b, .sigma _ q A B _ => do
     let q ← qtyPoly ctx q
@@ -427,6 +392,9 @@ partial def check (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM (Usage R) :=
     let ub ← check ctx b (ctx.instArg B a)
     pure (q • ua + ub)
   | .tt, .unit _ => pure (Usage.zeros ctx.lvl)
+  | .letUnit u b, _ => do
+    let uu ← checkUnit ctx u
+    pure (uu + (← check ctx b ty))
   | t, .sizeLt s => do
     -- a size below `s` (`∞` is not below itself)
     let _ ← check { ctx with erased := true } t .size
@@ -561,9 +529,8 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     let _ ← checkType ctx tty
     let vty := ctx.eval tty
     let uv ← check (ctx.erasedAt q) val vty
-    let ctx' := ctx.define x q vty (ctx.eval val)
-    let (bty, ub) ← infer ctx' body
-    let ub ← popBinder ctx' x q vty ub
+    let (bty, ub) ← infer (ctx.define x q vty (ctx.eval val)) body
+    let ub ← popUsage x q ub
     pure (bty, q • uv + ub)
   | .ann tm tty => do
     let _ ← checkType ctx tty
@@ -608,12 +575,10 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
       let mc : Closure R := .mk ctx.env m
       let vx : Val R := Val.var ctx.lvl
       let vy : Val R := Val.var (ctx.lvl + 1)
-      let ctx₁ := ctx.bind x (q * p) A
-      let By := Closure.inst ctx.globals B vx
-      let ctx₂ := ctx₁.bind y q By
+      let ctx₂ := (ctx.bind x (q * p) A).bind y q (Closure.inst ctx.globals B vx)
       let ub ← check ctx₂ b (Closure.inst ctx.globals mc (.pair vx vy))
-      let ub ← popBinder ctx₂ y q By ub
-      let ub ← popBinder ctx₁ x (q * p) A ub
+      let ub ← popUsage y q ub
+      let ub ← popUsage x (q * p) ub
       pure (Closure.inst ctx.globals mc (ctx.eval s), q • us + ub)
     | _ => throw (.other s!"not a pair: {ctx.showTerm s}\n  has type: {ctx.showVal sty}")
   | .unit l => pure (.sort l, Usage.zeros ctx.lvl)
@@ -625,6 +590,10 @@ partial def infer (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     match whnf ty with
     | .empty _ => pure (ctx.eval m, Usage.zeros ctx.lvl)
     | _ => throw (.typeMismatch "an empty type" (ctx.showVal ty))
+  | .letUnit u b => do
+    let uu ← checkUnit ctx u
+    let (bty, ub) ← infer ctx b
+    pure (bty, uu + ub)
   | .pair .. | .tt => throw (.cannotInfer (ctx.showTerm t))
   | .eq A a b => do
     let l ← checkType ctx A
@@ -881,6 +850,19 @@ partial def checkIndexLevel (ctx : Ctx R) (l : Level) (I : Term R) : TCM Unit :=
   let lI ← checkType ctx I
   unless lI.equiv (.succ l) do
     throw (.other s!"an index type must be in the data type's universe: Sort {(Level.succ l).format}, not Sort {lI.format} (lift it with ULift)")
+
+/-- The scrutinee of `let () := u; b` (linear-case stage 2): `u` must have the type
+`Unit_l` itself (after `whnf`), never a type that is merely a singleton by η (a function
+into `Unit` may be a closure holding a resource: applying it would need its argument). Its
+usage is `u`'s own, counted once: the eliminator consumes it. -/
+partial def checkUnit (ctx : Ctx R) (u : Term R) : TCM (Usage R) := do
+  match u with
+  | .tt => pure (Usage.zeros ctx.lvl)
+  | _ =>
+    let (ty, uu) ← infer ctx u
+    match whnf ty with
+    | .unit _ => pure uu
+    | _ => throw (.typeMismatch "Unit (`let () := u` takes apart a value of the unit type only)" (ctx.showVal ty))
 
 /-- A binder's quantity annotation: a term of type `Qty` (its usage is discarded, as
 for types), returned as a polynomial. -/

@@ -75,6 +75,11 @@ inductive Term (R : Type) where
   | empty (level : Level)
   /-- `absurd t : motive`, given `t : empty l` -/
   | absurd (motive t : Term R)
+  /-- `let () := u; b`: the unit eliminator (linear logic's 1-elimination, linear-case
+  stage 2). `u : Unit_l` is consumed (its usage counts), then `b`. It computes to `b` by
+  η (every `u` is `()`), but compiled code evaluates `u` first: a consumer stashed in a
+  unit runs. The only way a linear `Unit` is used up. -/
+  | letUnit (u b : Term R)
   -- Stage 4c: observational equality.
   /-- `a = b` at type `A : Type u`. A proposition that *computes* by `A`. -/
   | eq (A a b : Term R)
@@ -236,6 +241,7 @@ don't need a case per constructor. -/
   | .unit l => return .unit (← fl l)
   | .empty l => return .empty (← fl l)
   | .absurd a b => return .absurd (← f 0 a) (← f 0 b)
+  | .letUnit u b => return .letUnit (← f 0 u) (← f 0 b)
   | .eq A a b => return .eq (← f 0 A) (← f 0 a) (← f 0 b)
   | .eqTy A B => return .eqTy (← f 0 A) (← f 0 B)
   | .refl A a => return .refl (← f 0 A) (← f 0 a)

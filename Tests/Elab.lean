@@ -2594,6 +2594,8 @@ inductive MTm where
   | star
   | empty (n : Nat)
   | exfalso (m t : MTm)
+  /-- `let () := u; b`, the unit eliminator (linear-case stage 2) -/
+  | letUnit (u b : MTm)
   | enum (k : Nat)
   | tag (k i : Nat)
   | ecase (m s : MTm) (bs : List MTm)
@@ -2700,6 +2702,7 @@ partial def toWiz : MTm → String
   | star => ".star"
   | empty n => s!"(.empty {n})"
   | exfalso m t => s!"(.exfalso {m.toWiz} {t.toWiz})"
+  | letUnit u b => s!"(.letUnit {u.toWiz} {b.toWiz})"
   | enum k => s!"(.enum {k})"
   | tag k i => s!"(.tag {k} {i})"
   | ecase m s bs => s!"(.ecase {m.toWiz} {s.toWiz} {bs.foldr (fun b acc => s!"(.tcons {b.toWiz} {acc})") ".tnil"})"
@@ -2767,6 +2770,7 @@ partial def toTerm : MTm → Term ZeroOneMany
   | star => .tt
   | empty n => .empty (Level.ofNat (n + 1))
   | exfalso m t => .absurd m.toTerm t.toTerm
+  | letUnit u b => .letUnit u.toTerm b.toTerm
   | enum k => .enum (labels k)
   | tag k i => .tag (labels k) i
   | ecase m s bs => .ecase "z" m.toTerm s.toTerm (bs.map toTerm)
@@ -2840,6 +2844,7 @@ partial def ofTerm : Term ZeroOneMany → Option MTm
     | some 0 => some pfalse
     | _ => none
   | .absurd m t => return exfalso (← ofTerm m) (← ofTerm t)
+  | .letUnit u b => return letUnit (← ofTerm u) (← ofTerm b)
   | .enum ls => some (enum ls.length)
   | .tag ls i => some (tag ls.length i)
   | .ecase _ m s bs => return ecase (← ofTerm m) (← ofTerm s) (← bs.mapM ofTerm)
@@ -2894,6 +2899,7 @@ partial def pretty (l : Nat) : MTm → String
   | star => "tt"
   | empty n => s!"Empty{n}"
   | exfalso m t => s!"absurd({pretty l m}, {pretty l t})"
+  | letUnit u b => s!"let () := {pretty l u}; {pretty l b}"
   | enum k => s!"Enum{k}"
   | tag _ i => s!"#{i}"
   | ecase m s bs => s!"case({pretty (l + 1) m}, {pretty l s}{String.join (bs.map fun b => ", " ++ pretty l b)})"
@@ -3128,9 +3134,10 @@ rebuilds a linear `Nat` (accepted, also for `x` at ω), a method that drops the 
 copies it (into a pair: an ω position) is rejected, and so is a linear `x` taken by the
 case at ω (the existing rule) or at 0 (unused). At 0 the scrutinee is erased: a method that
 ignores the payload is accepted for `x` at 0, one that reads it at run time (`xs.1`, the
-tag) is rejected. **K2a**: a variable whose type is `Unit`, or an erased function into
-`Unit`, may go unused at any quantity; used twice at 1 it is still rejected, and other
-types (a function whose argument is not erased, `Enum 1`) are not exempt. -/
+tag) is rejected. **No unused linear unit** (K2a was withdrawn): a linear `Unit`, or an erased
+function into `Unit`, left unused is rejected; `let () := u; b` consumes a `Unit` (once),
+and only a `Unit`: applied to a closure into `Unit` (linear-review's `stash`, which hides a
+linear `t` in `(0 e : A = Unit) → Unit`) it is rejected, as is dropping that closure. -/
 def linearCaseRule : List (MTm × Bool) :=
   let rebuild := lams 3 (ann (con (var 0)) (mus 0 (unit 0) natD (var 1) (szSuc (var 2))))
   let cs (q : ZeroOneMany) (P m : MTm) := scaseq q 0 (unit 0) natD 1 P m szInf star (var 0)
@@ -3150,17 +3157,30 @@ def linearCaseRule : List (MTm × Bool) :=
    (ann (lam (cs .zero (lams 2 (enum 2)) (lams 3 (fst (var 0))))) (piq .many natTy (enum 2)), false),
    -- K1 at ω, as `scase`
    (ann (lam (cs .many (lams 2 (enum 2)) (lams 3 (fst (var 0))))) (piq .many natTy (enum 2)), true),
-   -- K2a
-   (ann (lam star) (piq .one (unit 0) (unit 0)), true),
-   (ann (lam (tag 2 0)) (piq .one (unit 0) (enum 2)), true),
-   (letq .one (unit 0) star (tag 2 0), true),
-   (ann (lam (tag 2 0)) (piq .one (piq .zero (enum 2) (unit 0)) (enum 2)), true),
-   (ann (lam (tag 2 0)) (piq .one (piq .zero (enum 2) (piq .zero (enum 2) (unit 0))) (enum 2)), true),
-   (ann (lam (pair (var 0) (var 0))) (piq .one (unit 0) (sigma (unit 0) (unit 0))), false),
-   (ann (lam (tag 2 0)) (piq .one (pi (enum 2) (unit 0)) (enum 2)), false),
-   (ann (lam (tag 2 0)) (piq .one (piq .one (enum 2) (unit 0)) (enum 2)), false),
-   (ann (lam (tag 2 0)) (piq .one (enum 1) (enum 2)), false),
-   (ann (lam (tag 2 0)) (piq .one (sigma (unit 0) (unit 0)) (enum 2)), false)]
+   -- no unit-shaped binder may go unused (K2a was withdrawn: linear-review's
+   -- counterexamples); a linear `Unit` is consumed by `let () := u; b`
+   (ann (lam star) (piq .one (unit 0) (unit 0)), false),
+   (ann (lam (tag 2 0)) (piq .one (unit 0) (enum 2)), false),
+   (letq .one (unit 0) star (tag 2 0), false),
+   (ann (lam (tag 2 0)) (piq .one (piq .zero (enum 2) (unit 0)) (enum 2)), false),
+   (ann (lam (letUnit (var 0) (tag 2 0))) (piq .one (unit 0) (enum 2)), true),
+   (ann (lam (letUnit (var 0) (letUnit (var 0) (tag 2 0)))) (piq .one (unit 0) (enum 2)), false),
+   (ann (lam (letUnit (var 0) (tag 2 0))) (piq .zero (unit 0) (enum 2)), false),
+   (letUnit star (tag 2 0), true),
+   -- the eliminator takes `Unit` only, never a function into it (a closure may hold a resource)
+   (ann (lam (letUnit (var 0) (tag 2 0))) (piq .one (piq .zero (enum 2) (unit 0)) (enum 2)), false),
+   (ann (lam (letUnit (var 0) (tag 2 0))) (piq .one (enum 1) (enum 2)), false),
+   -- linear-review's stash: `(1 t : A)` captured by a closure `(0 e : A = Unit) → Unit`, then
+   -- the closure dropped (rejected), or "eliminated" (rejected: not a `Unit`)
+   (ann (lam (lam (letq .one (piq .zero (eqTy (var 1) (unit 0)) (unit 0)) (lam (cast (var 2) (unit 0) (var 0) (var 1))) (tag 2 0))))
+     (pi (univ 0) (piq .one (var 0) (enum 2))), false),
+   (ann (lam (lam (letq .one (piq .zero (eqTy (var 1) (unit 0)) (unit 0)) (lam (cast (var 2) (unit 0) (var 0) (var 1)))
+       (letUnit (var 0) (tag 2 0)))))
+     (pi (univ 0) (piq .one (var 0) (enum 2))), false),
+   -- … and the closure passed to a binder that ignores it (leak4)
+   (ann (lam (lam (app (ann (lam (tag 2 0)) (piq .one (piq .zero (eqTy (var 1) (unit 0)) (unit 0)) (enum 2)))
+       (lam (cast (var 2) (unit 0) (var 0) (var 1))))))
+     (pi (univ 0) (piq .one (var 0) (enum 2))), false)]
 
 /-- The five eliminators that name the index type `I`, at level `l`, on the smallest
 descriptions (`ret i`, and `rec i (ret i)` for `ν`), in this order: `ind`, `sfix`,
@@ -4595,15 +4615,16 @@ def languageGroup : Group where
           "def a : Nat := let 0 x : Nat := (loop ()).1; 1\ndef b : (0 x : Nat) × Nat := ((loop ()).1, 2)\n" ++
           "def c : Nat := let 0 (x, y) := loop (); 3\ndef d (f : (0 x : Nat) → Nat) : Nat := f (loop ()).1\n" ++
           "#eval a\n#eval b.2\n#eval c\n#eval d (fun _ => 4)") ["1", "2", "3", "4"] },
-    { name := "... a structure held at quantity 1: no field access, no match, but nested splits (R1, K2a)", run := fun _ => do
+    { name := "... a structure can't be held at quantity 1 yet: no field access, no match, no nested split (R1)", run := fun _ => do
         let guard := r1Header ++ "structure Guard where\n  n : Nat\n  tok : Tok\n"
         okLib (guard ++ "def readω (g : Guard) : Nat × Tok := (g.n, g.tok)\ndef pass (1 g : Guard) : Guard := g")
-        failsLib (guard ++ "def s1 (1 g : Guard) : Nat := g.n") "take the structure apart with `let 1 ⟨x, y, …⟩ := g"
-        failsLib (guard ++ "def s2 (1 g : Guard) : Tok := g.tok") "this is a field of a structure"
+        failsLib (guard ++ "def s1 (1 g : Guard) : Nat := g.n") "a structure can't be held at a quantity other than ω yet"
+        failsLib (guard ++ "def s2 (1 g : Guard) : Tok := g.tok") "use a tuple `A × B` instead"
         -- (13h) `.mk n t` on a structure is the tuple pattern over its Σ: two projections,
         -- rejected at quantity 1 like a tuple pattern on a linear pair (`m1` below)
         failsLib (guard ++ "def s3 (1 g : Guard) : Nat × Tok := match g with\n  | .mk n t => (n, t)") "quantity 1 but used ω"
-        okLib (guard ++ "def s4 (1 g : Guard) : (1 t : Tok) × Nat := let 1 (n, rest) := g; let 1 (t, tail) := rest; (t, n)")
+        failsLib (guard ++ "def s4 (1 g : Guard) : (1 t : Tok) × Nat := let 1 (n, rest) := g; let 1 (t, tail) := rest; (t, n)")
+          "variable tail declared with quantity 1 but used 0"
         -- a tuple pattern in `match` is two projections: not for a linear pair
         failsLib (r1Header ++ "def m1 (1 p : Nat × Tok) : (1 t : Tok) × Nat := match p with\n  | (n, t) => (t, n)") "quantity 1 but used ω" },
     -- (linear-case p05) raw `ind` binds the payload at ω, so its scrutinee counts ω times
@@ -4704,11 +4725,14 @@ def languageGroup : Group where
           "axiom Tok : Type\naxiom Tok.close : (1 t : Tok) → Unit\n" ++
           "def lin3 (1 p : Nat × Tok × Tok) : Unit × Unit :=\n  let 1 ⟨n, s, t⟩ := p\n  (Tok.close s, Tok.close t)\n")
           ["7", "7", "4", "2"] },
-    -- (13h; linear-case stage 2) the Σ of a structure ends in a marker tail that a linear
-    -- split leaves unused: it is unit-shaped, so it may go unused (K2a)
-    { name := "let 1 ⟨a, b⟩ := s on a structure: nested splits, the marker tail left unused (K2a)", run := fun _ => do
-        okLib ("import Prelude\nstructure Stats where\n  hits : Nat\n  misses : Nat\n" ++ "def lin (1 s : Stats) : Nat × Nat :=\n  let 1 ⟨h, m⟩ := s\n  (h, m)")
-        okLib ("import Prelude\nstructure Stats where\n  hits : Nat\n  misses : Nat\n" ++ "def lin (1 s : Stats) : Nat × Nat :=\n  let 1 (.mk h m) := s\n  (h, m)")
+    -- the documented limitation (13h): the Σ of a structure ends in a marker tail that a
+    -- linear split leaves unused (K2a, which would have allowed it, was withdrawn: the
+    -- tail's type has closure inhabitants that can hold a resource; linear-case stage 2)
+    { name := "let 1 ⟨a, b⟩ := s on a structure: nested splits, rejected today for the leftover tail", run := fun _ => do
+        failsLib ("import Prelude\nstructure Stats where\n  hits : Nat\n  misses : Nat\n" ++ "def lin (1 s : Stats) : Nat × Nat :=\n  let 1 ⟨h, m⟩ := s\n  (h, m)")
+          "cannot take a value of the structure Stats apart at quantity 1"
+        failsLib ("import Prelude\nstructure Stats where\n  hits : Nat\n  misses : Nat\n" ++ "def lin (1 s : Stats) : Nat × Nat :=\n  let 1 (.mk h m) := s\n  (h, m)")
+          "ends in a component that is not a field"
         failsLib ("import Prelude\nstructure Stats where\n  hits : Nat\n  misses : Nat\n" ++ "def f (s : Stats × Nat) : Nat :=\n  let ω ⟨⟨h, m⟩, k⟩ := s\n  h")
           "its components are names or `_`"
         failsLib ("import Prelude\ndef f (n : Nat) : Nat :=\n  let 1 ⟨a, b⟩ := n\n  a")
@@ -7255,17 +7279,55 @@ def main : IO Unit := IO.bind (MVar.new (A := Nat)) (fun r =>
       IO.println (Nat.toString (a + sumN 2000 s))))))
 "
 
-/-- Linear-case stage 2 (K1: `scase` at a quantity, `T.casesOn1`; K2a: unit-shaped
-binders may go unused): the M4 acceptance probes of `wiz-notes/cohesion-resources.md`
-§7 and the negatives of the soundness argument (docs/CoreSpec.md §10.2, §10.2a): a
-linear variable is never used twice, an erased one never at run time. -/
+/-- Linear-case stage 2 (K1: `scase` at a quantity, `T.casesOn1`; the unit eliminator
+`let () := u; b`): the M4 acceptance probes of `wiz-notes/cohesion-resources.md` §7, the
+negatives of the soundness argument (docs/CoreSpec.md §10.2, §10.2a): a linear variable is
+never used twice, nor dropped, an erased one never used at run time; and linear-review's
+counterexamples to the withdrawn K2a. -/
 def linearCaseHeader : String :=
   "import Prelude\naxiom Tok : Type\naxiom use : (1 t : Tok) → Nat\n" ++
   "inductive Res1 (A : Type) where\n  | ok (1 a : A)\n  | err (e : Nat) (1 back : A)\n"
 
+/-- At least one error, and the first mentions `fragment` (with every library importable):
+for programs whose later declarations use a rejected one. -/
+def rejectsLibs (input : String) (fragment : String) : IO Unit := do
+  let s := runFrontend (R := ZeroOneMany) input { trustedModule := Tests.libModule, loader := ← libLoader }
+  let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render input
+  let some e := errs[0]? | throw (IO.userError "expected an error, got none")
+  unless (e.splitOn fragment).length > 1 do
+    throw (IO.userError s!"error does not mention '{fragment}':\n{e}")
+
+/-- linear-review's stash: a linear `t` hidden in a closure `(0 e : T = Unit) → Unit`. -/
+def stashDef : String :=
+  "def stash {T : Type} (1 t : T) : (0 e : T = Unit) → Unit := fun e => Eq.subst (fun (X : Type) => X) e t\n"
+
+/-- A lock in C, a non-recursive mutex: `c_acquire` locks it (a second `c_acquire` without
+a `c_release` in between would wait forever) and hands out a ticket number; `c_release`
+returns `Unit`, unlocks and counts. -/
+def relHelper : String := "#include <stdint.h>
+#include <pthread.h>
+static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
+static uint64_t released = 0, next = 0;
+uint64_t c_acquire(void) { pthread_mutex_lock(&mu); return next++; }
+void c_release(uint64_t n) { (void)n; released++; pthread_mutex_unlock(&mu); }
+uint64_t c_count(void) { return released; }
+"
+
+/-- A linear ticket for `relHelper`'s lock, released by a consumer that returns `Unit`
+(through `casesOn1`) and consumed with `let () := …`. -/
+def ticketSrc : String :=
+  "import IO\nextern \"c_acquire\" cAcquire : IO Nat\nextern \"c_release\" cRelease : Nat → Unit\n" ++
+  "extern \"c_count\" cCount : IO Nat\n" ++
+  "inductive Ticket where\n  | mk (n : Nat)\n" ++
+  "def Ticket.release (1 t : Ticket) : Unit := match t with\n  | .mk n => cRelease n\n" ++
+  "def withTicket {B : Type} (1 k : (1 t : Ticket) → IO B) : IO B :=\n  fun w => let 1 (n, w') := cAcquire w; k (Ticket.mk n) w'\n" ++
+  "def main : IO Unit :=\n  IO.bind (withTicket (fun t => let () := Ticket.release t; IO.println \"first\"))\n" ++
+  "    (fun _ => IO.bind (withTicket (fun t => let () := Ticket.release t; IO.println \"second\"))\n" ++
+  "      (fun _ => IO.bind cCount (fun c => IO.println (Nat.toString c))))\n"
+
 def linearCaseGroup : Group where
   name := "linear-case"
-  exercise := "docs/CoreSpec.md §10.2 (K1), §10.2a (K2a)"
+  exercise := "docs/CoreSpec.md §10.2 (K1), §10.2a (the unit eliminator)"
   cases := [
     { name := "a2: a linear field matched out of a linear scrutinee, handed back in both alternatives (D8)", run := fun _ =>
         okLibs (linearCaseHeader ++ "def rebuild (1 r : Res1 Tok) : Res1 Tok := match r with\n  | .ok t => .ok t\n  | .err e t => .err e t\n") },
@@ -7285,32 +7347,71 @@ def linearCaseGroup : Group where
     { name := "nested linear matches: a linear field is matched again with casesOn1", run := fun _ =>
         okLibs (linearCaseHeader ++ "def flat (1 r : Res1 (Res1 Tok)) : Res1 Tok := match r with\n" ++
           "  | .ok s => (match s with\n    | .ok t => .ok t\n    | .err e t => .err e t)\n  | .err e s => (match s with\n    | .ok t => .err e t\n    | .err e' t => .err e' t)\n") },
-    { name := "a3: a borrow scope over a linear structure handle (`1 val : S`), taken apart with let 1 ⟨v⟩", run := fun _ =>
+    { name := "a3: a borrow scope over a linear handle, a one-constructor inductive `H | mk (1 val : S)`", run := fun _ =>
         okLibs ("import Region\ninductive Res1 (A : Type) where\n  | ok (1 a : A)\n  | err (e : Error) (1 back : A)\n" ++
-          "structure H (ρ : Region) (S : Type) where\n  1 val : S\n" ++
+          "inductive H (ρ : Region) (S : Type) where\n  | mk (1 val : S)\n" ++
           "def borrow1 {S B : Type} (0 σ : Region) (1 s : S)\n    (1 body : (0 ρ : Region) → (1 r : H ρ S) → Res1 ((ω b : B) × H ρ S)) : Res1 ((ω b : B) × S) :=\n" ++
-          "  match body σ (H.mk s) with\n  | .ok p => let 1 (b, r) := p; let 1 ⟨v⟩ := r; .ok (b, v)\n  | .err e p => let 1 (b, r) := p; let 1 ⟨v⟩ := r; .err e (b, v)\n") },
-    { name := "a3 as first written: an ω field holding a linear value is a usage error, by design", run := fun _ =>
-        -- (`val : S` is an ω field, so `H.mk s` uses the linear `s` ω times; a structure
-        -- that holds a resource declares the field `1 val : S`)
-        failsLibs ("import Region\ninductive Res1 (A : Type) where\n  | ok (1 a : A)\n  | err (e : Error) (1 back : A)\n" ++
-          "structure H (ρ : Region) (S : Type) where\n  val : S\n" ++
+          "  match body σ (H.mk s) with\n  | .ok p => let 1 (b, r) := p; (match r with\n    | .mk v => .ok (b, v))\n" ++
+          "  | .err e p => let 1 (b, r) := p; (match r with\n    | .mk v => .err e (b, v))\n") },
+    { name := "a3 as a structure: an ω field holding a linear value is a usage error, and a linear structure has no destructuring form", run := fun _ => do
+        let pre (fld : String) := "import Region\ninductive Res1 (A : Type) where\n  | ok (1 a : A)\n  | err (e : Error) (1 back : A)\n" ++
+          s!"structure H (ρ : Region) (S : Type) where\n  {fld}\n" ++
           "def borrow1 {S B : Type} (0 σ : Region) (1 s : S)\n    (1 body : (0 ρ : Region) → (1 r : H ρ S) → Res1 ((ω b : B) × H ρ S)) : Res1 ((ω b : B) × S) :=\n" ++
-          "  match body σ (H.mk s) with\n  | .ok p => let 1 (b, r) := p; let 1 ⟨v⟩ := r; .ok (b, v)\n  | .err e p => let 1 (b, r) := p; let 1 ⟨v⟩ := r; .err e (b, v)\n") "s declared with quantity 1 but used ω" },
-    { name := "a linear structure: a field dropped is rejected", run := fun _ =>
-        failsLibs (linearCaseHeader ++ "structure G where\n  n : Nat\n  1 t : Tok\n" ++
-          "def g (1 x : G) : Nat := let 1 ⟨n, t⟩ := x; n\n") "quantity 1 but used 0" },
-    { name := "K2a: a linear Unit may go unused, not be used twice", run := fun _ => do
-        okLibs "import Prelude\ndef f (1 u : Unit) : Nat := 0\ndef g (1 k : (0 n : Nat) → Unit) : Nat := 0\n"
-        failsLibs "import Prelude\naxiom h : (1 u : Unit) → (1 v : Unit) → Nat\ndef f (1 u : Unit) : Nat := h u u\n" "used ω" },
-    { name := "K2a: a token is not droppable, whether an axiom, a definition of Unit or a field-less structure", run := fun _ => do
+          "  match body σ (H.mk s) with\n  | .ok p => let 1 (b, r) := p; let 1 ⟨v⟩ := r; .ok (b, v)\n  | .err e p => let 1 (b, r) := p; let 1 ⟨v⟩ := r; .err e (b, v)\n"
+        failsLibs (pre "val : S") "cannot take a value of the structure H apart at quantity 1"
+        failsLibs (pre "1 val : S") "cannot take a value of the structure H apart at quantity 1" },
+    { name := "a linear one-constructor type: a field dropped is rejected", run := fun _ =>
+        failsLibs (linearCaseHeader ++ "inductive G where\n  | mk (n : Nat) (1 t : Tok)\n" ++
+          "def g (1 x : G) : Nat := match x with\n  | .mk n t => n\n") "quantity 1 but used 0" },
+    { name := "a linear Unit must be consumed: unused is rejected, `let () := u` consumes it once", run := fun _ => do
+        failsLibs "import Prelude\ndef f (1 u : Unit) : Nat := 0\n" "used 0"
+        failsLibs "import Prelude\ndef g (1 k : (0 n : Nat) → Unit) : Nat := 0\n" "used 0"
+        okLibs "import Prelude\ndef f (1 u : Unit) : Nat := let () := u; 0\n"
+        failsLibs "import Prelude\ndef f (1 u : Unit) : Nat := let () := u; let () := u; 0\n" "used ω"
+        failsLibs "import Prelude\ndef f (0 u : Unit) : Nat := let () := u; 0\n" "quantity 0"
+        failsLibs "import Prelude\ndef f (1 k : (0 n : Nat) → Unit) : Nat := let () := k; 0\n" "mismatch" },
+    { name := "a token is not droppable, whether an axiom, a definition of Unit or a field-less structure", run := fun _ => do
         failsLibs "import Prelude\naxiom Tok : Type\ndef drop (1 t : Tok) : Nat := 0\n" "used 0"
         failsLibs "import Prelude\ndef Tok : Type := Unit\ndef drop (1 t : Tok) : Nat := 0\n" "used 0"
         failsLibs "import Prelude\nstructure Tok where\ndef drop (1 t : Tok) : Nat := 0\n" "used 0" },
+    { name := "linear-review: a token hidden in a closure into Unit can't be dropped (leak1–4, 6)", run := fun _ => do
+        let h := linearCaseHeader
+        let subst := "fun e => Eq.subst (fun (X : Type) => X) e t"
+        failsLibs (h ++ s!"def drop (1 t : Tok) : Nat :=\n  let 1 g : (0 e : Tok = Unit) → Unit := {subst}\n  0\n") "used 0"
+        rejectsLibs (h ++ s!"def dropU (1 t : Tok) : Unit := let 1 g : (0 e : Tok = Unit) → Unit := {subst}; ()\n" ++
+          "def drop (1 t : Tok) : Nat := let 1 u : Unit := dropU t; 0\n") "used 0"
+        rejectsLibs (h ++ stashDef ++ "def drop (1 t : Tok) : Nat := let 1 g := stash t; 0\n") "used 0"
+        failsLibs (h ++ s!"def drop (1 t : Tok) : Nat := (fun (1 g : (0 e : Tok = Unit) → Unit) => 0) ({subst})\n") "used 0"
+        failsLibs (h ++ s!"def drop (1 t : Tok) : Nat :=\n  let 1 p : Nat × ((0 e : Tok = Unit) → Unit) := (0, {subst})\n  let 1 (n, g) := p\n  n\n") "used 0"
+        -- (n_closurefield) the closure as a linear constructor field, matched and dropped
+        failsLibs (h ++ "inductive C where\n  | mk (1 f : (0 e : Tok = Unit) → Unit)\n" ++
+          s!"def stash (1 t : Tok) : C := .mk ({subst})\n" ++ "def drop (1 c : C) : Nat := match c with\n  | .mk f => 0\n") "used 0"
+        -- and the closure can't be "consumed" by the unit eliminator: it is not a Unit
+        failsLibs (h ++ s!"def drop (1 t : Tok) : Nat :=\n  let 1 g : (0 e : Tok = Unit) → Unit := {subst}\n  let () := g; 0\n") "mismatch" },
+    { name := "linear-review: a unit-valued consumer's result must be consumed (leak5)", run := fun _ => do
+        let h := linearCaseHeader ++ "axiom useU : (1 t : Tok) → Unit\n"
+        failsLibs (h ++ "def drop (1 t : Tok) : Nat := (fun (1 u : Unit) => 0) (useU t)\n") "used 0"
+        okLibs (h ++ "def fin (1 t : Tok) : Nat := let () := useU t; 0\n") },
+    { name := "linear-review: a token stashed in a structure's tail can't be dropped (tail3)", run := fun _ => do
+        failsLibs (linearCaseHeader ++ "inductive PL (P : Prop) : Type where\n  | up (h : P)\n" ++
+          "def PL.down {P : Prop} (b : PL P) : P := match b with | .up h => h\n" ++
+          "structure S (A : Type) where\n  n : Nat\n" ++
+          "def mk (1 t : Tok) : S (PL (Tok = Unit)) := (0, fun b m => Eq.subst (fun (X : Type) => X) (PL.down b) t)\n" ++
+          "def drop (1 t : Tok) : Nat := let 1 ⟨n⟩ := mk t; n\n") "cannot take a value of the structure S apart" },
+    { name := "linear-review: a lock guard can't be forgotten (the deadlock repro is rejected)", run := fun _ =>
+        rejectsLibs ("import IO\nimport MVar\n" ++ stashDef ++
+          "def forget {T B : Type} (1 t : T) (1 k : IO B) : IO B := let 1 g := stash t; k\n" ++
+          "def main : IO Unit :=\n  IO.bind Lock.new (fun l =>\n" ++
+          "    IO.bind (Lock.acquire l (fun g => forget g (IO.println \"first acquire; guard forgotten\")))\n" ++
+          "      (fun _ => Lock.acquire l (fun g => Lock.release l g (IO.println \"second acquire\"))))\n") "variable g declared with quantity 1 but used 0" },
     { name := "the linear match runs, compiled", run := fun _ =>
         ioRun ("import IO\ninductive Res1 (A : Type) where\n  | ok (1 a : A)\n  | err (e : Nat) (1 back : A)\n" ++
           "def get (1 r : Res1 Nat) : Nat := match r with\n  | .ok n => n\n  | .err e n => n\n" ++
-          "def main : IO Unit := do\n  IO.println (Nat.toString (get (.ok 3)));\n  IO.println (Nat.toString (get (.err 4 5)))\n") "3\n5\n" }
+          "def main : IO Unit := do\n  IO.println (Nat.toString (get (.ok 3)));\n  IO.println (Nat.toString (get (.err 4 5)))\n") "3\n5\n" },
+    { name := "`let () := u` runs u exactly once, compiled (C and LLVM): a unit-valued consumer releases a lock", run := fun _ =>
+        -- (if `Ticket.release t` were skipped, the second `c_acquire` would wait forever;
+        -- if it ran twice, the count would be off)
+        ioRunC ticketSrc relHelper "first\nsecond\n2\n" }
   ]
 
 def concGroup : Group where

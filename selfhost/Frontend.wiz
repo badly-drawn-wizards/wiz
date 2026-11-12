@@ -419,6 +419,7 @@ def shiftTm (k : Nat) : Nat → Tm → Tm
   | c, .snd t => .snd (shiftTm k c t)
   | c, .con t => .con (shiftTm k c t)
   | c, .exfalso m t => .exfalso (shiftTm k c m) (shiftTm k c t)
+  | c, .letUnit u b => .letUnit (shiftTm k c u) (shiftTm k c b)
   | _, t => t
 inductive TmsR where
   | ok (ts : Tms)
@@ -1394,6 +1395,7 @@ def zonkSub (es : ES) (d : Nat) (t : Tm) : Option Tm := match t with
   | .eqTy A B => zonk2 es d A B (fun A' B' => .eqTy A' B')
   | .eqRefl A a => zonk2 es d A a (fun A' a' => .eqRefl A' a')
   | .exfalso m x => zonk2 es d m x (fun m' x' => .exfalso m' x')
+  | .letUnit u b => zonk2 es d u b (fun u' b' => .letUnit u' b')
   | .eq A a b => match zonkTms es d (.tcons A (.tcons a (.tcons b .tnil))) with
     | .some (.tcons A' (.tcons a' (.tcons b' _))) => .some (.eq A' a' b')
     | _ => .none

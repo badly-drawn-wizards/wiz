@@ -920,6 +920,10 @@ where
       | _ => do let (t, ty) ← infer ctx stx; unifyAt ctx stx expected ty; pure t
     | "term.letPair" => elabLetPair ctx stx expected
     | "term.letTuple" => elabLetPair ctx (letTupleToPairs stx) expected
+    -- (linear-case stage 2) `let () := u; b`: consumes `u : Unit`
+    | "term.letUnit" => do
+      let u ← check ctx (stx.getArg 4) (.unit (.succ .zero))
+      return .letUnit u (← check ctx (stx.getArg 6) expected)
     | "term.match" => elabMatch ctx stx expected
     | "term.by" => elabBy ctx stx expected
     | "term.num" =>
@@ -1297,6 +1301,14 @@ partial def letTupleToPairs (stx : Syntax) : Syntax :=
     | _, _, e => e
   go 0 names (stx.getArg 10)
 
+/-- (linear-case stage 2) The literal quantities a `split` at `q` binds its components
+at, `q·p` and `q`, for a Σ whose first component is at `p` (when both are literals): a
+component taken at 1 is linear (`LocalCtx.bindQ`), so a `match` on it is `casesOn1`. -/
+partial def splitQtys (q : Term R) (p : Val R) : Option R × Option R :=
+  match q with
+  | .qlit r => (((Val.toPoly? p).bind (·.isConst?)).map (r * ·), some r)
+  | _ => (none, none)
+
 /-- `let q (x, y) := s; body`, check mode only (the motive is the expected type). -/
 partial def elabLetPair (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : ElabM R (Term R) := do
   let q ← elabQuantity ctx .default (stx.getArg 1).args[0]?
@@ -1304,10 +1316,11 @@ partial def elabLetPair (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : E
   let y := ((stx.getArg 5).getId?).getD "_"
   let (s, sty) ← infer ctx (stx.getArg 8)
   match ← force sty with
-  | .sigma _ _ A B _ =>
+  | .sigma _ p A B _ =>
     let g ← getGlobals
     let motive := quote g (ctx.lvl + 1) expected
-    let ctx₂ := (ctx.bind x A).bind y (← instM B (Val.var ctx.lvl))
+    let (qx, qy) := splitQtys q p
+    let ctx₂ := (ctx.bindQ x A qx).bindQ y (← instM B (Val.var ctx.lvl)) qy
     let body ← check ctx₂ (stx.getArg 10) expected
     pure (.split q s "z" motive x y body)
   | sty => throwAt (ctx.withInfo (stx.getArg 8)).info s!"let (x, y) := ... expects a pair, got {← showVal ctx sty}"
@@ -1325,17 +1338,18 @@ partial def splitChain (ctx : LocalCtx R) (q : Term R) (s : Term R) (sty : VTy R
     let t ← check (ctx.define x sty sv) body expected
     pure (.letE x q (quote g ctx.lvl sty) s t)
   | x :: rest =>
-    let .sigma _ _ A B _ ← force sty
+    let .sigma _ p A B _ ← force sty
       | throwAt ctx.info s!"internal error: expected a pair, got {← showVal ctx sty}"
     let motive := quote g (ctx.lvl + 1) expected
     let Bty ← instM B (Val.var ctx.lvl)
+    let (qx, qy) := splitQtys q p
     match rest with
     | [y] =>
-      let t ← check ((ctx.bind x A).bind y Bty) body expected
+      let t ← check ((ctx.bindQ x A qx).bindQ y Bty qy) body expected
       pure (.split q s "z" motive x y t)
     | _ =>
       let r : Name := "rest✝"
-      let t ← splitChain ((ctx.bind x A).bind r Bty) (q.lift 2) (.var 0) Bty rest body expected
+      let t ← splitChain ((ctx.bindQ x A qx).bind r Bty) (q.lift 2) (.var 0) Bty rest body expected
       pure (.split q s "z" motive x r t)
 
 /-- (13h) `let q pat := e; body` for a pattern `⟨p₁, …, pₙ⟩` or `(.mk p₁ … pₙ)` (any
@@ -1391,9 +1405,16 @@ partial def elabLetPat (ctx : LocalCtx R) (stx : Syntax) (expected : Option (VTy
       let n := L.fields.length
       unless ps.length == n do
         throwAt pat.info s!"{S}.mk expects {n} argument{if n == 1 then "" else "s"} (the fields {", ".intercalate L.fields}), got {ps.length}"
-      -- a component that is not a field (the marker tail, `(0 fields✝ : …) → Unit`) is
-      -- bound at `q` and never used: the kernel allows that for a unit-shaped type at any
-      -- quantity (K2a, `popBinder`), so a linear structure can be taken apart
+      -- a component that is not a field, bound at `q` and never used
+      let leftoverOk := match q with
+        | .qlit r => QRig.le (0 : R) r
+        | _ => false
+      if L.comps.any (· == .marker false) && !leftoverOk then
+        throwAt pat.info (s!"cannot take a value of the structure {S} apart at quantity {q.pretty ctx.names}: " ++
+          s!"the Σ type of a structure ends in a component that is not a field (its marker tail), and this " ++
+          s!"`let` would bind it at quantity {q.pretty ctx.names} and never use it. This is a limitation of " ++
+          "how structures are encoded today; take the structure at quantity ω, use a tuple type, or a one-constructor " ++
+          "`inductive` with fields at 1 (taken apart by `match`) for linear data")
       L.comps.mapM fun c => match c with
         | .field i => nameOf ps[i]!
         | .marker _ => pure "_"
@@ -2686,6 +2707,10 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
     return (← check ctx stx ty, ty)
   | "term.letPair" | "term.letTuple" | "term.absurd" | "term.rfl" =>
     throwAt ctx.info "cannot infer the type of this expression; add a type ascription"
+  | "term.letUnit" => do
+    let u ← check ctx (stx.getArg 4) (.unit (.succ .zero))
+    let (b, ty) ← infer ctx (stx.getArg 6)
+    return (.letUnit u b, ty)
   -- (13g–i) as-patterns, anonymous constructors, pattern `let`, structure update
   | "term.asPat" => throwAt ctx.info "an as-pattern `x@p` is only allowed in a pattern"
   | "term.anon" => throwAt ctx.info "cannot infer the type of an anonymous constructor ⟨…⟩; add a type ascription"
