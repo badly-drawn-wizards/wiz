@@ -210,6 +210,7 @@ case analysis inside a tactic (needs a `cases` request or motives built from the
 a second effect observation from `Eff` (lib/Eff.wiz) state operations into `W` — the
 morphism-based shape means this is a translation `Eff [Heap] → Prog` plus its morphism
 lemma (watch agent/lin-fixes's one-shot continuations); linear points-to tokens at
-quantity 1 over a native heap, with this model as the `implemented_by` reference (CS7b);
+quantity 1 over a native heap (CS7b: lib/Ref.wiz, docs/libraries.md; adequacy against this
+model is argued in its header, not yet mechanised);
 then a scheduler semantics, CSL with resource invariants and PCM ghost state (CS10a).
 SteelCore's action trees with `Par` nodes are the model for where concurrency goes.

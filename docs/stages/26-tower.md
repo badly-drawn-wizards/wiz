@@ -126,7 +126,7 @@ compiler you are working on.
 
 **With Nix**: the package (`packages.tower`) contains tower and the `wiz` and `grail`
 shims, which call that same tower; installing it puts all three on `PATH`:
-`nix profile install github:badly-drawn-wizards/wiz#tower` (or `home.packages` /
+`nix profile install github:wiz-pl/wiz#tower` (or `home.packages` /
 `environment.systemPackages`), then `tower default nightly`. Nix installs only tower and
 the shims: the toolchains are installed by tower into `~/.tower` (with `tower set source
 release` they come from the release tarballs and never from Nix). The package adds git,
@@ -134,7 +134,7 @@ tar and curl to tower's `PATH`; `nix` and `lake` are yours. `tower self shims` i
 there for shims in `~/.tower/bin` (they then call the tower given with `--self`).
 
 **With the install script** (no Nix):
-`curl -sSfL https://raw.githubusercontent.com/badly-drawn-wizards/wiz/master/scripts/tower-init.sh | sh`
+`curl -sSfL https://raw.githubusercontent.com/wiz-pl/wiz/master/scripts/tower-init.sh | sh`
 (or `| sh -s -- v0.2.0` for a tag). It downloads the tarball, runs `tower self install`
 and then `tower default nightly`.
 
@@ -345,7 +345,7 @@ outlives the window, and `tower toolchain install keep/icestick` works too, beca
 
 **Older commits.** Running the workflow by hand (`workflow_dispatch`) with the input
 `commit` set to a full master sha builds that commit and publishes its snapshot (nightly
-does not move): `gh workflow run release.yml -R badly-drawn-wizards/wiz -f
+does not move): `gh workflow run release.yml -R wiz-pl/wiz -f
 commit=<sha>`, or "Run workflow" on the Actions page. The commit's tarball is laid out
 by the workflow's current `scripts/release-tarball.sh`, not by the commit's own copy. A
 dispatched snapshot is new, so it survives the next 20 pushes; push a `keep/` tag to

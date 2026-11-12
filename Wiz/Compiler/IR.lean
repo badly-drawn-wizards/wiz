@@ -136,4 +136,47 @@ def Decl.toString (d : Decl) : String :=
   let ps := d.params.zipIdx.toList.map fun (p, i) => if d.borrow[i]?.getD false then s!"@&x{p}" else s!"x{p}"
   s!"def {d.name} {" ".intercalate ps} :=\n{d.body.toString}"
 
+/-! ### Closed definitions (CAFs)
+
+A top-level function without parameters (after erasure) is a *constant applicative form*,
+as in GHC and Lean: its body is the same value at every use. The native backends compute
+it on its first use and keep it for the rest of the run (immortal, never freed: see
+`wiz_caf_init` in `runtime/wiz.c`). Lazily, never at startup, so a definition that is never
+used is never computed, even one that diverges or is huge. A value of type `IO A` is a
+function of the world: its body builds a closure (or is a function with a parameter), so
+caching it does not run it.
+
+Not cached: `wiz.entry` (run once, by `main`), the exported functions' closures, the
+wrappers of foreign functions (a foreign function without arguments is called each time,
+as written), and bodies that do no work, whose value is cheaper to rebuild than to look
+up: scalars, and calls of other constants (which are cached themselves). -/
+
+/-- Is `e` work worth caching? (Allocations and calls; `zeroParam` are the functions
+without parameters, whose calls are lookups or cheap themselves.) -/
+def Expr.isWork (zeroParam : Name → Bool) : Expr → Bool
+  | .erased | .proj .. => false
+  | .lit n => n ≥ 2 ^ 62
+  | .ctor _ as => !as.isEmpty
+  | .fap f _ => !zeroParam f
+  | .pap .. | .ap .. | .prim .. | .reset _ | .reuse .. => true
+
+/-- Does a body do work worth caching? -/
+partial def Body.isWork (zeroParam : Name → Bool) : Body → Bool
+  | .vdecl _ e b => e.isWork zeroParam || b.isWork zeroParam
+  | .case _ alts => alts.any (·.isWork zeroParam)
+  | .jdecl _ _ jb k => jb.isWork zeroParam || k.isWork zeroParam
+  | .dup _ b | .drop _ b => b.isWork zeroParam
+  | .ret _ | .jmp .. | .unreachable => false
+
+/-- Excluded from caching whatever their body: run once, or called for their effect. -/
+def cafExcluded (n : Name) : Bool :=
+  n == "wiz.entry" || n.startsWith "wiz.export." || n.startsWith "wiz.native."
+
+/-- The closed definitions whose values the native backends cache. -/
+def cafs (decls : Array Decl) : Std.HashSet Name :=
+  let zero : Std.HashSet Name := decls.foldl (fun s d =>
+    if d.params.isEmpty && !cafExcluded d.name then s.insert d.name else s) {}
+  decls.foldl (fun s d =>
+    if zero.contains d.name && d.body.isWork zero.contains then s.insert d.name else s) {}
+
 end Wiz.IR

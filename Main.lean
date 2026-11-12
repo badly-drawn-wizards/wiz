@@ -1,5 +1,6 @@
 import Wiz
 import Wiz.Version
+import Wiz.Doc.Site
 
 open Wiz
 
@@ -12,6 +13,10 @@ def usage : String := "usage:
   wiz build FILE -o OUT --no-main  … or the exported functions, linked without a `main`
                                    (say, a Wasm module: --cc emcc --ldflags --no-entry)
   wiz run FILE [--llvm]            build and run `main`, printing its value
+  wiz doc [MODULE|FILE|DIR…] -o OUT [--lib] [--source-url URL] [--title T] [--web DIR]
+                                   documentation: a static site (one page per module,
+                                   index, search); --lib: the toolchain's library;
+                                   source links are URL + path in its root + #L<line>
   wiz lsp                          a language server on stdin/stdout
   wiz lsp --infoview SOCK          … and for infoviews on the Unix socket SOCK
   wiz lsp --ws [ADDR:]PORT         … and on a WebSocket (127.0.0.1 unless ADDR is given;
@@ -182,6 +187,76 @@ def elaborate (tc : Toolchain) (path : String) (input : String) : IO (CommandSta
     let key₀ := hash (toString (headers.toList.map (·.2)))
     pure (← Cache.elaborateCached dir input init key₀).1
 
+/-- (11s) `wiz doc`'s options. -/
+structure DocArgs where
+  out : Option String := none
+  lib : Bool := false
+  sourceUrl : Option String := none
+  title : Option String := none
+  web : Option String := none
+  inputs : List String := []
+
+def docArgs (a : DocArgs) : List String → Except String DocArgs
+  | [] => pure { a with inputs := a.inputs.reverse }
+  | "-o" :: o :: rest => docArgs { a with out := some o } rest
+  | "--lib" :: rest => docArgs { a with lib := true } rest
+  | "--source-url" :: u :: rest => docArgs { a with sourceUrl := some u } rest
+  | "--title" :: t :: rest => docArgs { a with title := some t } rest
+  | "--web" :: w :: rest => docArgs { a with web := some w } rest
+  | x :: rest => if x.startsWith "-" then throw s!"wiz doc: unknown option {x}" else docArgs { a with inputs := x :: a.inputs } rest
+
+/-- The path of `p` relative to `root` (`p` itself if it isn't under it). -/
+def relativeTo (root p : System.FilePath) : IO String := do
+  let r := (← IO.FS.realPath root).toString
+  let q := (← IO.FS.realPath p).toString
+  pure (if q.startsWith (r ++ "/") then (q.drop (r.length + 1)).toString else p.toString)
+
+/-- (11s) `wiz doc`: the modules to document, then the site (`Wiz.Doc.run`). -/
+def docCmd (tc : Toolchain) (args : List String) : IO UInt32 := do
+  let a ← match docArgs {} args with
+    | .ok a => pure a
+    | .error e => do IO.eprintln e; return 2
+  let some out := a.out | IO.eprintln "wiz doc: -o OUT is required"; return 2
+  -- every input that is a directory or a file is a module root
+  let mut tc := tc
+  let mut wanted : Array (String × System.FilePath × System.FilePath) := #[]
+  let lib ← Module.toolchainLib
+  if a.lib then
+    for (n, p) in ← Module.listRoot lib do wanted := wanted.push (n, p, lib)
+  for i in a.inputs do
+    let p : System.FilePath := i
+    if ← p.isDir then
+      tc := { tc with searchPath := tc.searchPath ++ [p] }
+      for (n, f) in ← Module.listRoot p do wanted := wanted.push (n, f, p)
+    else if p.extension == some "wiz" then
+      let root := p.parent.getD "."
+      tc := { tc with searchPath := tc.searchPath ++ [root] }
+      wanted := wanted.push ((p.fileStem.getD i), p, root)
+    else
+      let all ← Module.loadAll (← moduleRoots tc)
+      match all.get? i with
+      | some (f, _) => wanted := wanted.push (i, f, f.parent.getD ".")
+      | none => IO.eprintln s!"wiz doc: no module {i}"; return 1
+  if wanted.isEmpty then IO.eprintln "wiz doc: nothing to document (give modules, files, directories or --lib)"; return 2
+  -- (a module found twice, as a file and in a directory: once)
+  let mut mods : Array Doc.Module := #[]
+  for (n, f, root) in wanted do
+    if mods.any (·.name == n) then continue
+    mods := mods.push { name := n, src := ← IO.FS.readFile f, rel := ← relativeTo root f }
+  let web ← match a.web with
+    | some w => pure (some (System.FilePath.mk w))
+    | none => do pure ((← webDir).map System.FilePath.mk)
+  -- the site's own files: beside the Wasm module (a release), or web/ of the checkout
+  let base := lib.parent.getD "."
+  let mut assets : Option System.FilePath := none
+  for d in (web.toList ++ [base / "web", base / "share" / "wiz" / "web"]) do
+    if assets.isNone && (← (d / "scroll.css").pathExists) then assets := some d
+  let o : Doc.Options := { out, sourceUrl := a.sourceUrl, title := a.title.getD "Wiz documentation", web, assets }
+  let n ← Doc.run (fun m => elaborate tc "<doc>" s!"import {m}\n") mods o
+  IO.println s!"wiz doc: {n} modules, {out}/index.html"
+  if web.isNone then IO.println "wiz doc: no Wasm module (web/build.sh): the pages are plain HTML"
+  pure 0
+
 def checkCmd (tc : Toolchain) (path : String) : IO UInt32 := do
   let input ← IO.FS.readFile path
   let s ← elaborate tc path input
@@ -227,7 +302,10 @@ def kernelOpt : List String → Except String (Regularity × Bool × List String
   | [] => return (.off, false, [])
 
 def main (args : List String) : IO UInt32 := do
-  if args == ["--version"] then IO.println (← versionLine "wiz"); return 0
+  -- (after the toolchain flags: the tarball's and tower's wrappers put `-I LIB` and
+  -- their flags before the user's arguments)
+  if ((({} : Toolchain).parseFlags args).2) == ["--version"] then
+    IO.println (← versionLine "wiz"); return 0
   let home := (← IO.getEnv "HOME").getD "."
   -- the toolchain comes from flags only (no environment variables)
   -- (26f) a release toolchain's own C compiler, GMP and GC are the defaults
@@ -265,6 +343,7 @@ def main (args : List String) : IO UInt32 := do
   | ["build", path, "-o", out, "--no-main"] => buildCmd tc path out false false true
   | ["build", path, "-o", out, "--no-main", "--llvm"] | ["build", path, "-o", out, "--llvm", "--no-main"] =>
     buildCmd tc path out true false true
+  | "doc" :: rest => docCmd tc rest
   | ["run", path] => runCmd tc path false
   | ["run", path, "--llvm"] => runCmd tc path true
   | "lsp" :: opts => do
