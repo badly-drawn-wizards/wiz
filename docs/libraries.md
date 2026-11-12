@@ -197,6 +197,16 @@ laws), `lib/Hoare.wiz` (`wp`, triples, the frame rule, adequacy for an interpret
 `lib/HoareExamples.wiz` (verified swap, list reversal, counter, list length, in-place map,
 freeing a list). See [stage 24](stages/24-separation-logic.md).
 
+`lib/Ref.wiz` puts mutable cells in `IO` under linear points-to tokens (plan CS7b). A
+location `l : Loc V` is an ordinary value. Owning the cell is a separate token `Pts l v`
+at quantity 1, so one owner per cell, no leak, no double free and no use after free are
+all type errors. The token's ghost index is the cell's value, so a function's type is its
+Hoare triple: `swap : (1 tp : Pts p a) → (1 tq : Pts q b) → (1 k : (1 tp : Pts p b) →
+(1 tq : Pts q a) → IO B) → IO B`. `Ref.get` hands back the value with an erased proof
+that it is the index. The trusted part is the four natives `wiz_ref_*` (runtime/wiz.c,
+over MVar cells) and their types, kept true by an invariant the API maintains; the header
+of lib/Ref.wiz has the argument. Compiled code only.
+
 ## Owned handles (`lib/Handle.wiz`) ✅
 
 `Owned h` is the obligation to release the handle `h`: a token at quantity 1 indexed by
@@ -211,16 +221,6 @@ token and are not covered; the handles stay ω values, so direct calls to lib/Sy
 owned handle are not checked either. Making the handles themselves linear (direct style,
 with lib/Sys.wiz and lib/Serial.wiz moved onto this module) waits for linear Σ fields
 (linear-case stage 2). Trusted: two natives (`wiz_handle_own`/`wiz_handle_disown`).
-
-`lib/Ref.wiz` puts mutable cells in `IO` under linear points-to tokens (plan CS7b). A
-location `l : Loc V` is an ordinary value. Owning the cell is a separate token `Pts l v`
-at quantity 1, so one owner per cell, no leak, no double free and no use after free are
-all type errors. The token's ghost index is the cell's value, so a function's type is its
-Hoare triple: `swap : (1 tp : Pts p a) → (1 tq : Pts q b) → (1 k : (1 tp : Pts p b) →
-(1 tq : Pts q a) → IO B) → IO B`. `Ref.get` hands back the value with an erased proof
-that it is the index. The trusted part is the four natives `wiz_ref_*` (runtime/wiz.c,
-over MVar cells) and their types, kept true by an invariant the API maintains; the header
-of lib/Ref.wiz has the argument. Compiled code only.
 
 ## Functors and Booleans
 
