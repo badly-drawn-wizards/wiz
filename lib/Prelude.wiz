@@ -216,6 +216,45 @@ infixl:70 " % " => Mod.mod
 syntax:75 (name := neg) "-" term:75 : term
 macro_rules
   | `(term| - $x) => `(term| Neg.neg $x)
+-- Bitwise classes (H14 S2), as in Lean: `a &&& b`, `a ||| b`, `a ^^^ b`, `~~~a`, and the
+-- shifts `a <<< k`, `a >>> k` by a number of places `k : Nat` (Lean's take it at the
+-- operand's type; a fixed amount is what hardware shifts by wiring). Precedences as in
+-- Lean: `|||` 55, `^^^` 58, `&&&` 60 (below `+`), shifts 75, `~~~` max. Instances: `Nat`
+-- here, words in lib/Word.wiz, HDL signals in lib/Hdl/Core.wiz.
+class AndOp (A : Type) where
+  and : A → A → A
+class OrOp (A : Type) where
+  or : A → A → A
+class XorOp (A : Type) where
+  xor : A → A → A
+class Complement (A : Type) where
+  complement : A → A
+class ShiftLeft (A : Type) where
+  shiftLeft : A → Nat → A
+class ShiftRight (A : Type) where
+  shiftRight : A → Nat → A
+instance : AndOp Nat := AndOp.mk Nat.land
+instance : OrOp Nat := OrOp.mk Nat.lor
+instance : XorOp Nat := XorOp.mk Nat.xor
+instance : ShiftLeft Nat := ShiftLeft.mk Nat.shiftLeft
+instance : ShiftRight Nat := ShiftRight.mk Nat.shiftRight
+infixl:55 " ||| " => OrOp.or
+infixl:58 " ^^^ " => XorOp.xor
+infixl:60 " &&& " => AndOp.and
+-- The notation takes the amount at any type `B` (Lean's `HShiftLeft A B C`, the result
+-- type `C` an output): `ShiftLeft A` gives `HShiftLeft A Nat A`, and
+-- an HDL signal also shifts by a signal (H14 S4). A numeral amount is a `Nat` (the
+-- default type of a numeral).
+def outParam.{u} (A : Sort u) : Sort u := A
+class HShiftLeft (A B : Type) (C : outParam Type) where
+  hShiftLeft : A → B → C
+class HShiftRight (A B : Type) (C : outParam Type) where
+  hShiftRight : A → B → C
+instance {A : Type} [ShiftLeft A] : HShiftLeft A Nat A := HShiftLeft.mk ShiftLeft.shiftLeft
+instance {A : Type} [ShiftRight A] : HShiftRight A Nat A := HShiftRight.mk ShiftRight.shiftRight
+infixl:75 " <<< " => HShiftLeft.hShiftLeft
+infixl:75 " >>> " => HShiftRight.hShiftRight
+notation:max "~~~" a:max => Complement.complement a
 -- (end of the numeric classes)
 
 -- Errors.
@@ -245,6 +284,14 @@ app_unexpander Bool.casesOn
   | `(term| $f $m Bool.false $b $a) => `(term| $a && $b)
   | `(term| $f $m $b Bool.true $a) => `(term| $a || $b)
   | `(term| $f $m $e $t $c) => `(term| if $c then $t else $e)
+-- A condition that is a signal (H14 S2): when the type `C` of `c` is not a data type and
+-- has an instance `Mux C C` (an HDL signal, lib/Hdl/Core.wiz), `if c then a else b` is
+-- `Mux.mux c a b`, a multiplexer, at an instance `Mux C A` for the branches' type `A`.
+-- Any other condition is the `match` above (and its messages).
+class Mux (C A : Type) where
+  mux : C → A → A → A
+app_unexpander Mux.mux
+  | `(term| $f $c $t $e) => `(term| if $c then $t else $e)
 -- (end of the Boolean section)
 
 -- Reflected terms, for tactics. Variables are de Bruijn indices, relative to the goal's
@@ -390,9 +437,8 @@ def TacticM.isDefinition (n : String) : TacticM (Option Bool) := fun k => Tac.is
 def TacticM.tryCatch (t : TacticM Unit) (h : String → TacticM Unit) : TacticM Unit :=
   fun k => Tac.catch (TacticM.run t) (fun e => TacticM.run (h e)) (k ())
 
--- Type classes (stage 7). `outParam` marks a class parameter that instance resolution
--- determines (it is the identity).
-def outParam.{u} (A : Sort u) : Sort u := A
+-- Type classes (stage 7). `outParam` (defined with the shift classes, above) marks a
+-- class parameter that instance resolution determines (it is the identity).
 
 class Monad (m : Type → Type) where
   pure : {A : Type} → A → m A
