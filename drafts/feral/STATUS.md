@@ -29,7 +29,7 @@ hand the handle back) what changes is the text emitted for scopes and for `match
 checker's rules.
 
 Not in the fragment (each is an error "not supported yet", never a silent miscompile):
-spec clauses, `loop`/`break`/`continue`, `impl`/`trait`, closures, struct literals with
+inline spec clauses on `fn` (use a `spec f requires (P) ensures (Q)` item), loop invariants, `loop`/`break`/`continue`, `impl`/`trait`, closures, struct literals with
 fields, assignment to `x.f`/`v[i]`, `while let` directly through a `&mut` (use a cursor),
 more than two lenders, `From.from` in `?`, integer types other than `U64`.
 Differences from rustc: a `&mut` argument is never implicitly reborrowed at a shorter
@@ -69,7 +69,7 @@ after the block when the block is in tail position.
 | `let (u, ra, rb) := r` (L6) | `let` tuple patterns of more than two components (nested binary lets today) | `let-tuple-patterns` |
 | E0499/E0502 and no escape through `(0 r : Region) × Uniq r A`, enforced by the type checker (today: by the lowering's shape, `Lent` rebinding; handles are ω; drafts/feral/linear/) | a `match` whose alternatives use a captured linear variable once, linear constructor fields (R9a) | `linear-case` |
 | structural recursion through a field reborrow (05 `insert`, 11 `incr_all` are `partial`) | the termination checker seeing a recursive call on a scope's handle of a pattern variable | `reborrow-recursion` |
-| `requires`/`ensures`/`invariant` | spec clauses → quantity-0 spec defs | `spec-clauses` |
+| `invariant`, `decreases`, `final result` | loop specs, returned-borrow specs (`requires`/`ensures` are `spec` items since M7) | `spec-clauses` |
 | `final(x)`, `old(x)` | desugaring over the backward function | `final-specs` |
 | `decreases` on loops | well-founded recursion; loops stay `partial def` (unverifiable) | `decreases-loops` |
 | numerals at integer types other than `U64` (the front end writes `U64.lit n`) | numerals at machine-int types | `machine-int-literals` |

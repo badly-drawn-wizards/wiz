@@ -440,7 +440,13 @@ loops, `?`, `U64`, and functions that return borrows.
   `Result U64`); a method call on a variable (`r.push`) is one identifier, so it shows the
   receiver.
 
-Limitations: the fragment (LOWERING.md §1a); spec clauses are not parsed; `U64` and `Vec`
+Specifications: a `spec f requires (P) ensures (Q)` item states `f.Spec`, a Wiz
+proposition over the arguments' values, `result`, `old x` and `final x` (an `&mut`
+argument's value when the borrow ends, its handed-back handle), with total correctness
+(`Result.Holds`), proved in Wiz; see [Resources in Wiz](../resources.md).
+
+Limitations: the fragment (LOWERING.md §1a); loop invariants, `decreases` and `final result`
+(a returned borrow) in specs are not supported; `U64` and `Vec`
 are the stand-ins of `drafts/feral/lib/FeralCore.wiz`; keywords such as `if` and `mut`
 are reserved in a file that imports `Feral`; one borrow error per function; stricter than rustc where a `&mut` would be
 implicitly reborrowed at a shorter lifetime.
