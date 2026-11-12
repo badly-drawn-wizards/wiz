@@ -1,6 +1,7 @@
 import Grail.Graph
 import Grail.Deps
 import Grail.Lsp
+import Wiz.Version
 
 /-!
 # grail, a build tool for Wiz
@@ -29,6 +30,7 @@ def usage : String := "usage:
                           beside grail, else wiz on PATH)
   grail targets           list the targets
   grail config            print the toolchain grail would use
+  grail --version         print the version
   grail clean             remove .grail/build, .grail/bin, .grail/tmp, .grail/log and
                           the command outputs grail installed (unless changed since)
 options: -C DIR (the package directory), --std DIR (the standard library),
@@ -76,6 +78,7 @@ def findStd (opt : Option String) : IO System.FilePath := do
   pure "lib"
 
 def cliMain (args : List String) : IO UInt32 := do
+  if args == ["--version"] then IO.println (← Wiz.versionLine "grail"); return 0
   -- (23k) the supervisor of a job process
   if let "--grail-exec" :: rest := args then return ← execMain rest
   -- a `panic!` (a kernel-internal failure) ends the build, as it ends `wiz check`

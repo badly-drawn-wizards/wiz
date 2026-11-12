@@ -41,20 +41,21 @@ inductive Head (R : Type) where
   | refl (A a : Val R)
   | reflTy (X : Val R)
   | transp (A a P p b e : Val R)
-  /-- (P2, `Globals.lazyProofs`) a **suspended proof**: the term `t` in `env`,
-  never evaluated by the kernel. `v` computes it: for reading the proof back outside the
-  kernel (`quote`, unless `quoteErasesProofs`), and for the proof-inspecting
-  `--regularity refl`. `ty` is its type, for conversion (which never compares two
-  proofs). -/
-  | prf (ty : Thunk (Val R)) (env : List (Val R)) (t : Term R) (v : Thunk (Val R))
+  /-- (P2, `Globals.lazyProofs`) a **suspended proof**: the term `t` in `env`, never
+  evaluated by the kernel. It comes from a marked proof (`Term.prf`) or from a position
+  the syntax marks (`cast`'s equation, `transp`'s two proofs). Outside the kernel it is
+  evaluated to be read back (`quote`, unless `quoteErasesProofs`), within a step budget
+  (`Budget`). It carries no type: conversion never compares two proofs, and what follows
+  an `absurd` is typed by the motive. -/
+  | prf (env : List (Val R)) (t : Term R)
 
 inductive Val (R : Type) where
   /-- `head` followed by the eliminations in `spine`, innermost first -/
   | neutral (head : Head R) (spine : Array (Elim R))
   | sort (level : Level)
-  | pi (x : Name) (bi : BinderInfo) (q : Val R) (dom : Val R) (cod : Closure R) (s : Option Level)
+  | pi (x : Name) (bi : BinderInfo) (q : Val R) (dom : Val R) (cod : Closure R) (σ : BinderSorts)
   | lam (x : Name) (body : Closure R)
-  | sigma (x : Name) (q : Val R) (fst : Val R) (snd : Closure R) (s : Option Level)
+  | sigma (x : Name) (q : Val R) (fst : Val R) (snd : Closure R) (σ : BinderSorts)
   | pair (a b : Val R)
   | unit (level : Level)
   | tt
@@ -82,8 +83,8 @@ inductive Val (R : Type) where
   | coit (l : Level) (I D S step i s : Val R)
   /-- a numeral of the `builtin nat` type (see `Term.natLit`) -/
   | natLit (n : Nat)
-  /-- `ULift.{l} A` and its constructor (Q4) -/
-  | ulift (l : Level) (A : Val R)
+  /-- `ULift.{l} A` (for `A : Sort k`) and its constructor (Q4) -/
+  | ulift (k l : Level) (A : Val R)
   | up (a : Val R)
   /-- **glued**: the global `name` applied to the eliminations `sp`, together with its
   unfolding, computed only when needed (a `Thunk` remembers it). Keeping the head

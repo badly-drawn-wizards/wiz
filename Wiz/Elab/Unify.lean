@@ -238,7 +238,24 @@ partial def rename (m : Nat) (p : PRen) (v : Val R) : ElabM R (Term R) := do
       (← rename m p b) (← rename m p e)) sp
   -- (P2) a suspended proof is evaluated for a solution (a normal form, which the kernel
   -- can check)
-  | .neutral (.prf _ _ _ pv) sp => do rename m p (vElims (← getGlobals) pv.get sp)
+  -- within a step budget (`Budget`): a proof need not have one
+  | .neutral (.prf env t) sp => do
+    let g ← getGlobals
+    match g.budget with
+    | some _ => rename m p (vElims g (eval g env t) sp)
+    | none =>
+      -- (the monadic read-back is a pure function of the state: it runs inside the budget)
+      let st ← get
+      let (r, used) := Budget.run g.proofSteps fun b =>
+        let g' := { g with budget := some b }
+        match (rename m p (vElims g' (eval g' env t) sp)).run { st with globals := g' } with
+        | .ok (tm, st') => (some tm, some st', none)
+        | .error e => (none, none, some e)
+      if used > g.proofSteps then throwAt {} (Budget.message g.proofSteps)
+      match r with
+      | (some tm, some st', _) => set { st' with globals := g }; pure tm
+      | (_, _, some e) => throw e
+      | _ => throwAt {} "internal error: read-back of a proof"
   | .neutral (.mvar m') sp =>
     if m == m' then throwAt {} s!"occurs check: ?m{m} would have to contain itself"
     else goSp (.mvar m') sp
@@ -271,7 +288,7 @@ partial def rename (m : Nat) (p : PRen) (v : Val R) : ElabM R (Term R) := do
   | .mu l I D i s h => return .mu l (← rename m p I) (← rename m p D) (← rename m p i) (← rename m p s) (← renameHint h)
   | .nu l I D i s h => return .nu l (← rename m p I) (← rename m p D) (← rename m p i) (← rename m p s) (← renameHint h)
   | .con x => return .con (← rename m p x)
-  | .ulift l A => return .ulift l (← rename m p A)
+  | .ulift k l A => return .ulift k l (← rename m p A)
   | .up a => return .up (← rename m p a)
   | .natLit n => return .natLit n
   | .unfold n us sp _ => goSp (.const n us) sp
@@ -502,7 +519,7 @@ partial def unify (l : Lvl) (t u : Val R) : ElabM R Unit := do
   | .mu u I D i s _, .mu u' I' D' i' s' _ | .nu u I D i s _, .nu u' I' D' i' s' _ =>
     unifyLevel u u'; unify l I I'; unify l D D'; unify l i i'; unify l s s'
   | .con x, .con y => unify l x y
-  | .ulift u A, .ulift u' A' => unifyLevel u u'; unify l A A'
+  | .ulift _ u A, .ulift _ u' A' => unifyLevel u u'; unify l A A'
   | .up a, .up b => unify l a b
   | .up a, t'@(.neutral ..) => unify l a (vDown t')
   | t'@(.neutral ..), .up a => unify l (vDown t') a

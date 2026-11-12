@@ -82,13 +82,14 @@ s        ::= ∞ | ↑s | x                                                     
 t, A, B ::=
   x | c.{l…}                                      variables, global constants
   Sort l                                          universes (Prop = Sort 0, Type u = Sort (u+1))
-  (q x : A) → B  [σ]                              Π, optional sort annotation σ (a level)
+  (q x : A) →^σ B                                 Π; σ = ⟨i, j⟩ the sorts of A and of B (mandatory)
   λx. t | t u                                     no domain or quantity on λ
   let x :q A := t; u | (t : A)                    let, ascription
-  (q x : A) × B  [σ] | (t, u) | t.1 | t.2         Σ (optional sort annotation σ)
+  (q x : A) ×^σ B | (t, u) | t.1 | t.2            Σ; σ = ⟨i, j⟩ as for Π (mandatory)
   let q (x, y) := t as z. M; u                    Σ elimination (`split`)
   Unit_l | tt | Empty_l | absurd M t              Unit_0 = True, Empty_0 = False
-  ULift.{l} A | up t | down t                     lifting to a bigger universe (§4.1, Q4)
+  ULift.{k,l} A | up t | down t                   lifting to a bigger universe (§4.1, Q4); k the sort of A
+  prf.{l} t                                       the proof marker (§8.6): `t`, whose type is in `Sort l`
   t = u   (written eq A t u)                      observational equality of elements
   A ≡ B   (written eqTy A B)                      equality of types
   refl A t | reflTy A | cast A B e t | transp A a P p b e
@@ -103,6 +104,16 @@ t, A, B ::=
   n  (natLit)                                     numerals of the type registered by `builtin nat`
   ?m (mvar)                                       elaborator only: the kernel rejects it
 ```
+
+**Mandatory sorts.** Every Π and Σ carries the sorts of its two components,
+`σ = ⟨i, j⟩` (`BinderSorts`: `i` the domain's or first component's, `j` the codomain's or
+second component's, under the binder), and every `ULift` the sort `k` of its content. They
+are written, never inferred by evaluation: the rules *pi*, *sigma* and *ulift* check each
+one against the inferred sort of its own component (structurally, never a combination such
+as `imax i j`), and evaluation reads them (whether a type is a proposition, §8.3; whether a
+cast computes, §8.4, D2). The level `_` (a *hole*, `Level.hole`) exists only in the
+elaborator, before its sorts pass; the kernel rejects it. `σ.piSort = imax i j`,
+`σ.sigmaSort = max i j`.
 
 `natOp` (`Term.lean:158`) is produced only by evaluation and never type-checked. `μ` and `ν`
 also carry a *display hint* (the nominal name to print) that conversion ignores.
@@ -177,19 +188,20 @@ opaque atoms.
 ### 4.1 Lifting: `ULift` (Q4)
 
 Universes are not cumulative, so a type in a small universe is moved up explicitly.
-`ULift.{l} A` (`Term.ulift`) is a copy of `A : Sort k` in `Sort l`, for `k ≤ l`. Its only
+`ULift.{k,l} A` (`Term.ulift`) is a copy of `A : Sort k` in `Sort l`, for `k ≤ l`; `k` is
+written in the term (mandatory sorts) and checked. Its only
 use in the core is in descriptions: a description field must be in exactly `Sort (l+1)`
 (§9.1), and the elaborator wraps smaller fields. [std: Agda's `Lift`, Lean's `ULift`;
 the levitated descriptions of [CDMM10] fix the field level and use `Lift` the same way]
 
 ```
-     Γ ⊢ A type@k    k ≤ l                Γ ⊢ a ⇐ A ⊣ U                 Γ ⊢ t ⇒ ULift.{l} A ⊣ U
-     ─────────────────────── ulift        ──────────────────── up        ─────────────────────── down
-     Γ ⊢ ULift.{l} A ⇒ Sort l ⊣ 0         Γ ⊢ up a ⇐ ULift.{l} A ⊣ U     Γ ⊢ down t ⇒ A ⊣ U
+     Γ ⊢ A type@k'   ⊢ k ≡ k'   k ≤ l      Γ ⊢ a ⇐ A ⊣ U                   Γ ⊢ t ⇒ ULift.{k,l} A ⊣ U
+     ───────────────────────────── ulift   ──────────────────────── up    ───────────────────────── down
+     Γ ⊢ ULift.{k,l} A ⇒ Sort l ⊣ 0         Γ ⊢ up a ⇐ ULift.{k,l} A ⊣ U  Γ ⊢ down t ⇒ A ⊣ U
 
      down (up a) ⟶ a                                                       (β)      vDown, Eval.lean
      t ≡ t' : ULift A   iff   down t ≡ down t' : A                         (η)      conv, Conv.lean
-     ULift.{l} A ≡ ULift.{l'} A'   iff   l ≡ l' and A ≡ A'                           convTy
+     ULift.{k,l} A ≡ ULift.{k',l'} A'   iff   l ≡ l', k ≡ k' and A ≡ A'                convTy
 ```
 
 `up` is checked only (its type can't be inferred). `down` is an elimination: it is stuck on
@@ -207,15 +219,15 @@ the type itself (its sort, `propSort?`), never of the sort it is used at.
 **Observational equality** (`vEq`, `vEqType`, `vCast`; the given lines at the top of each):
 
 ```
-a =_{ULift.{l} A} b    ⟶  True                         if A is a proposition (propSort? A = true)
-                       ⟶  down a =_A down b            if A is not one (propSort? A = false)
-                       ⟶  stuck                        if unknown
+a =_{ULift.{k,l} A} b  ⟶  True                         if A is a proposition (k ≡ 0)
+                       ⟶  down a =_A down b            if A is not one (k never 0)
+                       ⟶  stuck                        if unknown (k depends on a parameter)
 ULift.{u} A ≡ ULift.{w} B ⟶  (X → Y) × (Y → X)         if both are propositions (u ≡ w ≡ 0)
                        ⟶  A ≡ B                        if u ≡ w
                        ⟶  False                        if u, w are closed and different; else stuck
 ULift A ≡ B, B another canonical former  ⟶  False      (ULift is in `canonical`: no confusion)
-cast (ULift.{u} A) (ULift.{w} B) e t
-                       ⟶  up (cast A B e (down t))     if u ≡ w and u is never 0
+cast (ULift.{k,u} A) (ULift.{k',w} B) e t
+                       ⟶  up (cast A B e (down t))     if u ≡ w, u is never 0, and k ≡ k' (D2)
                        ⟶  stuck                        if both are propositions (the cast is a proof, §8.6)
                        ⟶  stuck                        otherwise
 ```
@@ -228,7 +240,11 @@ payload cast of a constructor casts each field, and a lifted field `up x` is cas
 proof (a stuck proof), exactly as an unlifted proof field did: the D1 argument (no proof
 returned unchanged) still holds. `ULift A` is inert when `A` is (`inertTy`), and a lifted
 proposition is not. The rule for `cast` requires `u` never `0` (not merely "not known to
-be 0"), so the choice between the two rules is stable under level substitution.
+be 0"), so the choice between the two rules is stable under level substitution. It also
+requires the contents to be in one sort (`k ≡ k'`, written in the terms): the reduct
+`cast A B e (down t)` is formed only within one sort (D2, §8.4). Reading `k` instead of
+asking `propSort?` of the content makes `x = y : ULift X` compute for a type variable `X`
+(its sort is written).
 
 **Subject reduction for the new rules.** *β*: `down (up a)` has type `A` because `up a ⇐
 ULift A` needs `a ⇐ A`. *η* only adds conversions between terms of the same type.
@@ -332,12 +348,17 @@ what the 0-fragment does anyway).
      ─────────────────────────────── var            [std]            Check.lean:346
      Γ ⊢ x ⇒ Γ(x) ⊣ 𝟙ₓ
 
-     Γ ⊢ q qty ↦ p    Γ ⊢ A type@i    Γ, x :p A ⊢ B type@j    (σ given ⇒ ⊢ σ ≡ imax i j)
-     ──────────────────────────────────────────────────────────────── pi      Check.lean:354–359
-     Γ ⊢ (q x : A) → B [σ] ⇒ Sort (imax i j) ⊣ 0
+     Γ ⊢ q qty ↦ p   Γ ⊢ A type@i'   ⊢ i ≡ i'   Γ, x :p A ⊢ B type@j'   ⊢ j ≡ j'   (σ = ⟨i, j⟩, no hole)
+     ──────────────────────────────────────────────────────────────── pi      Check.lean `inferCore`
+     Γ ⊢ (q x : A) →^σ B ⇒ Sort (imax i j) ⊣ 0
 ```
-[std: Atkey18 for the quantity, Lean for `imax`; the sort annotation σ is [wiz], checked by
-`checkSortNote`, `Check.lean:243`. Its purpose is §8.3.]
+[std: Atkey18 for the quantity, Lean for `imax`; the component sorts σ are [wiz] (mandatory
+sorts), checked by `checkComponentSort`, each against the inferred sort of its own component.
+Their purpose is §8.3 and §8.4. **Structural**: a combination (`imax i j`) would not do,
+since `imax 2 2` would then pass as the sort of `X → Type` with `X : Sort 1`, while the cast
+rules read the domain's sort (`wiz-notes/prf-marker.md` §8.1, item 6). `λ ⇐ Π` and
+`(a, b) ⇐ Σ` trust the expected type's σ: it was formed by this rule, or written by the
+kernel's own templates (§16, trust 4–5).]
 
 ```
      Γ, x :p A ⊢ b ⇐ B ⊣ (u :: U)     u ≤ p         (p = value of q)
@@ -378,9 +399,9 @@ The `lam` rule is `Kernel.wiz:2116`. Quantities are the three literals only.
 ### 7.1 Σ
 
 ```
-     Γ ⊢ q qty ↦ p   Γ ⊢ A type@i   Γ, x :p A ⊢ B type@j   (σ given ⇒ ⊢ σ ≡ max i j)
-     ──────────────────────────────────────────────────────── sigma               Check.lean:389–394
-     Γ ⊢ (q x : A) × B [σ] ⇒ Sort (max i j) ⊣ 0
+     Γ ⊢ q qty ↦ p   Γ ⊢ A type@i'  ⊢ i ≡ i'   Γ, x :p A ⊢ B type@j'  ⊢ j ≡ j'   (σ = ⟨i, j⟩, no hole)
+     ──────────────────────────────────────────────────────── sigma               Check.lean `inferCore`
+     Γ ⊢ (q x : A) ×^σ B ⇒ Sort (max i j) ⊣ 0
 
      Γ' ⊢ a ⇐ A ⊣ U₁     Γ ⊢ b ⇐ B[a/x] ⊣ U₂     (Γ' = Γ⁰ if p is the constant 0, else Γ)
      ──────────────────────────────────────── pair  (check only)                  Check.lean `check`
@@ -457,7 +478,7 @@ The `lam` rule is `Kernel.wiz:2116`. Quantities are the three literals only.
     `let q (x, y) := s` does. `do`/`do1` binds go through `bind`/`bind1`, which are
     library functions written with `let 1 (a, w') := x w` (`lib/IO.wiz`).
 * `split`'s motive variable `z` has quantity 0 (`ctx.bind z []`).
-* The sort annotation `σ` is not checked for `split`'s scrutinee; it is checked where the
+* The component sorts `σ` are not checked for `split`'s scrutinee; they are checked where the
   Σ type is formed.
 * **Positions at 0.** The `pair` rule's first part at a 0 field, `split`'s scrutinee at
   `ρ = 0` and `let`'s value at 0 (§6) are erased positions, like `app`'s argument to a 0
@@ -596,7 +617,7 @@ Stage 4c. This section follows Pujet and Tabareau's TTobs [PT22] and the earlier
 |---|---|---|---|
 | `(q x : A₁) → B` | `(0 x : A₁) → a x =_{B x} b x` (funext) | [std: PT22] | 523–525 |
 | a proposition (`propSort? A = true`) | `True` (**proof irrelevance**) | [wiz: Prop components] | `vEq` |
-| `(q x : A₁) × B` | `(0 e : a.1 =_{A₁} b.1) × (cast (B a.1) (B b.1) ê a.2 =_{B b.1} b.2)`, where `ê = transp A₁ a.1 (λy _. B a.1 ≡ B y) (reflTy (B a.1)) b.1 e`; if `A₁` is a proposition, `ê = reflTy (B a.1)` | [std: PT22; wiz] | 526–532 |
+| `(q x : A₁) ×^⟨i,j⟩ B` | `(0 e : a.1 =_{A₁} b.1) × (cast (B a.1) (B b.1) ê a.2 =_{B b.1} b.2)`, where `ê = transp A₁ a.1 (λy _. B a.1 ≡ B y) (reflTy (B a.1)) b.1 e`; if `i ≡ 0` (`A₁` is a proposition), the first component is `True` and `ê = reflTy (B a.1)`; if `j ≡ 0` (`B` is a family of propositions), the second component is `True` | [std: PT22; wiz] | `vEq` |
 | `Unit_l`, `Empty_l` | `True` | [std] | 533 |
 | `Enum ls`, with `a = tag i`, `b = tag j` | `True` if `i = j`, else `False` | [wiz: finite types] | 534–536 |
 | `μ D i`, with `a = con x`, `b = con y` | `x =_{⟦D⟧ (μ D) i} y`, **by the description** (`vEqPayload`, below) | [wiz: OTT for descriptions] | `vEqPayload` |
@@ -619,12 +640,14 @@ it, as `transp` along a proposition, §8.1). Both are justified by conv-irr (§8
 
 Without them the computed equation was ill typed (a normal form the kernel rejects), and the
 kernel rejected well-typed programs that let-bound `h.2` for `h : p = q` at a subtype. The
-test `propSort? A = true` is stable under substitution (a proposition stays one); a `none`
-(an unknown sort) is handled as before (U5/U5b). **Known gap**: `propSort?` sees only
-propositions whose head shows it (`True`, an equation, a Π/Σ annotated `0`), not a neutral one
-(`P q.1` for a variable `P : A → Prop`): there the equation is still formed at the proposition,
-and the kernel rejects it (pinned in the 'observational equality' group). Mandatory sorts
-(every Π/Σ carries its components' sorts) closes it.
+tests are stable under substitution (a proposition stays one; `i ≡ 0` holds at every
+instance). **Neutral propositions** (closed by mandatory sorts): the Σ rule reads whether a
+component is a proposition off the Σ's component sorts `⟨i, j⟩`, not off the component's head
+(`propSort?`), so it also sees a neutral proposition (`P q.1` for a variable `P : A → Prop`,
+or a variable `P : Prop`): `(x : A) × P x` gives `True` as its second component's equation,
+and `(0 k : P) × B` gives `True` and `ê = reflTy`. (Before, the equation was formed at the
+proposition and the kernel rejected it; that was pinned in the 'observational equality' group
+and in the property harness as NU-TRANSP-NEUTRAL.)
 
 Equality of payloads by the description (`vEqPayload`), so that `succ m = succ n` is
 `m = n` and not, through the Σ rule, an equation with a cast along the tags'
@@ -651,20 +674,23 @@ succ^k zero` computes to `True`, as the numerals `k = k` do, and `0 = .zero` (a 
 against a constructor, seen through `vNatView`) gives the same `True`.
 
 Equality at `ν` stays stuck (no bisimulation): a design decision (4d, [stages/04-data.md](stages/04-data.md)). All
-binders generated by these rules have quantity 0, and the generated Π/Σ carry the sort
-annotation `0` (`some 0`), which is correct because each is built from propositions.
+binders generated by these rules have quantity 0, and the generated Π/Σ carry their
+component sorts: `⟨0, 0⟩` for a Σ of two propositions, `⟨i, 0⟩` for the funext Π over the
+domain `A₁ : Sort i` (read off the Π at hand, which is why the components must be written).
 
 ### 8.3 Computation of `A ≡ B` (type equality)
 
 `vEqType`, `Eval.lean:563–597`. First the **proposition test** [wiz]:
 
 ```
-propSort?(T) (Eval.lean:98–103) =
-  Π/Σ with annotation σ:  true if σ ≡ 0, false if isNeverZero σ, else unknown
-  Unit_l, Empty_l, ULift.{l} A:   true if l ≡ 0, false if isNeverZero l, else unknown
+propSort?(T) (Eval.lean `propSort?`, by the sorts written in T) =
+  Π^⟨i,j⟩:   true if j ≡ 0, false if j is never 0, else unknown
+  Σ^⟨i,j⟩:   true if i ≡ j ≡ 0, false if i or j is never 0, else unknown
+  Unit_l, Empty_l, ULift.{k,l} A:   true if l ≡ 0, false if isNeverZero l, else unknown
   Sort, Qty, Enum, Desc, μ, ν, Size, Size<:   false
   a stuck eq / eqTy (empty spine):   true
-  anything else (neutral, Π/Σ with no annotation):   unknown
+  anything else (a neutral):   unknown
+"unknown" now means only: depends on a level parameter (or the type is a neutral).
 ```
 
 Then:
@@ -696,12 +722,17 @@ both false, by shape:
 * The Π/Σ decomposition and "different formers ⇒ False" are TTobs's [std: PT22]. The
   Π case puts the domain equation backwards (`A' ≡ A`), as in CCobs ([PT23] Fig. 4, rule
   Eq-Π). TTobs has it forwards and casts along the inverse ([PT22] Fig. 4).
-* **Propositions compared by equivalence, and the sort annotation** are [wiz]. They exist
+* **Propositions compared by equivalence, and the component sorts** are [wiz]. They exist
   because comparing propositions by shape proved `False` (Status.md, issue F1). A Π or Σ
-  can't tell by its parts alone whether it is a proposition, so it carries its sort `σ`,
-  which the kernel checks when the type is formed (rule *pi*, *sigma*). A Π/Σ **without**
-  an annotation makes type equality *stuck*. That is sound (stuck terms prove nothing) but
-  incomplete (Status.md, "stuck but sound").
+  can't tell by its parts alone whether it is a proposition (a neutral part carries no
+  type), so it carries its components' sorts `σ`, which the kernel checks when the type is
+  formed (rules *pi*, *sigma*). They are mandatory: before, a Π/Σ without an annotation made
+  type equality *stuck* (U5), so two convertible types could compute differently.
+* **The Π/Σ decomposition is Cross** (decision Q5, the user's): it decomposes whatever the
+  component sorts are, so the reduct can relate components in different sorts (`A' ≡ A` with
+  `A : Sort i`, `A' : Sort i'`, `i ≢ i'`); such an equation then computes to `False` or stays
+  stuck, as below. The Levelled variant (decompose only if `i ≡ i'` and `j ≡ j'`) is not
+  implemented.
 * **Quantities are part of a type's identity**: `(1 x : A) → B ≡ (ω x : A) → B` is
   `False` [wiz]. Conversion agrees (§11.3), except at propositions.
 * `Size ≡ Size`, `Size< s ≡ Size< t`, `Qty ≡ Qty` are **stuck** in the Lean kernel
@@ -719,14 +750,26 @@ both false, by shape:
 
 ```
 propSort? A = propSort? B = true   ⟶  stuck (the cast is itself a proof, §8.6)                             [std: PT23, PLT25]
-Π/Π, quantities equal              ⟶  λx. cast (B₁ x̂) (B₂ x) (e.2 x) (t x̂),  x̂ = cast A₂ A₁ e.1 x  619–624 [std: PT22]
+Π/Π, quantities equal, both not propositions, σ₁ ≡ σ₂
+                                   ⟶  λx. cast (B₁ x̂) (B₂ x) (e.2 x) (t x̂),  x̂ = cast A₂ A₁ e.1 x  619–624 [std: PT22]
 Π/Π or Σ/Σ, quantities not known equal ⟶  stuck
-Σ/Σ, quantities equal              ⟶  (c₁, cast (B₁ t.1) (B₂ c₁) (e.2 t.1) t.2),  c₁ = cast A₁ A₂ e.1 t.1   625–629 [std: PT22]
+Π/Π or Σ/Σ, a sort not known (U5b)  ⟶  stuck: `propSort?` of either side is unknown (a level with
+                                       parameters that may be 0), so the equation `e` proves is stuck
+                                       (§8.3) and is no pair to project
+Π^⟨i₁,j₁⟩/Π^⟨i₂,j₂⟩, Σ/Σ, unless i₁ ≡ i₂ and j₁ ≡ j₂ (D2)  ⟶  stuck: the reducts cast between the
+                                       components, and `cast` is formed only within one sort. With
+                                       the sorts written this is decided by the terms, and it is stable
+                                       under level substitution (`≡` holds at every instance). (Closed
+                                       by mandatory sorts; before, these rules computed across sorts and
+                                       the normal form of an accepted term could be rejected; test "D2 …")
+Σ/Σ, quantities equal, both not propositions, σ₁ ≡ σ₂
+                                   ⟶  (c₁, cast (B₁ t.1) (B₂ c₁) (e.2 t.1) t.2),  c₁ = cast A₁ A₂ e.1 t.1   625–629 [std: PT22]
 Sort u/Sort w, Empty_u/Empty_w     ⟶  t if u ≡ w, else stuck                                         630
 Unit_u/Unit_w                      ⟶  tt if u ≡ w, else stuck                                        631
 Enum/Enum, same number of tags     ⟶  t                                                             632
-ULift.{u}/ULift.{u}, u never 0     ⟶  up (cast A B e (down t))                                        [Q4, §4.1]
-groundEqTy A B (equal, inert, ground) ⟶  t                     (regularity at inert types)   CONJECTURE (argued) [wiz, D1, P1]
+ULift.{k,u}/ULift.{k',u}, u never 0, k ≡ k' ⟶  up (cast A B e (down t))                          [Q4, §4.1, D2]
+groundEqTy A B (equal, inert, ground) ⟶  t        (regularity at inert types: the evaluator's fast path
+                                                    for InReg_conv, below)        CONJECTURE (argued) [wiz, D1, P1]
 Desc_l I / Desc_l I'               ⟶  by the description (below)                                  [wiz, D1]
 μ^s I D i / μ^s I' D' i', t = con x ⟶ con (cast (⟦D⟧ μ^s' i) (⟦D'⟧ μ^s' i') ê x)               [std: PT22, D1, 4g]
 (a numeral at its own type: the inert-regularity line above, since the numeral type is ground)
@@ -795,7 +838,7 @@ made both kernels loop (Status.md, D1). Regularity is now off in both kernels
   is stuck, as in TTobs.
 * **Regularity at inert types (CONJECTURE).** `inertTy` (`Eval.lean`; `inertTy` in
   `Kernel.wiz`) is a syntactic, conservative test: `Enum`, `Unit_l` with `l` never 0,
-  `Σ` with a never-zero sort annotation of inert types, and `μ` types whose index type
+  `Σ` whose sort (`max i j`, written) is never zero, of inert types, and `μ` types whose index type
   is inert and whose description, walked with its tags (and with a fresh variable for a
   non-enum field), has only `ret`, `rec` and `arg` at inert types (no `hrec`, no `Prop`
   field, no function, no neutral type, so no variable parameter: `List A` is not inert,
@@ -815,8 +858,8 @@ made both kernels loop (Status.md, D1). Regularity is now off in both kernels
   hold neither. Conversion stays decidable as before: the new rules are evaluation rules
   that terminate (the inertness walk is bounded by the nesting depth 8 and by the finite
   enumerations; the payload cast follows the finite constructor value), and conversion
-  is unchanged (proof irrelevance, η, structural comparison; `unCast` applies only under
-  `--regularity full|nonprop|refl`). It is a conjecture for Wiz. A published system has
+  only removes a stuck cast whose two types it finds convertible (`unCast`, InReg_conv
+  below). It is a conjecture for Wiz. A published system has
   the rule at *every* type, with a proof that conversion stays decidable, but for an
   algorithm that never reduces proofs and for a fragment without general inductive types
   (CICobs [PLT25]; see "Related work" below).
@@ -890,12 +933,46 @@ made both kernels loop (Status.md, D1). Regularity is now off in both kernels
     argument proofs, §8.6).
 * **Cost.** Casting a constructor of a non-inert type walks the whole value (each field
   is cast). At inert types the cast is the identity.
-* **The side condition is ground equality** (P1, `groundEqTy` in both kernels;
-  `/workspace/wiz-notes/p1-stable.md`). A side condition must give the same answer for
-  convertible inputs (S1), and an answer of "fires" must survive substitution (S2).
-  Otherwise one side of a conversion reduces and the other is stuck, and a δβ-reduct of
-  a well-typed term can be rejected. Syntactic equality fails S1 (proof arguments inside
-  an index, `Fin (f p)` against `Fin (f q)`; a glued name against its unfolding).
+* **The rule is InReg_conv** (decision P1; `/workspace/wiz-notes/conv-regularity.md`,
+  `p1-stable.md`, `plt-vs-inert.md`):
+
+  ```
+  A inert     Γ ⊢ A ≡ B     Γ ⊢ e : A ≡ B     Γ ⊢ t : A
+  ───────────────────────────────────────────────────────  InReg_conv
+  Γ ⊢ cast A B e t ≡ t : B
+  ```
+
+  It is [PLT25]'s Cast-Refl restricted to inert `A`, and like theirs it is a rule of
+  **conversion**, not a reduction: the evaluator never calls conversion.
+  * *In the conversion checker* (`unCast` in `Conv.lean`, applied in `conv` and in
+    `convTy`; `stripCast` in `Kernel.wiz`, applied where neutrals are compared, with a
+    typed re-entry). A neutral `cast A B e t · sp` (any eliminations `sp`) with `A` or
+    `B` inert and `A ≡ B` by `convTy` is replaced by `t · sp`, on either side, before
+    the comparison goes on. A cast on a canonical value takes a structural rule of
+    `vCast` instead; where that rule is stuck (a size variable) the cast is removed here
+    like any other.
+  * *"`A` or `B` inert"*: `inertTy` reads a `Σ`'s component sorts. They are mandatory, and
+    conversion compares them (§11.3), so two convertible types are both inert or both not.
+    (While sorts were optional, of two convertible types one could be inert and the other
+    not, and conversion was not transitive at such types: `cast A A' e t ≡ t` could fail for
+    two unannotated types where both held through an annotated third. Mandatory sorts
+    closed this.)
+  * *Termination.* The side condition compares two components of the neutral, as the
+    congruence rule for two casts already does; each step removes one cast; and
+    `inertTy` is a bounded walk that instantiates binders with reserved atoms (never
+    with variables a context could give a type to). The evaluation of `t · sp` for a
+    canonical `t` is the evaluation of a term that is well typed by the rule itself.
+  * *Strategy.* Strip whenever the rule applies, else congruence; no backtracking
+    ([PLT25] backtracks between congruence and the two refl rules). Argued complete
+    relative to a transitive `convTy`, not proved.
+  * `--inert ground` (`kernelInertConv := .false`) turns the conversion rule off and
+    leaves the fast path alone.
+* **The evaluator's fast path is ground equality** (`groundEqTy` in both kernels). A
+  rule of evaluation with a side condition must give the same answer for convertible
+  inputs (S1), and an answer of "fires" must survive substitution (S2). Otherwise one
+  side of a conversion reduces and the other is stuck. Syntactic equality fails S1
+  (proof arguments inside an index, `Fin (f p)` against `Fin (f q)`; a glued name
+  against its unfolding), and it is gone from both kernels.
   `groundEqTy A B` holds for two inert types that are equal and have no free variable in
   a relevant position:
   * types and descriptions are compared part by part (an `arg` at a non-tag field is
@@ -906,15 +983,17 @@ made both kernels loop (Status.md, D1). Regularity is now off in both kernels
     collide with a variable of the context).
   At an inert type, convertible values have the same canonical skeleton and neutrals in
   the same places, so S1 holds. A ground type has nothing to substitute, so S2 holds.
-  What is lost: regularity at inert types whose indices are open (`cast (Fin n) (Fin n) e
-  k` for variables `n`, `k` is stuck). Casts of constructors still compute structurally.
-  `--inert conv` (experimental, Lean kernel) also identifies `cast A B e t` with `t` in
-  conversion when `A` is inert and `A ≡ B` (InReg_conv, decided by `convTy`, so it is a
-  congruence). `--inert syntactic` restores the old rule for comparison.
-* **Syntactic equality** (`sameVal`, both kernels; now used only by the D1 experiment's
-  `--regularity` modes) quotes at `max (lvlBound A)
-  (lvlBound B)`, a level above every variable either value mentions, so different
-  variables never quote alike (before `b7e1736` it was a fixed 100000: Status.md, Q3).
+  Whenever it fires, `A ≡ B`, so InReg_conv gives the same equation: it decides a
+  fragment of the rule without conversion. What it alone leaves stuck (a neutral value
+  at an inert type with an open index: `cast (Fin n) (Fin n) e k` for variables `n`,
+  `k`) the conversion checker removes.
+* **`--regularity full`** (an experiment; `kernelRegularity := .true`) is the same rule
+  at *every* type, [PLT25]'s Cast-Refl, also in conversion only. The modes `nonprop`
+  and `refl`, which fired in the evaluator by syntactic equality (and, for `refl`, by
+  inspecting a proof), are gone.
+* **Not widened.** [PLT25]'s decidability proof covers Π, ℕ, ⊥, the impredicative `Prop`
+  and ∃. What regularity at `Desc l I`, or at all types, would need is in
+  `conv-regularity.md` §8.
 
 ### 8.4a Propositional regularity: the `castRefl` axiom
 
@@ -1010,10 +1089,8 @@ what a component computes to. In particular:
   `Enum` is the identity. Applying the Π to a tag computes that constructor's equation.
   (Expanding the Π into a product over the tags would depend on the field type being a
   literal `Enum`, which a substitution can create.)
-* What stays syntactic is unchanged and outside these rules: regularity at inert types
-  (`inertTy A && sameVal A B`, §8.4, a conjecture; the theory notes analyse it), and the
-  numeral shortcut (`cast` of a literal between syntactically equal types is the literal,
-  which the structural rule computes too, up to the index proofs).
+* Nothing in these rules, or in regularity at inert types (§8.4: ground equality in the
+  evaluator, conversion in the checker), is decided by syntactic equality any more.
 
 **What it gives.** For `inductive L (A : Type) | nil | cons (x : A) (xs : L A)`
 (`I = Unit`, `D = arg ω (Enum [nil, cons]) E`), `e : L A ≡ L B` has
@@ -1173,8 +1250,9 @@ let q (x, y) := p as z. M; u,  p a proof   ⟶  u[p.1/x, p.2/y]        (η for �
 conv at a proposition       true, before either side is unfolded
 ```
 
-* **A suspended proof** is a neutral head (`Head.prf`, `hprf`) holding the term, its
-  environment and its type. Projections and applications of it grow its spine. The
+* **A suspended proof** is a neutral head (`Head.prf`, `hprf`) holding the term and its
+  environment. It has no type of its own (§8.6a). Projections and applications of it grow
+  its spine. The
   rules of §8.4 only project the equation (`e.1`, `e.2 x`) and pass the parts on, so no
   rule needs a proof's value.
 * **Why no rule needs it.** Every elimination of a proof yields a proof: Σ is
@@ -1182,16 +1260,18 @@ conv at a proposition       true, before either side is unfolded
   applied to anything is a proof; there are no inductive propositions; `absurd` is
   stuck; `eq` is rejected at propositions. `split` with a relevant motive is the one
   exception, and η for Σ covers it.
-* **Reading back.** The kernel's syntactic comparison of types (`sameVal`: behind
-  `sameFamily?`, the `--regularity` modes and `--inert syntactic`) reads every suspended
-  proof as `()`: it neither evaluates nor compares proofs (`quoteErasesProofs`;
-  `quoteM .false` in `Kernel.wiz`). Regularity at inert types, by default, does not read
-  values back at all (`groundEqTy`, §8.4), and it skips propositions.
+* **Reading back.** The kernel's own read-back (`quoteErasesProofs`; `quoteM .false` in
+  `Kernel.wiz`) reads every proof head as `()`: it neither evaluates nor compares proofs.
+  It is used by the kernel's messages and, in the Lean kernel, by the shortcut that
+  compares two folded inductions on numerals (which falls back to conversion). Regularity
+  does not read values back at all (`groundEqTy` and `convTy`, §8.4).
   Reading a value back into a term *outside* the kernel (the elaborator's `quote`,
-  messages, `#reduce`) evaluates the suspended proof, so that the term is a normal form.
-  It has to: a proof read back by substitution alone can be `(p, q).1`, and the
-  bidirectional checker cannot infer a type for that when the elaborated term is checked
-  again. So the elaborator may still run a proof. The kernel does not.
+  `#reduce`, hover, the elaborator's messages) evaluates the suspended proof, so that the
+  term is a normal form, and writes it back marked. It has to evaluate: a proof read back
+  by substitution alone can be `(p, q).1`, and the bidirectional checker cannot infer a
+  type for that when the elaborated term is checked again. So the elaborator may still
+  run a proof, within a **step budget** (below). The kernel does not, in its error
+  messages either: they read a suspended proof back as `()`.
   - *Erasure stops at `absurd`.* `absurd M p : M` for any `M`, so what is done to a
     proof after an `absurd` need not be a proof. The erased reading keeps the
     eliminations from the last `absurd` on, applied to `()`: two different values of a
@@ -1199,24 +1279,26 @@ conv at a proposition       true, before either side is unfolded
     a checked term (it only sits in the proof positions of `cast` and `transp`); the
     rule is there so that this does not have to be argued (test "P2: comparing types
     erases suspended proofs, but not what follows an absurd").
-* **Consequence: what can still loop.** The reading that evaluates proofs is outside the
-  path by which the kernel accepts a term, but it is used. An error message, `#reduce`,
-  hover information, or the elaborator reading a value back can evaluate a proof, and on
-  a proof without a normal form (Abel–Coquand's, under `--regularity full`) that does
-  not terminate. So the guarantee is about *acceptance by the kernel*, not about every
-  run of `wiz check`.
-* **P2 is reduced, not closed.** Together with the next point: the kernel no longer runs
-  the proofs in `cast` and `transp`, which is where D1's loop ran. It still runs proofs
-  in two kinds of position.
-* **What is not covered [gap].** Only the positions the syntax marks as proofs are
-  suspended. A proof bound by `let`, or passed as an ordinary argument, is still
-  evaluated strictly, because `eval` does not know the type of what it evaluates. A
-  definition is glued (§12), so a proof that is a global name is not unfolded. The gap
-  is real: with regularity switched on, the let-encoded Abel–Coquand term still makes
-  `Kernel.wiz` loop (Status.md, D1). Closing it needs the elaborator to mark such
-  positions, or an evaluator that knows types.
-* **`--regularity refl`** (a D1 experiment) is the one rule that inspects a proof (is it
-  visibly `refl`?). It forces the suspension.
+* **The step budget** (`Budget` in `Term.lean`; `--proof-steps N`, default 1 000 000).
+  A proof need not have a normal form (Abel–Coquand's, under `--regularity full`). So
+  each read-back of a suspended proof outside the kernel runs within a budget of
+  *steps*, counted and not timed: the same on every machine and in every run, so a file
+  that checks once always checks.
+  - A step is one instantiation of a closure: a β-step, or going under a binder to read
+    it back. Every loop of the evaluator takes one.
+  - When the budget runs out the evaluator stops computing, and the proof reads back as
+    a constant whose name is the message ("a proof was not read back: it needs more than
+    N evaluation steps …"). No declaration has that name, so a term that contains it is
+    rejected by the kernel with that message; in `#reduce`, hover and messages it is
+    what is printed.
+  - The kernel's own evaluation has no budget and needs none: it never evaluates a proof.
+  - Not covered: the elaborator's own evaluation of a term it has not marked yet (a
+    `let`-bound proof while its body is elaborated). A proof without a normal form there
+    still makes elaboration loop. Nothing is accepted by a loop.
+* **The other positions: the proof marker** (`wiz-notes/prf-marker.md`). Only `cast`'s
+  equation and `transp`'s proofs are marked by the syntax. A proof bound by `let`, passed
+  as an argument, or stored in a pair or a constructor would be evaluated, because `eval`
+  has no types. The marker closes that, and the kernel checks it: see §8.6a.
 * **What the literature proves, and for what.** [PLT25] Theorem 5.6 is decidability of
   conversion for a system whose algorithm never reduces proofs, with full regularity
   (Cast-Refl) decided when two neutrals are compared. It is mechanised for a fragment:
@@ -1224,6 +1306,104 @@ conv at a proposition       true, before either side is unfolded
   `cast`, with two universe levels and no general inductive types. Wiz's descriptions,
   `μ`/`ν`, sizes, quantities, `ULift` and its computing equality type are outside that
   theorem (§8.4, "Related work"; `/workspace/wiz-notes/plt-vs-inert.md`).
+
+### 8.6a The proof marker
+
+`Term.prf` / `Tm.prf`; "the proof marker" in `Check.lean` and `Kernel.wiz`;
+`wiz-notes/prf-marker.md`.
+
+```
+eval (prf.{l} t)   =  neutral (prf ⟨env, t⟩)     if l is 0          (never looks at t)
+eval (prf.{l} t)   =  eval t                      otherwise
+
+Γ ⊢ T : Sort s    s ≡ l    Γ ⊢ t ⇐ T  (as a proof if l is 0; else t itself is exempt)
+──────────────────────────────────────────────────────────────────────────────────────  Prf
+Γ ⊢ prf.{l} t ⇐ T                                      (and the same for ⇒)
+```
+
+* **The level.** `l` is the sort of the type. "`l` is 0" is `Level.isZero` (`lvlIsZero`):
+  a closed level is computed, and a level with parameters is `0` only if `Level.equiv`
+  says so. Instantiating a constant's level parameters instantiates `l`, so a
+  level-generic term, marked at `Sort u`, is a suspended proof at the instance `u := 0`
+  and an ordinary term elsewhere. While the declaration itself is checked, `u` is a
+  parameter and the term is evaluated: that is the generic computation.
+* **Verified.** A marker at the wrong level is rejected. A marker at level `0` on a term
+  of a data type would be unsound (a neutral where a constructor is expected, and any two
+  suspended proofs are convertible), so the kernel does not trust the elaborator's
+  marking. The test is the computation of the type's sort (`typeSort?`, `sortOf`), the one
+  proof irrelevance in conversion relies on; if the sort cannot be computed the term is
+  rejected.
+* **Required.** The checker has two modes. *Proof mode*: under a marker at level `0`, and
+  in `cast`'s equation and `transp`'s proofs. *Relevant mode*: everywhere else, including
+  a declaration's body. In relevant mode a term whose type is in a sort that may be `0`
+  (`Sort l` with `l` not never-zero: `Prop`, or `Sort u` for a level parameter `u`) must be
+
+  ```
+  marked:          prf.{l} t
+  neutral-shaped:  x | c | () | n a | n.1 | n.2 | down n | (n : T)      (n any term accepted here)
+  a stuck proof:   refl A a | reflTy X | transp A a P p b e
+  ```
+
+  Anything else there (a `fun`, a pair, a `let`, a cast, `absurd`, a case analysis or an
+  induction with such a motive, `up`) is the kernel error "unmarked proof". The stuck
+  proofs need no marker because `eval` makes each a stuck head: it evaluates their
+  relevant parts (`A`, `a`, `X`, `b`, and the motive `P`, which is a family of
+  propositions and so a relevant term) and suspends `transp`'s `p` and `e`. The body of a marked `fun` is exempt: `Sort (imax a l)` is `0` exactly when
+  `Sort l` is, so where the body's sort is `0` the whole `fun` is suspended.
+* **Inside a proof** (audit-2's I-1). Two rules make proof mode keep the same promise:
+  - *the mode of a subterm is decided by its type*: a subterm of a proof whose type is not
+    a proposition (the argument of a type, an index) is a relevant term again, since the
+    checker may evaluate it, so the proofs in it must be marked. For a term whose type is
+    only known afterwards: the argument of an application is checked in relevant mode
+    when the function's type is not a proposition; the value of a `let`-bound proof after
+    the body, in relevant mode when the body's type is not a proposition; `absurd`'s
+    argument by the motive's sort; `split`'s scrutinee likewise. A type is always
+    checked in relevant mode;
+  - *bind by type*: where the checker needs a term's value to bind a variable or to
+    instantiate a type (`let`, a dependent argument, a pair's first part, `split`'s
+    scrutinee, `.2`, `transp`'s endpoints), inside a proof a proof is suspended, not
+    evaluated.
+
+  So the checker never evaluates a term that was checked in proof mode. (Before this, a
+  `let` inside a marked proof evaluated its value to bind it: a Church tower of twos in
+  `Prop`, 2^65536 steps at height 4, hung the checker. It now checks at once, with no
+  step budget involved: the kernel has none.)
+* **The invariant.** Call a value *proof-safe* if it is a neutral, `()`, or a glued
+  constant that unfolds to one. Every value the kernel's evaluator builds at a
+  proposition is proof-safe: a variable of proposition type is only ever bound (by a
+  `let`, a β-step, a field of a pair or constructor, a fresh variable) to the value of a
+  term that was checked in relevant mode, or put there by one of the kernel's templates;
+  and applying or projecting a proof-safe value grows a spine. So **the kernel never
+  performs a β, projection or ι step inside a proof**, and a term that would make it do
+  so is rejected. `Globals.strictProofs` (off) asks for the marker on neutral-shaped
+  proofs too.
+* **Who writes the marker.** The elaborator's marking pass (`Wiz/Elab/Mark.lean`; in
+  `Kernel.wiz`, outside the kernel proper, `markCheck`/`markInfer`), a typed traversal.
+  It is untrusted: a missing or wrong marker is a kernel error. It costs about as much as
+  the kernel's check, so it runs **on demand**: a declaration goes to the kernel as it
+  is, and is marked and checked again only if the kernel answers "unmarked proof" (a
+  theorem is marked at once). What is stored, and cached, is the term the kernel
+  accepted. `quote` outside the kernel writes proofs back marked.
+* **Conversion.** At a proposition, conversion answers before it looks (§8.5). A proof
+  can sit inside a neutral that is compared at a relevant type only under `absurd`:
+
+  ```
+  a = h · sp · absurd M · sp₂     b = h' · sp' · absurd M' · sp₂'     (the same number of eliminations after the absurd)
+  h · sp and h' · sp' are proofs of False     M ≡ M'     sp₂ ≡ sp₂' (typed by M)
+  ───────────────────────────────────────────────────────────────────────────────
+  a ≡ b
+  ```
+
+  The proofs and their heads are not compared (a suspended proof on one side, a
+  hypothesis on the other). "A proof of `False`": it starts at a proof head and has
+  passed through no `absurd`, or its type is computed to be `Empty_0`. So a suspended
+  proof needs no type: what follows an `absurd` is typed by the motive.
+* **Erasure** is unchanged (by type). A marker at level `0` is erased; one at another
+  level is transparent.
+* **Mandatory sorts** (`wiz-notes/mandatory-sorts.md`): every `Π`/`Σ`, the kernel's own
+  templates' included, carries its components' sorts, so "may be `0`" for a canonical type
+  is decided by its head and the sorts written in it (U5 closed). Relevance marks on
+  binders are a later step (`wiz-notes/prf-marker.md` §8).
 
 ---
 
@@ -1336,8 +1516,8 @@ All (hrec …) P i xs      = ((h : H) → P (j h) (xs.1 h)) × All D P i xs.2
 
 Indices are handled by an **equation** `j = i` in the payload (the "Henry Ford"
 encoding), so `μ` needs no index unification. The templates are **trusted**: the kernel
-never type-checks them, and their Σ types carry hand-written sort annotations
-(`Templates.lean:44–75`). An error there would be a kernel bug (Status.md, kernel trust).
+never type-checks them, and their Π/Σ types carry hand-written component sorts
+(`Templates.lean`), from the levels at hand (`l`, `v`). An error there would be a kernel bug (Status.md, kernel trust).
 
 ### 9.3 μ, con, ind
 
@@ -1553,9 +1733,9 @@ directly:
 
 ```
 1. proof irrelevance    if typeSort?(A) ≡ 0:   a ≡ b                                   263   [std: PT22]
-2. regularity           (only under --regularity full|nonprop|refl; off by default)       264–265, 307–310  [wiz]
-                        replace a stuck cast A' B' e t (empty spine) with A' ≡ B' by t,
-                        on both sides, before comparing
+2. regularity           InReg_conv (§8.4): replace a stuck cast A' B' e t · sp with A' ≡ B' and
+                        A' or B' inert (any types under --regularity full) by t · sp, on
+                        both sides, before comparing; also in convTy            [std: PLT25, restricted]
 3. by the type:
    Π   η:  a x ≡ b x  at B x, for a fresh x : A                                         267–269  [std]
    Σ   η:  a.1 ≡ b.1 : A  and  a.2 ≡ b.2 : B a.1                                        270–272  [std]
@@ -1571,9 +1751,8 @@ directly:
    otherwise: neutral comparison (convNe)                                                305
 ```
 
-`typeSort?` (`Conv.lean:213–229`) computes a type's universe from its value (Π: `imax`
-of the parts; neutral: from `inferNe`), independently of the sort annotations. So proof
-irrelevance does not depend on the annotations.
+`typeSort?` (`Conv.lean`) computes a type's universe from its value (Π/Σ: from the
+component sorts written in it, which the kernel checked; neutral: from `inferNe`).
 
 At `ν`, two coinductive values are equal only if they are built the same way. This is
 sound (it equates less than bisimilarity) and incomplete.
@@ -1592,11 +1771,15 @@ Enum ls ≡ Enum ls'               |ls| = |ls'|
 Desc l I ≡ Desc l' I'            l ≡ l', I ≡ I'
 μ/μ, ν/ν                         l ≡ l', sizeEq, I ≡ I', D ≡ D' : Desc, i ≡ i' : I
 Unit_u ≡ Unit_u', Empty_u ≡ Empty_u'   u ≡ u'
-ULift.{u} A ≡ ULift.{u'} A'      u ≡ u', A ≡ A'
+ULift.{k,u} A ≡ ULift.{k',u'} A'   u ≡ u', k ≡ k', A ≡ A'
 two neutrals                     convNe
 ```
 
-The sort annotations are ignored by conversion.
+**The component sorts are compared** (Π/Σ: `σ ≡ σ'` componentwise, decision Q6; `subTy` too).
+On well-typed types this is redundant (convertible components have equivalent sorts, and
+there is no cumulativity), but it makes "convertible types get the same `propSort?`, hence
+the same `vEqType`/`vCast`/`inertTy` decision" hold by construction, without relying on
+`Level.equiv` being complete.
 
 ### 11.4 convNe
 
@@ -1630,8 +1813,9 @@ observational equality (`μ^s ≡ μ^t` as types is stuck, §8.3).
 
 `eval` (`Eval.lean:128`) is call-by-value on an environment, with closures for binders.
 Lazy places: glued globals, `ind` on numerals and equations (thunks); `coit`/`scofix` values (until
-`out`); `ecase` branches (evaluated only when the tag is known); and the proof positions
-of `cast` and `transp`, which are never evaluated (§8.6). Ill-typed situations
+`out`); `ecase` branches (evaluated only when the tag is known); and proofs, which are
+never evaluated: the proof positions of `cast` and `transp`, and marked proofs (§8.6,
+§8.6a). Ill-typed situations
 (applying a non-function) `panic!` and are meant to be unreachable on checked terms. All
 functions are `partial` in Lean: **termination of evaluation and of type checking is not
 proved**, and the D1 experiment shows checking can loop (Status.md).
@@ -1677,7 +1861,7 @@ proved**, and the D1 experiment shows checking can loop (Status.md).
   type**, with the definition itself already declared (a recursive one calls it):
   `checkImpl`, from `addDecl` and `setImpl`, as `addPartialImpl` does for a partial
   definition. So an implementation is well typed at `T`, its quantities are respected,
-  and the sorts noted on its `Π`s and `Σ`s are right (`checkSortNote`): erasure reads all
+  and the sorts written on its `Π`s and `Σ`s are right (`checkComponentSort`): erasure reads all
   three. A declaration whose implementation does not check is rejected. For a
   structurally recursive definition the kernel also checks that the implementation
   **computes what the value computes** (`checkImplAgrees`): both are stuck on the same
@@ -1748,15 +1932,17 @@ Each item says what the code does; the code is what the kernel checks.
 | `split` (`let (x, y)`) | yes | **no**. Projections need an unrestricted pair in both kernels (§7.1, R1), so a pair held at quantity 1 cannot be consumed in Kernel.wiz's fragment, nor at all in the self-hosted language (no `let (x, y)`; its `IO` and `Prod` are at ω): every term that projects one is rejected by both kernels, and terms with `split` are outside the fragment (the differential test's term type `MTm` has no `split`) |
 | numerals, `natOp` | yes | no |
 | levels of data | `Level` | closed numerals (`descr l`, `mu l`, `ulift l`) |
-| `ULift` (Q4) | `ulift`/`up`/`down`, `cast` needs a level never `0` | `ulift`/`up`/`down` at closed levels (`vulift`, `vup`, `sdown`); the same rules |
+| `ULift` (Q4) | `ulift k l`/`up`/`down`, `cast` needs a level never `0` and `k ≡ k'` | `ulift k l`/`up`/`down` at closed levels (`vulift`, `vup`, `sdown`); the same rules |
+| component sorts (mandatory sorts) | `BinderSorts ⟨dom, cod⟩` on `pi`/`sigma`, `Level`s; a hole is `Level.hole` | `pi q i j`, `sigma q i j` (`Lvl`; `piq`, `sigmaq`, `sorted` are gone); a hole is `Lvl.lhole`. The templates write closed numerals. The frontend fills holes with the sorts pass (`sortsTy`, `sortsClosed`: the marking pass at `TCtx.pm` 4/5, no markers) |
 | globals | table, by name; `addDecl` rejects a second declaration of a name | inline `const` terms carrying value and type (trusted). **`convHead`, `tmEq` and `headSame` compare two constants by name alone**, so the kernel *relies* on every name having one value, and it has no table to check that with. The frontend checks it, in one place: `stepCommand` refuses a command that adds a name already in scope, or twice (`newDuplicate`, `Frontend.wiz`; a partial definition's signature followed by its body is the one exception). Before that check (audit 2, Y4), `def T := Nat; def a : Box T := …; def T := Empty; def c : Box T := a` was accepted, a closed term of an empty type: the two `T`s are both still folded under `Box`. Anything else that builds `const` terms for `Kernel.wiz` (the differential test) must keep names unique too |
 | a variable out of scope (raw core terms) | a checking error (`infer`, `.var`); `eval` gives a stuck unknown | the same (`infer`; `lookup` past the end). Before audit 2 both went on with `Sort 0` as the variable's type *and* value (a panic's default value in Lean, `lookup`'s default in Wiz): a term `Prop : Prop`, with which Hurkens' paradox checks. No frontend produces such a term |
 | **`Size ≡ Size`, `Size< s ≡ Size< t`** | **stuck** (`Eval.lean:572`) | **`False`**: `canonical` includes `vsize`/`vsizeLt` (`Kernel.wiz:552–565`) and `vEqTypeW` has no case for two sizes, so it falls through to "different formers ⇒ False" (`Kernel.wiz:961–963`). **Unsound** (Status.md, O1). |
-| regularity in conversion (`unCast`) | off by default (`Conv.lean:264`, only under `--regularity`) | no: stuck casts are compared structurally |
-| regularity in evaluation | off; at inert types only, decided by `groundEqTy` (P1) | the same (`kernelRegularity := .false`; `groundEqTy`) |
-| InReg in conversion (`--inert conv`, experimental) | `unCast` at an inert type with `convTy A B` | not implemented |
-| proofs (P2, §8.6) | never evaluated (`Globals.lazyProofs`, `--eager-proofs` for the old behaviour); `quote` forces a suspended proof unless `quoteErasesProofs` | the same (`kernelLazyProofs := .true`); `quote` forces, `quoteM .false` (in `sameVal`) erases |
-| two proof heads in `convNe` | any two of `refl`, `reflTy`, `transp`, `prf` are equal (`isProof`) | only two of the same kind (`convHead`): **stricter**, so it can reject where the Lean kernel accepts, never the reverse. Reached only under an `absurd` (elsewhere proof irrelevance answers first); pinned by the test "P2: comparing types erases suspended proofs …" |
+| regularity in conversion (InReg_conv, §8.4) | `unCast` in `conv` and `convTy`: a stuck cast at an inert type with `convTy A B`; `--inert ground` turns it off, `--regularity full` widens it to every type | `stripCast` in `convNeW`, with a typed re-entry at the neutral's type; `kernelInertConv`, `kernelRegularity` |
+| regularity in evaluation | only the fast path `groundEqTy` | the same |
+| proofs (P2, §8.6) | never evaluated (`Globals.lazyProofs`, `--eager-proofs` for the old behaviour); `quote` outside the kernel evaluates a suspended proof within a step budget, the kernel's (`quoteErasesProofs`) never | the same (`kernelLazyProofs := .true`); `quote` evaluates (no budget: it is the frontend's), `quoteM .false` (in `sameVal`, `showVal`) erases |
+| the proof marker (§8.6a) | `Term.prf`, required and verified; `Globals.strictProofs` for the strict form | `Tm.prf`, the same rules; no strict form |
+| a proof under `absurd` in conversion | not compared (§8.6a) | the same. (Before the marker: any two proof heads in the Lean kernel, only two of the same kind in `Kernel.wiz`.) |
+| two proof heads with no `absurd`, at a type not seen to be a proposition | equal (`isProof`) | equal only if of the same kind (`convHead`): stricter |
 | convTy at Π/Σ propositions | quantities may differ | quantities must be equal (`Kernel.wiz:1598`) |
 | proof irrelevance at Π/Σ | asked at the Π/Σ | asked at the codomain/components only (`Kernel.wiz:1537–1541`); equivalent |
 | `isProp` | `typeSort? ≡ 0` | Π: codomain is a proposition; Σ: both parts (`Kernel.wiz:1328`) |
@@ -1794,7 +1980,9 @@ by the test "the self-hosted frontend: quantities, the pinned differences (21m)"
   `scase`), copatterns (compiled to `coit`, `cocon`), coconstructors `T.mk`, the
   guardedness check;
 * macros, command macros and reflection, tactics, `deriving`, `do` notation;
-* writing sort annotations on Π/Σ (the kernel checks those that are present).
+* writing the component sorts on every Π/Σ and the content's sort on every `ULift`
+  (mandatory: eagerly where known, then one total pass, `Decl.withSorts` in `Mark.lean`, fills
+  every hole, inside proofs too; the kernel rejects a hole and checks every sort).
 
 **What the kernel re-checks.** Every `def`, `axiom`, constructor, recursor and generated
 declaration goes through `addDecl` (`Elab/Command.lean:700–705`), which type-checks it
@@ -1810,11 +1998,11 @@ is not caught by type checking):
 2. **Partial definitions**: no longer trusted: each has a witness the kernel checks.
 3. **`builtin` registrations** of the toolchain's `lib/`: numerals' type and native
    arithmetic (any other registration is an axiom, reported by `#print axioms`).
-4. **The templates** (`Templates.lean`): never type-checked; their sort annotations are
-   hand-written.
+4. **The templates** (`Templates.lean`): never type-checked; their component sorts are
+   hand-written (from `l`, `v`).
 5. **The method/motive types** the kernel builds itself (`delimMethodTys`,
    `indMethodTy`, `sfixFunTy`, … in `Conv.lean`), and the terms built inside `vEq`,
-   `vEqType`, `vCast` (their binders and `some 0` annotations).
+   `vEqType`, `vCast` (their binders and component sorts).
 6. **Code outside the kernel that runs on checked terms**: erasure and the backends.
    Erasure relies on QTT: a 0-quantity value is assumed unneeded. Every term erasure is
    given has been checked by the kernel, a definition's implementation for the compiler

@@ -1,8 +1,8 @@
 [
-  {"name": "selfhost", "split": 4, "select": [
+  {"name": "selfhost", "split": 4, "heavy": true, "select": [
     "=selfhost"
   ]},
-  {"name": "grail-selfhost", "select": [
+  {"name": "grail-selfhost", "heavy": true, "select": [
     "=grail-selfhost"
   ]},
   {"name": "backends", "select": [

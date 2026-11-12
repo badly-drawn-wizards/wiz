@@ -78,7 +78,7 @@ partial def isoKey (base : CommandState R) (m : Name) : Option UInt64 := do
   -- "isoKey: every setting of Globals is in the key" checks that none is left out)
   let settings := hash (base.termInfo, base.nextScope, g.eager, g.predicativeProp, toString (repr g.regularity),
     toString (repr g.inertReg), g.builtins, g.unboxStructs, g.lazyProofs, g.lazyEqs, g.strictPrivacy,
-    g.pushCalls)
+    g.pushCalls, g.strictProofs, g.proofSteps, g.traceProofSteps, g.sortHolesOk, g.pp.useNotation)
   let (k, _) ← go [] m {}
   pure (mixHash settings k)
 where

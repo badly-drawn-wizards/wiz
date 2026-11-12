@@ -1,0 +1,52 @@
+Wiz
+Copyright (C) 2026 Reuben Steenekamp
+
+Wiz is free software: you can redistribute it and/or modify it under the terms of the
+GNU General Public License as published by the Free Software Foundation, either
+version 3 of the License, or (at your option) any later version (LICENSE). Its runtime
+library carries the Wiz Runtime Library Exception (COPYING.RUNTIME), which lets you
+distribute programs compiled by Wiz under terms of your choice.
+
+Third-party software in this toolchain
+======================================
+
+The licence texts are in LICENSES/ (and, for the bundled C toolchain, in
+cc/LICENSES/).
+
+Linked into the binaries wiz, grail and tower (built with Lean 4):
+
+* The Lean 4 runtime and standard library (Init, Std, Lean): Apache License 2.0.
+  LICENSES/lean4-LICENSE.
+* mimalloc (Lean's allocator): MIT. LICENSES/mimalloc-LICENSE.
+* libuv 1.x (Lean's event loop), statically: MIT. LICENSES/libuv-LICENSE.
+* libc++ and libc++abi (LLVM), statically: Apache License 2.0 with LLVM Exceptions.
+  LICENSES/lean4-third-party (the licences of what Lean's binary releases bundle).
+* GNU MP (GMP) 6.3.0, statically: GNU LGPL v3 or later, or GNU GPL v2 or later.
+  LICENSES/lean4-third-party (the LGPL v3) and LICENSE (the GPL v3, which the LGPL
+  v3 adds to). Its source: https://gmplib.org/. Because wiz, grail and tower are
+  themselves under the GPL, with their complete source at
+  https://github.com/badly-drawn-wizards/wiz, you can relink them with a modified
+  GMP by rebuilding them.
+* glibc, dynamically (libc, libm, libpthread, libdl, librt): GNU LGPL v2.1 or later.
+
+The bundled C toolchain (cc/, when present; docs/stages/26-tower.md, 26f): clang,
+ld.lld and compiler-rt (Apache 2.0 with LLVM Exceptions; their libraries: libc++,
+libunwind, zlib, libgcc_s and libatomic under the GCC Runtime Library Exception),
+glibc 2.27 headers and link libraries (LGPL v2.1+), Linux UAPI headers (GPL v2 with
+the Linux syscall note), GMP 6.3.0 (LGPL v3+ / GPL v2+) and the Boehm GC 8.2.8
+(MIT-style). See cc/LICENSES/ and cc/VERSIONS.
+
+Programs you build with this toolchain
+======================================
+
+Programs built by `wiz build`, `wiz run` and grail with the bundled C toolchain link
+GMP statically (and, for the self-hosted runtime, the Boehm GC), and glibc
+dynamically. The Runtime Library Exception covers only Wiz's own runtime; GMP keeps its
+licence. If you distribute such a program in binary form under terms other than the
+(L)GPL, the LGPL v3 asks you to say that it uses GMP and include the GNU LGPL and GPL
+texts, to offer GMP's source (or say where to get it), and to let the recipient relink
+the program with a modified GMP: for a statically linked program that means also
+providing its object files (or its source). Building with the system's compiler and
+shared GMP (`--cc gcc`, with libgmp-dev) leaves only the notice and the source offer.
+The Boehm GC only asks that its notice be kept. Details: docs/building.md, "What
+`wiz build` links".
