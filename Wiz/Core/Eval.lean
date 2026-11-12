@@ -53,6 +53,14 @@ partial def whnf : Val R → Val R
   | .lazyInd _ _ _ _ _ _ _ _ _ v => whnf v.get
   | v => v
 
+/-- A value with its suspended inductions on constructors computed (`vInd`): they are
+lazy for speed alone, so wherever a value's shape or read-back is looked at without `whnf`
+(`quote`, the elaborator's unifier) they count as what they compute, as before they were
+lazy. Inductions on numerals stay folded (`Val.lazyInd` since stage 7). -/
+partial def unlazyCon : Val R → Val R
+  | v@(.lazyInd _ _ _ _ _ _ _ x _ val) => if whnf x matches .con _ then unlazyCon val.get else v
+  | v => v
+
 /-- **Exercise 4.4b.** First projection. -/
 partial def vFst : Val R → Val R
   -- (given) a projection of a glued value stays glued, like an application (`vApp`):
@@ -224,8 +232,8 @@ partial def eval (g : Globals R) (env : Env R) : Term R → Val R
   | .var ix => env[ix]?.getD (.neutral (.global "out of scope✝" []) #[])
   | .const n us => if let some v := vBuiltin? g n then v else match g.find? n with
     | some { value := some v, levelParams, inline, .. } =>
-      if inline || g.eager then eval g [] (v.instLevels levelParams us)
-      else .unfold n us #[] (Thunk.mk fun _ => eval g [] (v.instLevels levelParams us))
+      if inline || g.eager then eval g [] (g.instValue n v levelParams us)
+      else .unfold n us #[] (Thunk.mk fun _ => eval g [] (g.instValue n v levelParams us))
     | _ => .neutral (.global n us) #[]
   | .natLit n => .natLit n
   | .natOp op args => vNatOp g op (args.map (eval g env))
@@ -542,6 +550,32 @@ partial def vNatOp (g : Globals R) (op : Name) (args : Array (Val R)) : Val R :=
     | none, _, _ => unfold ()
   | none => unfold ()
 
+/-- `hyps D X P f i xs` by `Templates.hypsTm`: the definition. -/
+partial def vHypsTemplate (g : Globals R) (l v : Level) (I D X P f i xs : Val R) : Val R :=
+  [I, D, X, P, f, i, xs].foldl (vApp g) (eval g [] (Templates.hypsTm l v))
+
+/-- (given) `hyps D X P f i xs` computed directly on a canonical description, one step of
+`Templates.hypsTm`'s `Desc.elim` at a time, without evaluating the template (most of the
+cost of a data operation: `wiz-notes/kernel-eval.md`, F2):
+
+    ret j        ↦ ()
+    arg q S E    ↦ hyps (E xs.1) xs.2
+    rec q j E    ↦ (f j xs.1, hyps E xs.2)
+    hrec q H j E ↦ (fun h => f (j h) (xs.1 h), hyps E xs.2)
+
+On a description that isn't canonical (stuck), the template from there on, which is what
+the template itself reduces to after the steps already taken. -/
+partial def vHyps (g : Globals R) (l v : Level) (I D X P f i xs : Val R) : Val R :=
+  match whnf D with
+  | .dret _ => .tt
+  | .darg _ _ E => vHyps g l v I (vApp g E (vFst xs)) X P f i (vSnd xs)
+  | .drec _ j E => .pair (vApp g (vApp g f j) (vFst xs)) (vHyps g l v I E X P f i (vSnd xs))
+  | .dhrec _ _ j E =>
+    -- h0 x1 j2 f3
+    .pair (.lam "h" (.mk [vFst xs, j, f] (.app (.app (.var 3) (.app (.var 2) (.var 0))) (.app (.var 1) (.var 0)))))
+      (vHyps g l v I E X P f i (vSnd xs))
+  | _ => vHypsTemplate g l v I D X P f i xs
+
 /-- **Exercise 4.19c.** Induction computes on constructors:
 
     ind P m i (con xs) ↦ m i xs (hyps D (μ D) P (fun j y => ind P m j y) i xs)
@@ -555,7 +589,7 @@ partial def vIndStep (g : Globals R) (l : Level) (I D : Val R) (v : Level) (P m 
     -- y0 j1 m2 P3 D4 I5
     let f : Val R := .lam "j" (.mk [m, P, D, I]
       (.lam "y" (.ind l (.var 5) (.var 4) v (.var 3) (.var 2) (.var 1) (.var 0))))
-    let hyps := [I, D, muFamily l I D, P, f, i, xs].foldl (vApp g) (eval g [] (Templates.hypsTm l v))
+    let hyps := vHyps g l v I D (muFamily l I D) P f i xs
     [i, xs, hyps].foldl (vApp g) m
   | .neutral h sp => .neutral h (sp.push (.ind l I D v P m i))
   | _ => panic! "vInd: ill-typed"
@@ -563,11 +597,19 @@ partial def vIndStep (g : Globals R) (l : Level) (I D : Val R) (v : Level) (P m 
   --| sorry
   --sol>
 
-/-- `ind` on a numeral `n + 1` is computed only when needed (`Val.lazyInd`): its
-hypothesis is `ind` on `n`, so computing eagerly would go all the way down to `0`. -/
+/-- `ind` on a numeral `n + 1`, or on a constructor, is computed only when needed
+(`Val.lazyInd`): the hypotheses of `con xs` are `ind` on its recursive fields, so
+computing them eagerly would go all the way down (to `0`, or to the end of a list) even
+for a method that ignores them (a `match`: `T.casesOn`), which made a `match` on a list
+cost its length (`wiz-notes/kernel-eval.md`). Not for a normal form (`g.eager`, `nf`):
+`ind` on a constructor is a redex, which a normal form must not contain; and not with
+`--eager-proofs` (`!g.lazyProofs`), where the evaluator runs everything as it did before
+(the D1 experiments' loops are loops of that evaluator). -/
 partial def vInd (g : Globals R) (l : Level) (I D : Val R) (v : Level) (P m i x : Val R) : Val R :=
   match whnf x with
   | .natLit (_ + 1) => .lazyInd l I D v P m i x #[] (Thunk.mk fun _ => vIndStep g l I D v P m i x)
+  | .con _ => if g.eager || !g.lazyProofs then vIndStep g l I D v P m i x
+    else .lazyInd l I D v P m i x #[] (Thunk.mk fun _ => vIndStep g l I D v P m i x)
   | _ => vIndStep g l I D v P m i x
 
 /-- **Exercise 4.22a.** Sized recursion unfolds on a constructor, with the recursive
@@ -1180,7 +1222,10 @@ two. -/
 partial def quote (g : Globals R) (l : Lvl) : Val R → Term R
   -- (given) a glued value keeps its name
   | .unfold n us sp _ => quote g l (.neutral (.global n us) sp)
-  | .lazyInd lv I D v P m i x sp _ =>
+  -- (folded only on a numeral, as before kernel-eval: `ind` on a constructor is lazy for
+  -- speed alone and reads back as what it computes, so read-back is unchanged)
+  | .lazyInd lv I D v P m i x sp val =>
+    if (whnf x matches .con _) then quote g l (unlazyCon val.get) else
     sp.foldl (fun t e => match e with
       | .app a => .app t (quote g l a)
       | .fst => .fst t

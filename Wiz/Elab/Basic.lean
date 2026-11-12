@@ -342,6 +342,9 @@ partial def type (tys : Array (VTy R)) (env : Env R) : Term R → Term R × Opti
     let (B, lB) := type (tys.push (eval g env A)) (Val.var tys.size :: env) B
     let s := s.orElse fun _ => return .max (← lA) (← lB)
     (.sigma x (term tys env q) A B s, s)
+  -- an equation is a proposition: no need to evaluate it (which computes its sides, the
+  -- whole of a `refl` proof's computation; the kernel checks every sort note anyway)
+  | t@(.eq ..) | t@(.eqTy ..) => (term tys env t, some 0)
   | t =>
     let t := term tys env t
     (t, typeSort? g tys (eval g env t))
@@ -385,10 +388,14 @@ def LocalCtx.sortVal (g : Globals R) (ctx : LocalCtx R) (v : Val R) : Val R :=
 /-- A declaration with the sorts of its types filled in (`Sorts`). -/
 def Decl.withSorts (g : Globals R) (d : Decl R) : Decl R :=
   let type := (Sorts.type g #[] [] d.type).1
-  let ty := eval g [] type
-  { d with type, value := d.value.map (Sorts.value g #[] [] · ty),
-           impl := d.impl.map (Sorts.value g #[] [] · ty),
-           witness := d.witness.map (Sorts.value g #[] [] · ty) }
+  -- (the type's value only directs `Sorts.value` under a term's leading `fun`s: it is
+  -- evaluated only for one, since evaluating an equation computes its sides)
+  let ty : Thunk (Val R) := Thunk.mk fun _ => eval g [] type
+  let value (t : Term R) : Term R := match t with
+    | .lam .. => Sorts.value g #[] [] t ty.get
+    | t => Sorts.term g #[] [] t
+  { d with type, value := d.value.map value, impl := d.impl.map value,
+           witness := d.witness.map value }
 
 def instM (c : Closure R) (v : Val R) : ElabM R (Val R) :=
   return Closure.inst (← getGlobals) c v
