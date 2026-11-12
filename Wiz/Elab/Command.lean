@@ -1,4 +1,5 @@
 import Wiz.Elab.Recursor
+import Wiz.Elab.Mark
 import Wiz.Compiler.Run
 import Wiz.Compiler.IRRun
 import Wiz.Compiler.Lower
@@ -157,6 +158,24 @@ structure CommandState (R : Type) where
   node kind: they decide the spacing of printed notation -/
   rawAtoms : Std.HashMap Name (Array String) := {}
 
+/-- Run a kernel entry on a declaration, with the proof markers the kernel requires
+(`Mark`) **when it asks for them**. The marking pass is a typed traversal of the whole
+term, about as much work as the kernel's own check, and most declarations need at most a
+marker on their body. So the kernel is tried on, in turn:
+
+1. the declaration with a marker on its body, if the body is a proof that is not
+   neutral-shaped (`Decl.withTopMarks`: a theorem; any other declaration is left as it is);
+2. the declaration marked by the pass (`Decl.withMarks`), only if the kernel answered
+   "unmarked proof" to the first.
+
+The error reported is the last attempt's, and the kernel has accepted exactly the term
+that is stored. -/
+def withMarksOnDemand (g : Globals R) (d : Decl R) (k : Decl R → TCM (Globals R)) : TCM (Globals R) :=
+  match k (d.withTopMarks g) with
+  | .error (.unmarkedProof t ty l) =>
+    let go := fun (_ : Unit) => k (d.withMarks g)
+    if g.traceProofSteps then dbgTrace s!"marks-on-demand {d.name}: {(t.take 80).replace "\n" " "} : {(ty.take 60).replace "\n" " "} in Sort {l}" go else go ()
+  | r => r
 /-- (11s) The doc comment of a declaration, if it has one. -/
 def CommandState.docOf? (s : CommandState R) (n : Name) : Option String :=
   (s.declDocs.get? n).bind (·.doc)
@@ -212,15 +231,17 @@ def privacyCheck (g : Globals R) (d : Decl R) (kind : Globals R → Decl R → T
     throw (.other (s!"{d.name} depends on the definition of {", ".intercalate (used.map show1)}, which is hidden outside " ++
       s!"its module (it has private parts): with the definition hidden, {e}"))
 
-/-- `addDecl` with the sorts of the elaborator's `Π`/`Σ` filled in first (`Sorts`), and then
-the privacy check. -/
+/-- `addDecl` with the sorts of the elaborator's `Π`/`Σ` filled in first (`Sorts`), the
+proof markers the kernel requires (`withMarksOnDemand`), and then the privacy check (with
+the markers too: an unmarked proof is not a privacy failure). -/
 def addDeclSorted (g : Globals R) (d : Decl R) : TCM (Globals R) := do
   -- the kernel's own check is against the full environment: never the elaborator's view,
   -- whose `hidden` definitions (13b) `conv` would consult
   unless g.hidden.isEmpty do throw (.other s!"internal error: {d.name} checked against the elaborator's view")
   let d := d.withSorts g
-  let g' ← addDecl g d
-  privacyCheck g d
+  let kind := fun (g' : Globals R) (d' : Decl R) => withMarksOnDemand g' d' (addDecl g')
+  let g' ← kind g d
+  privacyCheck g d kind
   pure g'
 
 /-- Replace each const `n` by `f n`. -/
@@ -243,7 +264,11 @@ def renamePrivate (s : CommandState R) (added : Array Name) : CommandState R :=
     | none => m) g.decls
   let order := g.order.map f
   let rb (bs : List (Name × Name)) := bs.map fun (k, n) => (k, f n)
-  { s with globals := { g with decls, order, builtins := rb g.builtins, assumed := rb g.assumed },
+  -- (the instantiation cache follows the renamed values: `Globals.instValue`)
+  let instCache := added.foldl (fun c n => match decls[f n]? with
+    | some d => { g with instCache := c.erase n }.cacheInst d
+    | none => c.erase n) g.instCache
+  { s with globals := { g with decls, order, instCache, builtins := rb g.builtins, assumed := rb g.assumed },
            builtins := rb s.builtins }
 
 /-- Metas are untyped, so `?A : Sort ?u` never learns `?u` from `?A := A`. For each
@@ -261,9 +286,11 @@ def solveSortConstraints : ElabM R Unit := do
     for (ctx, t, l) in (← get).sortConstraints do
       let t ← zonk ctx.lvl t
       if !t.mvars.isEmpty then continue
-      let kctx : Ctx R := { globals := ← getGlobals, env := ctx.env, names := ctx.names,
+      -- (a holed sort is no error here: the term is not checked for acceptance, and the
+      -- sorts pass runs later, `Decl.withSorts`)
+      let kctx : Ctx R := { globals := { (← getGlobals) with sortHolesOk := true }, env := ctx.env, names := ctx.names,
                             qtys := ctx.names.map fun _ => QPoly.const QuantitySyntax.explicitDefault,
-                            types := ctx.types, lvl := ctx.lvl }
+                            types := ctx.types, lvl := ctx.lvl, proof := true }
       if let .ok (ty, _) := Wiz.infer kctx t then
         if let .sort l' ← force ty then
           try unifyLevel l l' catch e => throwAt ctx.info e.msg
@@ -292,7 +319,7 @@ def elabDeclTerms (binders : Array Syntax) (typeStx : Option Syntax) (valStx : O
   -- the equation stays as written, as above.)
   let ty ← if (← get).pendingInsts.isEmpty then zonkInsts ctx.lvl ty else pure ty
   let val ← valStx.mapM fun s => do Elab.check ctx s (← evalIn ctx ty)
-  let ty := tele.foldr (fun (x, bi, q, a) b => Term.pi x bi q a b none) ty
+  let ty := tele.foldr (fun (x, bi, q, a) b => Term.pi x bi q a b .hole) ty
   let val := val.map fun v => tele.foldr (fun (x, _, _, _) b => Term.lam x b) v
   solveSortConstraints
   let ty ← zonk 0 ty
@@ -338,7 +365,7 @@ def elabSizedDef (name : Name) (cmd : Syntax) (ctx : LocalCtx R) (tele : Array (
   let some vlev := typeSort? g c1.types.reverse.toArray (← evalIn c1 B)
     | throwAt info "could not determine the universe of the result"
   -- F := fun s rec i x' => let f := …; fun rest => tree
-  let fty := sfixFunTy g l I D vP w
+  let fty := sfixFunTy g l vlev I D vP w
   let .pi _ _ _ _ c_s _ ← force fty | throwAt info "internal error"
   let ctxS := c1.bind "s" .size
   let sv := Val.var c1.lvl
@@ -367,7 +394,7 @@ def elabSizedDef (name : Name) (cmd : Syntax) (ctx : LocalCtx R) (tele : Array (
   let hintT := hint.map fun (n, us, as) => (n, us, as.map (quote g (L + 1)))
   let fTyTm : Term R := .pi "j" .implicit (.qlit 0) (.sizeLt sT)
     (.pi "y" .default (.qlit w) (.mu l (q ctxX I |>.lift 1) (q ctxX D |>.lift 1) (q ctxX idx |>.lift 1) (.var 0) hintT)
-      ((Term.app (Term.app ((P.lift (L - c1.lvl)).lift 2) ((q ctxX idx).lift 2)) (.var 0))) none) none
+      ((Term.app (Term.app ((P.lift (L - c1.lvl)).lift 2) ((q ctxX idx).lift 2)) (.var 0))) .hole) .hole
   -- β-reduce `P () y` (the kernel can't infer the type of an applied lambda)
   let fTyTm := quote g L (← evalIn ctxX fTyTm)
   let fValTm : Term R := .lam "j" (.lam "y" (.app (.app (.app (recT.lift 2) (.var 1)) ((q ctxX idx).lift 2)) (.var 0)))
@@ -394,7 +421,7 @@ def elabSizedDef (name : Name) (cmd : Syntax) (ctx : LocalCtx R) (tele : Array (
   let sfixT : Term R := .sfix l (q c1 I) (q c1 D) vlev P F sizeVarT (q c1 idx) (.var 0)
   solveSortConstraints
   let val := tele.foldr (fun (x, _, _, _) b => Term.lam x b) (.lam x0 sfixT)
-  let fullTy := tele.foldr (fun (x, bi, qq, a) b => Term.pi x bi qq a b none) (Term.pi x0 bi0 q0 A0 B s0)
+  let fullTy := tele.foldr (fun (x, bi, qq, a) b => Term.pi x bi qq a b .hole) (Term.pi x0 bi0 q0 A0 B s0)
   let val ← zonk 0 val
   ensureNoMVars val info
   let fullTy ← zonk 0 fullTy  -- (the telescope's holes, solved by now)
@@ -610,7 +637,7 @@ def elabDefEqns (name : Name) (cmd : Syntax) (isPartial : Bool := false) :
   let body ← compileMatch ctx' (perm vars) clauses tyv rc true
   solveSortConstraints
   let val := tele.foldr (fun (x, _, _, _) b => Term.lam x b) (names.foldr .lam body)
-  let fullTy := tele.foldr (fun (x, bi, q, a) b => Term.pi x bi q a b none) ty
+  let fullTy := tele.foldr (fun (x, bi, q, a) b => Term.pi x bi q a b .hole) ty
   let val ← zonk 0 val
   ensureNoMVars val info
   let fullTy ← zonk 0 fullTy  -- (the telescope's holes, solved by now)
@@ -749,7 +776,7 @@ def elabCopatternsCoit (name : Name) (cmd : Syntax) (obs : List (Name × Bool)) 
   let explicit := (tele.toList.zipIdx.filter fun ((_, bi, _, _), _) => bi == .default)
   let w : Term R := .qlit QuantitySyntax.explicitDefault
   let stateTy : Term R := explicit.zipIdx.foldr (fun (((x, _, _, _), k), j) acc =>
-    .sigma x w ((q ctx.lvl ctx.types[ctx.lvl - k - 1]!).lift j) acc none) (.unit (.succ l))
+    .sigma x w ((q ctx.lvl ctx.types[ctx.lvl - k - 1]!).lift j) acc .hole) (.unit (.succ l))
   let vS ← evalIn ctx stateTy
   -- the step function's context: i, s, then the explicit binders re-bound from s
   let mut sctx := (ctx.bind "i" I).bind "s" vS
@@ -815,7 +842,7 @@ def elabCopatternsCoit (name : Name) (cmd : Syntax) (obs : List (Name × Bool)) 
   let init : Term R := (explicit.map fun ((_, _, _, _), k) => (.var (ctx.lvl - k - 1) : Term R)).foldr .pair .tt
   let coit : Term R := .coit l (q ctx.lvl I) (q ctx.lvl D) Sfun step (q ctx.lvl i) init
   let val := tele.foldr (fun (x, _, _, _) b => Term.lam x b) coit
-  let fullTy := tele.foldr (fun (x, bi, qq, a) b => Term.pi x bi qq a b none) ty
+  let fullTy := tele.foldr (fun (x, bi, qq, a) b => Term.pi x bi qq a b .hole) ty
   -- (7e) the right-hand sides' instance problems (`nats (n + 1)`)
   finishInstances
   let val ← zonk 0 val
@@ -861,7 +888,7 @@ def elabCopatternsCocon (name : Name) (cmd : Syntax) (obs : List (Name × Bool))
     -- (Q4) a lifted field (`ULift A'`, made by the elaborator): check against the
     -- field's own type, and box it
     let (A, lifted) ← match isRec, ← force A with
-      | false, .ulift _ A' => pure (A', true)
+      | false, .ulift _ _ A' => pure (A', true)
       | _, _ => pure (A, false)
     let c ← Elab.check ctx rhs A
     let c := if lifted then .up c else c
@@ -873,7 +900,7 @@ def elabCopatternsCocon (name : Name) (cmd : Syntax) (obs : List (Name × Bool))
     | _ => pure (.refl (quote g ctx.lvl I) (quote g ctx.lvl i))
   let payload : Term R := comps.foldr .pair (.pair e .tt)
   let val := tele.foldr (fun (x, _, _, _) b => Term.lam x b) (Term.cocon payload)
-  let fullTy := tele.foldr (fun (x, bi, qq, a) b => Term.pi x bi qq a b none) ty
+  let fullTy := tele.foldr (fun (x, bi, qq, a) b => Term.pi x bi qq a b .hole) ty
   -- (7e) the right-hand sides' instance problems (`nats (n + 1)`)
   finishInstances
   let val ← zonk 0 val
@@ -916,7 +943,9 @@ def runElabH (g : Globals R) (x : ElabM R α) (levelParams : List Name := [])
   let runProcMacro f stx scope := match compileCode [f, "Macro.run"] with
     | .ok code => Elab.runProcMacro code f stx scope (macroEnv g)
     | .error e => (#[], .error e)
-  let kernelInfer (ctx : Ctx R) (t : Term R) := (Wiz.infer ctx t).map (·.1) |>.mapError toString
+  -- (the elaborator's terms carry no proof markers yet: `proof`)
+  -- (mandatory sorts: an elaboration-time type, where a sort may still be a hole)
+  let kernelInfer (ctx : Ctx R) (t : Term R) := (Wiz.infer { ctx with proof := true, globals := { ctx.globals with sortHolesOk := true } } t).map (·.1) |>.mapError toString
   -- (13b) structures with a constructor private to another module don't unfold here
   match x.run { globals := g.elabView, levelParams, macros, builtins, procMacros, runProcMacro, tactics, compileCode,
                 kernelInfer, classes, instances, termInfo } with
@@ -967,7 +996,7 @@ def classMethods (sDecl : Decl R) (levelParams : List Name)
     let mut A' := A.lift 1 k
     for i in (List.range k).reverse do
       A' := A'.instantiateAt 0 (proj i (.var i))
-    let type := implicitΔ.foldr (fun (y, bi, q, B) acc => .pi y bi q B acc none) (.pi "self" selfBi w Capp A' none)
+    let type := implicitΔ.foldr (fun (y, bi, q, B) acc => .pi y bi q B acc .hole) (.pi "self" selfBi w Capp A' .hole)
     let value := Δ.foldr (fun (y, _, _, _) acc => .lam y acc) (.lam "self" (proj k (.var 0)))
     let d : Decl R := { name := C ++ "." ++ x, levelParams, type, value := some value }
     out := out ++ [d]
@@ -1495,9 +1524,10 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
             return
           | .error e => report .error e.info e.msg; return
         let pd := Decl.withSorts g { name, levelParams, type := ty, value := none, witness := some w }
+        let addP := fun (g' : Globals R) (d' : Decl R) => withMarksOnDemand g' d' (addPartialDecl g')
         match (do
             unless g.hidden.isEmpty do throw (.other s!"internal error: {pd.name} checked against the elaborator's view")
-            let g' ← addPartialDecl g pd; privacyCheck g pd addPartialDecl; pure g' : TCM (Globals R)) with
+            let g' ← addP g pd; privacyCheck g pd addP; pure g' : TCM (Globals R)) with
         | .ok g' => g := g'
         | .error e => report .error (d.getArg 1).info s!"kernel rejected {name}: {e}"; return
         sigs := sigs.push (d, name, levelParams)
@@ -1515,9 +1545,15 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
       | (.ok v, hv) =>
         addInfos hv
         let v := match g.find? name with
-          | some d => Sorts.value g #[] [] v (eval g [] d.type)
+          | some d => if v.hasHole then Mark.check { globals := g, sortsOnly := true } v (eval g [] d.type) else v
           | none => v
-        match addPartialImpl g name v with
+        -- (the proof markers, if the kernel asks for them: `withMarksOnDemand`)
+        let r := match addPartialImpl g name v with
+          | .error (.unmarkedProof ..) => match g.find? name with
+            | some d => addPartialImpl g name (Mark.check { globals := g } v (eval g [] d.type))
+            | none => addPartialImpl g name v
+          | r => r
+        match r with
         | .ok g' => g := g'
         | .error e => report .error d.info s!"kernel rejected {name}: {e}"; return
       | (.error e, hv) => addInfos hv; reportErr e; return
@@ -1543,8 +1579,10 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
       solveSortConstraints
       let t ← zonk 0 t
       ensureNoMVars t
+      -- (P2) with its proofs marked: `nf` suspends them, and reads each back within the
+      -- step budget (a proof need not have a normal form)
       let g ← getGlobals
-      pure ((nf g t).pretty [] (some g))
+      pure ((nf g (Mark.infer { globals := g } t).1).pretty [] (some g))
     match r with
     | .ok text => report .info cmd.info text
     | .error e => report .error e.info e.msg
@@ -1983,7 +2021,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
         let fin := match rn with
           | some n => (List.lookup n (st.foreignTypes : List (Name × String))).getD ""
           | none => ""
-        let ty := ks.toList.foldr (fun k acc => .pi "_" .default w (ty1 k) acc none) res
+        let ty := ks.toList.foldr (fun k acc => .pi "_" .default w (ty1 k) acc .hole) res
         let key : Name := s!"extern:{f.name}:{String.join (ks.toList.map (·.1.toKey))}:{rk.toKey}:{if isPure then "pure" else "io"}:{header}:{fin}"
         match addDeclSorted st.globals { name, type := ty, value := none } with
         | .ok g => modify fun s => { s with builtins := (key, name) :: s.builtins,
@@ -2446,7 +2484,9 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     match r with
     | .error e => report .error e.info e.msg
     | .ok t =>
-      let ctx : Ctx R := { globals := s.globals }
+      -- (the sorts pass first: the kernel checks the term erasure is given)
+      let t := if t.hasHole then (Mark.infer { globals := s.globals, sortsOnly := true } t).1 else t
+      let ctx : Ctx R := { globals := s.globals, proof := true }
       let result := do
         let (ty, _) ← Wiz.infer ctx t
         let e ← eraseTop ctx t ty
@@ -2471,7 +2511,8 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     match r with
     | .error e => report .error e.info e.msg
     | .ok t =>
-      let ctx : Ctx R := { globals := s.globals }
+      let t := if t.hasHole then (Mark.infer { globals := s.globals, sortsOnly := true } t).1 else t
+      let ctx : Ctx R := { globals := s.globals, proof := true }
       let result : Except String (VTy R × RVal) := do
         let (ty, _) ← (Wiz.infer ctx t).mapError toString
         let e ← (eraseTop ctx t ty).mapError toString

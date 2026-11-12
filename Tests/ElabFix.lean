@@ -530,7 +530,15 @@ def group : Group where
         let lst := (List.range n).foldr (fun i acc => s!"(List.cons {i} {acc})") "List.nil"
         let src := s!"import Prelude\ndef L : List Nat := {lst}\ndef bad (h : L = L) : Nat := h\n"
         let loader ← preludeLoader
+        -- (glued equations: by default the equation is shown as written, `L = L`; the
+        -- computed form, whose printing is bounded, is what `--eager-eqs` shows. The two
+        -- runs share the process's cache of imported modules, whose key must include
+        -- `lazyEqs`: without it the second run got the first run's Prelude, flag and all)
         let s := runFrontend (R := ZeroOneMany) src { loader, trustedModule := Tests.libModule }
+        let errs := s.messages.filter (·.severity == .error)
+        unless errs.size == 1 do throw (IO.userError s!"expected one error, got {errs.size}")
+        check ((errs[0]!.text.splitOn "L = L").length > 1) s!"not shown as written: {errs[0]!.text.take 300}"
+        let s := runFrontend (R := ZeroOneMany) src { loader, trustedModule := Tests.libModule, globals := { lazyEqs := false } }
         let errs := s.messages.filter (·.severity == .error)
         unless errs.size == 1 do throw (IO.userError s!"expected one error, got {errs.size}")
         let t := errs[0]!.text

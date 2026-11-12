@@ -48,12 +48,26 @@ inductive Outcome where
   | disagree (what : String)
   deriving Repr, BEq
 
+/-- The Lean kernel on a raw term, with the proof markers it requires (P2) from the
+marking pass, as the elaborator gives them and as the differential tests do (`leanVerdict`):
+the term is marked only if it is well typed without the requirement (the pass checks
+nothing), else the kernel's answer is that check's. The reference checker needs no
+markers: it does not evaluate terms through the kernel's evaluator. -/
+def kernelInfer (g : Globals ZeroOneMany) (t0 : Term ZeroOneMany) : TCM (VTy ZeroOneMany × Usage ZeroOneMany) :=
+  -- (mandatory sorts: the holes `MTm` writes are filled by the sorts pass first)
+  -- (the pre-check first, holes allowed: the sorts pass evaluates, so only on a well-typed term)
+  match infer (R := ZeroOneMany) { globals := { g with lazyProofs := false, sortHolesOk := true } } t0 with
+  | .error e => .error e
+  | .ok _ =>
+    let t := (Mark.infer (R := ZeroOneMany) { globals := g, sortsOnly := true } t0).1
+    infer (R := ZeroOneMany) { globals := g } (Mark.infer (R := ZeroOneMany) { globals := g } t).1
+
 /-- One term: the Lean kernel's verdict against the reference checker's. -/
 def vote (g : Globals ZeroOneMany) (sg : Sig) (t : MTm) (opts : Opts := kernelOpts) : Outcome :=
   match WizMeta.ofTerm [] t.toTerm with
   | none => .outside
   | some tm =>
-    let k := infer (R := ZeroOneMany) { globals := g } t.toTerm
+    let k := kernelInfer g t.toTerm
     let r := WizMeta.inferClosed sg tm opts
     match k, r with
     | _, .error .fuel => .fuel
@@ -120,7 +134,7 @@ def tally (terms : Array MTm) (opts : Opts := kernelOpts) : Except String Tally 
 open Tests.Elab.MTm
 
 def kernelAccepts (t : MTm) (g : Globals ZeroOneMany := leanGlobals ()) : Bool :=
-  (infer (R := ZeroOneMany) { globals := g } t.toTerm).isOk
+  (kernelInfer g t.toTerm).isOk
 
 /-- The reference checker's verdict on a term: `ok`, `fuel`, `outside`, or the rejection. -/
 def refVerdict (t : MTm) (opts : Opts := kernelOpts) (sg : Option Sig := none) : String :=
@@ -163,10 +177,10 @@ def e5b : MTm := erased (lam (lam (lam (lam (fst (var 0)))))) e5bTy
 
 -- model-memo T4: an equation between two Π types whose domains are in different universes
 def crossLevel : MTm :=
-  let A1 := sorted 1 (pi pfalse (enum 2))
-  let A2 := sorted 2 (pi pfalse (univ 0))
+  let A1 := sorted 0 1 (pi pfalse (enum 2))
+  let A2 := sorted 0 2 (pi pfalse (univ 0))
   let no := lam (exfalso pfalse (var 0))
-  erased (pair (pair (pair no no) no) (lam star)) (eqTy (sorted 2 (pi A1 (univ 0))) (sorted 2 (pi A2 (univ 0))))
+  erased (pair (pair (pair no no) no) (lam star)) (eqTy (sorted 1 2 (pi A1 (univ 0))) (sorted 2 2 (pi A2 (univ 0))))
 
 
 -- PR #40 (CoreSpec §8.4b): equality at `Desc`, `μ ≡ μ` by codes, casts at `Desc` and `μ`
@@ -328,12 +342,12 @@ def group : Group where
     { name := "the spec's own rules: a Π/Σ carries its sort, and it is checked", run := fun _ => do
         let spec : Opts := {}
         rejects (ann (lam (lam (var 0))) (pi (univ 0) (pi (var 0) (var 1)))) spec (some [])
-        accepts (ann (lam (lam (var 0))) (sorted 2 (pi (univ 0) (sorted 1 (pi (var 0) (var 1)))))) spec (some [])
-        rejects (ann (lam (lam (var 0))) (sorted 1 (pi (univ 0) (sorted 1 (pi (var 0) (var 1)))))) spec (some [])
+        accepts (ann (lam (lam (var 0))) (sorted 2 1 (pi (univ 0) (sorted 1 1 (pi (var 0) (var 1)))))) spec (some [])
+        rejects (ann (lam (lam (var 0))) (sorted 1 1 (pi (univ 0) (sorted 1 1 (pi (var 0) (var 1)))))) spec (some [])
         -- impredicativity: a Π into Prop is in Prop
-        accepts (sorted 0 (pi (univ 0) ptrue)) spec (some [])
-        rejects (sorted 2 (pi (univ 0) ptrue)) spec (some [])
-        accepts (sorted 2 (sigma (univ 0) ptrue)) spec (some []) },
+        accepts (sorted 2 0 (pi (univ 0) ptrue)) spec (some [])
+        rejects (sorted 2 2 (pi (univ 0) ptrue)) spec (some [])
+        accepts (sorted 2 0 (sigma (univ 0) ptrue)) spec (some []) },
     { name := "the spec's own rules: equations are formed at every sort, and are True at a proposition", run := fun _ => do
         let spec : Opts := {}
         let eqP := eq ptrue star star
@@ -343,7 +357,7 @@ def group : Group where
         accepts (ann star eqP) spec (some [])
         -- between a proposition and a type that is not one: formed in the spec, and False
         rejects (eqTy ptrue (enum 2))
-        accepts (ann (lam (var 0)) (sorted 0 (pi (eqTy ptrue (enum 2)) pfalse))) spec (some []) },
+        accepts (ann (lam (var 0)) (sorted 0 0 (pi (eqTy ptrue (enum 2)) pfalse))) spec (some []) },
     { name := "T0 against T1: a cast between convertible inert types is its argument only with InReg", run := fun _ => do
         let nat := const "Nat"
         let t := ann (lam (lam (refl nat (var 0)))) (pi (eqTy nat nat) (pi nat (eq nat (cast nat nat (var 1) (var 0)) (var 0))))
@@ -376,7 +390,7 @@ def group : Group where
         -- W1: `d.{0}` and `d.{1}` under a stuck case are different
         rejects (w1 0 1) kernelOpts (some sg1)
         accepts (w1 1 1) kernelOpts (some sg1)
-        let g1 ← match addDecl (leanGlobals ()) w1Decl with | .ok g => pure g | .error e => throw (IO.userError s!"{e}")
+        let g1 ← match addDecl (leanGlobals ()) (Decl.withMarks (leanGlobals ()) w1Decl) with | .ok g => pure g | .error e => throw (IO.userError s!"{e}")
         check (!kernelAccepts (w1 0 1) g1 && kernelAccepts (w1 1 1) g1) "the Lean kernel's verdicts on W1 changed" },
     { name := "E5b: a payload equation at a neutral field type, in the three variants (the kernels' rule is not stable under substitution)", run := fun _ => do
         let stuck := { kernelOpts with payload := .stuck }

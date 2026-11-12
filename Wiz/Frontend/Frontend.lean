@@ -75,15 +75,17 @@ it is not to be kept: `base` is not an initial state, or `m`'s imports run in a 
 partial def isoKey (base : CommandState R) (m : Name) : Option UInt64 := do
   unless base.pristine && base.globals.order.isEmpty && base.imported.isEmpty && base.infos.isEmpty do none
   let g := base.globals
-  -- (every option of `Globals` that a module's state depends on or carries)
+  -- (every option of `Globals` that a module's state depends on or carries: lint's
+  -- "isoKey: every setting of Globals is in the key" checks that none is left out)
   -- (and every field of `Globals` that is not data checked empty above: the kept state
   -- carries them to the importer, `pp.notation` included)
   unless g.decls.isEmpty && g.privates.isEmpty && g.opaques.isEmpty && g.declModule.isEmpty do none
   let ppKeys (m : List Name) : List Name := m.mergeSort (fun a b => decide (a ≤ b))
   let settings := hash (base.termInfo, base.nextScope, g.eager, g.predicativeProp, toString (repr g.regularity),
-    toString (repr g.inertReg), g.builtins, g.unboxStructs, g.lazyProofs)
+    toString (repr g.inertReg), g.builtins, g.unboxStructs, g.lazyProofs, g.lazyEqs)
   let settings := mixHash settings (hash (g.assumed, g.quoteErasesProofs, g.pushCalls, g.strictPrivacy, g.module,
     g.pp.useNotation, ppKeys (g.pp.unexpanders.toList.map (·.1)), ppKeys (g.pp.formats.toList.map (·.1))))
+  let settings := mixHash settings (hash (g.strictProofs, g.proofSteps, g.traceProofSteps, g.sortHolesOk))
   let (k, _) ← go [] m {}
   pure (mixHash settings k)
 where

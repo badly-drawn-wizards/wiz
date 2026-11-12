@@ -1,4 +1,5 @@
 import Wiz
+import Lean
 import Tests.Harness
 
 /-!
@@ -177,7 +178,7 @@ def termClassify : String → Option (List Nat)
   | "Term R" => some [1, 0]
   | "List (Term R)" | "Array (Term R)" => some [2, 0]
   | "Level" | "Option Level" => some [0, 1]
-  | "List Level" => some [0, 2]
+  | "List Level" | "BinderSorts" => some [0, 2]
   | "Option (Name × List Level × List (Term R))" => some [2, 2]
   | "Name" | "Nat" | "BinderInfo" | "R" | "List Name" => some [0, 0]
   | _ => none
@@ -187,13 +188,13 @@ def termTable : List TermRow := [
   ⟨"var", [], 0, fun _ _ => .var 0⟩,
   ⟨"const", [], 2, fun _ l => .const "c" [l 0, l 1]⟩,
   ⟨"sort", [], 1, fun _ l => .sort (l 0)⟩,
-  ⟨"pi", [0, 0, 1], 1, fun c l => .pi "x" .default (c 0) (c 1) (c 2) (some (l 0))⟩,
+  ⟨"pi", [0, 0, 1], 2, fun c l => .pi "x" .default (c 0) (c 1) (c 2) ⟨l 0, l 1⟩⟩,
   ⟨"lam", [1], 0, fun c _ => .lam "x" (c 0)⟩,
   ⟨"app", [0, 0], 0, fun c _ => .app (c 0) (c 1)⟩,
   ⟨"letE", [0, 0, 0, 1], 0, fun c _ => .letE "x" (c 0) (c 1) (c 2) (c 3)⟩,
   ⟨"ann", [0, 0], 0, fun c _ => .ann (c 0) (c 1)⟩,
   ⟨"mvar", [], 0, fun _ _ => .mvar 0⟩,
-  ⟨"sigma", [0, 0, 1], 1, fun c l => .sigma "x" (c 0) (c 1) (c 2) (some (l 0))⟩,
+  ⟨"sigma", [0, 0, 1], 2, fun c l => .sigma "x" (c 0) (c 1) (c 2) ⟨l 0, l 1⟩⟩,
   ⟨"pair", [0, 0], 0, fun c _ => .pair (c 0) (c 1)⟩,
   ⟨"fst", [0], 0, fun c _ => .fst (c 0)⟩,
   ⟨"snd", [0], 0, fun c _ => .snd (c 0)⟩,
@@ -235,9 +236,10 @@ def termTable : List TermRow := [
   ⟨"coit", [0, 0, 0, 0, 0, 0], 1, fun c l => .coit (l 0) (c 0) (c 1) (c 2) (c 3) (c 4) (c 5)⟩,
   ⟨"natLit", [], 0, fun _ _ => .natLit 3⟩,
   ⟨"natOp", [0, 0], 0, fun c _ => .natOp "nat.add" #[c 0, c 1]⟩,
-  ⟨"ulift", [0], 1, fun c l => .ulift (l 0) (c 0)⟩,
+  ⟨"ulift", [0], 2, fun c l => .ulift (l 0) (l 1) (c 0)⟩,
   ⟨"up", [0], 0, fun c _ => .up (c 0)⟩,
-  ⟨"down", [0], 0, fun c _ => .down (c 0)⟩
+  ⟨"down", [0], 0, fun c _ => .down (c 0)⟩,
+  ⟨"prf", [0], 1, fun c l => .prf (l 0) (c 0)⟩
 ]
 
 /-- The name of a term's constructor, from its derived `Repr` (`Wiz.Term.pi …`). -/
@@ -256,7 +258,15 @@ def TermRow.withChild (row : TermRow) (j : Nat) (mark : Term R) (plain : Term R 
 def TermRow.withLevel (row : TermRow) (j : Nat) (mark : Level) : Term R :=
   row.build (fun _ => plainT) (fun i => if i == j then mark else .zero)
 
-def freeVars (t : Term R) : List Nat := ((Term.freeVarsAt 0 t).run #[]).2.toList
+/-- The free variables of `t` under `depth` binders, as indices into the enclosing
+environment (with repeats). (The kernel's copy of this went with its syntactic
+regularity, conv-regularity §5; the lint keeps its own.) -/
+partial def freeVarsAt (depth : Nat) (t : Term R) : StateM (Array Nat) Unit :=
+  match t with
+  | .var i => if i ≥ depth then modify (·.push (i - depth)) else pure ()
+  | t => t.forChildren (fun _ => pure ()) (fun d c => freeVarsAt (depth + d) c)
+
+def freeVars (t : Term R) : List Nat := ((freeVarsAt 0 t).run #[]).2.toList
 
 /-- The index of the marked variable, as seen from outside the witness. -/
 def M : Nat := 40
@@ -328,7 +338,7 @@ def checkTermOps (ops : TermOps) (rows : List TermRow) : Failures Unit := do
 /-! ### Evaluation and read-back keep every child
 
 The witness is evaluated in an environment of `L` variables and read back. The marked
-child is the variable with the highest level, so `Val.lvlBound` must be `L`, and the term
+child is the variable with the highest level, and the term
 read back must mention the variable (index 0). The other children are a lower variable:
 every eliminator is stuck on it. -/
 
@@ -352,10 +362,18 @@ comparisons, `sameVal`): the proof positions the syntax marks (P2). -/
 def eraseDrops : List (String × Nat × String) := [
   ("cast", 2, "the equation of a cast is a proof"),
   ("transp", 3, "transp's proof `p`"),
-  ("transp", 5, "transp's equation `e`")]
+  ("transp", 5, "transp's equation `e`"),
+  ("prf", 0, "a marked proof at level 0 is erased"),
+  -- (P2) read-back erases every proof head, not only suspensions (a `refl` head where the
+  -- term was evaluated and a suspension where it was read back are the same proof)
+  ("refl", 0, "a refl is a proof"), ("refl", 1, "a refl is a proof"),
+  ("reflTy", 0, "a reflTy is a proof"),
+  ("transp", 0, "a transp is a proof"), ("transp", 1, "a transp is a proof"),
+  ("transp", 2, "a transp is a proof"), ("transp", 4, "a transp is a proof")]
 
 /-- The levels that evaluation drops (none today). -/
-def evalLevelDrops : List (String × Nat × String) := []
+def evalLevelDrops : List (String × Nat × String) := [
+  ("prf", 0, "a marker at a level that is not 0 is its term's value (it suspends nothing), and read-back writes no marker back")]
 
 def checkTermEval (rows : List TermRow) : Failures Unit := do
   for row in rows do
@@ -367,8 +385,6 @@ def checkTermEval (rows : List TermRow) : Failures Unit := do
         let g := semGlobals erase
         let v := eval g semEnv w
         let mode := if erase then "erasing proofs" else "evaluating proofs"
-        expect (v.lvlBound == L)
-          s!"Term.{row.name}, child {j}: after eval, Val.lvlBound is {v.lvlBound}, expected {L} (the child's variable is not counted)"
         let dropped := erase && eraseDrops.any fun (n, i, _) => n == row.name && i == j
         let back := quote g L v
         expect ((freeVars back).contains 0 == !dropped)
@@ -399,7 +415,7 @@ def valClassify : String → Option (List Nat)
   | "Val R" | "List (Val R)" => some [1, 0, 0]
   | "Closure R" => some [0, 1, 0]
   | "Level" | "Option Level" => some [0, 0, 1]
-  | "List Level" => some [0, 0, 2]
+  | "List Level" | "BinderSorts" => some [0, 0, 2]
   | "Option (Name × List Level × List (Val R))" => some [2, 0, 2]
   -- a head and a spine have their own tables; a thunk is the value of what the other
   -- fields describe (an unfolding, a proof's value); an `ecase`'s branches and a
@@ -414,9 +430,9 @@ def stuck : Val R := .neutral (.global "stuck" []) #[]
 def valTable : List ValRow := [
   ⟨"neutral", 0, [], 0, fun _ _ _ => .neutral (.global "h" []) #[]⟩,
   ⟨"sort", 0, [], 1, fun _ _ l => .sort (l 0)⟩,
-  ⟨"pi", 2, [1], 1, fun c k l => .pi "x" .default (c 0) (c 1) (k 0) (some (l 0))⟩,
+  ⟨"pi", 2, [1], 2, fun c k l => .pi "x" .default (c 0) (c 1) (k 0) ⟨l 0, l 1⟩⟩,
   ⟨"lam", 0, [1], 0, fun _ k _ => .lam "x" (k 0)⟩,
-  ⟨"sigma", 2, [1], 1, fun c k l => .sigma "x" (c 0) (c 1) (k 0) (some (l 0))⟩,
+  ⟨"sigma", 2, [1], 2, fun c k l => .sigma "x" (c 0) (c 1) (k 0) ⟨l 0, l 1⟩⟩,
   ⟨"pair", 2, [], 0, fun c _ _ => .pair (c 0) (c 1)⟩,
   ⟨"unit", 0, [], 1, fun _ _ l => .unit (l 0)⟩,
   ⟨"tt", 0, [], 0, fun _ _ _ => .tt⟩,
@@ -441,10 +457,11 @@ def valTable : List ValRow := [
   ⟨"scofix", 7, [], 1, fun c _ l => .scofix (l 0) (c 0) (c 1) (c 2) (c 3) (c 4) (c 5) (c 6)⟩,
   ⟨"coit", 6, [], 1, fun c _ l => .coit (l 0) (c 0) (c 1) (c 2) (c 3) (c 4) (c 5)⟩,
   ⟨"natLit", 0, [], 0, fun _ _ _ => .natLit 3⟩,
-  ⟨"ulift", 1, [], 1, fun c _ l => .ulift (l 0) (c 0)⟩,
+  ⟨"ulift", 1, [], 2, fun c _ l => .ulift (l 0) (l 1) (c 0)⟩,
   ⟨"up", 1, [], 0, fun c _ _ => .up (c 0)⟩,
   ⟨"unfold", 0, [], 2, fun _ _ l => .unfold "f" [l 0, l 1] #[] (thunk stuck)⟩,
-  ⟨"lazyInd", 6, [], 2, fun c _ l => .lazyInd (l 0) (c 0) (c 1) (l 1) (c 2) (c 3) (c 4) (c 5) #[] (thunk stuck)⟩
+  ⟨"lazyInd", 6, [], 2, fun c _ l => .lazyInd (l 0) (c 0) (c 1) (l 1) (c 2) (c 3) (c 4) (c 5) #[] (thunk stuck)⟩,
+  ⟨"lazyEq", 3, [], 0, fun c _ _ => .lazyEq (c 0) (c 1) (c 2) (thunk stuck)⟩
 ]
 
 def headTable : List ValRow := [
@@ -458,7 +475,7 @@ def headTable : List ValRow := [
   ⟨"reflTy", 1, [], 0, fun c _ _ => .neutral (.reflTy (c 0)) #[]⟩,
   ⟨"transp", 6, [], 0, fun c _ _ => .neutral (.transp (c 0) (c 1) (c 2) (c 3) (c 4) (c 5)) #[]⟩,
   -- the suspended proof `var 0` in the environment `[c 0]`, whose value is `c 0`
-  ⟨"prf", 1, [], 0, fun c _ _ => .neutral (.prf (thunk stuck) [c 0] (.var 0) (thunk (c 0))) #[]⟩
+  ⟨"prf", 1, [], 0, fun c _ _ => .neutral (.prf [c 0] (.var 0)) #[]⟩
 ]
 
 /-- The eliminations, as builders of one spine entry. -/
@@ -500,7 +517,7 @@ def valCtorName : Val R → String
   | .nu .. => "nu" | .size => "size" | .szInf => "szInf" | .szSuc _ => "szSuc"
   | .sizeLt _ => "sizeLt" | .cocon _ => "cocon" | .scofix .. => "scofix" | .coit .. => "coit"
   | .natLit _ => "natLit" | .ulift .. => "ulift" | .up _ => "up" | .unfold .. => "unfold"
-  | .lazyInd .. => "lazyInd"
+  | .lazyInd .. => "lazyInd" | .lazyEq .. => "lazyEq"
 
 def headCtorName : Head R → String
   | .local _ => "local" | .global .. => "global" | .mvar _ => "mvar" | .eq .. => "eq"
@@ -520,21 +537,19 @@ def plainK : Closure R := .mk [] (.var 0)
 /-- A closure under `b` binders whose body is the entry of its environment. -/
 def markK (b : Nat) (v : Val R) : Closure R := .mk [v] (.var b)
 
-/-- Every child of every value constructor counts for `lvlBound`, and is read back by
+/-- Every child of every value constructor is read back by
 `quote` in both modes; `eraseExempt` names the rows whose children are erased proofs. -/
 def checkValRows (what : String) (rows : List ValRow) (eraseExempt : List String := []) :
     Failures Unit := do
   for row in rows do
     let plain := row.build (fun _ => plainV) (fun _ => plainK) (fun _ => .zero)
-    let base := plain.lvlBound
+    let _ := plain
     let marked : List (String × Val R) :=
       (List.range row.vals).map (fun j => (s!"value child {j}",
         row.build (fun i => if i == j then Val.var VM else plainV) (fun _ => plainK) (fun _ => .zero))) ++
       (List.range row.closures.length).map (fun j => (s!"closure child {j}",
         row.build (fun _ => plainV) (fun i => if i == j then markK row.closures[j]! (Val.var VM) else plainK) (fun _ => .zero)))
     for (child, w) in marked do
-      expect (w.lvlBound == max base (VM + 1))
-        s!"{what}.{row.name}, {child}: lvlBound is {w.lvlBound}, expected {VM + 1} (a variable of the child is not counted)"
       for erase in [false, true] do
         let g := semGlobals erase
         let back := quote g (VM + 1) w
@@ -561,12 +576,13 @@ def levelTable : List LevelRow := [
   ⟨"max", 2, fun c => .max (c 0) (c 1)⟩,
   ⟨"imax", 2, fun c => .imax (c 0) (c 1)⟩,
   ⟨"param", 0, fun _ => .param "p"⟩,
-  ⟨"mvar", 0, fun _ => .mvar 0⟩
+  ⟨"mvar", 0, fun _ => .mvar 0⟩,
+  ⟨"hole", 0, fun _ => .hole⟩
 ]
 
 def levelCtorName : Level → String
   | .zero => "zero" | .succ _ => "succ" | .max .. => "max" | .imax .. => "imax"
-  | .param _ => "param" | .mvar _ => "mvar"
+  | .param _ => "param" | .mvar _ => "mvar" | .hole => "hole"
 
 def checkLevels : Failures Unit := do
   for row in levelTable do
@@ -630,7 +646,7 @@ def catchAlls (body : List String) : List String :=
 
 /-- file, function, the number of default arms, and why they are safe (the note has more). -/
 def pinned : List (String × String × Nat × String) := [
-  ("Wiz/Core/Term.lean", "mapChildrenM", 1, "`| t => pure t`: the childless constructors; the lint checks every constructor with children dynamically"),
+  ("Wiz/Core/Term.lean", "mapChildrenM", 0, "the leaves by name (prf-conv): no default arm"),
   ("Wiz/Core/Term.lean", "lift", 1, "everything but `var` goes to mapChildrenM"),
   ("Wiz/Core/Term.lean", "abstract", 1, "as lift"),
   ("Wiz/Core/Term.lean", "strengthen?", 1, "as lift"),
@@ -638,11 +654,6 @@ def pinned : List (String × String × Nat × String) := [
   ("Wiz/Core/Term.lean", "hasVar", 1, "as lift"),
   ("Wiz/Core/Term.lean", "instLevels", 0, ""),
   ("Wiz/Core/Term.lean", "levelParamsUsed", 0, ""),
-  ("Wiz/Core/Eval.lean", "Term.freeVarsAt", 1, "as lift"),
-  ("Wiz/Core/Eval.lean", "Val.lvlBound", 0, ""),
-  ("Wiz/Core/Eval.lean", "Head.lvlBound", 0, ""),
-  ("Wiz/Core/Eval.lean", "Elim.lvlBound", 0, ""),
-  ("Wiz/Core/Eval.lean", "Closure.lvlBound", 0, ""),
   ("Wiz/Core/Eval.lean", "eval", 2, "`const`: no definition is a stuck global; `szSuc`: any size but ∞"),
   ("Wiz/Core/Eval.lean", "quote", 2, "the erased proof's `isAbsurd`; a lazyInd's spine holds only app/fst/snd/down (the lint checks that dynamically: 'glued spines')"),
   ("Wiz/Core/Eval.lean", "vElims", 0, ""),
@@ -827,19 +838,12 @@ def wizFns : List WizFn := [
   -- "might mention the variable": the default is `true`, the conservative answer
   { fn := "usesVar", ty := "Tm", arg := 1, defaultOk := true,
     exempt := closedConst "closed" },
-  -- the level bound that `sameVal` quotes at (S1): total, every child counted
-  { fn := "lvlBound", ty := "Val", arg := 0 },
-  { fn := "headBound", ty := "Head", arg := 0, exempt := closedConst "closed" },
-  { fn := "spineBound", ty := "Spine", arg := 0 },
-  { fn := "envBound", ty := "Env", arg := 1 },
-  { fn := "branchesBound", ty := "Tms", arg := 1 },
   -- evaluation and read-back
   { fn := "eval", ty := "Tm", arg := 1,
     exempt := closedConst "a constant's type is not part of its value" ++ [
       ("letE", "ty", "a let's type is not part of its value"), ("letq", "ty", "as letE"),
       ("ann", "ty", "an annotation is not part of the value")] },
-  { fn := "forceSp", ty := "Spine", arg := 1,
-    pending := some "`| v, _ => v` drops ecase/delim/ind/sfix/scase/out from a suspended proof's spine when it is read back (display only today; audit review C-3; prf-conv rewrites this function)" },
+  { fn := "forceSp", ty := "Spine", arg := 1 },
   { fn := "fromAbsurd", ty := "Spine", arg := 0,
     exempt := [("sabsurd", "sp", "the eliminations from the last `absurd` on: what is below it is the erased proof")] },
   { fn := "quoteM", ty := "Val", arg := 1 },
@@ -850,7 +854,7 @@ def wizFns : List WizFn := [
   { fn := "convHead", ty := "Head", arg := 1, binary := true, defaultOk := true, diagonal := true,
     childTys := ["Tm", "Tms", "Val", "Env", "Spine", "Head", "Lvl", "List Lvl"],
     exempt := closedConst "constants are compared by name" ++ proofFields },
-  { fn := "convSpine", ty := "Spine", arg := 2, binary := true, defaultOk := true, diagonal := true },
+  { fn := "convSpineW", ty := "Spine", arg := 3, binary := true, defaultOk := true, diagonal := true },
   -- the structural fast path (`valSame`): its default is "don't know", but an arm that
   -- answers "the same" must have compared every child, levels included
   { fn := "headSame", ty := "Head", arg := 1, binary := true, defaultOk := true,
@@ -858,6 +862,12 @@ def wizFns : List WizFn := [
     exempt := closedConst "constants are compared by name" },
   { fn := "spineSame", ty := "Spine", arg := 1, binary := true, defaultOk := true },
   { fn := "valSame", ty := "Val", arg := 1, binary := true, defaultOk := true },
+  -- (mandatory sorts) the sorts pass skips a term without holes: a hole missed here is
+  -- one the pass does not fill (a kernel error, never unsoundness)
+  { fn := "tmHasHole", ty := "Tm", arg := 0, childTys := ["Tm", "Tms", "Lvl"],
+    exempt := closedConst "a constant's value and type are closed and were filled when it was declared" ++
+      [("const", "levels", "a constant's levels are never holes")] },
+  { fn := "lvlHasHole", ty := "Lvl", arg := 0, childTys := ["Lvl"] },
 ]
 
 /-! ## The lint against a broken traversal
@@ -906,7 +916,7 @@ def panicSites : List (String × Term R) := [
 def hintCarrier (X : Term R) : Decl R :=
   { name := "carrier", value := none
     type := .pi "x" .default (.qlit .one)
-      (.mu 0 (.unit 1) (.dret .tt) .tt .szInf (some ("hint", [], [X]))) (.unit 1) none }
+      (.mu 0 (.unit 1) (.dret .tt) .tt .szInf (some ("hint", [], [X]))) (.unit 1) ⟨1, 1⟩ }
 
 /-- `tests --panic-probe MODE SITE`: check `hintCarrier` of the site's term (`eval`: just
 evaluate `fst ()` and print the constructor of the value; `eval:SITE`: evaluate the site's
@@ -930,12 +940,72 @@ def panicProbe (mode site : String) : IO UInt32 := do
   | .error e => IO.println s!"rejected: {e}"
   return 0
 
+/-! ## `isoKey`: every setting of `Globals` is in the key
+
+`runFrontend` keeps the modules it elaborated in isolation for the whole process, keyed by
+`isoKey`: the texts and the settings of the base state. A setting left out of the key lets a
+module elaborated under one value be reused under another (`lazyEqs` was: a test's
+`--eager-eqs` run got the glued Prelude). Every field of `Globals` is listed here, either as
+a setting, with a way to change it (the key must change), or as state, with why it isn't
+one. A new field fails the test until it is listed. -/
+
+open Lean Elab Term in
+/-- The fields of `Wiz.Globals`, in order, as the compiler sees them. -/
+elab "globalsFields%" : term => do
+  return toExpr ((getStructureFields (← getEnv) ``Wiz.Globals).toList.map toString)
+
+/-- The settings, each with a change of it. -/
+def globalsSettings : List (String × (Globals R → Globals R)) := [
+  ("eager", fun g => { g with eager := !g.eager }),
+  ("regularity", fun g => { g with regularity := match g.regularity with | .full => .off | _ => .full }),
+  ("lazyProofs", fun g => { g with lazyProofs := !g.lazyProofs }),
+  ("lazyEqs", fun g => { g with lazyEqs := !g.lazyEqs }),
+  ("inertReg", fun g => { g with inertReg := match g.inertReg with | .conv => .ground | _ => .conv }),
+  ("unboxStructs", fun g => { g with unboxStructs := !g.unboxStructs }),
+  ("pushCalls", fun g => { g with pushCalls := !g.pushCalls }),
+  ("predicativeProp", fun g => { g with predicativeProp := !g.predicativeProp }),
+  ("strictPrivacy", fun g => { g with strictPrivacy := !g.strictPrivacy }),
+  ("builtins", fun g => { g with builtins := ("nat", "N") :: g.builtins }),
+  ("strictProofs", fun g => { g with strictProofs := !g.strictProofs }),
+  ("proofSteps", fun g => { g with proofSteps := g.proofSteps + 1 }),
+  ("traceProofSteps", fun g => { g with traceProofSteps := !g.traceProofSteps }),
+  ("sortHolesOk", fun g => { g with sortHolesOk := !g.sortHolesOk }),
+  ("pp", fun g => { g with pp := { g.pp with useNotation := !g.pp.useNotation } })]
+
+/-- The other fields: what a module's elaboration builds, or what is never set on a base
+state. -/
+def globalsState : List (String × String) := [
+  ("decls", "the declarations (a base state has none: `isoKey` requires it)"),
+  ("order", "the declarations' order (likewise)"),
+  ("assumed", "unchecked `builtin`s, made by the module itself"),
+  ("quoteErasesProofs", "set by the kernel's own comparisons, inside one call, never on a state"),
+  ("privates", "made by the module's private declarations"),
+  ("opaques", "made by the module's private constructors"),
+  ("hidden", "the definitions `elabView` hides, made from the declarations, never on a base state"),
+  ("module", "the module being elaborated, set per module"),
+  ("instCache", "derived from the declarations by `insert`"),
+  ("budget", "the budget of a read-back in progress, set inside one call, never on a state"),
+  ("declModule", "made per declaration")]
+
 /-! ## The group -/
 
 def lintGroup : Group where
   name := "lint"
   exercise := "kernel hygiene (wiz-notes/kernel-lint.md)"
   cases := [
+    { name := "isoKey: every setting of Globals is in the key (the cache of imported modules)", run := fun _ => do
+        let all := globalsFields%
+        let listed := globalsSettings.map (·.1) ++ globalsState.map (·.1)
+        for f in all do
+          unless listed.contains f do
+            throw (IO.userError s!"Globals.{f} is not listed: a setting goes in `isoKey` and globalsSettings, state in globalsState")
+        for f in listed do
+          unless all.contains f do throw (IO.userError s!"globalsSettings/globalsState list {f}, which Globals has no more")
+        let base : CommandState R := { loader := fun m => if m == "M" then some "def x : Unit := ()\n" else none }
+        let some k := isoKey base "M" | throw (IO.userError "no key for a pristine base")
+        for (f, change) in globalsSettings do
+          let some k' := isoKey { base with globals := change base.globals } "M" | throw (IO.userError s!"{f}: no key")
+          unless k != k' do throw (IO.userError s!"Globals.{f} is not in isoKey: changing it leaves the key as it was") },
     { name := "Term: every constructor in the source has a witness row, with the source's children", run := fun _ => do
         let ctors ← readCtors "Wiz/Core/Term.lean" "Term"
         report "Term table" do
@@ -945,7 +1015,7 @@ def lintGroup : Group where
             expect (termCtorName w == r.name) s!"Term.{r.name}: the row builds a `{termCtorName w}`" },
     { name := "Term: mapChildrenM, forChildren, freeVarsAt, hasVar, lift, instantiateAt, strengthen?, abstract, instLevels, levelParamsUsed reach every child", run := fun _ =>
         report "Term traversals" (checkTermOps kernelOps termTable) },
-    { name := "Term: eval, Val.lvlBound and quote (both modes) keep every child and level", run := fun _ =>
+    { name := "Term: eval and quote (both modes) keep every child and level", run := fun _ =>
         report "Term evaluation" (checkTermEval termTable) },
     { name := "the lint fails on the S1 bug (a traversal without a case for natOp)", run := fun _ => do
         let ((), fs) ← (checkTermOps brokenOps termTable).run #[]
@@ -971,14 +1041,13 @@ def lintGroup : Group where
           for r in elimTable do
             let e := r.build (fun _ => plainV) (fun _ => plainK) (fun _ => .zero)
             expect (elimCtorName e == r.name) s!"Elim.{r.name}: the row builds a `{elimCtorName e}`" },
-    { name := "Val, Head, Elim: lvlBound counts and quote (both modes) reads back every child and level", run := fun _ =>
+    { name := "Val, Head, Elim: quote (both modes) reads back every child and level", run := fun _ =>
         report "value traversals" do
           checkValRows "Val" valTable
           -- (a suspended proof is erased by `quoteErasesProofs`; its bound still counts)
-          checkValRows "Head" headTable (eraseExempt := ["prf"])
+          checkValRows "Head" headTable (eraseExempt := ["prf", "refl", "reflTy", "transp"])
           checkValRows "Elim" (elimTable.map (·.toValRow fun e => .neutral (.global "h" []) #[e]))
           -- the variable itself
-          expect ((Val.var 4 : Val R).lvlBound == 5) "Head.local: lvlBound is not the level + 1"
           expect (quote (semGlobals false) 7 (Val.var 4 : Val R) == .var 2) "Head.local: quote is not the index" },
     { name := "glued spines: every elimination of an unfold or a lazyInd is counted and read back", run := fun _ =>
         report "glued spines" do

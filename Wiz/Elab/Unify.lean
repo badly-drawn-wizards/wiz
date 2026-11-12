@@ -58,7 +58,8 @@ def elimsChecked (m : Nat) (sol : Val R) (sp : Array (Elim R)) : ElabM R (Val R)
   let g ← getGlobals
   let mut v := sol
   for e in sp do
-    let fits : Bool := match v, e with
+    -- (on a constructor, `ind` is lazy for speed alone: what it computes must fit)
+    let fits : Bool := match unlazyCon v, e with
       | .neutral .., _ | .unfold .., _ | .lazyInd .., _ => true
       | .lam .., .app _ => true
       | .pair .., .fst | .pair .., .snd => true
@@ -92,6 +93,7 @@ partial def force (v : Val R) : ElabM R (Val R) := do
   match ← forceMeta v with
   | .unfold _ _ _ v => force v.get
   | .lazyInd _ _ _ _ _ _ _ _ _ v => force v.get
+  | .lazyEq _ _ _ v => force v.get
   | v => pure v
 
 /-- An equation stuck on a metavariable (its type or a side) computes once the
@@ -172,7 +174,9 @@ partial def rename (m : Nat) (p : PRen) (v : Val R) : ElabM R (Term R) := do
   -- (given) a glued value keeps its name in the solution
   if let .unfold n us sp _ ← forceMeta v then return ← rename m p (.neutral (.global n us) sp)
   -- (given) and glued induction on a numeral keeps its folded form
-  if let .lazyInd lv I D w P mt i x sp _ ← forceMeta v then
+  if let .lazyInd lv I D w P mt i x sp val ← forceMeta v then
+    -- (on a constructor, `ind` is lazy for speed alone: renamed as what it computes)
+    if (whnf x matches .con _) then return ← rename m p val.get
     let t := Term.ind lv (← rename m p I) (← rename m p D) w (← rename m p P) (← rename m p mt) (← rename m p i) (← rename m p x)
     return ← sp.foldlM (fun t e => match e with
       | .app a => return .app t (← rename m p a)
@@ -180,6 +184,9 @@ partial def rename (m : Nat) (p : PRen) (v : Val R) : ElabM R (Term R) := do
       | .snd => pure (.snd t)
       | .down => pure (.down t)
       | _ => pure t) t
+  -- (glued equations) folded, as written
+  if let .lazyEq A a b _ ← forceMeta v then
+    return .eq (← rename m p A) (← rename m p a) (← rename m p b)
   if let .natLit n ← force v then return .natLit n
   --<sol
   let goSp (h : Term R) (sp : Array (Elim R)) : ElabM R (Term R) :=
@@ -209,6 +216,7 @@ partial def rename (m : Nat) (p : PRen) (v : Val R) : ElabM R (Term R) := do
       | .sfix l I D v P f s i =>
         return .sfix l (← rename m p I) (← rename m p D) v (← rename m p P) (← rename m p f) (← rename m p s) (← rename m p i) acc
   match ← force v with
+  | .lazyEq _ _ _ v => rename m p v.get  -- (not reached: `force` forces it)
   | .neutral (.local x) sp =>
     match p.ren[x]? with
     | some x' => goSp (.var (p.dom - x' - 1)) sp
@@ -230,7 +238,24 @@ partial def rename (m : Nat) (p : PRen) (v : Val R) : ElabM R (Term R) := do
       (← rename m p b) (← rename m p e)) sp
   -- (P2) a suspended proof is evaluated for a solution (a normal form, which the kernel
   -- can check)
-  | .neutral (.prf _ _ _ pv) sp => do rename m p (vElims (← getGlobals) pv.get sp)
+  -- within a step budget (`Budget`): a proof need not have one
+  | .neutral (.prf env t) sp => do
+    let g ← getGlobals
+    match g.budget with
+    | some _ => rename m p (vElims g (eval g env t) sp)
+    | none =>
+      -- (the monadic read-back is a pure function of the state: it runs inside the budget)
+      let st ← get
+      let (r, used) := Budget.run g.proofSteps fun b =>
+        let g' := { g with budget := some b }
+        match (rename m p (vElims g' (eval g' env t) sp)).run { st with globals := g' } with
+        | .ok (tm, st') => (some tm, some st', none)
+        | .error e => (none, none, some e)
+      if used > g.proofSteps then throwAt {} (Budget.message g.proofSteps)
+      match r with
+      | (some tm, some st', _) => set { st' with globals := g }; pure tm
+      | (_, _, some e) => throw e
+      | _ => throwAt {} "internal error: read-back of a proof"
   | .neutral (.mvar m') sp =>
     if m == m' then throwAt {} s!"occurs check: ?m{m} would have to contain itself"
     else
@@ -277,7 +302,7 @@ partial def rename (m : Nat) (p : PRen) (v : Val R) : ElabM R (Term R) := do
   | .mu l I D i s h => return .mu l (← rename m p I) (← rename m p D) (← rename m p i) (← rename m p s) (← renameHint h)
   | .nu l I D i s h => return .nu l (← rename m p I) (← rename m p D) (← rename m p i) (← rename m p s) (← renameHint h)
   | .con x => return .con (← rename m p x)
-  | .ulift l A => return .ulift l (← rename m p A)
+  | .ulift k l A => return .ulift k l (← rename m p A)
   | .up a => return .up (← rename m p a)
   | .natLit n => return .natLit n
   | .unfold n us sp _ => goSp (.const n us) sp
@@ -522,7 +547,7 @@ partial def unify (l : Lvl) (t u : Val R) : ElabM R Unit := do
   | .mu u I D i s _, .mu u' I' D' i' s' _ | .nu u I D i s _, .nu u' I' D' i' s' _ =>
     unifyLevel u u'; unify l I I'; unify l D D'; unify l i i'; unify l s s'
   | .con x, .con y => unify l x y
-  | .ulift u A, .ulift u' A' => unifyLevel u u'; unify l A A'
+  | .ulift _ u A, .ulift _ u' A' => unifyLevel u u'; unify l A A'
   | .up a, .up b => unify l a b
   | .up a, t'@(.neutral ..) => unify l a (vDown t')
   | t'@(.neutral ..), .up a => unify l (vDown t') a
@@ -561,7 +586,11 @@ partial def unifyGlued (l : Lvl) (t u : Val R) : ElabM R Bool := do
     let s ← get
     try x; pure true catch e => set s; keepLearnt e; pure false
   match t, u with
-  | .lazyInd .., .lazyInd .. =>
+  -- (glued equations) side by side; on failure the caller forces both
+  | .lazyEq A a b _, .lazyEq A' a' b' _ => attempt do unify l A A'; unify l a a'; unify l b b'
+  | .lazyInd _ _ _ _ _ _ _ x _ _, .lazyInd _ _ _ _ _ _ _ y _ _ =>
+    -- (on a constructor, `ind` is lazy for speed alone: compared by what it computes)
+    if (whnf x matches .con _) || (whnf y matches .con _) then return false
     let g ← getGlobals
     pure (quote g l t == quote g l u)
   | .unfold n us sp v, .unfold n' us' sp' v' =>
@@ -593,6 +622,9 @@ partial def unifyGlued (l : Lvl) (t u : Val R) : ElabM R Bool := do
         -- (with the state as it is now, which has what was learnt)
         throw { err with state? := some (← get) }
       attempt other
+  | .neutral (.mvar m) sp, v@(.lazyEq ..) | v@(.lazyEq ..), .neutral (.mvar m) sp =>
+    noteMeta
+    attempt (solve l m sp v)
   | .neutral (.mvar m) sp, v@(.unfold ..) | v@(.unfold ..), .neutral (.mvar m) sp =>
     noteMeta
     if ← attempt (solve l m sp v) then return true

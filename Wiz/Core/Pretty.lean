@@ -519,8 +519,10 @@ partial def printNode (env : Option (Globals R)) (names : List Name) (tys : List
   | .coit _ _ _ S st i s => app (txt "coit") [S, st, i, s]
   | .natLit n => pure (txt (toString n))
   -- Q4: the elaborator lifts small fields; `up`/`down` are invisible
-  | .ulift _ A => app (txt "ULift") [A]
+  | .ulift _ _ A => app (txt "ULift") [A]
   | .up a | .down a => printNode env names tys prec a noUnexp
+  -- (P2) the proof marker is invisible too
+  | .prf _ a => printNode env names tys prec a noUnexp
   | .natOp op args => app (txt s!"<{op}>") args.toList
   | .transp _ _ P p _ e =>
     pure (paren (prec > 1022) (cat [txt "transp ", ← sub 1023 P, txt " ", ← sub 1023 p, txt " ", ← sub 1023 e]))

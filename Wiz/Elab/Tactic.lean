@@ -172,7 +172,7 @@ partial def reify (handles : Array (Term R × Nat)) (v : RVal) (depth : Nat) : E
   | some 3 =>
     let bi : BinderInfo := if decodeBool (v.conField 1) == some true then .implicit else .default
     return .pi (← str (v.conField 0)) bi (← reify handles (v.conField 2) depth)
-      (← reify handles (v.conField 3) depth) (← reify handles (v.conField 4) (depth + 1)) none
+      (← reify handles (v.conField 3) depth) (← reify handles (v.conField 4) (depth + 1)) .hole
   | some 4 => return .lam (← str (v.conField 0)) (← reify handles (v.conField 1) (depth + 1))
   | some 5 => return .app (← reify handles (v.conField 0) depth) (← reify handles (v.conField 1) depth)
   | some 6 => return .natLit (← nat (v.conField 0))
@@ -556,6 +556,7 @@ partial def forceNames (v : Val R) (names : List Name := []) : ElabM R (Val R ×
   | .unfold n _ _ v =>
     forceNames v.get (if names.contains n || isRecursor (← getGlobals) n then names else names ++ [n])
   | .lazyInd _ _ _ _ _ _ _ _ _ v => forceNames v.get names
+  | .lazyEq _ _ _ v => forceNames v.get names
   | v => pure (v, names)
 
 /-- The weak head normal form of `t`, with recursive calls folded back. -/
