@@ -83,6 +83,12 @@ def group : Group where
         let ms ← msgs (lcg ++ s!"def it : iter 20000 (UIntN.ofNat 16 1) = UIntN.ofNat 16 {lcgValue 20000} := native_refl\n#print axioms it\n")
         noErrors ms
         expect ms "'it' depends on axioms: [it.native✝" },
+    { name := "V1: the OLED demo's units at full width (examples/hdl-verified-native.wiz)", run := fun _ => do
+        let ms ← msgs (← IO.FS.readFile "examples/hdl-verified-native.wiz")
+        noErrors ms
+        expect ms "root_full is accepted on the strength of native evaluation"
+        expect ms "smin_full is accepted on the strength of native evaluation"
+        expect ms "'smin_full' depends on axioms: [smin_full.native✝" },
     { name := "rejected without --trust-native", run := fun _ => do
         let ms ← msgs (sumTo ++ "def s : sumTo 4 = 10 := native_refl\n") (trust := false)
         expect ms "error: native evaluation is not enabled"

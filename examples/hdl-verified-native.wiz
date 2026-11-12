@@ -1,0 +1,21 @@
+-- Verified circuit optimisation, the full-width checks (docs/libraries.md, H14 V1).
+--
+-- TRUST NOTE: every `native_refl` below is accepted only with --trust-native and is NOT
+-- checked by the kernel: each adds an axiom `X.native✝` (listed by `#print axioms`) and
+-- trusts erasure and `#eval`'s interpreter (stage 27a). The kernel-checked part, with
+-- nothing trusted, is examples/hdl-verified.wiz. These inputs are out of the kernel's
+-- reach today (about 14 ms per case there; 2^20 cases here).
+import Hdl.Verified
+
+-- Sphere's square root on every input it can take (n < 1024 = 32², the kernel has n ≤ 400)
+def root_full : allBelow Hv.rtOk 1024 = .true := native_refl
+-- Blobs' seven-step root, every 13-bit input
+def blobRoot_full : allBelow Hv.aRootOk 8192 = .true := native_refl
+-- Blobs' stage A end to end: squarers, × 4, root: ρ = 2 ⌊√(4 (ax² + ay²))⌋
+def rho_full : allBelow Hv.rhoOk 1024 = .true := native_refl
+-- the length estimate, every a, c < 1024: n² ≤ a² + c² ≤ 1.21 (n + 2)²
+def norm_full : allBelow Hv.normOk 1048576 = .true := native_refl
+-- the smooth minimum, every d₁, d₂ in [-64, 960): min − c − 1, c ≤ g²/256 < c + 2
+def smin_full : allBelow Hv.sminOk 1048576 = .true := native_refl
+
+#print axioms smin_full
