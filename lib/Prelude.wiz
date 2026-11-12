@@ -241,8 +241,17 @@ instance : ShiftRight Nat := ShiftRight.mk Nat.shiftRight
 infixl:55 " ||| " => OrOp.or
 infixl:58 " ^^^ " => XorOp.xor
 infixl:60 " &&& " => AndOp.and
-infixl:75 " <<< " => ShiftLeft.shiftLeft
-infixl:75 " >>> " => ShiftRight.shiftRight
+-- The notation takes the amount at any type `B` (Lean's `HShiftLeft`, without its result
+-- type): `ShiftLeft A` gives `HShiftLeft A Nat`, and an HDL signal also shifts by a signal
+-- (H14 S4). A numeral amount is a `Nat` (the default type of a numeral).
+class HShiftLeft (A B : Type) where
+  hShiftLeft : A → B → A
+class HShiftRight (A B : Type) where
+  hShiftRight : A → B → A
+instance {A : Type} [ShiftLeft A] : HShiftLeft A Nat := HShiftLeft.mk (fun a k => ShiftLeft.shiftLeft a k)
+instance {A : Type} [ShiftRight A] : HShiftRight A Nat := HShiftRight.mk (fun a k => ShiftRight.shiftRight a k)
+infixl:75 " <<< " => HShiftLeft.hShiftLeft
+infixl:75 " >>> " => HShiftRight.hShiftRight
 notation:max "~~~" a:max => Complement.complement a
 -- (end of the numeric classes)
 

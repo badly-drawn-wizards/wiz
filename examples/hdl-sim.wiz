@@ -66,6 +66,16 @@ def acc8 : Circuit B8 B8 := Circuit.mk B8 (BitVec.ofNat 8 0) (fun s x => Hw.pair
 def piped : Circuit AluIn.code B8 :=
   Circuit.seq (Circuit.mapOut (fun y => Hw.untag (Hw.fst y)) alu) (Circuit.seq (Circuit.delay B8 (BitVec.ofNat 8 7)) acc8)
 
+-- (H14 S4) shifts by a signal and signed comparisons, at 70 and 8 bits (amounts past
+-- the width included)
+def shiftStep {r : HwTy → Type} [Hw r] (s : r B70) (x : r B8) : r (HwTy.prod B70 B8) :=
+  let amt := Hw.slice 0 7 x;
+  let up := Hw.add (Hw.shlBy s (Hw.slice 0 3 x)) (Hw.cat x (Hw.lit 62 77));
+  let down := Hw.mux (Hw.slt s (Hw.cat x (Hw.lit 62 0))) (Hw.ashrBy s amt) (Hw.lshrBy s amt);
+  Hw.pair (Hw.xor up down)
+    (Hw.xor (Hw.slice 0 8 s) (Hw.mux (Hw.slt x (Hw.slice 62 8 s)) (Hw.ashrBy x (Hw.slice 4 4 x)) (Hw.shlBy x (Hw.slice 5 3 x))))
+def shifter : Circuit B8 B8 := Circuit.mk B70 (BitVec.ofNat 70 1000000000000000000001) shiftStep
+
 def Rng.next (s : Nat) : Nat := Nat.mod (s * 1103515245 + 12345) 2147483648
 def Rng.trace (m : Nat) : Nat → Nat → List Nat
   | .zero, _ => .nil
@@ -110,5 +120,6 @@ def main : IO Unit := do
   IO.println (report "alu" alu (Rng.trace 1024 3000 1));
   IO.println (report "alu with reset and enable" aluRE (Rng.trace 4096 3000 2));
   IO.println (report "piped" piped (Rng.trace 1024 3000 3));
+  IO.println (report "shifter" shifter (Rng.trace 256 3000 4));
   IO.println ("not well formed: " <+> yes (Bool.not (Netlist.wellFormed badNet)) <+> ", simFast = simulate: "
     <+> yes (leavesEq (Netlist.simFast badNet badIns) (Netlist.simulate badNet badIns)))

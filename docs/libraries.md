@@ -183,9 +183,8 @@ Signals are written with operators: `c + 1`, `x &&& ~~~y`, `s.left === 0`,
   type other than `Nat` (`OfNat.ofNat A n _`) now prints as the numeral, for `Int` and
   words too (`fun x => x + 1 : Int → Int`).
 
-Not done: shifts by a signal (a barrel shifter needs a `NetOp`), signed comparisons and
-arithmetic shift, ASCII spellings of `≤ᵤ` …, `&&`/`||` on signals (they are `if`s whose
-other branch is a `Bool`).
+Not done: ASCII spellings of `≤ᵤ` …. (Shifts by a signal, signed comparisons, arithmetic
+shift and `&&`/`||` on signals: H14 S4.)
 
 ## H14 S3: fast simulation for compiled programs (`import Hdl.Sim`) ✅
 
@@ -223,6 +222,84 @@ updated in place (`Array`, lib/Std.wiz).
 Not done: skipping nodes whose arguments did not change (event-driven simulation),
 generated C for a netlist, a value simulation that keeps its meta-level work (caching
 closed top-level definitions in compiled code would remove the table rebuilding).
+
+## H14 S4: the iCEstick gaps: shifts by a signal, signed operations, `&&`/`||`, BitPack, reset and enable ✅
+
+What the iCEstick projects (`/workspace/wiz-icestick-uart`, FINDINGS.md) still had to
+work around after S1 and S2. Everything is in `lib/Hdl/Core.wiz`; the examples and tests
+are `examples/hdl-gaps.wiz` (group `hdl`, with Icarus Verilog test benches when
+`iverilog` is installed) and a shifter in `examples/hdl-sim.wiz` (S3's fast simulation).
+
+| notation (at `r (HwTy.bits n)`) | meaning | Verilog |
+|---|---|---|
+| `a <<< s`, `a >>> s` (`s : r (HwTy.bits m)`) | logical shifts by a signal (`Hw.shlBy`, `Hw.lshrBy`) | `a << s`, `a >> s` |
+| `a >>>ₛ s` | arithmetic shift right by a signal (`Hw.ashrBy`) | `$signed(a) >>> s` |
+| `a >>>ₛ k` (`k : Nat`) | arithmetic shift right by a fixed amount: wiring (`Hw.ashr`) | |
+| `a <ₛ b`, `a ≤ₛ b`, `a >ₛ b`, `a ≥ₛ b` | signed (two's complement) comparisons, one bit (`Hw.slt`, `sle`, `sgt`, `sge`) | `$signed(a) < $signed(b)` |
+| `a && b`, `a \|\| b` (`a b : r HwTy.bit`) | `a &&& b`, `a \|\|\| b` | `&`, `\|` |
+
+* **Shifts by a signal** are four new `Hw` operations (`shlBy`, `lshrBy`, `ashrBy`, `slt`)
+  and four new `NetOp`s (`shl`, `lshr`, `ashr`, `slt`; codes 20–23, leaving 17–19 to
+  memories, H14 C3). The values (`HwTy.El`), the netlist simulation and `Hdl.Sim` all
+  compute them with one set of functions on numbers (`Hdl.shlN`, `lshrN`, `ashrN`,
+  `sltN`), and an amount of `n` or more gives 0 (or all sign bits) without computing
+  `2^s`. `examples/hdl-gaps.wiz` checks the values against lib/BitVec.wiz's own
+  `BitVec.shl`/`lshr`/`ashr`/`slt`/`sle` (every 8-bit value and amount), and the
+  Verilog with a test bench that replays the value simulation in Icarus Verilog.
+* **The shift notation takes any amount type.** `<<<` and `>>>` are now the prelude's
+  `HShiftLeft A B`/`HShiftRight A B` (Lean's `HShiftLeft` without its result type), with
+  `HShiftLeft A Nat` from every `ShiftLeft A`, so `Nat`, words and the fixed shifts of S2
+  are unchanged, and the HDL adds `HShiftLeft (r (bits n)) (r (bits m))`. A numeral amount
+  is a `Nat` (the default type of a numeral), so `x <<< 2` is still wiring.
+  `>>>ₛ` is the HDL's class `AShiftRight A B` (signals only).
+* **`&&` and `||` on one-bit signals.** The prelude's `a && b` is
+  `if a then b else Bool.false` and `a || b` is `if a then Bool.true else b`. When `a` is a
+  signal (S2's `if`-as-a-mux test), the elaborator (`ifMux?`) makes them the gates
+  `AndOp.and a b` / `OrOp.or a b` at the condition's type, so they print as `&&&`/`|||`
+  and have the Verilog of those. On `Bool` they are unchanged (`!` is still `Bool.not`
+  only: use `~~~` on a signal).
+* **`deriving BitPack`.** `structure BitPack A` is a type's values as bit vectors of one
+  width (a value, not an instance, as `Bundle`). For an **enumeration** (no parameters,
+  constructors without fields) constructor `i` is the number `i` in
+  `⌈log₂ #constructors⌉` bits (Clash's encoding):
+  ```
+  inductive Phase where | idle | start | data | stop  deriving BitPack
+  -- Phase.width = 2, Phase.code = HwTy.bits 2, Phase.toNat, Phase.ofNat (out of range:
+  -- the first constructor), Phase.pack : Phase → HwTy.El Phase.code, Phase.unpack,
+  -- Phase.unpack_pack : Phase.unpack (Phase.pack p) = p (by cases), Phase.bitPack,
+  -- Phase.lit p : r Phase.code (the constant in a circuit: `s.ph === Phase.lit .stop`)
+  ```
+  A bundle's field can be `r Phase.code`. For a **bundle** `S Δ r` it adds `S.width`,
+  `S.toBits : S Δ r → r (HwTy.bits (S.width Δ))` and `S.ofBits` (the bundle as one bus:
+  `Hw.packBits`/`Hw.unpackBits`, first field in the high bits as `HwTy.pack`; wiring
+  only), `S.unpack_pack : S.unpack (S.pack s) = s` at values and `S.bitPack`; it derives
+  the `Bundle` too when `S.code` does not exist yet (`deriving Bundle, BitPack` or just
+  `deriving BitPack`). The bit-level round trip `S.ofBits (S.toBits s) = s` holds by `rfl`
+  for closed values (the example checks one, and all 32 values of a 5-bit bundle); a
+  general lemma needs words' range proofs (stage 22l) and lemmas on `concat`/`slice`.
+* **Reset and enable: the convention.** A design with a reset or a clock enable takes
+  them as its first inputs, named `rst` and `en`, reset first: both synchronous and
+  active high, and the reset wins over the enable, as
+  `always @(posedge clk) if (rst) r <= init; else if (en) r <= next;`. Three ways to get
+  it, all of which the netlist turns into the register's reset and enable (not
+  multiplexers):
+  * a whole circuit: `Circuit.withResetEnable c` (= `withReset (withEnable c)`; S1's
+    `withReset`, `withEnable` alone);
+  * one register: `Circuit.registerR t init`, `registerE`, `registerRE` (a `delay` with
+    them; `Circuit.stepEl_registerRE` … say what they do in a cycle);
+  * a field of a state, inside a step function: `Hw.regNext rst en init cur next`
+    (`init` under `rst`, else `next` under `en`, else `cur`). The netlist sees the reset
+    when `init` is the register's initial value, and the enable when `cur` is the
+    register itself; otherwise it is the same multiplexers, with the same meaning.
+
+  Every register keeps its `initial` value, which is all an iCE40 needs (yosys turns a
+  non-zero initial value into inverters around a flip-flop); a reset is for targets
+  without initial values and for restarting a design.
+
+Not done: a general bit-level round-trip lemma for bundles (above), `BitPack` for
+inductive types with fields (a tag and the widest constructor's fields), `!` on signals,
+`match` on an enumeration signal (staged `match`, hdl-staging-research S3), asynchronous
+reset.
 
 ## Logic, heap predicates and Hoare triples ✅
 
