@@ -7783,6 +7783,30 @@ def hdlGroup : Group where
            "fun x y => x === y ||| x <ᵤ 3 : Wire B8 → Wire B8 → Wire HwTy.bit",
            "fun c x => if c then x else 0 : Wire Bit → Wire B8 → Wire B8",
            "(1, 24, 14)"] },
+    { name := "S4: shifts by a signal, signed comparisons, && and || on bits, deriving BitPack, registers with reset and enable", run := fun _ => do
+        -- examples/hdl-gaps.wiz: the values against lib/BitVec.wiz (every 8-bit value),
+        -- netlist simulations = values (shifter, comparisons, gates, a phase register, a
+        -- bundle in one register, the registers with rst/en), operator twins' Verilog,
+        -- printing, enum and bundle encodings, the reset/enable Verilog
+        okLibs (← IO.FS.readFile "examples/hdl-gaps.wiz")
+          ["(.true, .true)",
+           "(.true, 12)",
+           "(.true, .true)",
+           "\"module shifts(input clk, input [7:0] x_0, input [3:0] x_1, output [7:0] y_0, output [7:0] y_1, output [7:0] y_2, output [7:0] y_3);\\n  wire [7:0] n3 = x_0 << x_1;\\n  wire [7:0] n4 = x_0 >> x_1;\\n  wire [7:0] n5 = $signed(x_0) >>> x_1;\\n  wire [0:0] n6 = x_0[7:7];\\n  wire [2:0] n9 = n6 ? 3'd7 : 3'd0;\\n  wire [10:0] n10 = {n9, x_0};\\n  wire [7:0] n11 = n10[10:3];\\n  assign y_0 = n3;\\n  assign y_1 = n4;\\n  assign y_2 = n5;\\n  assign y_3 = n11;\\nendmodule\\n\"",
+           "fun x s => x <<< s ||| x >>> s ^^^ x >>>ₛ s ^^^ x >>>ₛ 2 : Wire B8 → Wire B3 → Wire (.bits 8)",
+           "fun x y => x <ₛ y ||| x ≥ₛ 2 : Wire B8 → Wire B8 → Wire HwTy.bit",
+           "(.true, .true)",
+           "fun a b => a &&& b ||| b : Wire Bit → Wire Bit → Wire Bit",
+           "(.false, .true)",
+           "(2, .cons 0 (.cons 1 (.cons 2 (.cons 3 .nil))), 7, 5)",
+           "83",
+           ".true",
+           "(.true, .cons 9 (.cons 0 (.cons 0 (.cons 1 (.cons 1 (.cons 2 (.cons 3 (.cons 0 (.cons 0 (.cons 0 (.cons 1 (.cons 1 (.cons 2 (.cons 3 (.cons 0 (.cons 1 (.cons 2 (.cons 3 (.cons 0 (.cons 1 (.cons 2 .nil)))))))))))))))))))))",
+           "(.true, .cons 10 (.cons 83 (.cons 0 (.cons 95 (.cons 9 (.cons 120 (.cons 5 (.cons 81 (.cons 108 (.cons 56 (.cons 115 (.cons 60 (.cons 104 .nil)))))))))))))",
+           "\"module phase(input clk, input [0:0] x, output [1:0] y);\\n  reg [1:0] r; initial r = 2'd0;\\n  wire [0:0] n3 = r == 2'd3;\\n  wire [1:0] n6 = r + 2'd1;\\n  wire [1:0] n7 = n3 ? 2'd0 : n6;\\n  wire [1:0] n8 = x ? n7 : r;\\n  always @(posedge clk) r <= n8;\\n  assign y = r;\\nendmodule\\n\"",
+           "((.true, .cons 4 (.cons 42 (.cons 42 (.cons 174 (.cons 174 (.cons 174 (.cons 174 (.cons 174 (.cons 174 (.cons 174 (.cons 174 (.cons 174 (.cons 116 (.cons 116 (.cons 116 (.cons 116 (.cons 116 (.cons 116 (.cons 116 (.cons 116 (.cons 116 (.cons 116 (.cons 87 (.cons 87 (.cons 87 (.cons 87 (.cons 42 (.cons 203 (.cons 203 (.cons 203 (.cons 203 (.cons 203 (.cons 203 (.cons 203 (.cons 203 (.cons 203 (.cons 203 (.cons 203 (.cons 58 (.cons 58 (.cons 58 .nil))))))))))))))))))))))))))))))))))))))))), (.true, .cons 5 (.cons 0 (.cons 0 (.cons 174 (.cons 174 (.cons 174 (.cons 174 (.cons 174 (.cons 174 (.cons 174 (.cons 174 (.cons 174 (.cons 34 (.cons 34 (.cons 34 (.cons 34 (.cons 34 (.cons 34 (.cons 34 (.cons 34 (.cons 34 (.cons 34 (.cons 121 (.cons 121 (.cons 121 (.cons 121 (.cons 0 (.cons 203 (.cons 203 (.cons 203 (.cons 203 (.cons 203 (.cons 203 (.cons 203 (.cons 203 (.cons 203 (.cons 203 (.cons 203 (.cons 5 (.cons 5 (.cons 63 .nil))))))))))))))))))))))))))))))))))))))))), .true, .true)",
+           ".true",
+           "\"module reg_(input clk, input [0:0] rst, input [0:0] en, input [7:0] x, output [7:0] y);\\n  reg [7:0] r; initial r = 8'd42;\\n  always @(posedge clk) if (rst) r <= 8'd42; else if (en) r <= x;\\n  assign y = r;\\nendmodule\\n\""] },
     { name := "S2: if on a condition that is no signal takes the ordinary path (its messages)", run := fun _ => do
         failsLibs "import Prelude\ndef f (n : Nat) : Nat := if n then 1 else 2" "constructor"
         failsLibs "import Prelude\ndef f (A : Type) (a : A) : Nat := if a then 1 else 2" "cannot match on a value of type A"
@@ -7883,14 +7907,33 @@ def hdlGroup : Group where
           unless o.exitCode == 0 do throw (IO.userError s!"iverilog rejects the test bench:\n{o.stderr}")
           let r ← IO.Process.output { cmd := "vvp", args := #["-n", (dir / "tb.vvp").toString], cwd := dir }
           unless (r.stdout.splitOn "PASS counter: 60 cycles").length > 1 do
-            throw (IO.userError s!"test bench: {r.stdout}{r.stderr}") },
+            throw (IO.userError s!"test bench: {r.stdout}{r.stderr}")
+        -- (H14 S4) the shifts by a signal and the signed comparisons: Icarus Verilog
+        -- replays their value simulations
+        let src ← IO.FS.readFile "examples/hdl-gaps.wiz"
+        let s := runFrontend (R := ZeroOneMany) (src ++ "\n#eval vShift\n#eval tbShift\n#eval vecShift\n#eval vCmp\n#eval tbCmp\n#eval vecCmp\n")
+          { trustedModule := Tests.libModule, loader := ← libLoader }
+        let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render ""
+        unless errs.isEmpty do throw (IO.userError s!"unexpected errors: {errs}")
+        let all := s.messages.toList.map (·.text)
+        let texts := all.drop (all.length - 6)
+        IO.FS.withTempDir fun dir => do
+          let names := ["shifts.v", "tbs.v", "shifts.vec", "cmps.v", "tbc.v", "cmps.vec"]
+          for t in texts, nm in names do IO.FS.writeFile (dir / nm) (unq t)
+          for (tb, m, pass) in [("tbs.v", "shifts.v", "PASS shifts: 200 cycles"), ("tbc.v", "cmps.v", "PASS cmps: 200 cycles")] do
+            let o ← IO.Process.output { cmd := "iverilog", args := #["-g2005", "-o", (dir / "t.vvp").toString, (dir / tb).toString, (dir / m).toString], cwd := dir }
+            unless o.exitCode == 0 do throw (IO.userError s!"iverilog rejects {m}:\n{o.stderr}")
+            let r ← IO.Process.output { cmd := "vvp", args := #["-n", (dir / "t.vvp").toString], cwd := dir }
+            unless (r.stdout.splitOn pass).length > 1 do
+              throw (IO.userError s!"test bench {m}: {r.stdout}{r.stderr}") },
     { name := "fast netlist simulation (Hdl.Sim, compiled): = Netlist.simulate = Circuit.run, cycle for cycle; not well formed falls back", run := fun _ => do
-        -- examples/hdl-sim.wiz: every netlist operation, 70-bit widths, reset and enable, a
+        -- examples/hdl-sim.wiz: every netlist operation (shifts by a signal too), 70-bit widths, reset and enable, a
         -- table tree, composition; 3000 random cycles each, hash-consed and naive netlists
         cRunLibs (← IO.FS.readFile "examples/hdl-sim.wiz")
           ("alu: yes, 3000 cycles, well formed yes, checksum 840993931\n" ++
            "alu with reset and enable: yes, 3000 cycles, well formed yes, checksum 86608463\n" ++
            "piped: yes, 3000 cycles, well formed yes, checksum 623585979\n" ++
+           "shifter: yes, 3000 cycles, well formed yes, checksum 331396695\n" ++
            "not well formed: yes, simFast = simulate: yes\n") }
   ]
 

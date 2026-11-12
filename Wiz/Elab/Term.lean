@@ -2582,6 +2582,22 @@ partial def ifMux? (ctx : LocalCtx R) (alts : Array Syntax) (c : Term R) (C expe
   unless Ct.mvars.isEmpty do return none
   let mux (A : VTy R) : VTy R := vApp g (vApp g (eval g [] (.const "Mux" [])) C) A
   let some _ ← (try synthInstance ctx (mux C) catch _ => pure none) | return none
+  -- (H14 S4) `a && b` and `a || b` on a signal: the prelude makes them
+  -- `if a then b else Bool.false` and `if a then Bool.true else b`; they are the gates
+  -- `AndOp.and a b` and `OrOp.or a b` at the condition's type (`a &&& b`, `a ||| b`)
+  let isConst (stx : Syntax) (n : Name) : Bool :=
+    stx.isOfKind "term.ident" && (stx.getArg 0).getId? == some n
+  let gate? : Option (Name × Syntax) :=
+    if isConst eStx "Bool.false" then some ("AndOp.and", tStx)
+    else if isConst tStx "Bool.true" then some ("OrOp.or", eStx)
+    else none
+  if let some (op, other) := gate? then
+    unifyAt ctx other expected C
+    let o ← check ctx other C
+    let cls : Name := if op == "AndOp.and" then "AndOp" else "OrOp"
+    let inst ← freshMeta ctx "an instance"
+    addInstProblem ctx inst (vApp g (eval g [] (.const cls [])) C)
+    return some (.app (.app (.app (.app (.const op []) Ct) inst) c) o)
   -- a branch that is a numeral (or an `if` of numerals) takes its type from the other
   -- one (`if c then 0 else x + 1`), so the other is elaborated first
   let (t, e) ← if numeralish tStx && !numeralish eStx then do
