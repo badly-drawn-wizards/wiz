@@ -121,9 +121,10 @@ def mkGenerator (ctx : LocalCtx R) (key : String) (goal : Term R) (goalTy : VTy 
 type the instance's binder gives it? Unification is untyped, so matching the instance's
 conclusion can pick an ill-kinded solution: `ShareLet (r a) (r b)` against `S T.El`
 (first order: `r := S`, `a := T.El`) although `r : T → Type` and `S : (T → Type) → Type`.
-Such an instance doesn't apply. (Arguments still holes, or whose types are, are left to
-the rest of elaboration and the kernel.) -/
-def instArgsWellTyped (ctx : LocalCtx R) (args : Array (Term R × VTy R)) : ElabM R Bool := do
+Such an instance doesn't apply. Only a definite mismatch counts: arguments still holes
+(or whose types are), and arguments whose type the kernel can't infer, are left to the
+rest of elaboration and the kernel. -/
+def instArgsWellTyped (ctx : LocalCtx R) (args : Array (Term R × VTy R)) : ElabM R (Option String) := do
   let g ← getGlobals
   let mut checks : Array (Term R × Term R) := #[]
   for (m, dom) in args do
@@ -132,7 +133,7 @@ def instArgsWellTyped (ctx : LocalCtx R) (args : Array (Term R × VTy R)) : Elab
     let A ← zonk ctx.lvl (quote g ctx.lvl (← forceMeta dom))
     if !A.mvars.isEmpty || A.hasLevelMVar then continue
     checks := checks.push (t, A)
-  if checks.isEmpty then return true
+  if checks.isEmpty then return none
   -- the variables' types with the holes solved since they were bound
   let mut tys : Array (VTy R) := #[]
   for v in ctx.types.reverse do
@@ -145,10 +146,12 @@ def instArgsWellTyped (ctx : LocalCtx R) (args : Array (Term R × VTy R)) : Elab
   let infer := (← get).kernelInfer
   for (t, A) in checks do
     match infer kctx t with
-    | .ok ty => unless convTy g tys (eval g ctx.env A) ty do return false
-    -- (ill-typed; unless there is no kernel to ask, outside a command)
-    | .error e => if e != noKernelMsg then return false
-  return true
+    | .ok ty => unless convTy g tys (eval g ctx.env A) ty do
+        return some s!"{t} : {quote g ctx.lvl ty}, expected {A}"
+    -- (no answer: a term only checkable, such as a constructor `.bits 8`, or no kernel to
+    -- ask outside a command; left to the kernel's check of the whole declaration)
+    | .error _ => pure ()
+  return none
 
 /-- **Exercise 7.1.** Apply an instance (`e : ty`) to the goal: fill each of its leading
 Π binders with a fresh hole (the instance-implicit ones are the subgoals, in order),
@@ -171,7 +174,8 @@ partial def applyInstance (ctx : LocalCtx R) (goal : Term R) (goalTy : VTy R) (e
       ty ← instM cod (← evalIn ctx m)
     | _ => break
   unify ctx.lvl goalTy ty
-  unless ← instArgsWellTyped ctx args do throwAt {} "instance does not apply: an ill-typed argument"
+  if let some why ← instArgsWellTyped ctx args then
+    throwAt {} s!"instance does not apply: an ill-typed argument ({why})"
   unify ctx.lvl (← evalIn ctx goal) (← evalIn ctx t)
   pure subgoals.toList
   --|ex

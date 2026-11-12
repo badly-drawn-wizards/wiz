@@ -188,9 +188,6 @@ inductive Approx where
   | none | default | last
   deriving BEq, Inhabited
 
-/-- `ElabState.kernelInfer`'s answer where no kernel was supplied. -/
-def noKernelMsg : String := "no kernel here"
-
 structure ElabState (R : Type) where
   globals : Globals R
   metas : Array (MetaEntry R) := #[]
@@ -247,7 +244,7 @@ structure ElabState (R : Type) where
   goal a tactic makes from it shows (and `intro` takes) the name the user wrote -/
   binderNames : List (Lvl × Name) := []
   /-- the kernel's type inference, for complete terms (supplied by the command elaborator) -/
-  kernelInfer : Ctx R → Term R → Except String (VTy R) := fun _ _ => .error noKernelMsg
+  kernelInfer : Ctx R → Term R → Except String (VTy R) := fun _ _ => .error "no kernel here"
   /-- set when unification meets an unsolved (term or level) metavariable. A failure that
   never met one is final: no other order of unfolding can succeed (see `unifyGlued`).
   Unification's own backtracking keeps it (`keepLearnt`). -/

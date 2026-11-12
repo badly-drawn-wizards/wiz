@@ -775,7 +775,11 @@ def group : Group where
           "def s0t (s : S0) : Type := match s with\n  | .mk n m => Nat\n" ++
           "#eval s0mt (S0.mk 3 4)\n") ["4"]
         -- used at runtime it is an error (not a projection at ω behind the user's back)
-        failsLib (hdr ++ "def bad (s : S0) : Nat := match s with\n  | .mk n m => n\n") "n" }
+        failsLib (hdr ++ "def bad (s : S0) : Nat := match s with\n  | .mk n m => n\n") "n" },
+    -- agent/dogfood-fixes
+    { name := "auto-share: an ill-kinded instance match does not apply; no evaluator panic (autoshare-illkinded-panic)", run := fun _ =>
+        -- `ShareLet (r a) (r b)` matched `S T.El` first order with r := S, a := T.El
+        okLib "import Prelude\n-- the auto-share hook of Hdl.Core, alone (docs/libraries.md, H14 S0)\nclass ShareLet (A B : Type) where\n  share : A → (A → B) → B\ninductive T where\n  | bits (n : Nat)\ndef T.El : T → Type\n  | .bits n => Nat\nclass Hw (r : T → Type) where\n  lit : (n : Nat) → r (T.bits n)\ninstance : Hw T.El where\n  lit := fun n => n\ninstance {r : T → Type} [Hw r] {a b : T} : ShareLet (r a) (r b) where\n  share := fun x f => f x\nstructure S (r : T → Type) where\n  x : r (T.bits 3)\n  y : r (T.bits 8)\ndef base : S T.El := S.mk 1 2\n-- `S T.El` is taken for `r a` with r := S, a := T.El: ill-kinded\ndef f (k : Nat) : S T.El :=\n  let b := base;\n  S.mk b.x k\n" }
   ]
 
 /-- This module's test groups, which `Tests/Main.lean` runs: one per line, in sorted
