@@ -25,7 +25,7 @@ notes are in `docs/stages/11-tooling.md` (11p).
 ## Installing
 
 `wiz` must be on `PATH` (or set `lsp.cmd`), and `grail` too for grail packages (or set
-`lsp.grail.cmd`), e.g. from `nix profile install github:badly-drawn-wizards/wiz`, tower's
+`lsp.grail.cmd`), e.g. from `nix profile install github:wiz-pl/wiz`, tower's
 shims, or a checkout's `.lake/build/bin`. Without `grail`, the plugin warns once and
 starts `wiz lsp`.
 
@@ -33,7 +33,7 @@ starts `wiz lsp`.
 and the packaged `wiz` on `PATH`):
 
 ```sh
-nix run github:badly-drawn-wizards/wiz#nvim-wiz -- examples/tactics.wiz
+nix run github:wiz-pl/wiz#nvim-wiz -- examples/tactics.wiz
 ```
 
 (The Cachix cache of docs/building.md saves building wiz.)
@@ -42,7 +42,7 @@ nix run github:badly-drawn-wizards/wiz#nvim-wiz -- examples/tactics.wiz
 
 ```lua
 {
-  'badly-drawn-wizards/wiz',
+  'wiz-pl/wiz',
   ft = 'wiz',
   config = function(plugin)
     vim.opt.rtp:append(plugin.dir .. '/editors/nvim')
@@ -61,7 +61,7 @@ Or with a local checkout: `{ dir = '/path/to/wiz/editors/nvim', opts = {} }`.
 **packer.nvim**:
 
 ```lua
-use { 'badly-drawn-wizards/wiz', rtp = 'editors/nvim', config = function() require('wiz').setup {} end }
+use { 'wiz-pl/wiz', rtp = 'editors/nvim', config = function() require('wiz').setup {} end }
 ```
 
 **Nix** (home-manager or a NixOS Neovim): the flake's `packages.<system>.wiz-nvim` is a
@@ -94,6 +94,7 @@ require('wiz').setup {
     root_markers = { 'grail.wiz', 'wiz-toolchain', 'lakefile.toml', '.git' },
     on_attach = nil,                   -- function(client, bufnr)
     capabilities = nil,                -- merged into the defaults
+    folding = false,                   -- fold with the server's ranges (0.11+)
   },
   abbreviations = {
     enable = true,
@@ -125,6 +126,14 @@ In Wiz buffers (normal mode): `<LocalLeader>i` toggles the infoview, `<LocalLead
 refreshes it, `<LocalLeader>b` is `:WizInfoviewBrowser`, `<LocalLeader>\` is
 `:WizAbbrev` (each with a `desc`, which which-key shows). The usual LSP keymaps (`K` hover,
 `gd`, `grn`, `gra`, `]d`, …) are Neovim's own.
+
+What the server offers, and Neovim's keys for it:
+
+| | |
+|---|---|
+| references (`grr`), rename (`grn`) | a global's uses in the open files and the package's modules; a local's in its declaration. Rename refuses the toolchain's library |
+| outline (`gO`), workspace symbols (`:lua vim.lsp.buf.workspace_symbol()`) | the file's declarations (fields and constructors as children); every declaration of the open files and their imports |
+| folding (`lsp.folding`) | commands, `by` blocks, `match`es, block comments |
 
 In the infoview: `K` or `<CR>` shows what the subterm under the cursor is (its text,
 type, kind and, for a constant, where it is declared: `wiz/subtermInfo`); moving the
