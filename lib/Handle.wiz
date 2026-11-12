@@ -1,0 +1,76 @@
+import Sys
+-- Owned handles: `import Handle` (cohesion step M6, /workspace/wiz-notes/cohesion-resources.md;
+-- docs/libraries.md).
+--
+-- An OS handle (a `File`, an `Fd`, a `Child`) is an ordinary (ω) value in lib/Sys.wiz,
+-- closed by its finalizer when the last reference goes, or by an explicit close that the
+-- type system does not track. `Owned h` is the obligation to release `h`: a token at
+-- quantity 1, indexed by the handle (as `MVar.Hole m` and `Lock.Guard l` are, 25d), so
+--
+--  * it can't be dropped: every acquired handle is released exactly once, on every path;
+--  * it can't be copied: a handle is released once, not twice;
+--  * every operation through `Handle.use` takes it and hands it back, so there is no
+--    use after release *through this API*, and the token can move to another thread
+--    with the closure that captured it (`Chan.fork`).
+--
+-- **Which handles this covers.** Only handles obtained through the owned constructors
+-- below (`File.withOwned`, `Fd.withOwned`, `Process.spawnOwned`): each opens a fresh
+-- handle and mints its one token, and nothing else can mint one (`Handle.own` is private),
+-- so for those handles the release (`File.releaseOwned`, …: the real close, not an
+-- overridable instance) happens exactly once. A handle from lib/Sys.wiz's ω API
+-- (`File.open`, …) has no token and nothing here says anything about it.
+--
+-- What it does not do: `h` itself stays an ω value, so code that calls lib/Sys.wiz's
+-- operations on `h` directly (`File.close h` inside `Handle.use`'s action, say) is not
+-- checked. Making the handles themselves linear (and
+-- the operations direct style, `(1 o : Owned f) → … → IO (Owned f)`) needs linear Σ fields
+-- (linear-case stage 2); then lib/Sys.wiz and lib/Serial.wiz move onto this module.
+--
+-- Trusted: the two natives `wiz_handle_own`/`wiz_handle_disown` (runtime/wiz.c: an empty
+-- box, as an MVar hole) and their private `extern`s; nothing else reaches `Owned`. Extern
+-- privacy is by name only: another module could bind `wiz_handle_own` with any type (it
+-- would show in `#print axioms`), the same gap as MVar.Hole, Lock.Guard and Chan.
+
+axiom Owned : {H : Type} → H → Type
+private extern "wiz_handle_own" Owned.mint : {0 H : Type} → {0 h : H} → IO (Owned h)
+private extern "wiz_handle_disown" Owned.burn : {0 H : Type} → {0 h : H} → (1 o : Owned h) → IO Unit
+
+-- own a fresh `h` (private: only the owned constructors below, which create `h`, mint)
+private def Handle.own {H B : Type} (h : H) (1 k : (1 o : Owned h) → IO B) : IO B :=
+  fun w => let 1 (o, w') := @Owned.mint H h w; k o w'
+-- release `h` with `close`, using up the token; `k` gets the close's result (private: the
+-- public releases fix `close`)
+private def Handle.releaseWith {H B : Type} (close : H → EIO Unit) (h : H) (1 o : Owned h)
+    (1 k : (r : Except String Unit) → IO B) : IO B :=
+  fun w => let 1 (u, w') := Owned.burn o w; IO.bind (close h) k w'
+-- an operation on an owned handle: the token goes in and comes back
+def Handle.use {H A B : Type} (h : H) (1 o : Owned h) (act : H → IO A) (1 k : (a : A) → (1 o : Owned h) → IO B) : IO B :=
+  IO.bind (act h) (fun a => k a o)
+-- acquire a fresh handle with `acquire` (an error owns nothing), then `k` owns it. `k` is
+-- an ordinary function (it runs only if `acquire` succeeds), so it can't capture another
+-- linear value: an acquisition that fails would leave that value unused.
+private def Handle.with {H B : Type} (acquire : EIO H) (k : (h : H) → (1 o : Owned h) → EIO B) : EIO B :=
+  IO.bind acquire (fun r => match r with
+    | .ok h => Handle.own h (k h)
+    | .error e => EIO.fail e)
+
+-- ## The handles of lib/Sys.wiz: owned constructors and their releases
+
+-- `File.open p mode`, owned
+def File.withOwned {B : Type} (p mode : String) (k : (f : File) → (1 o : Owned f) → EIO B) : EIO B :=
+  Handle.with (File.open p mode) k
+-- close it; `k` gets the close's result (an error is reported, not dropped)
+def File.releaseOwned {B : Type} (f : File) (1 o : Owned f) (1 k : (r : Except String Unit) → IO B) : IO B :=
+  Handle.releaseWith (fun (f : File) => File.close f) f o k
+-- `Fd.open p a fl`, owned
+def Fd.withOwned {B : Type} (p : String) (a : Access) (fl : OpenFlags) (k : (f : Fd) → (1 o : Owned f) → EIO B) : EIO B :=
+  Handle.with (Fd.open p a fl) k
+def Fd.releaseOwned {B : Type} (f : Fd) (1 o : Owned f) (1 k : (r : Except String Unit) → IO B) : IO B :=
+  Handle.releaseWith (fun (f : Fd) => Fd.close f) f o k
+-- `Process.spawn …`, owned: released by waiting for the child
+def Process.spawnOwned {B : Type} (cmd : String) (args : List String) (stdin stdout stderr : Stdio)
+    (k : (c : Child) → (1 o : Owned c) → EIO B) : EIO B :=
+  Handle.with (Process.spawn cmd args stdin stdout stderr) k
+-- wait for it; `k` gets the exit status, or the error
+def Child.releaseOwned {B : Type} (c : Child) (1 o : Owned c) (1 k : (r : Except String ExitStatus) → IO B) : IO B :=
+  fun w => let 1 (u, w') := Owned.burn o w; IO.bind (Child.wait c) k w'

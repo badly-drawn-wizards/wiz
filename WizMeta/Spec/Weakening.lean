@@ -100,6 +100,10 @@ theorem ren_eqSigma (A B a b : Tm) (ρ : Nat → Nat) :
     (eqSigma A B a b).ren ρ = eqSigma (A.ren ρ) (B.ren (upRen ρ)) (a.ren ρ) (b.ren ρ) := by
   simp only [eqSigma, ren, ren_shift, ren_inst, ren_eqSigmaTransport]
 
+theorem ren_eqSigmaProof (A B a b : Tm) (ρ : Nat → Nat) :
+    (eqSigmaProof A B a b).ren ρ = eqSigmaProof (A.ren ρ) (B.ren (upRen ρ)) (a.ren ρ) (b.ren ρ) := by
+  simp only [eqSigmaProof, ren, ren_shift, ren_inst]
+
 theorem ren_eqTyPi (A₁ B₁ A₂ B₂ : Tm) (ρ : Nat → Nat) :
     (eqTyPi A₁ B₁ A₂ B₂).ren ρ = eqTyPi (A₁.ren ρ) (B₁.ren (upRen ρ)) (A₂.ren ρ) (B₂.ren (upRen ρ)) := by
   simp only [eqTyPi, ren, ren_shift, ren_shift2, ren_inst, ren_under1, ren_under2]; rfl
@@ -321,9 +325,12 @@ theorem sigma_renClosed {R : Rules} (hc : ∀ r, Core r → R r) (hs : ∀ r, Si
   | sndCong =>
     simp only [Jdg.ren, Tm.ren, Tm.ren_inst]
     exact ofRule (hs _ .sndCong) (by fromIH ih ρ Δ hρ hΔ)
-  | eq h =>
+  | eq h h' =>
     simp only [Jdg.ren, Tm.ren, Tm.ren_eqSigma]
-    exact ofRule (hs _ (.eq h)) (by fromIH ih ρ Δ hρ hΔ)
+    exact ofRule (hs _ (.eq h h')) (by fromIH ih ρ Δ hρ hΔ)
+  | eqProof h h' =>
+    simp only [Jdg.ren, Tm.ren, Tm.ren_eqSigmaProof]
+    exact ofRule (hs _ (.eqProof h h')) (by fromIH ih ρ Δ hρ hΔ)
   | eqTyApart h1 h2 h3 => exact ofRule (hs _ (.eqTyApart h1 h2 h3)) (by fromIH ih ρ Δ hρ hΔ)
   | cast h1 h2 =>
     simp only [Jdg.ren, Tm.ren, Tm.ren_castSigma]

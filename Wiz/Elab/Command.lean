@@ -270,8 +270,9 @@ def renamePrivate (s : CommandState R) (added : Array Name) : CommandState R :=
                                                    impl := d.impl.map rn, witness := d.witness.map rn }
     | none => m) g.decls
   let order := g.order.map f
+  let heights := Std.HashMap.ofList (order.toList.zipIdx)
   let rb (bs : List (Name × Name)) := bs.map fun (k, n) => (k, f n)
-  { s with globals := { g with decls, order, builtins := rb g.builtins, assumed := rb g.assumed },
+  { s with globals := { g with decls, order, heights, builtins := rb g.builtins, assumed := rb g.assumed },
            builtins := rb s.builtins }
 
 /-- Metas are untyped, so `?A : Sort ?u` never learns `?u` from `?A := A`. For each
@@ -2651,7 +2652,8 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
             -- located output (Elab/ProcMacro.lean): diagnostics and generated source,
             -- placed at a node of the macro's input
             let info := Elab.pathInfo cmd (c.getArg 0)
-            let text := Elab.atomText (c.getArg 1)
+            -- marked source (Elab/ProcMacro.lean, "Positions inside generated source")
+            let (text, spans) := Elab.stripMarks (Elab.atomText (c.getArg 1))
             match c.kind with
             | "macro.error" => report .error info text
             | "macro.info" => report .info info text
@@ -2663,7 +2665,14 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
                 if skipWs chars pos ≥ chars.size then break
                 match parseCommand chars (← get).tables pos with
                 | .ok (stx, stop) =>
-                  elabCommand (Elab.setInfoAll info stx)
+                  let before := (← get).globals.order.size
+                  elabCommand (Elab.locateMarked cmd info spans stx)
+                  -- what it declares is declared at the input node (go to definition
+                  -- inside the block; the frontend keeps these over the whole command)
+                  if !spans.isEmpty then
+                    modify fun s =>
+                      let added := s.globals.order.extract before s.globals.order.size
+                      { s with declSites := added.foldl (fun m n => m.insert n (info, s.module)) s.declSites }
                   pos := stop
                 | .error e =>
                   report .error info s!"macro {f}: the generated source does not parse: {e.render text}\n{text}"
