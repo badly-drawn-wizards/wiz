@@ -5077,6 +5077,50 @@ def stdGroup : Group where
            "'Int.add_zero' does not depend on any axioms"] },
     { name := "integers: compiled (C)", run := fun _ =>
         cRunLibs "import Int\ndef main : Int := (-3 : Int) * 4 + 2" "-10" },
+    { name := "order notation: ≤, < and ≈ are classes (lib/Order.wiz)", run := fun _ =>
+        okLibs ("import Order\ndef Bool.Le (a b : Bool) : Prop := Bool.or (Bool.not a) b = .true\n" ++
+          "instance : LE Bool := LE.mk Bool.Le\ninstance : Equiv Bool := Equiv.mk (fun a b => a = b)\n" ++
+          "def t : Bool.false ≤ Bool.true := rfl\ndef u : Bool.true ≈ Bool.true := rfl\n#check Bool.false ≤ Bool.true")
+          ["Bool.false ≤ Bool.true : Prop"] },
+    -- arithmetic library: lib/Nat.wiz, Ring.wiz, IntRing.wiz, IntOrder.wiz, Rat.wiz
+    { name := "naturals: semiring laws, the order as a proposition, ≤ notation", run := fun _ =>
+        okLibs ("import Nat\n#check Nat.mul_add\n#check Nat.le_trans\n" ++
+          "def a (n : Nat) : n ≤ n + 1 := Nat.le_add_right n 1\ndef b : Nat.Le 2 5 := rfl\ndef c : (3 : Nat) < 4 := rfl\n" ++
+          "def d (m n : Nat) (h : m ≤ n) (h' : n ≤ m) : m = n := Nat.le_antisymm m n h h'\n#print axioms Nat.mul_assoc")
+          ["Nat.mul_add : (a : Nat) → (b : Nat) → (c : Nat) → a * (b + c) = a * b + a * c",
+           "Nat.le_trans : (a : Nat) → (b : Nat) → (c : Nat) → Nat.Le a b → Nat.Le b c → Nat.Le a c",
+           "'Nat.mul_assoc' does not depend on any axioms"] },
+    { name := "nat_ring! proves semiring identities by reflection", run := fun _ =>
+        okLibs ("import Ring\ndef t (a b c : Nat) : (a + b) * (a + c) = a * a + a * c + b * a + b * c :=\n" ++
+          "  nat_ring! (a + b) * (a + c) = a * a + a * c + b * a + b * c\n" ++
+          "def u (n : Nat) : Nat.succ n * 2 = n + n + 2 := nat_ring! Nat.succ n * 2 = n + n + 2\n" ++
+          "def v (f : Nat → Nat) (x : Nat) : f x * (x + 1) = x * f x + f x := nat_ring! f x * (x + 1) = x * f x + f x\n" ++
+          "#print axioms t") ["'t' does not depend on any axioms"] },
+    { name := "nat_ring! rejects an equation that is not an identity", run := fun _ =>
+        failsLibs "import Ring\ndef bad (a b : Nat) : a + b = a * b := nat_ring! a + b = a * b" "not definitionally equal" },
+    { name := "int_ring! and the ring laws of Int", run := fun _ =>
+        okLibs ("import IntRing\ndef t (a b : Int) : (a - b) * (a + b) = a * a - b * b := int_ring! (a - b) * (a + b) = a * a - b * b\n" ++
+          "def u (a b c : Int) : -(a - b) * c + a * c = b * c := int_ring! -(a - b) * c + a * c = b * c\n" ++
+          "#check Int.mul_comm\n#check Int.neg_mul\n#print axioms Int.mul_add")
+          ["Int.mul_comm : (a : Int) → (b : Int) → a * b = b * a",
+           "Int.neg_mul : (a : Int) → (b : Int) → -a * b = - (a * b)",
+           "'Int.mul_add' does not depend on any axioms"] },
+    { name := "int_ring! rejects an equation that is not an identity", run := fun _ =>
+        failsLibs "import IntRing\ndef bad (a b : Int) : a - b = b - a := int_ring! a - b = b - a" "not definitionally equal" },
+    { name := "the order of Int, absolute value, the triangle inequality", run := fun _ =>
+        okLibs ("import IntOrder\ndef a (x y : Int) (h : x ≤ y) : x + 1 ≤ y + 1 := Int.add_le_add_right 1 x y h\n" ++
+          "def b : (-2 : Int) < 3 := rfl\ndef c (x y : Int) : Int.abs (x + y) ≤ Int.abs x + Int.abs y := Int.abs_add x y\n" ++
+          "#check Int.abs_sub_le\n#print axioms Int.abs_sub_le")
+          ["Int.abs_sub_le : (a : Int) → (b : Int) → (c : Int) → Int.Le (Int.abs (a - c)) (Int.abs (a - b) + Int.abs (b - c))",
+           "'Int.abs_sub_le' does not depend on any axioms"] },
+    { name := "rationals: an ordered field up to ≈, and q_ring!", run := fun _ =>
+        okLibs ("import Rat\ndef half : Q := Q.mk 1 2 rfl\ndef a : half + half ≈ 1 := rfl\ndef b : half < 1 := rfl\n" ++
+          "def c (p q : Q) : (p + q) * (p + q) ≈ p * p + 2 * p * q + q * q := q_ring! (p + q) * (p + q) ≈ p * p + 2 * p * q + q * q\n" ++
+          "def d (p q r : Q) (h : p ≤ q) (h' : q < r) : p < r := Q.lt_of_le_of_lt h h'\n" ++
+          "#eval (Q.div 1 half).num\n#check Q.mul_inv\n#check Q.abs_sub_le\n#print axioms Q.lt_ceil")
+          ["2", "Q.mul_inv : (p : Q) → ¬p.1 = 0 → p * Q.inv p ≈ 1",
+           "Q.abs_sub_le : (p : Q) → (q : Q) → (r : Q) → Q.abs (p - r) ≤ Q.abs (p - q) + Q.abs (q - r)",
+           "'Q.lt_ceil' does not depend on any axioms"] },
     { name := "machine types: operators at UInt64 and Float64", run := fun _ =>
         okLibs "import IO\ndef f (a b : UInt64) : UInt64 := a * b + 1\ndef g (x : Float64) : Float64 := x * x - 2 / 3" },
     { name := "arrays, updated in place", run := fun _ =>
