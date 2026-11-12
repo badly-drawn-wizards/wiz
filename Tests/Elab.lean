@@ -3993,6 +3993,101 @@ def selfhostVerdicts (header : String) (decls : List (String × Bool × Bool)) :
     unless errs.isEmpty == selfOk do
       throw (IO.userError s!"the self-hosted frontend {if errs.isEmpty then "accepts" else "rejects"}:\n{d}\n{out}")
 
+/-- (13i, 13p, 13q) Same outputs: after `header`, each `(e, n)` has `#eval e` print `n` in the
+Lean frontend, and `#reduce Nat.beq (e) n` compute `.true` in the self-hosted one (whose
+output is the kernel's normal form). Both frontends report no errors. -/
+def selfhostSameNats (header : String) (cases : List (String × Nat)) : IO Unit := do
+  let loader ← preludeLoader
+  let src := "import Prelude\n" ++ header ++ String.join (cases.map fun (e, _) => s!"#eval {e}\n")
+  let s := runFrontend (R := ZeroOneMany) src { loader, trustedModule := Tests.libModule }
+  let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
+  unless errs.isEmpty do throw (IO.userError s!"the Lean frontend rejects:\n{"\n".intercalate errs.toList}")
+  checkEq (repr (cases.map fun (_, n) => toString n)).pretty (repr (s.messages.toList.map (·.text))).pretty
+  let src' := "import Prelude\n" ++ header ++ String.join (cases.map fun (e, n) => s!"#reduce Nat.beq ({e}) {n}\n")
+  let some out ← selfhostOutput src' | return
+  let lines := (out.splitOn "\n").filter (· != "")
+  if let some e := lines.find? (fun l => l.startsWith "error" || l.startsWith "parse error") then
+    throw (IO.userError s!"the self-hosted frontend rejects: {e}\n{out}")
+  let results := lines.filter (·.startsWith "con(")
+  unless results == cases.map (fun _ => "con((#1, (tt, tt)))") do
+    throw (IO.userError s!"the self-hosted frontend computes otherwise:\n{out}")
+
+/-- (13q) Literal patterns: a `String.beq` both frontends have (`lib/Text.wiz` isn't the
+self-hosted frontend's). -/
+def litHeader : String :=
+  "def chEq : List Char → List Char → Bool\n  | .nil, .nil => .true\n" ++
+  "  | .cons a as, .cons b bs => Bool.and (Nat.beq (Char.code a) (Char.code b)) (chEq as bs)\n  | _, _ => .false\n" ++
+  "def String.beq : String → String → Bool\n  | .mk a, .mk b => chEq a b\n" ++
+  "def sLen : String → Nat\n  | .mk cs => List.length cs\n" ++
+  "def Name : Type := String\n" ++
+  "inductive Color where\n  | red\n  | green\n"
+def litProgram : String :=
+  "def s : String → Nat\n  | \"a\" => 1\n  | \"bc\" => 2\n  | _ => 0\n" ++
+  "def two (a : String) (n : Nat) : Nat := match a, n with\n  | \"x\", 0 => 10\n  | \"x\", k+1 => k\n  | \"y\", _ => 7\n  | _, _ => 0\n" ++
+  "def nm (x : Name) : Nat := match x with\n  | \"n\" => 5\n  | y => sLen y\n" ++
+  "def h : Nat → Nat\n  | 0x10 => 1\n  | 0b11 => 2\n  | .succ .zero => 3\n  | _ => 0\n" ++
+  "def big : Nat := 0xFF + 0b1010 + 0X1f\n"
+def litCases : List (String × Nat) := [
+  ("s \"a\"", 1), ("s \"bc\"", 2), ("s \"b\"", 0), ("s \"abc\"", 0),
+  ("two \"x\" 0", 10), ("two \"x\" 5", 4), ("two \"y\" 3", 7), ("two \"z\" 0", 0),
+  ("nm \"n\"", 5), ("nm \"abc\"", 3),
+  ("h 16", 1), ("h 3", 2), ("h 1", 3), ("h 4", 0), ("big", 296)]
+def litDecls : List (String × Bool) := [
+  ("def f : String → Nat\n  | \"a\" => 1\n  | x => sLen x\n", true),
+  ("def f (b : Nat) : Nat := match b with\n  | 0x3F => 1\n  | 0b1 => 2\n  | _ => 3\n", true),
+  ("def f : String → Nat\n  | \"a\" => 1\n  | \"b\" => 2\n", false),
+  ("def f : String → Nat\n  | n + 1 => 1\n  | _ => 2\n", false),
+  ("def f : Color → Nat\n  | 0 => 1\n  | _ => 2\n", false),
+  ("def f : Bool → Nat\n  | .true => 0\n  | 1 => 1\n  | _ => 2\n", false),
+  ("def f : Nat → Nat\n  | 300 => 1\n  | _ => 2\n", false),
+  ("def f : Nat → Nat\n  | 30 => 1\n  | _ => 2\n", true),
+  ("def f (m : Nat) : Nat → Nat\n  | n + m => 1\n  | _ => 2\n", false),
+  ("def f : Nat → Nat\n  | \"a\" => 1\n  | _ => 2\n", false),
+  ("def f : String → Nat\n  | \"a\" => 0\n  | .mk _ => 2\n  | _ => 3\n", false),
+  ("def f : String → Nat\n  | \"a\" => 0\n  | 3 => 2\n  | _ => 3\n", false),
+  ("def f (c : Color) : Nat := match c with\n  | \"red\" => 0\n  | _ => 1\n", false),
+  ("def f : String → Nat → Nat\n  | \"a\", .succ n => f \"a\" n\n  | _, _ => 0\n", false),
+  ("def f : Nat → String → Nat\n  | .succ n, \"a\" => f n \"a\"\n  | _, _ => 0\n", true)]
+
+/-- (13i, 13p) Structure update. -/
+def updHeader : String :=
+  "structure Stats where\n  hits : Nat\n  misses : Nat\n" ++
+  "structure In where\n  x : Nat\n  y : Nat\nstructure Out where\n  i : In\n  n : Nat\nstructure Deep where\n  o : Out\n" ++
+  "structure Tx (r : Type → Type) where\n  line : r Bool\n  busy : r Nat\n" ++
+  "def Id' (A : Type) : Type := A\ndef St : Type := Stats\n" ++
+  "inductive One where\n  | mk (a : Nat)\n"
+def updProgram : String :=
+  "def s0 : Stats := Stats.mk 1 2\ndef s1 : Stats := { s0 with hits := 5 }\n" ++
+  "def bump (s : Stats) : Stats := { s with misses := Nat.add s.misses 1, hits := 0 }\n" ++
+  "def o0 : Out := Out.mk (In.mk 1 2) 3\ndef o1 : Out := { o0 with i.x := 10, n := 4 }\n" ++
+  "def o2 : Out := { o0 with i.x := 5, i.y := 6 }\n" ++
+  "def d (e : Deep) : Deep := { e with o.i.y := 0 }\n" ++
+  "def setBusy {r : Type → Type} (t : Tx r) (b : r Nat) : Tx r := { t with busy := b }\n" ++
+  "def t0 : Tx Id' := Tx.mk .true 1\n" ++
+  "def st (s : St) : St := { s with hits := 9 }\n" ++
+  "def fresh : Stats := { Stats.mk 3 4 with misses := 0 }\n"
+def updCases : List (String × Nat) := [
+  ("s1.hits", 5), ("s1.misses", 2), ("(bump s0).hits", 0), ("(bump s0).misses", 3),
+  ("o1.i.x", 10), ("o1.i.y", 2), ("o1.n", 4), ("Nat.add o2.i.x o2.i.y", 11),
+  ("In.y (Out.i (Deep.o (d (Deep.mk o0))))", 0), ("In.x (Out.i (Deep.o (d (Deep.mk o0))))", 1),
+  ("(setBusy t0 5).busy", 5), ("Stats.hits (st s0)", 9), ("Stats.misses (st s0)", 2),
+  ("Nat.add fresh.hits fresh.misses", 3)]
+def updDecls : List (String × Bool) := [
+  ("def f (s : Stats) : Stats := { s with hits := 1 }\n", true),
+  ("def f (s : Stats) : Stats := { s with hit := 1 }\n", false),
+  ("def f (s : Stats) : Stats := { s with hits := 1, hits := 2 }\n", false),
+  ("def f (n : Nat) : Nat := { n with hits := 1 }\n", false),
+  ("def f (s : Stats) : Stats := { s with hits := .true }\n", false),
+  ("def f (s : Stats) : Nat := { s with hits := 1 }\n", false),
+  ("def f (o : One) : One := { o with a := 1 }\n", false),
+  ("def f (o : Out) : Out := { o with i.z := 1 }\n", false),
+  ("def f (o : Out) : Out := { o with n.x := 1 }\n", false),
+  ("def f (o : Out) : Out := { o with i := In.mk 0 0, i.x := 1 }\n", false),
+  ("def f (o : Out) : Out := { o with i.x := 1, i := In.mk 0 0 }\n", false),
+  ("def f (o : Out) : Out := { o with i.x := 1, i.x := 2 }\n", false),
+  ("def f (o : Out) : Out := { o with i.x := 1, i.y := 2, n := 0 }\n", true),
+  ("def f (e : Deep) : Deep := { e with o.i.x := 1, o.n := 2 }\n", true)]
+
 /-- (stage 21m) Written quantities (finding K10 of audit 2): the declarations both frontends
 accept or reject alike. -/
 def quantityHeader : String :=
@@ -4314,7 +4409,8 @@ def selfHostGroup : Group where
     { name := "the lexer in Wiz agrees with the Lean lexer", run := fun _ => do
         let lexSrc ← IO.FS.readFile "selfhost/Lex.wiz"
         let input := "def f (x : Nat) : Nat := x + 1 -- a comment\n/- a /- nested -/ block -/ #eval f 41\n" ++
-          "inductive T where | a | b (t : T)\ndef s : String := \"hi\\n\" -- strings\ndef α₁ : List.cons → Nat.add := λ x => x.1"
+          "inductive T where | a | b (t : T)\ndef s : String := \"hi\\n\" -- strings\ndef α₁ : List.cons → Nat.add := λ x => x.1\n" ++
+          "0x3F 0b1010 0XfF 0B1 0x 0b2 0xg 007 0x7FFFFFFFFFFFFFFF 0x8000000000000000"
         let toks := Builtin.tables.tokens
         let expected := leanTokens toks input
         let table := toks.toList.foldr (fun t acc => s!"(.cons {wizLit t} {acc})") ".nil"
@@ -4673,6 +4769,14 @@ def selfHostGroup : Group where
           [("def t : Tagged .true := Tagged.mk 3\ndef f : Tagged .false := Tagged.mk .true\n" ++
               "def g (x : Nat) : Tagged .true := Tagged.mk (Nat.succ x)\n", true),
            ("def bad : Tagged .false := Tagged.mk 3\n", false)] },
+    { name := "the self-hosted frontend: literal patterns at other types, hex and binary numerals, as in the Lean frontend (13q)", run := fun _ =>
+        selfhostSameNats (litHeader ++ litProgram) litCases },
+    { name := "the self-hosted frontend: literal pattern verdicts, as in the Lean frontend (13q)", run := fun _ =>
+        selfhostAgrees litHeader litDecls },
+    { name := "the self-hosted frontend: structure update, plain and nested, as in the Lean frontend (13i, 13p)", run := fun _ =>
+        selfhostSameNats (updHeader ++ updProgram) updCases },
+    { name := "the self-hosted frontend: structure update verdicts, as in the Lean frontend (13i, 13p)", run := fun _ =>
+        selfhostAgrees updHeader updDecls },
     { name := "both kernels compare propositions by equivalence (and agree on it below)", run := fun _ => do
         -- the domains' equation is an equivalence, not `False`
         match MTm.propShapes.map leanVerdict with
