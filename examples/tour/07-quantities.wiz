@@ -1,0 +1,31 @@
+-- The tour, section 7: quantities and linear resources (docs/tour.md).
+import IO
+
+-- Every binder has a quantity: how often the body may use it at run time.
+--   0  never (erased: types, proofs, indices)
+--   1  exactly once (linear)
+--   ω  any number of times (the default)
+def id {0 A : Type} (1 x : A) : A := x
+def dup {0 A : Type} (x : A) : A × A := (x, x)
+
+-- A resource that must be used exactly once: a ticket for one ride.
+-- (`axiom` declares a type and functions without implementing them; a library would
+-- implement them with `extern`, as in section 9.)
+axiom Ticket : Type
+axiom Ticket.buy : Nat → IO Ticket
+axiom Ticket.ride : (1 t : Ticket) → IO Unit
+
+-- `do1` sequences actions whose later steps use linear values: `t` is used once
+def trip (1 t : Ticket) : IO Unit := do1
+  IO.println "boarding";
+  Ticket.ride t
+
+-- a pair can have a linear field, `(1 t : Ticket) × A`; a pair held linearly is taken
+-- apart with `let 1`, which binds both components (`p.1` would drop the other one)
+def swap {0 A : Type} (1 p : A × Ticket) : (1 t : Ticket) × A :=
+  let 1 (a, t) := p;
+  (t, a)
+
+-- IO itself is linear: `IO A` is `(1 w : World) → A × World`, so every action takes
+-- the world once and hands it back once, and effects can't be duplicated or dropped.
+#check @IO.bind
