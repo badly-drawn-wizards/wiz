@@ -15,8 +15,7 @@ in what is trusted (design and survey: `wiz-notes/smt.md`):
 
     def trans (a b c : Nat) (h₁ : Nat.lt a b = .true) (h₂ : Nat.lt b c = .true) :
         Nat.lt a c = .true := by smt
-    def nn (x : UIntN 8) (h : Nat.lt (UIntN.toNat x) 256 = .true) :
-        UIntN.not (UIntN.not x) = x := by smt
+    def nn (x : UIntN 8) : UIntN.not (UIntN.not x) = x := by smt
 
 `smt` is a tactic (lib/Prelude.wiz, over the request `Tac.smt`). It is accepted only
 
@@ -54,14 +53,11 @@ SMT operations or sorts.
 *atom* (a fresh constant; equal terms are the same constant): sound, since a formula valid
 for an arbitrary value is valid for this one. Hypotheses outside it are dropped.
 
-**Words need a range hypothesis.** `UIntN w` is a `Nat` whose bound is kept by
-construction, not by a proof, so the kernel's `UIntN 8` has values like
-`UIntN.ofBitsTrusted 300`, on which the definitions are not bit-vector operations:
-`UIntN.not (UIntN.not x) = x` is valid for bit vectors and *false* in Wiz (the kernel
-refutes it at 300). A naive translation would make Wiz inconsistent. So `smt` requires
-`Nat.lt (UIntN.toNat x) 2^w = .true` for every word variable or atom, and refuses
-otherwise. (agent/seal-range makes the bound a proof field of `UIntN`; then the hypothesis
-goes.)
+**Words are bit vectors because they are in range.** Mapping `UIntN w` to `(_ BitVec w)`
+is sound only if every value is below `2^w`, where Word's definitions are the bit-vector
+operations. Since 22l the constructor carries that proof. Before it, the kernel's
+`UIntN 8` had values like `ofBitsTrusted 300`, on which `UIntN.not (UIntN.not x) = x`
+is false (the kernel refuted it), so the prototype required a range hypothesis per word.
 
 **What is trusted**: the solver (named in the axiom), the translation (one Lean file,
 reviewed), the process plumbing (only the exact answer `unsat` closes a goal) and the

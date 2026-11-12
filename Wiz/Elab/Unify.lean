@@ -558,7 +558,21 @@ partial def unify (l : Lvl) (t u : Val R) : ElabM R Unit := do
       solve l m' sp' (.neutral (.mvar m) sp)
   | .neutral (.mvar m) sp, t' => solve l m sp t'
   | t', .neutral (.mvar m) sp => solve l m sp t'
-  | .neutral h sp, .neutral h' sp' => unifyHead l h h'; unifySpine l sp sp'
+  | .neutral h sp, .neutral h' sp' =>
+    -- (P2) two proofs with only applications and projections after them are equal, with
+    -- nothing to compare (as in `convNe`): their spines need not agree (a suspended
+    -- proof on one side, a `transp` applied to a phantom tail's argument on the other).
+    -- This is what makes two values that differ only in an erased proof field equal
+    -- where the type isn't seen (an opaque type, 13b), e.g. two closed words.
+    let lazy := (← getGlobals).lazyProofs
+    let isProof : Head R → Bool
+      | .refl .. | .reflTy _ | .transp .. | .prf .. => true
+      | h => lazy && proofHead h
+    let onProofs (sp : Array (Elim R)) : Bool := sp.all fun
+      | .app _ | .fst | .snd | .down => true
+      | _ => false
+    if isProof h && isProof h' && onProofs sp && onProofs sp' then pure () else
+    unifyHead l h h'; unifySpine l sp sp'
   | _, _ => throwAt {} "rigid mismatch"
   --|ex
   --| sorry

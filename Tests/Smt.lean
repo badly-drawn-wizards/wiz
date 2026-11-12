@@ -146,25 +146,22 @@ def smtGroup : Group where
         let ms ← msgs ("import Prelude\ndef wrong (a b : Nat) : Nat.add (Nat.sub a b) b = a := by smt\n") trusted
         expect ms "smt: the solver found a counterexample"
         -- SMT-LIB's `bvudiv x 0` is all ones; Wiz's `x / 0` is 0
-        let ms ← msgs ("import Word\ndef d (x : UIntN 8) (h : Nat.lt (UIntN.toNat x) 256 = .true) : UIntN.div x (UIntN.zero 8) = UIntN.zero 8 := by smt\n") trusted
+        let ms ← msgs ("import Word\ndef d (x : UIntN 8) : UIntN.div x (UIntN.zero 8) = UIntN.zero 8 := by smt\n") trusted
         noErrors ms },
-    { name := "smt: words need a range hypothesis (out-of-range words are values of UIntN)", run := fun _ => needs "z3" do
-        let ms ← msgs ("import Word\ndef nn (x : UIntN 8) : UIntN.not (UIntN.not x) = x := by smt\n") trusted
-        expect ms "smt: the word `x` needs a range hypothesis"
-        -- and the statement is false without it: the kernel refutes an instance
-        let ms ← msgs ("import Word\ndef f : UIntN.not (UIntN.not (UIntN.ofBitsTrusted 300 : UIntN 8)) = (UIntN.ofBitsTrusted 300 : UIntN 8) := rfl\n")
-        check (has ms "error") s!"the kernel accepted not (not 300) = 300 at width 8: {ms}"
+    { name := "smt: words, with no range hypotheses (every UIntN is in range, 22l)", run := fun _ => needs "z3" do
         let ms ← msgs ("import Word\n" ++
-          "def nn (x : UIntN 8) (h : Nat.lt (UIntN.toNat x) 256 = .true) : UIntN.not (UIntN.not x) = x := by smt\n" ++
-          "def ac (x y : UIntN 16) (hx : Nat.lt (UIntN.toNat x) 65536 = .true) (hy : Nat.lt (UIntN.toNat y) 65536 = .true) :\n" ++
-          "    UIntN.add x y = UIntN.add y x := by smt\n" ++
-          "def xs (x : UIntN 32) (h : Nat.lt (UIntN.toNat x) 4294967296 = .true) : UIntN.xor x x = UIntN.zero 32 := by smt\n") trusted
-        noErrors ms },
+          "def nn (x : UIntN 8) : UIntN.not (UIntN.not x) = x := by smt\n" ++
+          "def ac (x y : UIntN 16) : UIntN.add x y = UIntN.add y x := by smt\n" ++
+          "def xs (x : UIntN 32) : UIntN.xor x x = UIntN.zero 32 := by smt\n" ++
+          "def lt (x : UIntN 8) : Nat.lt (UIntN.toNat x) 256 = .true := by smt\n") trusted
+        noErrors ms
+        let ms ← msgs ("import Word\ndef bad (x : UIntN 8) : UIntN.add x x = x := by smt\n") trusted
+        expect ms "smt: the solver found a counterexample" },
     { name := "smt: only the library's definitions are read as SMT operations", run := fun _ => needs "z3" do
         -- a file of its own `UIntN` (no `import Word`): not bit vectors
         let ms ← msgs ("import Prelude\ninductive UIntN (w : Nat) where\n  | mk (n : Nat)\n" ++
           "def UIntN.toNat {w : Nat} : UIntN w → Nat\n  | .mk n => n\ndef UIntN.not {w : Nat} : UIntN w → UIntN w\n  | .mk n => .mk 0\n" ++
-          "def fake (x : UIntN 8) (h : Nat.lt (UIntN.toNat x) 256 = .true) : UIntN.not (UIntN.not x) = x := by smt\n") trusted
+          "def fake (x : UIntN 8) : UIntN.not (UIntN.not x) = x := by smt\n") trusted
         expect ms "smt: the goal is not in the fragment" },
     { name := "smt: a false goal fails with a counterexample in the user's names", run := fun _ => needs "z3" do
         let ms ← msgs ("import Prelude\ndef wrong (apples pears : Nat) (h : Nat.lt apples pears = .true) : Nat.lt pears apples = .true := by smt\n") trusted

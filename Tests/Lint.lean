@@ -257,7 +257,15 @@ def TermRow.withChild (row : TermRow) (j : Nat) (mark : Term R) (plain : Term R 
 def TermRow.withLevel (row : TermRow) (j : Nat) (mark : Level) : Term R :=
   row.build (fun _ => plainT) (fun i => if i == j then mark else .zero)
 
-def freeVars (t : Term R) : List Nat := ((Term.freeVarsAt 0 t).run #[]).2.toList
+/-- The free variables of `t` under `depth` binders, as indices into the enclosing
+environment (with repeats). (The kernel's copy of this went with its syntactic
+regularity, conv-regularity §5; the lint keeps its own.) -/
+partial def freeVarsAt (depth : Nat) (t : Term R) : StateM (Array Nat) Unit :=
+  match t with
+  | .var i => if i ≥ depth then modify (·.push (i - depth)) else pure ()
+  | t => t.forChildren (fun _ => pure ()) (fun d c => freeVarsAt (depth + d) c)
+
+def freeVars (t : Term R) : List Nat := ((freeVarsAt 0 t).run #[]).2.toList
 
 /-- The index of the marked variable, as seen from outside the witness. -/
 def M : Nat := 40
@@ -329,7 +337,7 @@ def checkTermOps (ops : TermOps) (rows : List TermRow) : Failures Unit := do
 /-! ### Evaluation and read-back keep every child
 
 The witness is evaluated in an environment of `L` variables and read back. The marked
-child is the variable with the highest level, so `Val.lvlBound` must be `L`, and the term
+child is the variable with the highest level, and the term
 read back must mention the variable (index 0). The other children are a lower variable:
 every eliminator is stuck on it. -/
 
@@ -376,8 +384,6 @@ def checkTermEval (rows : List TermRow) : Failures Unit := do
         let g := semGlobals erase
         let v := eval g semEnv w
         let mode := if erase then "erasing proofs" else "evaluating proofs"
-        expect (v.lvlBound == L)
-          s!"Term.{row.name}, child {j}: after eval, Val.lvlBound is {v.lvlBound}, expected {L} (the child's variable is not counted)"
         let dropped := erase && eraseDrops.any fun (n, i, _) => n == row.name && i == j
         let back := quote g L v
         expect ((freeVars back).contains 0 == !dropped)
@@ -529,21 +535,19 @@ def plainK : Closure R := .mk [] (.var 0)
 /-- A closure under `b` binders whose body is the entry of its environment. -/
 def markK (b : Nat) (v : Val R) : Closure R := .mk [v] (.var b)
 
-/-- Every child of every value constructor counts for `lvlBound`, and is read back by
+/-- Every child of every value constructor is read back by
 `quote` in both modes; `eraseExempt` names the rows whose children are erased proofs. -/
 def checkValRows (what : String) (rows : List ValRow) (eraseExempt : List String := []) :
     Failures Unit := do
   for row in rows do
     let plain := row.build (fun _ => plainV) (fun _ => plainK) (fun _ => .zero)
-    let base := plain.lvlBound
+    let _ := plain
     let marked : List (String × Val R) :=
       (List.range row.vals).map (fun j => (s!"value child {j}",
         row.build (fun i => if i == j then Val.var VM else plainV) (fun _ => plainK) (fun _ => .zero))) ++
       (List.range row.closures.length).map (fun j => (s!"closure child {j}",
         row.build (fun _ => plainV) (fun i => if i == j then markK row.closures[j]! (Val.var VM) else plainK) (fun _ => .zero)))
     for (child, w) in marked do
-      expect (w.lvlBound == max base (VM + 1))
-        s!"{what}.{row.name}, {child}: lvlBound is {w.lvlBound}, expected {VM + 1} (a variable of the child is not counted)"
       for erase in [false, true] do
         let g := semGlobals erase
         let back := quote g (VM + 1) w
@@ -647,11 +651,6 @@ def pinned : List (String × String × Nat × String) := [
   ("Wiz/Core/Term.lean", "hasVar", 1, "as lift"),
   ("Wiz/Core/Term.lean", "instLevels", 0, ""),
   ("Wiz/Core/Term.lean", "levelParamsUsed", 0, ""),
-  ("Wiz/Core/Eval.lean", "Term.freeVarsAt", 1, "as lift"),
-  ("Wiz/Core/Eval.lean", "Val.lvlBound", 0, ""),
-  ("Wiz/Core/Eval.lean", "Head.lvlBound", 0, ""),
-  ("Wiz/Core/Eval.lean", "Elim.lvlBound", 0, ""),
-  ("Wiz/Core/Eval.lean", "Closure.lvlBound", 0, ""),
   ("Wiz/Core/Eval.lean", "eval", 2, "`const`: no definition is a stuck global; `szSuc`: any size but ∞"),
   ("Wiz/Core/Eval.lean", "quote", 2, "the erased proof's `isAbsurd`; a lazyInd's spine holds only app/fst/snd/down (the lint checks that dynamically: 'glued spines')"),
   ("Wiz/Core/Eval.lean", "vElims", 0, ""),
@@ -836,12 +835,6 @@ def wizFns : List WizFn := [
   -- "might mention the variable": the default is `true`, the conservative answer
   { fn := "usesVar", ty := "Tm", arg := 1, defaultOk := true,
     exempt := closedConst "closed" },
-  -- the level bound that `sameVal` quotes at (S1): total, every child counted
-  { fn := "lvlBound", ty := "Val", arg := 0 },
-  { fn := "headBound", ty := "Head", arg := 0, exempt := closedConst "closed" },
-  { fn := "spineBound", ty := "Spine", arg := 0 },
-  { fn := "envBound", ty := "Env", arg := 1 },
-  { fn := "branchesBound", ty := "Tms", arg := 1 },
   -- evaluation and read-back
   { fn := "eval", ty := "Tm", arg := 1,
     exempt := closedConst "a constant's type is not part of its value" ++ [
@@ -953,7 +946,7 @@ def lintGroup : Group where
             expect (termCtorName w == r.name) s!"Term.{r.name}: the row builds a `{termCtorName w}`" },
     { name := "Term: mapChildrenM, forChildren, freeVarsAt, hasVar, lift, instantiateAt, strengthen?, abstract, instLevels, levelParamsUsed reach every child", run := fun _ =>
         report "Term traversals" (checkTermOps kernelOps termTable) },
-    { name := "Term: eval, Val.lvlBound and quote (both modes) keep every child and level", run := fun _ =>
+    { name := "Term: eval and quote (both modes) keep every child and level", run := fun _ =>
         report "Term evaluation" (checkTermEval termTable) },
     { name := "the lint fails on the S1 bug (a traversal without a case for natOp)", run := fun _ => do
         let ((), fs) ← (checkTermOps brokenOps termTable).run #[]
@@ -979,14 +972,13 @@ def lintGroup : Group where
           for r in elimTable do
             let e := r.build (fun _ => plainV) (fun _ => plainK) (fun _ => .zero)
             expect (elimCtorName e == r.name) s!"Elim.{r.name}: the row builds a `{elimCtorName e}`" },
-    { name := "Val, Head, Elim: lvlBound counts and quote (both modes) reads back every child and level", run := fun _ =>
+    { name := "Val, Head, Elim: quote (both modes) reads back every child and level", run := fun _ =>
         report "value traversals" do
           checkValRows "Val" valTable
           -- (a suspended proof is erased by `quoteErasesProofs`; its bound still counts)
           checkValRows "Head" headTable (eraseExempt := ["prf", "refl", "reflTy", "transp"])
           checkValRows "Elim" (elimTable.map (·.toValRow fun e => .neutral (.global "h" []) #[e]))
           -- the variable itself
-          expect ((Val.var 4 : Val R).lvlBound == 5) "Head.local: lvlBound is not the level + 1"
           expect (quote (semGlobals false) 7 (Val.var 4 : Val R) == .var 2) "Head.local: quote is not the index" },
     { name := "glued spines: every elimination of an unfold or a lazyInd is counted and read back", run := fun _ =>
         report "glued spines" do
