@@ -28,6 +28,8 @@ import IO
 -- value in the cell is always the index of its one token. This is the meaning of the
 -- token in lib/HProp.wiz's model, `Pts l v` ↔ `l ↦ v`; a mechanised adequacy proof
 -- against `Prog.run` (lib/Hoare.wiz) is future work. `#print axioms` lists the natives.
+-- Extern privacy is by name only: another module could bind `wiz_ref_new` with any type
+-- (it would show in `#print axioms`), the same gap as MVar.Hole, Lock.Guard and Chan.
 --
 -- Tokens are boxed units at run time (a zero-size representation is plan L5). In
 -- compiled code only: the interpreters (`#eval`, `#run`) don't run these natives.
@@ -44,7 +46,8 @@ private extern "wiz_ref_read" Ref.readRaw : {0 V : Type} → (l : Loc V) → {0 
 -- write `w`; the token now says so
 private extern "wiz_ref_write" Ref.writeRaw : {0 V : Type} → (l : Loc V) → (w : V) → {0 v : V} → (1 t : Pts l v) →
   IO (Pts l w)
--- give up the cell (the token is consumed; the memory goes when the last `Loc` does)
+-- give up the cell: the token is consumed and the value released (the cell's memory goes
+-- when the last `Loc` does)
 private extern "wiz_ref_free" Ref.freeRaw : {0 V : Type} → (l : Loc V) → {0 v : V} → (1 t : Pts l v) → IO Unit
 
 -- `{emp} new v {l. l ↦ v}`: a new cell holding `v`, and its token

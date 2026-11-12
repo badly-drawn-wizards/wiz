@@ -2534,7 +2534,9 @@ WIZ_API wiz_val wiz_ref_write(wiz_val mv, wiz_val a, wiz_val tok) {
   wiz_mvar_put(mv, a);
   return tok;
 }
-WIZ_API void wiz_ref_free(wiz_val mv, wiz_val tok) { wiz_dec(tok); wiz_dec(mv); }
+/* the value goes now (take_ empties the cell and consumes our reference to it); the cell
+   itself when the last Loc does */
+WIZ_API void wiz_ref_free(wiz_val mv, wiz_val tok) { wiz_dec(tok); wiz_dec(wiz_mvar_take_(mv, 0)); }
 
 /* a lock is a binary semaphore, so a guard may be released by another thread */
 typedef struct {
