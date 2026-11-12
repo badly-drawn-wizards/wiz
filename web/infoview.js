@@ -4,6 +4,8 @@
 // out. Every event is a step of the Wiz program (its export `wiz_web_step`, stage 9g),
 // which calls back js_send and js_set_html (web/js.c).
 "use strict";
+// (11s) The parts the documentation's pages use too are web/tagged.js.
+import { loadWasm, stepper, delegate } from "./tagged.js";
 
 const params = new URLSearchParams(location.search);
 const port = params.get("port") || "8765";
@@ -13,18 +15,11 @@ const uri = params.get("uri") || `file:///scratch-${Math.random().toString(36).s
 // Events for Wiz: each is a step `state = wiz_web_step(state, event)`. The state is a
 // Wiz value (a reference the page owns, passed back in); the event's text is copied by
 // Wiz. Events before the module is loaded wait in `early`.
-let wasm = null;
-let state = null;
+let step = null;
 const early = [];
-const big = (x) => (typeof x === "bigint" ? x : BigInt(x));   // wasm64: pointers are i64
-function step(ev) {
-  const p = wasm.stringToNewUTF8(ev);
-  state = wasm._wiz_web_step(state, big(p));
-  wasm._free(p);
-}
 function post(kind, payload) {
   const ev = kind + "\n" + payload;
-  if (wasm) step(ev); else early.push(ev);
+  if (step) step(ev); else early.push(ev);
 }
 
 // Messages to and from the server. Wiz frames its stream with Content-Length, as on
@@ -119,29 +114,16 @@ for (const ev of ["keyup", "click", "select"]) editor.addEventListener(ev, onCur
 
 // The infoview: clicks select a subterm (event delegation: one listener for every
 // tag Wiz renders), the innermost tag under the mouse is highlighted, arrows navigate.
-const goals = document.getElementById("goals");
-goals.addEventListener("click", (e) => {
-  const t = e.target.closest(".tt");
-  if (t) post("click", t.dataset.idx);
-});
-goals.addEventListener("mouseover", (e) => {
-  for (const h of goals.querySelectorAll(".hover")) h.classList.remove("hover");
-  const t = e.target.closest(".tt");
-  if (t) t.classList.add("hover");
-});
-goals.addEventListener("keydown", (e) => {
-  if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Escape"].includes(e.key)) {
-    e.preventDefault();
-    post("key", e.key);
-  }
+delegate(document.getElementById("goals"), {
+  click: (t) => post("click", t.dataset.idx),
+  key: (k) => post("key", k),
 });
 
 // Start: load the Wasm module (Emscripten's loader, web/build.sh), open the document.
 async function start() {
   setStatus("loading");
-  const createModule = (await import("./wiz-infoview.mjs")).default;
-  wasm = await createModule({ print: (s) => console.log(s), printErr: (s) => console.warn(s) });
-  state = wasm._wiz_web_init();
+  const wasm = await loadWasm();
+  step = stepper(wasm, "_wiz_web_init", "_wiz_web_step");
   for (const ev of early.splice(0)) step(ev);
   connect();
   if (follow) {
