@@ -1420,10 +1420,6 @@ def HdlDerive.fieldUnpack (r : String) (x : Syntax) (f : FieldView) : Syntax :=
   | .true => `(term| Hw.untag $x)
   | .false => let g := HdlDerive.suffixed ".unpack" sp.1; `(term| $g (Hw.untag $x))
 
-def HdlDerive.pack (r : String) (s : Syntax) : List FieldView → Syntax
-  | .nil => `(term| Hw.lit 0 0)
-  | .cons f .nil => HdlDerive.fieldPack r s f
-  | .cons f fs => let a := HdlDerive.fieldPack r s f; let b := HdlDerive.pack r s fs; `(term| Hw.pair $a $b)
 -- Unpacking `x✝0 : r (S.code Δ)` walks down the product once: the tails are bound in a
 -- chain `let ω x✝1 := Hw.snd x✝0; …; let ω x✝(n-1) := Hw.snd x✝(n-2)`, and field i is
 -- `Hw.fst x✝i` (the last one `x✝(n-1)` itself). So `S.unpack` is linear in the number of
@@ -1500,6 +1496,20 @@ def HdlDerive.code (n r : String) (ps : List ParamView) (delta : List Syntax) (f
     .cons `(command| def $nm : $ty := $val) .nil
   | .cons _ _ => HdlDerive.codeDefs n r ps delta 0 fs
 
+-- `pack`: `Hw.pair f₀ (Hw.pair f₁ … : r (S.code.tail1 Δ))`, each rest ascribed its tail's
+-- name, so that the `Hw.pair`s' codes are names too (inferred from the parts, they would
+-- be the literal products)
+def HdlDerive.pack (n r : String) (delta : List Syntax) (s : Syntax) : Nat → List FieldView → Syntax
+  | i, .nil => `(term| Hw.lit 0 0)
+  | i, .cons f fs => match fs with
+    | .nil => HdlDerive.fieldPack r s f
+    | .cons _ _ =>
+      let a := HdlDerive.fieldPack r s f;
+      let b := HdlDerive.pack n r delta s (Nat.succ i) fs;
+      let rv := Syntax.mkVar r;
+      let t := Syntax.mkApp (Syntax.mkVar (HdlDerive.tailName n (Nat.succ i))) delta;
+      `(term| Hw.pair $a ($b : $rv $t))
+
 def deriveBundle : Deriver := fun n => do
   v ← Derive.lookup "Bundle" n;
   Derive.noIndices "Bundle" v;
@@ -1523,7 +1533,7 @@ def deriveBundle : Deriver := fun n => do
     let x := Syntax.mkIdent "x✝";
     let xv := Syntax.mkVar "x✝";
     let packTy := HdlDerive.explicitPis ps `(term| {$rid : HwTy → Type} → [Hw $rv] → $tyS → $rv $codeApp);
-    let packBody := HdlDerive.pack r sv fs;
+    let packBody := HdlDerive.pack n r delta sv 0 fs;
     let packVal := HdlDerive.lams ps `(term| fun $s => $packBody);
     let unpackTy := HdlDerive.explicitPis ps `(term| {$rid : HwTy → Type} → [Hw $rv] → $rv $codeApp → $tyS);
     let mk := Syntax.mkApp (Syntax.mkVar (Derive.ctorName v c)) (HdlDerive.unpackArgs r 0 fs);

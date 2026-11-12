@@ -222,8 +222,11 @@ def plainBundle (n : Nat) : String :=
   s!"structure B{n} (r : HwTy → Type) where\n" ++ String.join ((List.range n).map (s!"  l{·} : r (HwTy.bits 8)\n")) ++
   "  deriving Bundle\n"
 
-/-- The number of instructions of an IR body. -/
+/-- The number of instructions of an IR body, without the projections. (Reading field k
+of a structure, a right-nested Σ, is k projections in the IR wherever it is written: so
+`S.pack` still has a quadratic number of projections, the lowering's to remove.) -/
 partial def bodySize : IR.Body → Nat
+  | .vdecl _ (.proj _ _) b => bodySize b
   | .vdecl _ _ b | .dup _ b | .drop _ b => bodySize b + 1
   | .case _ alts => alts.foldl (fun n a => n + bodySize a) 1
   | .jdecl _ _ body k => bodySize body + bodySize k + 1
@@ -355,8 +358,8 @@ def group : Group where
     -- argument, which is relevant (`{ω a b : HwTy}`): quadratic code (cubic in `unpack`),
     -- about n^2.7 to elaborate and compile (wiz-rv's 20-field core state: a 14k-line IR
     -- function). Now `unpack` is a chain of `let`s and every tail of the code a definition:
-    -- linear, about 90 instructions per field. Before, unpack: 32 fields 169k lines of
-    -- `#ir`, 48 fields 567k.
+    -- linear (but for `pack`'s field projections: see `bodySize`). `#ir` before → after:
+    -- unpack, 32 fields 169k → 2.9k lines, 48 fields 567k → 4.4k; pack, 64 fields 39k → 9k.
     { name := "deriving Bundle: pack and unpack of 32 and 64 fields are linear in the fields (unpack was cubic)", run := fun _ => do
         let r ← within 240 3000 fun _ => bundleIRSizes [32, 64]
         let [(p32, u32), (p64, u64)] := r | throw (IO.userError "two bundles expected")
