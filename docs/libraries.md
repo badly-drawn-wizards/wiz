@@ -211,6 +211,21 @@ that it is the index. The trusted part is the four natives `wiz_ref_*` (runtime/
 over MVar cells) and their types, kept true by an invariant the API maintains; the header
 of lib/Ref.wiz has the argument. Compiled code only.
 
+## Owned handles (`lib/Handle.wiz`) ✅
+
+`Owned h` is the obligation to release the handle `h`: a token at quantity 1 indexed by
+the handle, as `MVar.Hole m` and `Lock.Guard l` are ([25d](stages/25-concurrency.md)).
+The owned constructors `File.withOwned`, `Fd.withOwned` and `Process.spawnOwned` open a
+fresh handle and mint its one token; nothing else can mint one. `Handle.use` passes the
+token in and hands it back, and `File.releaseOwned`, `Fd.releaseOwned` and
+`Child.releaseOwned` (close, close, wait) use it up. **For handles obtained through the
+owned constructors**, the release happens exactly once on every path, and there is no use
+after release through this API. Handles from lib/Sys.wiz's ω API (`File.open`, …) have no
+token and are not covered; the handles stay ω values, so direct calls to lib/Sys.wiz on an
+owned handle are not checked either. Making the handles themselves linear (direct style,
+with lib/Sys.wiz and lib/Serial.wiz moved onto this module) waits for linear Σ fields
+(linear-case stage 2). Trusted: two natives (`wiz_handle_own`/`wiz_handle_disown`).
+
 ## Functors and Booleans
 
 `lib/Functor.wiz` (`import Functor`): `Functor`, `Applicative`, `<$>`, `<*>`; every `Monad`
