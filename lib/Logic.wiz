@@ -32,8 +32,9 @@ def absurdOf {P : Prop} {0 R : Prop} (p : P) (n : Not P) : R := absurd (n p)
 -- ## Conjunction
 
 def And (P Q : Prop) : Prop := P × Q
-infixr:35 " ∧ " => And
+-- (the ASCII spellings first: the notation declared last is the one printed, 11r)
 infixr:35 " /\\ " => And
+infixr:35 " ∧ " => And
 def And.intro {P Q : Prop} (p : P) (q : Q) : P ∧ Q := (p, q)
 def And.left {P Q : Prop} (h : P ∧ Q) : P := h.1
 def And.right {P Q : Prop} (h : P ∧ Q) : Q := h.2
@@ -44,8 +45,8 @@ def And.imp {P Q P' Q' : Prop} (f : P → P') (g : Q → Q') (h : P ∧ Q) : P' 
 -- ## Disjunction
 
 def Or (P Q : Prop) : Prop := (0 R : Prop) → (P → R) → (Q → R) → R
-infixr:30 " ∨ " => Or
 infixr:30 " \\/ " => Or
+infixr:30 " ∨ " => Or
 def Or.inl {P Q : Prop} (p : P) : P ∨ Q := fun R l r => l p
 def Or.inr {P Q : Prop} (q : Q) : P ∨ Q := fun R l r => r q
 def Or.elim {P Q : Prop} {0 R : Prop} (h : P ∨ Q) (l : P → R) (r : Q → R) : R := h R l r
@@ -59,8 +60,8 @@ def Or.resolveRight {P Q : Prop} (h : P ∨ Q) (n : ¬ Q) : P := h P (fun p => p
 -- ## Equivalence
 
 def Iff (P Q : Prop) : Prop := (P → Q) × (Q → P)
-infix:20 " ↔ " => Iff
 infix:20 " <-> " => Iff
+infix:20 " ↔ " => Iff
 def Iff.intro {P Q : Prop} (f : P → Q) (g : Q → P) : P ↔ Q := (f, g)
 def Iff.mp {P Q : Prop} (h : P ↔ Q) (p : P) : Q := h.1 p
 def Iff.mpr {P Q : Prop} (h : P ↔ Q) (q : Q) : P := h.2 q
@@ -87,7 +88,7 @@ def Ex.imp {A : Type} {P Q : A → Prop} (f : (a : A) → P a → Q a) (h : Ex P
 declare_syntax_cat exBinder
 syntax (name := plain) ident : exBinder
 syntax (name := typed) "(" ident+ ":" term ")" : exBinder
-syntax:lead (name := ex) "∃" exBinder+ (":" term)? "," term : term
+syntax:lead (name := ex) "∃ " exBinder+ (":" term)? "," term : term
 syntax:lead (name := exAscii) "exists" exBinder+ (":" term)? "," term : term
 -- `Ex (fun x => body)`, with the binder's type if there is one
 def Ex.wrap (x : Syntax) (ty : Option Syntax) (body : Syntax) : Syntax := match ty with
@@ -113,6 +114,9 @@ def Ex.binderMacro : Macro := fun stx => match Syntax.getArg stx 1 with
   | _ => MacroM.throw "∃: malformed binders"
 attribute [macro term.ex] Ex.binderMacro
 attribute [macro term.exAscii] Ex.binderMacro
+-- printed (11r): `Ex (fun x => P x)` is `∃ x, P x`
+app_unexpander Ex
+  | `(term| $f (fun $x => $b)) => `(term| ∃ $x, $b)
 -- `∃` commutes with `∧` on a side that doesn't mention the witness
 def Ex.andRight {A : Type} {P : A → Prop} {Q : Prop} (h : (∃ a, P a) ∧ Q) : ∃ a, P a ∧ Q :=
   h.1 (∃ a, P a ∧ Q) (fun a p => Ex.intro (fun a => P a ∧ Q) a (p, h.2))
@@ -162,3 +166,11 @@ def Bool.cases (b : Bool) : b = .true ∨ b = .false := match b with
 -- `.true = .false` computes to a Σ whose first component is `False`; `absurd` checks its
 -- argument erased, so it may project that (erased) field
 def Bool.trueNeFalse : ¬ Bool.true = Bool.false := fun e => absurd e.1
+/-- The left conjunct of a true `Bool.and`. -/
+def Bool.and_left : (a b : Bool) → Bool.and a b = .true → a = .true
+  | .true, _, _ => rfl
+  | .false, _, h => absurd h.1
+/-- The right conjunct of a true `Bool.and`. -/
+def Bool.and_right : (a b : Bool) → Bool.and a b = .true → b = .true
+  | .true, _, h => h
+  | .false, _, h => absurd h.1
