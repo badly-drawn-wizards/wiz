@@ -542,7 +542,10 @@ failure. Force both sides first, then:
 `t.1` and `b` with `t.2`), `unit`, `tt`, `empty`; and the other eliminations in
 `unifySpine`. -/
 partial def unify (l : Lvl) (t u : Val R) : ElabM R Unit := do
-  if ← unifyGlued l (← forceMeta t) (← forceMeta u) then return ()
+  -- (kernel-eval: `ind` on a constructor is lazy for speed alone; the elaborator sees what
+  -- it computes, which may be glued: `K.beq (.cons x xs) (.cons y ys)` against
+  -- `Bool.and ?a ?b` compares the two `Bool.and`s, as before `ind` was lazy there)
+  if ← unifyGlued l (unlazyCon (← forceMeta t)) (unlazyCon (← forceMeta u)) then return ()
   -- numerals: compare two directly, or else look one step inside (`vNatView`)
   let g ← getGlobals
   let (t, u) ← match ← force t, ← force u with

@@ -640,7 +640,8 @@ def group : Group where
         let w : Term ZeroOneMany := .qlit QuantitySyntax.explicitDefault
         let ty (s : Option Level) : Term ZeroOneMany := .pi "X" .default w (.sort 1) (.eqTy (.var 0) (.var 0)) s
         let d (s : Option Level) : Decl ZeroOneMany :=
-          { name := "r", type := ty s, value := some (.lam "X" (.reflTy (.var 0))) }
+          -- (a `fun` at a proposition carries its proof marker, P2)
+          { name := "r", type := ty s, value := some (.prf .zero (.lam "X" (.reflTy (.var 0)))) }
         check ((addDecl {} (d none)) matches .ok _) "the unmarked declaration was rejected"
         check ((addDecl {} (d (some 0))) matches .ok _) "the right sort note was rejected"
         check ((addDecl {} (d (some 1))) matches .error _) "a wrong sort note (Type for a proposition) was accepted" },
