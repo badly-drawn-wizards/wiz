@@ -45,4 +45,4 @@ def corr_all : allBelow Hv.corrOk 64 = .true := rfl
 def eleven_all : allBelow Hv.octOk 2048 = .true := rfl
 
 -- a use: the root of 400 is 20, and of 399 is 19
-#eval ((rtRun (BitVec.ofNat 11 400)).toNat, (rtRun (BitVec.ofNat 11 399)).toNat)
+#eval (((rtRun (BitVec.ofNat 11 400)).toNat, (rtRun (BitVec.ofNat 11 399)).toNat) : Nat × Nat)
