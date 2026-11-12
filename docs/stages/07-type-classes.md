@@ -173,11 +173,11 @@ with instances for `Nat` that are the natively computed functions (`Add.mk Nat.a
   a fresh type), and a numeral whose type is still a hole waits for the other arguments:
   `1 + x` with `x : U8`, `0 + a` with `a : Int`, `(-3 : Int)` and `def x : U8 := 1 + 2`
   put the numerals at the right type, with no search (a small Lean `binop%`).
-* **Nominal resolution.** Types are structural, so `UIntN w` and `IntN w` (one shape) unify,
-  and an instance for one would serve the other. Resolution compares the declared
-  inductive types behind the class arguments (aliases such as `U8` and `BitVec 8` are seen
-  through to `UIntN`) and skips an instance for a different one (`Class.lean`,
-  `nominalClash`), so `/` at `I32` is signed and at `U32` unsigned.
+* **Signed and unsigned words.** `UIntN w` and `IntN w` have one shape but are sealed
+  (22k, docs/stages/22-numbers.md), so they are different types and ordinary resolution
+  tells their instances apart: `/` at `I32` is signed and at `U32` unsigned. (An
+  interim nominal rule in `Class.lean` did this before the seal; it is gone, so ordinary
+  look-alike types still share instances, as they share everything else.)
 * **Declared types.** A definition by equations, a copattern definition, an inductive
   type's signature and constructor types solve their instance problems before their
   types are zonked (they used to be zonked at once: `(n : Nat) → n + 0 = n` would have
@@ -208,4 +208,4 @@ with instances for `Nat` that are the natively computed functions (`Add.mk Nat.a
 Heterogeneous `HAdd A B C` (Lean's) is not here: it needs default instances, which the
 class mechanism lacks; see /workspace/wiz-notes/num-classes.md for the design.
 Types are structural (two declarations of the same shape are one type), so an instance
-for a look-alike type applies too; numerals and patterns: numerals are not patterns yet.
+for a look-alike type applies too; numerals as patterns: see 13q (`docs/stages/13-language.md`).

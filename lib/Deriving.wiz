@@ -124,6 +124,13 @@ def Derive.explicitVars (base : String) : Nat → List FieldView → List Syntax
     | _ => Derive.explicitVars base (i + 1) fs
 def Derive.ctorName (v : IndView) (c : CtorView) : String :=
   String.append (IndView.name v) (String.append "." (CtorView.name c))
+-- (13b) A private type of a module has the kernel name `_private.M._0.T`; it is shown as `T`.
+def Derive.afterPrivate : List String → String → String
+  | .cons _ (.cons r rs), _ => String.intercalate "._0." (.cons r rs)
+  | _, n => n
+def Derive.sourceName (n : String) : String := match String.startsWith n "_private." with
+  | .true => Derive.afterPrivate (String.splitOn n "._0.") n
+  | .false => n
 -- Eliminate `x : T Δ ξ` into `motive`: `m c` is the result for constructor `c`, with
 -- its fields bound as `f✝i` and the recursive results as `ih✝i`. That is `T.rec` for an
 -- inductive type (each method binds them), and the projections `x.f` for a structure.
@@ -201,7 +208,7 @@ def Derive.reprArgs : Nat → List FieldView → Syntax
   | _, .nil => `(term| "")
   | i, .cons f fs => Derive.reprField i f (Derive.reprArgs (i + 1) fs)
 def Derive.reprMethod (v : IndView) (c : CtorView) : Syntax :=
-  let name := Syntax.mkStr (Derive.ctorName v c);
+  let name := Syntax.mkStr (Derive.sourceName (Derive.ctorName v c));
   let p := Syntax.mkIdent "p✝";
   let pv := Syntax.mkVar "p✝";
   match Derive.explicitVars "f✝" 0 (CtorView.fields c) with

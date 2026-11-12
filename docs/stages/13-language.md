@@ -49,8 +49,9 @@ constructors and recursors) private to its **module**: other modules get "'x' is
 private to module M"; the module itself, including its later declarations, uses the
 names as usual. Privacy is per module ([23c](23-grail.md): each module is elaborated in isolation and
 under its own name), and the main file is a module of its own. In a module, a private
-function, axiom or foreign function gets a kernel name of its own (`_private.M.0.secret`,
-as in Lean), so two modules' private `secret`s don't clash; see
+declaration (a function, axiom, foreign function or type, with a type's constructors,
+fields and recursors) gets a kernel name of its own (`_private.M._0.secret`, as in Lean),
+so two modules' private `secret`s don't clash; see
 [23b](23-grail.md).
 
 `private mk ::` right after a structure's `where` keeps the type and its projections
@@ -62,7 +63,11 @@ such a structure is also **opaque** to the elaborator: its definition doesn't un
 projection function `S.val` (`p.1` doesn't work). Within the module nothing changes.
 Like Lean's, privacy is enforced by the elaborator: the kernel checks every declaration
 against the full environment, where an opaque structure is its Σ again (which is sound:
-whatever converts with the definition hidden converts with it unfolded).
+whatever converts with the definition hidden converts with it unfolded). Two *values* of an
+opaque type are compared at its real definition (`Globals.hidden`, kept by `elabView`
+for `conv` only), so that its proof fields are irrelevant and η applies, as in the
+kernel: `P.mk 4 (lt_s 4) = P.mk 4 rfl` holds by `rfl` in any module. Only a yes or no
+comes out of that comparison, and the kernel's own environment never has `hidden`.
 
 **The elaborator never leaves a comparison to the kernel.** The other direction is not
 sound for privacy: the kernel accepts what converts with the definition *unfolded*, so a
@@ -522,3 +527,128 @@ equation writes `castRefl` themselves.
 Before, they checked only because unsolved holes kept the equation from computing.
 Research note: `wiz-notes/structure-eta.md`. Tests: group `elabfix`, "rfl at an equation
 that has computed"; group `optic`.
+
+## 13p: nested structure update `{ s with a.b := v }`, printed back ✅
+
+```
+structure In where
+  x : Nat
+  y : Nat
+structure Out where
+  i : In
+  n : Nat
+def f (o : Out) : Out := { o with i.x := 10, n := 4 }   -- i := { o.i with x := 10 }
+def g (o : Out) : Out := { o with i.x := 5, i.y := 6 }  -- one update of `i`
+```
+
+A field path `a.b := v` in a structure update (13i) updates field `b` of the structure
+held in field `a`: it is `a := { s.a with b := v }`, the inner update over the
+projection of `s` (bound once, like `s`). Paths into the same field are grouped, so
+`i.x := 5, i.y := 6` is one inner update; paths nest to any depth (`o.i.y := 0`).
+A field updated both directly and through a path, or one path given twice, is
+"field 'i' is updated twice" ("field 'i.x' …"); a path through a field that is not a
+structure is "field 'n' is not a structure (its type is Nat), so its fields can't be
+updated"; an unknown field in a path names the inner structure ("In has no field 'z'").
+A field updated through a path keeps its type, so the dependent-field rule of 13i
+applies to it as to a kept field.
+
+Updates work for every structure, since all of them are Σ types read through
+`StructLayout`: with parameters, with dependent fields, and for bundles, structures
+over a representation `structure Tx (r : HwTy → Type) where line : r Bit; …`
+(`lib/Hdl/Core.wiz`): `{ s with line := v }` at `Tx r` keeps `r` abstract.
+
+**Hover and go to definition.** The field name of an update is recorded as a use of
+the projection `S.f`: a hover shows its type in the updated structure, and go to
+definition jumps to the declaration of the structure that has the field (where the
+projections are declared). A path is recorded as its last field
+(`i.y` as `In.y`).
+
+**Printed back.** The printer shows `S.mk Δ a₁ … aₙ` as `{ s with fᵢ := aᵢ, … }` when
+some fields are the projections of one term `s` at their own components and the others
+are not (with every field replaced it is just `S.mk a₁ … aₙ`), `let x := e; S.mk …` (an update of a non-variable `e`) as `{ e with … }`, and a
+field updated with an update of its own old value as a path, so the three forms above
+print as written. The layout moved to `Wiz/Core/StructLayout.lean` so that the printer
+can read it (`structLayoutWith?`; `Elab/Struct.lean`'s `structLayout?` is the same
+function). `set_option pp.notation false` (or `--pp-all`) prints `S.mk` as it is.
+
+Tests: `language` ("13p: …"), `lsp` ("13p–q: an updated field's hover and definition …").
+
+## 13q: numeral and literal patterns ✅
+
+```
+def cls : Nat → Nat
+  | 0 => 10
+  | 1 => 11
+  | n+2 => n
+def sum : Nat → Nat
+  | 0 => 0
+  | n + 1 => n + 1 + sum n      -- structural: `n + 1` is `.succ n`
+def op (b : U8) : Nat := match b with
+  | 0x3F => 1
+  | 0 => 2
+  | _ => 3                      -- required: numerals don't cover U8
+```
+
+**At `Nat`** (the `builtin nat` type) a numeral pattern is its constructors, peeled one
+at a time as the match compiler splits (`natPatView`): `0` is `.zero`, `n` is
+`.succ (n - 1)`, and `p + k` (as `+` expands, `Add.add p k`, with a numeral `k`) is
+`.succ (p + (k - 1))`. So numeral patterns mix with constructor patterns, as-patterns
+and tuples, refine types like constructor patterns (`F : Nat → Type | 0 => Bool | _ =>
+Nat`), and `| n + 1 => … f n …` is structurally recursive. Recursion is still on the
+immediate predecessor only: `| n + 2 => f n` is "not structurally smaller" (the case
+tree splits twice, and only the first split has a hypothesis). The case tree grows with
+the numeral, so a numeral pattern at `Nat` is at most 256 ("the numeral pattern 300 is
+too large …; test with `Nat.beq` instead"). The self-hosted frontend already read
+numeral patterns this way (`patOf`, `selfhost/Frontend.wiz`).
+
+**At other types** a literal is an equality test. For a column of type `T` whose first
+row has a literal `l`, the column is compared with `T.beq x l`, where `T` is the first
+type in the chain of definitions the column's type unfolds through that has a `T.beq`
+(`BitVec 8`, then `UIntN 8`; `IntN w`; `String`, with `import Text`). The literal is
+elaborated at the column's type (numerals through `OfNat`, 7e). The test is a new
+`Bool` column in front of the column (`compileLitTest`): rows with `l` want `.true`
+(and `_` in the column), rows with another literal `.false` (keeping theirs for the next
+test), and catch-all rows `_`. The branches learn nothing about `x`. Literals don't
+cover a type, so the column needs a catch-all row: "a match on literals of type U8 needs
+a catch-all case (`_` or a variable) after them". In the same column only literals,
+`_` and variables are allowed; `n + k` is for `Nat` only; a literal on a data type
+without `T.beq` is "a literal pattern needs Nat, or a type T with literals and an
+equality test T.beq …". String literals are patterns by the same rule. A literal test
+can't be the split of a structural recursion (the first argument is split by its
+constructors).
+
+**Hexadecimal and binary numerals.** `0x3F` and `0b1010` are numerals everywhere (the
+tokenizer reads them as the decimal `num` token they denote, `Wiz/Parser/Token.lean`),
+so they need no change downstream; they print in decimal.
+
+Hover: a pattern variable under a numeral (`k` in `k + 1`) is a pattern variable like
+any other; a literal compared with `T.beq` is elaborated where it is written, so its
+`OfNat` instance shows in the hover as in a term. Tests: `language` ("13q: …"), `lsp`.
+
+**The self-hosted frontend** (`selfhost/Frontend.wiz`, `selfhost/Lex.wiz`) has all of
+13i, 13p and 13q, with the Lean frontend's verdicts and messages:
+- `selfhost/Lex.wiz` reads `0x3F` / `0b1010` as the decimal `num` token (`radixNum`); a
+  value from 2^63 on is read as 2^63, which the frontend rejects as it does the decimal
+  numeral (its numbers are 63-bit words).
+- Literal patterns: at `Nat` the numerals were already constructors (`patOf`); now a
+  numeral above 256, a string at `Nat`, `p + k` without a numeral `k`, and a literal on
+  a data type are the Lean frontend's errors (`litSplitErr`), and a literal in the first
+  row of a column of another type is the `T.beq` test (`litTest`, after
+  `compileLitTest`): `beqHead` finds `T` through the definitions the type unfolds
+  through, the column needs a catch-all row, and the new `Bool` column goes in front.
+  Numerals are `Nat` there (no `OfNat`), so in practice the literals are strings.
+- Structure update (`structUpdT`): `{ s with … }` is `let upd✝ := s; S.mk …`, a path
+  `a.b := v` an inner update of `S.a upd✝` (a sixth argument of the synthesized node
+  carries the path, for messages), checked against the type of `s`. A structure is
+  marked when declared (`Globals.markStruct`, an entry `structure S` among the
+  inductive types), so a one-constructor `inductive` is not one, as in Lean. The
+  self-hosted structures have no dependent fields, so the kept-field type check of 13i
+  has nothing to check.
+- There is no printer to read updates back: the self-hosted frontend prints kernel
+  terms (`show`).
+
+Tests: `selfhost` ("the self-hosted frontend: literal patterns …", "… structure update
+…"), each program checked by both frontends: the same values (`#eval` in one,
+`#reduce Nat.beq` in the other) and the same verdict for each declaration; the lexer
+agreement case has hex and binary numerals. The self-hosted sources use none of these,
+so the bootstrap is unaffected.

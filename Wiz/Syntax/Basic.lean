@@ -1,4 +1,4 @@
-import Wiz.Core.Term
+import Wiz.Core.Level
 
 /-!
 # Syntax trees
@@ -45,6 +45,12 @@ inductive Syntax where
 namespace Syntax
 
 def nullKind : Name := "null"
+
+/-- Rename identifiers: `f n` replaces `n` where it is `some`. -/
+partial def renameIdents (f : Name → Option Name) : Syntax → Syntax
+  | .ident i n => .ident i ((f n).getD n)
+  | .node i k args => .node i k (args.map (renameIdents f))
+  | s => s
 def numKind : Name := "num"
 def strKind : Name := "str"
 

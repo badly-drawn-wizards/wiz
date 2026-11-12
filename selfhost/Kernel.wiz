@@ -2624,7 +2624,10 @@ mutual
 -- (given) `infer`, with the proof marker's requirement
 def infer (c : TCtx) (t : Tm) : TyRes := match inferW (TCtx.belowMarked c) t with
   | .ok ty u => match requireMarker c t ty with
-    | .none => .ok ty u
+    -- (a proof uses nothing, as in `check`)
+    | .none => (match isPropTyU c ty with
+      | .true => .ok ty (uZeros (TCtx.lvl c))
+      | .false => .ok ty u)
     | .some m => .err m
   | r => r
 def inferW : TCtx → Tm → TyRes
@@ -2681,7 +2684,7 @@ def inferW : TCtx → Tm → TyRes
   -- at 1 can't be projected: this kernel has no `split`, so it can't be taken apart here)
   | c, .fst p => match infer c p with
     | .ok ty u => match whnf ty with
-      | .vsigma q a _ _ _ => match TCtx.erased c with
+      | .vsigma q a _ _ _ => match Bool.or (TCtx.erased c) (isPropTyU c ty) with
         | .true => .ok a u
         | .false => match qle .qo q with
           | .true => .ok a (uScale .qw u)
@@ -3010,7 +3013,7 @@ def letIn : TCtx → Q → Tm → Tm → Tm → TyRes
       -- evaluated, and its value with it: the value is then checked as in relevant mode
       | .true => (match infer (TCtx.define c (suspend (TCtx.env c) v) tyv) b with
         | .ok bty ub => (match check (erasedIf q (modeIf c (isProofTy c bty))) v tyv with
-          | .ok _ uv => (match popUsage q ub with
+          | .ok _ uv => (match popUsageAt c q tyv ub with
             | .some ub' => .ok bty (uAdd (uScale q uv) ub')
             | .none => .err "the let-bound variable's usage does not fit its quantity (used too often, or a variable at quantity 1 not used)")
           | r => r)
@@ -3018,7 +3021,7 @@ def letIn : TCtx → Q → Tm → Tm → Tm → TyRes
       -- (a `let` at 0 never computes its value: an erased position)
       | .false => match check (erasedIf q c) v tyv with
         | .ok _ uv => match infer (TCtx.define c (eval (TCtx.env c) v) tyv) b with
-          | .ok bty ub => match popUsage q ub with
+          | .ok bty ub => match popUsageAt c q tyv ub with
             | .some ub' => .ok bty (uAdd (uScale q uv) ub')
             | .none => .err "the let-bound variable's usage does not fit its quantity (used too often, or a variable at quantity 1 not used)"
           | r => r
@@ -3032,7 +3035,7 @@ def checkLet : TCtx → Q → Tm → Tm → Tm → Val → TyRes
       -- (a `let` at 0 never computes its value: an erased position)
       match check (erasedIf q c) v tyv with
       | .ok _ uv => match check (TCtx.define c (evalAt c v tyv) tyv) b T with
-        | .ok _ ub => match popUsage q ub with
+        | .ok _ ub => match popUsageAt c q tyv ub with
           | .some ub' => .ok T (uAdd (uScale q uv) ub')
           | .none => .err "the let-bound variable's usage does not fit its quantity (used too often, or a variable at quantity 1 not used)"
         | r => r
@@ -3040,9 +3043,27 @@ def checkLet : TCtx → Q → Tm → Tm → Tm → Val → TyRes
     | r => r
 -- (given) `check` matches on the type's shape (`whnf`), and answers with the type it got
 -- (and with the proof marker's requirement)
-def check (c0 : TCtx) (t : Tm) (ty : Val) : TyRes := match unknownSortInProof c0 t ty with
+def check (c0 : TCtx) (t : Tm) (ty : Val) : TyRes := match isPropTyU c0 ty with
+  -- a proof uses nothing: a term at a proposition is checked in an erased position, and its
+  -- usage is `0` (`check` in `Check.lean`)
+  | .true => (match checkE (TCtx.erase c0) t ty with
+    | .ok ty' _ => .ok ty' (uZeros (TCtx.lvl c0))
+    | r => r)
+  | .false => checkE c0 t ty
+def checkE (c0 : TCtx) (t : Tm) (ty : Val) : TyRes := match unknownSortInProof c0 t ty with
   | .some m => .err m
   | .none => checkM (modeAt c0 ty) t ty
+-- is this type a proposition (its sort computed, and `0`)? whatever the proof mode
+def isPropTyU (c : TCtx) (ty : Val) : Bool := match sortOf c ty with
+  | .some l => lvlIsZero l
+  | .none => .false
+-- leave a binder of quantity `q` and type `ty`: a binder whose type is a proposition takes
+-- any usage (its variable is a proof, erased and never run; `Ctx.popUsageAt`)
+def popUsageAt (c : TCtx) (q : Q) (ty : Val) (u : List Q) : Option (List Q) := match isPropTyU c ty with
+  | .true => (match u with
+    | .nil => .some .nil
+    | .cons _ rest => .some rest)
+  | .false => popUsage q u
 -- inside a proof, a sort that can't be computed is an error as in relevant mode
 -- (`requireMarker`), for a term the requirement would apply to (review F4)
 def unknownSortInProof (c : TCtx) (t : Tm) (ty : Val) : Option String := match Nat.beq (TCtx.pm c) 1 with
@@ -3071,7 +3092,7 @@ def checkW : TCtx → Tm → Val → TyRes
     | .err m => .err m
   | c, .lam b, .vpi q dom env cod _ =>
     match check (TCtx.bind c dom) b (eval (.cons (fresh (TCtx.lvl c)) env) cod) with
-    | .ok _ u => match popUsage q u with
+    | .ok _ u => match popUsageAt c q dom u with
       | .some u' => .ok (.vpi q dom env cod .none) u'
       | .none => .err "the bound variable's usage does not fit its quantity (used too often, or a variable at quantity 1 not used)"
     | r => r

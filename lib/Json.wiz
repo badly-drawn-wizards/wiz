@@ -86,13 +86,13 @@ def Json.escapeChar (ascii : Bool) (c : Nat) (tail : List Char) : List Char :=
               | .false => match Nat.beq c 12 with
                 | .true => Json.esc 102 tail
                 | .false => Json.u4 c tail
-      | .false => match Bool.and ascii (Nat.lt 126 c) with
+      | .false => match Bool.and ascii (Nat.lt 0x7E c) with
         | .false => .cons (Json.chr c) tail
-        | .true => match Nat.lt c 65536 with
+        | .true => match Nat.lt c 0x10000 with
           | .true => Json.u4 c tail
           | .false =>
-            let v := Json.divMod (c - 65536) 1024;
-            Json.u4 (55296 + v.1) (Json.u4 (56320 + v.2) tail)
+            let v := Json.divMod (c - 0x10000) 1024;
+            Json.u4 (0xD800 + v.1) (Json.u4 (0xDC00 + v.2) tail)
 def Json.escapeChars (ascii : Bool) : List Char → List Char → List Char
   | .nil, tail => tail
   | .cons c cs, tail => Json.escapeChar ascii (Char.code c) (Json.escapeChars ascii cs tail)
@@ -200,18 +200,18 @@ def Json.hex4 : List Char → Option (Nat × List Char)
     | .false => .none
   | _ => .none
 
--- `a - b`, opaque to the elaborator: today `(hi - 55296) * 1024 + …` written out makes
+-- `a - b`, opaque to the elaborator: today `(hi - 0xD800) * 1024 + …` written out makes
 -- elaboration unfold the subtraction 55296 times and run out of memory
 partial def Json.sub (a b : Nat) : Nat := a - b
 -- after `\u` and a high surrogate `hi`: a low one makes a pair; otherwise U+FFFD
 def Json.surrogate (hi : Nat) (s : List Char) : Nat × List Char :=
   match Json.expect (.cons (Json.chr 92) (.cons (Json.chr 117) .nil)) s with
-  | .none => (65533, s)
+  | .none => (0xFFFD, s)
   | .some s2 => match Json.hex4 s2 with
-    | .none => (65533, s)
-    | .some p => match Json.between p.1 56320 57343 with
-      | .true => (65536 + (Json.sub hi 55296 * 1024 + Json.sub p.1 56320), p.2)
-      | .false => (65533, s)
+    | .none => (0xFFFD, s)
+    | .some p => match Json.between p.1 0xDC00 0xDFFF with
+      | .true => (0x10000 + (Json.sub hi 0xD800 * 1024 + Json.sub p.1 0xDC00), p.2)
+      | .false => (0xFFFD, s)
 
 -- The body of a string literal after the opening quote; `acc` holds the characters
 -- read so far, reversed.
@@ -231,12 +231,12 @@ def Json.strEscape (e : Nat) (s : List Char) (acc : List Char) : JParse String :
   match Nat.beq e 117 with
   | .true => match Json.hex4 s with
     | .none => .err "bad \\u escape" s
-    | .some p => match Json.between p.1 55296 56319 with
+    | .some p => match Json.between p.1 0xD800 0xDBFF with
       | .true =>
         let q := Json.surrogate p.1 p.2;
         Json.strBody q.2 (.cons (Json.chr q.1) acc)
-      | .false => match Json.between p.1 56320 57343 with
-        | .true => Json.strBody p.2 (.cons (Json.chr 65533) acc)
+      | .false => match Json.between p.1 0xDC00 0xDFFF with
+        | .true => Json.strBody p.2 (.cons (Json.chr 0xFFFD) acc)
         | .false => Json.strBody p.2 (.cons (Json.chr p.1) acc)
   | .false =>
     let simple := fun (c : Nat) => Json.strBody s (.cons (Json.chr c) acc);

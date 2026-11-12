@@ -302,7 +302,14 @@ The judgments output usage vectors with these operations [std: Atkey18; McBride1
 * **application** to a `q`-binder scales the argument's usage by `q`: `U₁ + q·U₂`;
 * **leaving a binder** declared `q` pops its usage `u` and requires `u ≤ q`
   (**subusaging**, `popUsage`, `Check.lean:231`);
-* **types, quantities and proofs use nothing** (their usage is discarded);
+* **types, quantities and proofs use nothing** (their usage is discarded). For proofs this
+  is a rule of `check` and `infer` (both kernels): a term whose type is a proposition (its
+  sort computed and `0`) is checked in an erased position and its usage is `0`, at every
+  level of the proof. So a variable at `0` may appear in a proof, and a linear one must
+  still be used in relevant code. (Proofs are erased by compilation and never run.) For
+  the same reason a **binder whose type is a proposition takes any usage** (`popUsageAt`):
+  a linear proof may be used once, never or twice, and `let 1 (a, h) := p` at
+  `(1 x : A) × P x` is fine.
 * **branches** of an `ecase` combine by the **join** `⊔` (least upper bound in `≤`) of
   their usages (`QPoly.join?`, `QPoly.lean:105`); `0 ⊔ 1 = ω` in `{0,1,ω}`, and if
   there is no join the case is rejected [wiz: Atkey's QTT has no case analysis on
@@ -1922,6 +1929,13 @@ by the test "the self-hosted frontend: quantities, the pinned differences (21m)"
 | a constructor field with a quantity (`\| mk (0 n : Nat)`, a structure's `1 a : Nat`) | accepts (`Desc.arg q S D`) | **rejects** with an error: `darg S D` has no quantity, every field is stored at ω |
 | an implicit constructor field (`\| cons {n : Nat} …`) | a field at 0, filled in at the call | an explicit field at ω (the frontend has no implicit constructor fields; a call that leaves it out is rejected) |
 | `%t` quantity terms, quantity variables | yes | an error |
+
+**The self-hosted FFI** (stages 21l, 21o–21t) takes the Lean frontend's `extern`,
+`foreign_type`, `export`, callbacks, `c_struct`, `link_c`/`link_lib` and `implemented_by`
+with the same checks. It differs in: no `import_c` or `glue` (an error, "unsupported
+command"); no `Bytes`, so no buffer arguments or byte-array struct fields; a `Nat` is 63
+bits at the boundary (21p); `implemented_by mk get` (22d) is an error; under the collector
+`wiz_live_objects()` is 0 and `wiz_retain`/`wiz_release` do nothing.
 
 ---
 

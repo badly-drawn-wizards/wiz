@@ -213,7 +213,7 @@ def termLeading : List LeadingParser := [
   { kind := "term.match", prec := leadPrec,
     -- alternatives line up at or right of the first `|`, so an outer match's next
     -- alternative ends a nested match (as in Lean)
-    p := seqs ["match", sepBy1 term ",", "with", withPosition (many1 (seqs [colGe, matchAlt]))] },
+    p := seqs ["match", sepBy1 term ",", "with", withPosition (many (seqs [colGe, matchAlt]))] },
   -- tactics line up (or are separated by `;`); the tactics themselves come from the prelude
   { kind := "term.by", prec := leadPrec,
     p := seqs ["by", withPosition (many1 (seqs [colGe, cat "tactic" 0, optional ";"]))] },
@@ -260,7 +260,8 @@ continue onto a line starting at the command's column.
 | `command.inductive`          | "inductive" ident [".{" us "}"] [binders] [":" T] "where" [ctors] ["deriving" C,+] |
 | `command.structure`          | "structure" ident [".{" us "}"] [binders] [":" T] where [fields] ["deriving" C,+] (where: `structure.where`, "where" [["private"] ident "::"]) |
 | `command.private`            | "private" command (every name it declares is private to the module) |
-| `command.local`              | "local" command (13m: a `syntax`, `notation`, `infix…`, `macro_rules` or `attribute [macro …]` whose syntax stays in the module) |
+| `command.sealed`             | "sealed" command (an `inductive`: no other declaration is this type) |
+| `command.local`              | "local" command (13m: a `syntax`, `notation`, `infix…`, `macro_rules` or `attribute [macro …]` whose syntax stays in the module; 11w: an `instance` found only in the module) |
 | `command.deriving`           | "deriving" "instance" C,+ "for" T,+ |
 | `command.attrDeriver`        | "attribute" "[" "deriver" ident "]" ident |
 | `command.attrInline`         | "attribute" "[" "inline" "]" ident |
@@ -282,6 +283,9 @@ def commandLeading : List LeadingParser := [
     p := seqs ["def", ident, univParams, many (bracketedBinder false), typeSpec true, many1 matchAlt] },
   -- 13b: every name the command declares is visible only in this module
   { kind := "command.private", prec := maxPrec, p := seqs ["private", cat "command" 0] },
+  -- 22k: `sealed inductive T …`: only this declaration is the type `T` (a look-alike is
+  -- another type); needed for a native representation
+  { kind := "command.sealed", prec := maxPrec, p := seqs ["sealed", cat "command" 0] },
   -- 13m: notation that importers don't see (`local` is not reserved)
   { kind := "command.local", prec := maxPrec, p := seqs [nonReserved "local", cat "command" 0] },
   -- stage 13: general recursion; a `mutual` block's definitions are partial too
@@ -423,6 +427,9 @@ def addMetaParsers (t : ParserTables) (c : Name) : ParserTables :=
 | `command.macroRules`   | "macro_rules" [alts] (each `| `(c| pattern) => `(c| template)`) |
 | `command.notation`     | "notation" [":" prec] [items] "=>" term (items: str or ident [":" prec]) |
 | `command.infix`        | ("infixl" / "infixr" / "infix") ":" num str "=>" term |
+| `command.appUnexpander` | "app_unexpander" ident [alts] (11r: printing `ident`'s applications as notation) |
+| `command.attrUnexpander` | "attribute" "[" "app_unexpander" ident "]" ident (11r) |
+| `command.setOption`    | "set_option" ident (ident / num) (11r: `pp.notation`, `pp.all`) |
 -/
 def macroCommands : List LeadingParser := [
   { kind := "command.macroRules", prec := maxPrec, p := seqs ["macro_rules", many1 matchAlt] },
@@ -431,7 +438,12 @@ def macroCommands : List LeadingParser := [
       many1 (node "notation.item" (orelse str (seqs [ident, optional (seqs [noWs, ":", noWs, precedence])]))),
       "=>", term] },
   { kind := "command.infix", prec := maxPrec,
-    p := seqs [orelse "infixl" (orelse "infixr" "infix"), noWs, ":", noWs, num, str, "=>", term] }
+    p := seqs [orelse "infixl" (orelse "infixr" "infix"), noWs, ":", noWs, num, str, "=>", term] },
+  -- (11r) printing notation: unexpanders, and the `pp` options
+  { kind := "command.appUnexpander", prec := maxPrec, p := seqs ["app_unexpander", ident, many1 matchAlt] },
+  { kind := "command.attrUnexpander", prec := maxPrec,
+    p := seqs ["attribute", "[", nonReserved "app_unexpander", ident, "]", ident] },
+  { kind := "command.setOption", prec := maxPrec, p := seqs ["set_option", ident, orelse ident num] }
 ]
 
 def tables : ParserTables :=
