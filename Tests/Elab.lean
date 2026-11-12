@@ -6733,6 +6733,15 @@ def c3 : Circuit u8 u8 := Circuit.mk (HwTy.prod u8 u8) (BitVec.ofNat 8 1, BitVec
 def v3 : String := Verilog.emit (Circuit.netlist \"pairs\" c3)
 "
 
+-- (the UART proof checks in about 3 minutes, so it has a group and a heavy shard of its own)
+def hdlTemporalGroup : Group where
+  name := "hdl-temporal"
+  exercise := "H14 T2: temporal properties of the iCEstick UART"
+  cases := [
+    { name := "H14 T2: the iCEstick UART, temporal properties for every trace and byte (framing, idle-high, receiver, loopback)", run := fun _ => do
+        okLibs (← IO.FS.readFile "examples/hdl-uart-temporal.wiz") },
+  ]
+
 def hdlGroup : Group where
   name := "hdl"
   exercise := "HDL stage S0 (hdl-plan H14)"
@@ -6799,8 +6808,6 @@ def hdlGroup : Group where
            ".cons 17 (.cons 5 (.cons 4 .nil))"] },
     { name := "H14 T: temporal properties (UART idle-high and delivery for ever, valid/ready refinement, stability, liveness)", run := fun _ => do
         okLibs (← IO.FS.readFile "examples/hdl-temporal.wiz") },
-    { name := "H14 T2: the iCEstick UART, temporal properties for every trace and byte (framing, idle-high, receiver, loopback)", run := fun _ => do
-        okLibs (← IO.FS.readFile "examples/hdl-uart-temporal.wiz") },
     { name := "H14 T: temporal notation □ ◇ ○ ~> |-> |=>, printed back; `|=>` leaves `fun`/`match` alone (13o)", run := fun _ => do
         okLibs ("import Hdl.Temporal\n" ++
           "def p (a b : TL Nat) : TL Nat := □ (a ~> ◇ b)\n#check p\n#check fun (a b : TL Nat) => TL.always (TL.leadsTo a (TL.eventually b))\n" ++
@@ -7406,6 +7413,7 @@ def groups : List Group :=
   ffiStructGroup ::
   group ::
   hdlGroup ::
+  hdlTemporalGroup ::
   inductiveGroup ::
   infoviewGroup ::
   languageGroup ::

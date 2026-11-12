@@ -5,6 +5,9 @@
   {"name": "grail-selfhost", "heavy": true, "select": [
     "=grail-selfhost"
   ]},
+  {"name": "hdl-temporal", "heavy": true, "select": [
+    "=hdl-temporal"
+  ]},
   {"name": "backends", "select": [
     "backend",
     "borrow",
@@ -28,7 +31,7 @@
     "=grail-deps",
     "=grail-hygiene",
     "=grail-jobs",
-    "hdl",
+    "=hdl",
     "infoview",
     "language",
     "lsp",
