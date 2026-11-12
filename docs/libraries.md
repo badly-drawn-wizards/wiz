@@ -588,6 +588,7 @@ and doc comments; std's tests check one example of each.
 | `lib/IntRing.wiz` | `int_ring! lhs = rhs` at `Int`; the ring laws `Int.add_comm` … `Int.neg_mul`; the pair representation `Int.ofPair a b = a - b` |
 | `lib/IntOrder.wiz` | `Int.Le`/`Int.Lt` (`b - a` not negative) with `≤`/`<`; monotonicity, cancellation, `Int.abs` and the triangle inequality |
 | `lib/Rat.wiz` | `Q`: unreduced fractions with `≈`, an ordered field up to `≈` (`Q.inv`, `Q.mul_inv`, `Q.abs_add`, `Q.lt_ceil`); `q_ring! lhs ≈ rhs` |
+| `lib/RingTactic.wiz` | `by ring`: the three normalisers as a tactic that reads the goal |
 
 ```
 import Rat
@@ -606,9 +607,18 @@ def v (p q : Q) : (p + q) * (p + q) ≈ p * p + 2 * p * q + q * q :=
   expressions evaluate to the sides and that their normal forms agree (with a Boolean
   comparison: an `rfl` at a list type computes through OTT's Σ of equations and is much
   slower). Soundness is proved once (`NatExpr.eval_norm`, …), so no axiom is involved.
-* **They are term macros**, so the equation is written twice (statement and proof): a
-  term macro sees only its own syntax, and a tactic could not look inside an equation
-  goal (wiz-reals G1).
+* **`by ring`** (`lib/RingTactic.wiz`) reads the goal instead of repeating it: after
+  introducing its `∀`s, a goal `lhs = rhs` at `Nat` or `Int` (seen through
+  `TacticM.eqView`, stage 28b) or `lhs ≈ rhs` at `Q`. It reifies the *elaborated* sides
+  (`Add.add`/`HAdd.hAdd`, `Mul.mul`, `Sub.sub`, `Neg.neg`, `Nat.add` …, `OfNat.ofNat`,
+  literals, `Nat.succ`; atoms compared with `Expr.beq`, so `f x` and `f (x)` are one
+  atom), compares the normal forms itself (a false identity is an error naming both
+  sides) and closes the goal with `NatExpr.prove ρ e₁ e₂ Ring.trivial` (or `IntExpr`,
+  `QExpr`), which the kernel checks by computing. `def t (a b : Int) : (a - b) * (a + b)
+  = a * a - b * b := by ring`.
+* **The `!` forms are term macros**, so the equation is written twice (statement and
+  proof): a term macro sees only its own syntax. They remain for terms (`Eq.trans (…)
+  (int_ring! …)`), where no goal is at hand.
 * **`int_ring!` is bootstrapped.** Its soundness needs the ring laws of `Int`, proved by
   `int_pair_ring!`, which maps an integer identity through `Int.ofPair` to a `nat_ring!`
   identity (slower; use `int_ring!`).
