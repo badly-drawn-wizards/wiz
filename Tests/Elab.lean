@@ -1167,7 +1167,7 @@ def classGroup : Group where
           [".b", ".a", ".c", ".a"] },
     { name := "an instance can look at the numeral", run := fun _ =>
         okLib (numClassSrc ++ "#check (7 : Z3)\ndef seven : (7 : Z3) = Z3.b := rfl")
-          ["OfNat.ofNat Z3 7 (instOfNatZ3N 7) : Z3"] },
+          ["7 : Z3"] },
     { name := "a numeral at a type without OfNat is an error", run := fun _ =>
         failsLib "import Prelude\ninductive Z3 where\n  | a\n  | b\n  | c\n#eval (1 : Z3)" "failed to synthesize an instance of OfNat Z3 1" },
     { name := "an operator without an instance is an error", run := fun _ =>
@@ -4745,6 +4745,12 @@ def languageGroup : Group where
     { name := "... an importer may define the same notation at another meaning", run := fun _ =>
         okLoc locMod "import Loc\ninfixr:67 \" & \" => List.append\n#eval [1] & [2]\nsyntax (name := shout) \"shout\" term : term\nmacro_rules\n  | `(term| shout $x) => `(term| [$x])\n#eval shout 1"
           [".cons 1 (.cons 2 .nil)", ".cons 1 .nil"] },
+    { name := "local instance: found in its module, not by importers (11w)", run := fun _ => do
+        let m := "import Prelude\nclass Dflt (A : Type) where\n  dflt : A\nlocal instance : Dflt Nat := Dflt.mk 7\ndef seven : Nat := Dflt.dflt\n"
+        okLoc m "import Loc\n#eval seven" ["7"]
+        failsLoc m "import Loc\ndef x : Nat := Dflt.dflt" "failed to synthesize an instance of Dflt Nat"
+        -- the importer may give its own
+        okLoc m "import Loc\ninstance : Dflt Nat := Dflt.mk 3\n#eval (Dflt.dflt : Nat)" ["3"] },
     { name := "... in the main file it is ordinary notation; only grammar commands can be local", run := fun _ => do
         okLib "import Prelude\nlocal infixl:65 \" +! \" => Nat.add\n#eval 1 +! 2" ["3"]
         failsLib "import Prelude\nlocal def x : Nat := 1" "can be `local`" },
@@ -4927,7 +4933,7 @@ def stdGroup : Group where
     { name := "integers: lemmas, and printing needs no axiom", run := fun _ =>
         okLibs ("import Int\n#check Int.neg_neg\n#check Int.add_zero\n#print axioms Int.add_zero")
           ["Int.neg_neg : (a : Int) → - -a = a",
-           "Int.add_zero : (a : Int) → a + OfNat.ofNat Int 0 (instOfNatIntN 0) = a",
+           "Int.add_zero : (a : Int) → a + 0 = a",
            "'Int.add_zero' does not depend on any axioms"] },
     { name := "integers: compiled (C)", run := fun _ =>
         cRunLibs "import Int\ndef main : Int := (-3 : Int) * 4 + 2" "-10" },
@@ -6063,6 +6069,13 @@ def seplogicGroup : Group where
            "Prog.incrAll.spec : (L : List Nat) → (f : Nat) → Nat.lt (List.length Nat L) f = .true → (p : Nat) → Triple Nat Unit (MList L p) (Prog.incrAll f p) (fun _ => MList (List.incr L) p)",
            "Prog.freeAll.spec : (L : List Nat) → (f : Nat) → Nat.lt (List.length Nat L) f = .true → (p : Nat) → Triple Nat Unit (MList L p) (Prog.freeAll f p) (fun _ => emp Nat)",
            ".some (1, .cons (.some 1) .nil)", ".some (3, .nil)"] },
+    { name := "xgo steps through values computed through private structures (Region's Uniq, as Feral lowers)", run := fun _ => do
+        let src := "import HoareTactics\nimport Region\n" ++
+          "def incrU {ρ : Region} (r : Uniq ρ Nat) : Result (Unit × Uniq ρ Nat) := .ok ((), Uniq.set r (Nat.succ r.val))\n" ++
+          "def back (p : Nat) : Result (Unit × Nat) → Prog Nat Unit\n  | .ok x => .set p x.2 (.ret ())\n  | .err e => .fail\n" ++
+          "def bumpCell (p : Nat) : Prog Nat Unit :=\n  .get p (fun a => back p (Uniq.borrow Region.static a (fun ρ h l r => incrU r)))\n"
+        okLibs (src ++ "def bumpCell_spec (p a : Nat) : Triple (p ↦ a) (bumpCell p) (fun _ => p ↦ Nat.succ a) := by xgo")
+        failsLibs (src ++ "def bad (p a : Nat) : Triple (p ↦ a) (bumpCell p) (fun _ => p ↦ a) := by xgo") "unsolved goals" },
     { name := "a wrong specification is not proved by the x-tactics", run := fun _ =>
         failsLibs "import HoareExamples\ndef bad (p n : Nat) : Triple (p ↦ n) (Prog.incr p) (fun _ => p ↦ n) := by xgo" "unsolved goals" }
   ]
@@ -6724,6 +6737,24 @@ def hdlGroup : Group where
   name := "hdl"
   exercise := "HDL stage S0 (hdl-plan H14)"
   cases := [
+    { name := "S2: operators on signals: same Verilog as the Hw operations, numerals at the width, if as a mux, printed back", run := fun _ => do
+        -- the three designs agree with their Hw-operation twins (Verilog text); the counter
+        -- wraps at 10; shifts by 3, 0, 8 places; the counter's Verilog; three terms printed
+        -- in notation; `if` on a Bool, a dependent `if b then rfl else rfl`, Nat bitwise
+        okLibs (← IO.FS.readFile "examples/hdl-operators.wiz")
+          ["(.true, .true, .true)",
+           ".cons 0 (.cons 1 (.cons 2 (.cons 3 (.cons 4 (.cons 5 (.cons 6 (.cons 7 (.cons 8 (.cons 9 (.cons 0 (.cons 1 .nil)))))))))))",
+           "((72, 25), (201, 201), 0, 0)",
+           "\"module count(input clk, input [0:0] x, output [3:0] y);\\n  reg [3:0] r; initial r = 4'd0;\\n  wire [0:0] n3 = r == 4'd9;\\n  wire [3:0] n6 = r + 4'd1;\\n  wire [3:0] n7 = n3 ? 4'd0 : n6;\\n  always @(posedge clk) r <= n7;\\n  assign y = r;\\nendmodule\\n\"",
+           "fun c x y => if c then x + 1 &&& ~~~y else x <<< 2 ||| y >>> 3 : Wire Bit → Wire B8 → Wire B8 → Wire B8",
+           "fun x y => x === y ||| x <ᵤ 3 : Wire B8 → Wire B8 → Wire HwTy.bit",
+           "fun c x => if c then x else 0 : Wire Bit → Wire B8 → Wire B8",
+           "(1, 24, 14)"] },
+    { name := "S2: if on a condition that is no signal takes the ordinary path (its messages)", run := fun _ => do
+        failsLibs "import Prelude\ndef f (n : Nat) : Nat := if n then 1 else 2" "constructor"
+        failsLibs "import Prelude\ndef f (A : Type) (a : A) : Nat := if a then 1 else 2" "cannot match on a value of type A"
+        okLibs "import Prelude\ndef f (b : Bool) : (if b then 1 else 1) = 1 := if b then rfl else rfl\n#check fun (b : Bool) (x : Nat) => if b then x + 1 else 0"
+          ["fun b x => if b then x + 1 else 0 : Bool → Nat → Nat"] },
     { name := "auto-share: a let becomes ShareLet.share when an instance exists", run := fun _ =>
         okLibs shareLetHook ["101", "1", "1"] },
     { name := "L2 examples: hash-consed netlists are no bigger, three simulations agree; the doubling chain is linear", run := fun _ => do
@@ -7255,6 +7286,21 @@ def infoviewGroup : Group where
           [r#".cons "Tactic state" (.cons "A : Type" (.cons "f : Nat → Nat → Nat → Nat" (.cons "⊢ Nat → A" (.cons "" (.cons "Messages" (.cons "hello" (.cons "" (.cons "n : Nat" (.cons "⊢ Nat" .nil)))))))))"#,
            r#""<h3>Tactic state</h3><div class=\"no-goals\">No goals</div><h3>Messages</h3><pre class=\"message\">a&lt;b</pre>""#,
            r#".cons "one" (.cons "two" .nil)"#] },
+    { name := "11w: what else is at the cursor (wiz/interactiveInfo): sections, as text and HTML", run := fun _ =>
+        okInfoview (goalPrelude ++ r#"def items : List InfoItem := .cons (.mk "syntax" "syntax term.twice" "syntax \"twice\" term : term" .none)
+  (.cons (.mk "expansion" "expanded by macro rule" "Nat.add a\nb" .none)
+  (.cons (.mk "instance" "instance i" "i" (.some (nat 1)))
+  (.cons (.mk "declaration" "four" "" (.some (nat 2))) .nil)))
+#eval Infoview.plainLines (View.lines (View.ofInfo 40 .none .none items))
+#eval Infoview.plainLines (View.lines (View.ofInfo 40 (.some (.mk .nil .nil)) .none (.cons (.mk "message" "info" "3" .none) .nil)))
+#eval Infoview.htmlInfo 0 .none .none (.cons (.mk "declaration" "x<y" "" (.some (nat 1))) .nil)
+#eval match Json.parse "{\"items\": [{\"kind\": \"import\", \"title\": \"import M\", \"text\": \"lib/M.wiz\", \"type\": null}], \"session\": 1}" with
+  | .ok j => List.length (Items.ofJson j)
+  | .error _ => 0"#)
+          [r#".cons "Syntax" (.cons "syntax term.twice" (.cons "  syntax \"twice\" term : term" (.cons "expanded by macro rule" (.cons "  Nat.add a" (.cons "  b" (.cons "" (.cons "Instances" (.cons "i : Nat" (.cons "" (.cons "Declarations" (.cons "four : Nat" .nil)))))))))))"#,
+           r#".cons "Tactic state" (.cons "No goals" (.cons "" (.cons "Messages" (.cons "info" (.cons "  3" .nil)))))"#,
+           r#""<h3>Declarations</h3><div class=\"item\"><span class=\"names\">x&lt;y</span> : <span class=\"tt k-const\" data-ref=\"1\" data-idx=\"0\" title=\"Nat\">Nat</span></div>""#,
+           "1"] },
     { name := "terminal lines: SGR colours by kind, the selection in reverse video", run := fun _ =>
         okInfoview (goalPrelude ++ "#eval Infoview.ansiLines 3 (View.lines (View.ofState 80 (.some .nil) (.some (.mk \"h\" .nil (arrow 1 (nat 2) (nat 3))))))")
           [r#".cons "\x1b[0;1;4mTactic state\x1b[0m" (.cons "\x1b[0;1;32mNo goals\x1b[0m" (.cons "\x1b[0m" (.cons "\x1b[0;1;4mExpected type\x1b[0m" (.cons "\x1b[0;1;4mcase h\x1b[0m" (.cons "\x1b[0;1;35m⊢\x1b[0m \x1b[0;34mNat\x1b[0m \x1b[0m→\x1b[0m \x1b[0;34;7mNat\x1b[0m" .nil)))))"#] },
