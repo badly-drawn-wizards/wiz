@@ -1,0 +1,326 @@
+import Logic
+import Order
+/-!
+# Nat
+
+Natural numbers (`import Nat`): the commutative semiring laws, subtraction, and the
+order, proved by hand from `0` and `succ`.
+
+The order is the Prelude's Boolean `Nat.le`, made a proposition by `= .true`
+(`Nat.Le m n := Nat.le m n = .true`). An equation of Booleans computes, so
+`Nat.Le (succ m) (succ n)` *is* `Nat.Le m n` and `Nat.Le 0 n` is `True`: many order
+facts hold by `rfl`, and case splits use `Bool.cases`. `m ≤ n` and `m < n` (lib/Order.wiz)
+are `Nat.Le` and `Nat.Lt`.
+
+Main definitions: `congrArg`, `congrArg2`; the laws `Nat.add_comm`, `Nat.add_assoc`,
+`Nat.mul_comm`, `Nat.mul_assoc`, `Nat.mul_add`, `Nat.add_mul`, …; cancellation
+(`Nat.add_left_cancel`); `Nat.Le`, `Nat.Lt` with reflexivity, transitivity,
+antisymmetry, totality (`Nat.le_cases`) and monotonicity of `+` and `*`; `Nat.cmp`, a
+three-way comparison. Identities of `+` and `*` are better proved by `nat_ring!`
+(lib/Ring.wiz).
+
+```
+import Nat
+
+def ex (a b : Nat) : a + b + 0 = b + a :=
+  Eq.trans (Nat.add_zero (a + b)) (Nat.add_comm a b)
+def le : Nat.Le 2 5 := rfl
+```
+-/
+
+/-- `m ≤ n` on natural numbers: the Boolean `Nat.le m n` is true. -/
+def Nat.Le (m n : Nat) : Prop := Nat.le m n = .true
+/-- `m < n` on natural numbers: `m + 1 ≤ n`. -/
+def Nat.Lt (m n : Nat) : Prop := Nat.Le (Nat.succ m) n
+/-- `m ≤ n` is `Nat.Le m n`. -/
+instance : LE Nat := LE.mk Nat.Le
+/-- `m < n` is `Nat.Lt m n`. -/
+instance : LT Nat := LT.mk Nat.Lt
+
+-- ## Equality helpers
+
+/-- Applying `f` to equal arguments gives equal results. -/
+def congrArg.{u, v} {A : Type u} {B : Type v} (f : A → B) {a b : A} (e : a = b) : f a = f b :=
+  transp (fun b _ => f a = f b) (refl (f a)) e
+/-- `congrArg` for a function of two arguments. -/
+def congrArg2 {A B C : Type} (f : A → B → C) {a a' : A} {b b' : B} (e : a = a') (e' : b = b') :
+    f a b = f a' b' :=
+  Eq.trans (Eq.congrArg (fun x => f x b) e) (Eq.congrArg (f a') e')
+/-- Transport a proposition backwards along an equation: from `P b` and `a = b`, `P a`. -/
+def Eq.mpr' {A : Type} {a b : A} (0 P : A → Prop) (e : a = b) (h : P b) : P a :=
+  Eq.substProp P (Eq.symm e) h
+/-- Transport a proposition along an equation: from `P a` and `a = b`, `P b`. -/
+def Eq.mp' {A : Type} {a b : A} (0 P : A → Prop) (e : a = b) (h : P a) : P b :=
+  Eq.substProp P e h
+/-- `Eq.trans` with the middle term written out, for chains whose steps need their
+equation as the expected type (`nat_ring!`, `int_ring!`). -/
+def Eq.via {A : Type} {a c : A} (b : A) (h1 : a = b) (h2 : b = c) : a = c := Eq.trans h1 h2
+
+-- ## Addition
+
+/-- `n + 0 = n` (`+` recurses on its first argument, so this needs induction). -/
+def Nat.add_zero : (n : Nat) → n + 0 = n
+  | .zero => rfl
+  | .succ n => congrArg Nat.succ (Nat.add_zero n)
+/-- `0 + n = n`, by computation. -/
+def Nat.zero_add (n : Nat) : 0 + n = n := rfl
+/-- `m + (n + 1) = (m + n) + 1`. -/
+def Nat.add_succ : (m n : Nat) → m + Nat.succ n = Nat.succ (m + n)
+  | .zero, _ => rfl
+  | .succ m, n => congrArg Nat.succ (Nat.add_succ m n)
+/-- `(m + 1) + n = (m + n) + 1`, by computation. -/
+def Nat.succ_add (m n : Nat) : Nat.succ m + n = Nat.succ (m + n) := rfl
+/-- Addition is commutative. -/
+def Nat.add_comm : (m n : Nat) → m + n = n + m
+  | .zero, n => Eq.symm (Nat.add_zero n)
+  | .succ m, n => Eq.trans (congrArg Nat.succ (Nat.add_comm m n)) (Eq.symm (Nat.add_succ n m))
+/-- Addition is associative. -/
+def Nat.add_assoc : (a b c : Nat) → a + b + c = a + (b + c)
+  | .zero, _, _ => rfl
+  | .succ a, b, c => congrArg Nat.succ (Nat.add_assoc a b c)
+/-- `a + (b + c) = b + (a + c)`. -/
+def Nat.add_left_comm (a b c : Nat) : a + (b + c) = b + (a + c) :=
+  Eq.trans (Eq.symm (Nat.add_assoc a b c))
+    (Eq.trans (congrArg (fun x => x + c) (Nat.add_comm a b)) (Nat.add_assoc b a c))
+/-- `n + 1 = succ n`. -/
+def Nat.add_one (n : Nat) : n + 1 = Nat.succ n :=
+  Eq.trans (Nat.add_succ n 0) (congrArg Nat.succ (Nat.add_zero n))
+/-- `succ` is injective (an equation of constructors computes to one of their fields). -/
+def Nat.succ_inj {m n : Nat} (e : Nat.succ m = Nat.succ n) : m = n := e
+/-- Cancel a summand on the left: `k + m = k + n → m = n`. -/
+def Nat.add_left_cancel : (k : Nat) → {m n : Nat} → k + m = k + n → m = n
+  | .zero, _, _, e => e
+  | .succ k, _, _, e => @Nat.add_left_cancel k _ _ e
+/-- Cancel a summand on the right: `m + k = n + k → m = n`. -/
+def Nat.add_right_cancel {ω m n k : Nat} (e : m + k = n + k) : m = n :=
+  Nat.add_left_cancel k (Eq.trans (Nat.add_comm k m) (Eq.trans e (Nat.add_comm n k)))
+
+-- ## Multiplication
+
+/-- `n * 0 = 0`. -/
+def Nat.mul_zero : (n : Nat) → n * 0 = 0
+  | .zero => rfl
+  | .succ n => Nat.mul_zero n
+/-- `0 * n = 0`, by computation. -/
+def Nat.zero_mul (n : Nat) : 0 * n = 0 := rfl
+/-- `(m + 1) * n = n + m * n`, by computation. -/
+def Nat.succ_mul (m n : Nat) : Nat.succ m * n = n + m * n := rfl
+/-- `m * (n + 1) = m + m * n`. -/
+def Nat.mul_succ : (m n : Nat) → m * Nat.succ n = m + m * n
+  | .zero, _ => rfl
+  | .succ m, n =>
+    -- succ n + m * succ n = succ m + (n + m * n)
+    congrArg Nat.succ
+      (Eq.trans (congrArg (fun x => n + x) (Nat.mul_succ m n)) (Nat.add_left_comm n m (m * n)))
+/-- Multiplication is commutative. -/
+def Nat.mul_comm : (m n : Nat) → m * n = n * m
+  | .zero, n => Eq.symm (Nat.mul_zero n)
+  | .succ m, n => Eq.trans (congrArg (fun x => n + x) (Nat.mul_comm m n)) (Eq.symm (Nat.mul_succ n m))
+/-- `1 * n = n`. -/
+def Nat.one_mul (n : Nat) : 1 * n = n := Nat.add_zero n
+/-- `n * 1 = n`. -/
+def Nat.mul_one (n : Nat) : n * 1 = n := Eq.trans (Nat.mul_comm n 1) (Nat.one_mul n)
+/-- Multiplication distributes over addition on the right. -/
+def Nat.add_mul : (a b c : Nat) → (a + b) * c = a * c + b * c
+  | .zero, _, _ => rfl
+  | .succ a, b, c => Eq.trans (congrArg (fun x => c + x) (Nat.add_mul a b c)) (Eq.symm (Nat.add_assoc c (a * c) (b * c)))
+/-- Multiplication distributes over addition on the left. -/
+def Nat.mul_add (a b c : Nat) : a * (b + c) = a * b + a * c :=
+  Eq.trans (Nat.mul_comm a (b + c))
+    (Eq.trans (Nat.add_mul b c a) (congrArg2 (fun x y => x + y) (Nat.mul_comm b a) (Nat.mul_comm c a)))
+/-- Multiplication is associative. -/
+def Nat.mul_assoc : (a b c : Nat) → a * b * c = a * (b * c)
+  | .zero, _, _ => rfl
+  | .succ a, b, c => Eq.trans (Nat.add_mul b (a * b) c) (congrArg (fun x => b * c + x) (Nat.mul_assoc a b c))
+/-- `a * (b * c) = b * (a * c)`. -/
+def Nat.mul_left_comm (a b c : Nat) : a * (b * c) = b * (a * c) :=
+  Eq.trans (Eq.symm (Nat.mul_assoc a b c))
+    (Eq.trans (congrArg (fun x => x * c) (Nat.mul_comm a b)) (Nat.mul_assoc b a c))
+
+-- ## Comparisons as data
+
+/-- Decide equality: `Nat.beq m n = .true` gives `m = n`. -/
+def Nat.beq_eq : (m n : Nat) → Nat.beq m n = .true → m = n
+  | .zero, .zero, _ => rfl
+  | .zero, .succ _, h => absurd h.1
+  | .succ _, .zero, h => absurd h.1
+  | .succ m, .succ n, h => congrArg Nat.succ (Nat.beq_eq m n h)
+
+/-- The result of a three-way comparison. -/
+inductive Ordering where
+  | lt
+  | eq
+  | gt
+
+/-- Lexicographic combination: the first comparison, unless it is `eq`. -/
+def Ordering.andThen : Ordering → Ordering → Ordering
+  | .lt, _ => .lt
+  | .eq, o => o
+  | .gt, _ => .gt
+/-- `andThen` is `eq` only when both are. -/
+def Ordering.andThen_eq : (a b : Ordering) → Ordering.andThen a b = .eq → (a = .eq) ∧ (b = .eq)
+  | .lt, _, h => absurd h.1
+  | .eq, _, h => (rfl, h)
+  | .gt, _, h => absurd h.1
+
+/-- Three-way comparison of natural numbers. -/
+def Nat.cmp : Nat → Nat → Ordering
+  | .zero, .zero => .eq
+  | .zero, .succ _ => .lt
+  | .succ _, .zero => .gt
+  | .succ m, .succ n => Nat.cmp m n
+/-- `Nat.cmp m n = .eq` gives `m = n`. -/
+def Nat.cmp_eq : (m n : Nat) → Nat.cmp m n = .eq → m = n
+  | .zero, .zero, _ => rfl
+  | .zero, .succ _, h => absurd h.1
+  | .succ _, .zero, h => absurd h.1
+  | .succ m, .succ n, h => congrArg Nat.succ (Nat.cmp_eq m n h)
+
+-- ## Order
+
+/-- Nothing is below zero (as a Boolean). -/
+def Nat.lt_zero : (n : Nat) → Nat.lt n 0 = .false
+  | .zero => rfl
+  | .succ _ => rfl
+/-- `n + 1 ≤ 0` is impossible. (`Nat.Le (succ n) 0` is `Nat.lt n 0 = .true`, stuck on
+`n`, so this needs a case split.) -/
+def Nat.not_succ_le_zero (n : Nat) (h : Nat.Le (Nat.succ n) 0) : False :=
+  Bool.trueNeFalse (Eq.trans (Eq.symm h) (Nat.lt_zero n))
+/-- `0 ≤ n`, by computation. -/
+def Nat.zero_le (n : Nat) : Nat.Le 0 n := rfl
+/-- `≤` is reflexive. -/
+def Nat.le_refl : (n : Nat) → Nat.Le n n
+  | .zero => rfl
+  | .succ n => Nat.le_refl n
+/-- `n ≤ n + 1`. -/
+def Nat.le_succ : (n : Nat) → Nat.Le n (Nat.succ n)
+  | .zero => rfl
+  | .succ n => Nat.le_succ n
+/-- `≤` is transitive. -/
+def Nat.le_trans : (a b c : Nat) → Nat.Le a b → Nat.Le b c → Nat.Le a c
+  | .zero, _, _, _, _ => rfl
+  | .succ a, .zero, _, h, _ => absurd (Nat.not_succ_le_zero a h)
+  | .succ _, .succ b, .zero, _, h => absurd (Nat.not_succ_le_zero b h)
+  | .succ a, .succ b, .succ c, h, h' => Nat.le_trans a b c h h'
+/-- `≤` is antisymmetric. -/
+def Nat.le_antisymm : (a b : Nat) → Nat.Le a b → Nat.Le b a → a = b
+  | .zero, .zero, _, _ => rfl
+  | .zero, .succ b, _, h => absurd (Nat.not_succ_le_zero b h)
+  | .succ a, .zero, h, _ => absurd (Nat.not_succ_le_zero a h)
+  | .succ a, .succ b, h, h' => congrArg Nat.succ (Nat.le_antisymm a b h h')
+/-- `≤` is total. -/
+def Nat.le_cases : (a b : Nat) → Nat.Le a b ∨ Nat.Le b a
+  | .zero, _ => Or.inl rfl
+  | .succ _, .zero => Or.inr rfl
+  | .succ a, .succ b => Nat.le_cases a b
+/-- If `Nat.le a b` is false then `b < a`. -/
+def Nat.not_le : (a b : Nat) → Nat.le a b = .false → Nat.Lt b a
+  | .zero, _, h => absurd h.1
+  | .succ _, .zero, _ => rfl
+  | .succ a, .succ b, h => Nat.not_le a b h
+/-- `a ≤ b` or `b < a`: which one is decided by `Nat.le a b`. -/
+def Nat.le_or_lt (a b : Nat) : Nat.Le a b ∨ Nat.Lt b a :=
+  Or.imp (fun (h : Nat.le a b = .true) => h) (fun h => Nat.not_le a b h) (Bool.cases (Nat.le a b))
+/-- `<` is irreflexive. -/
+def Nat.lt_irrefl : (n : Nat) → Nat.Lt n n → False
+  | .zero, h => absurd h.1
+  | .succ n, h => Nat.lt_irrefl n h
+/-- `n < n + 1`. -/
+def Nat.lt_succ_self (n : Nat) : Nat.Lt n (Nat.succ n) := Nat.le_refl (Nat.succ n)
+/-- `a < b → a ≤ b`. -/
+def Nat.le_of_lt (a b : Nat) (h : Nat.Lt a b) : Nat.Le a b := Nat.le_trans a (Nat.succ a) b (Nat.le_succ a) h
+/-- `a < b → b ≤ c → a < c`. -/
+def Nat.lt_of_lt_of_le (a b c : Nat) (h : Nat.Lt a b) (h' : Nat.Le b c) : Nat.Lt a c :=
+  Nat.le_trans (Nat.succ a) b c h h'
+/-- `a ≤ b → b < c → a < c`. -/
+def Nat.lt_of_le_of_lt (a b c : Nat) (h : Nat.Le a b) (h' : Nat.Lt b c) : Nat.Lt a c :=
+  Nat.le_trans (Nat.succ a) (Nat.succ b) c h h'
+/-- `<` is transitive. -/
+def Nat.lt_trans (a b c : Nat) (h : Nat.Lt a b) (h' : Nat.Lt b c) : Nat.Lt a c :=
+  Nat.lt_of_lt_of_le a b c h (Nat.le_of_lt b c h')
+/-- `a ≤ b` and `b < a` contradict each other. -/
+def Nat.not_lt_of_le (a b : Nat) (h : Nat.Le a b) (h' : Nat.Lt b a) : False :=
+  Nat.lt_irrefl a (Nat.lt_of_le_of_lt a b a h h')
+/-- `a ≤ a + k`. -/
+def Nat.le_add_right : (a k : Nat) → Nat.Le a (a + k)
+  | .zero, _ => rfl
+  | .succ a, k => Nat.le_add_right a k
+/-- `a ≤ k + a`. -/
+def Nat.le_add_left (a k : Nat) : Nat.Le a (k + a) :=
+  Eq.mp' (fun (x : Nat) => Nat.Le a x) (Nat.add_comm a k) (Nat.le_add_right a k)
+/-- Adding on the left is monotone. -/
+def Nat.add_le_add_left : (k a b : Nat) → Nat.Le a b → Nat.Le (k + a) (k + b)
+  | .zero, _, _, h => h
+  | .succ k, a, b, h => Nat.add_le_add_left k a b h
+/-- Adding on the right is monotone. -/
+def Nat.add_le_add_right (k a b : Nat) (h : Nat.Le a b) : Nat.Le (a + k) (b + k) :=
+  Eq.mp' (fun (x : Nat) => Nat.Le x (b + k)) (Nat.add_comm k a)
+    (Eq.mp' (fun (x : Nat) => Nat.Le (k + a) x) (Nat.add_comm k b) (Nat.add_le_add_left k a b h))
+/-- `a ≤ b → c ≤ d → a + c ≤ b + d`. -/
+def Nat.add_le_add (a b c d : Nat) (h : Nat.Le a b) (h' : Nat.Le c d) : Nat.Le (a + c) (b + d) :=
+  Nat.le_trans (a + c) (b + c) (b + d) (Nat.add_le_add_right c a b h) (Nat.add_le_add_left b c d h')
+/-- Cancel a summand on the left of `≤`. -/
+def Nat.le_of_add_le_add_left : (k a b : Nat) → Nat.Le (k + a) (k + b) → Nat.Le a b
+  | .zero, _, _, h => h
+  | .succ k, a, b, h => Nat.le_of_add_le_add_left k a b h
+/-- Cancel a summand on the right of `≤`. -/
+def Nat.le_of_add_le_add_right (k a b : Nat) (h : Nat.Le (a + k) (b + k)) : Nat.Le a b :=
+  Nat.le_of_add_le_add_left k a b
+    (Eq.mp' (fun (x : Nat) => Nat.Le x (k + b)) (Nat.add_comm a k)
+      (Eq.mp' (fun (x : Nat) => Nat.Le (a + k) x) (Nat.add_comm b k) h))
+/-- `b = a + k → a ≤ b`. -/
+def Nat.le_of_eq_add (a b k : Nat) (e : b = a + k) : Nat.Le a b :=
+  Eq.mpr' (fun (x : Nat) => Nat.Le a x) e (Nat.le_add_right a k)
+/-- `a + (k + 1) ≤ a` is impossible. -/
+def Nat.not_add_succ_le : (a x : Nat) → Nat.Le (a + Nat.succ x) a → False
+  | .zero, x, h => Nat.not_succ_le_zero x h
+  | .succ a, x, h => Nat.not_add_succ_le a x h
+/-- Multiplying on the left is monotone. -/
+def Nat.mul_le_mul_left : (k a b : Nat) → Nat.Le a b → Nat.Le (k * a) (k * b)
+  | .zero, _, _, _ => rfl
+  | .succ k, a, b, h => Nat.add_le_add a b (k * a) (k * b) h (Nat.mul_le_mul_left k a b h)
+/-- Multiplying on the right is monotone. -/
+def Nat.mul_le_mul_right (k a b : Nat) (h : Nat.Le a b) : Nat.Le (a * k) (b * k) :=
+  Eq.mp' (fun (x : Nat) => Nat.Le x (b * k)) (Nat.mul_comm k a)
+    (Eq.mp' (fun (x : Nat) => Nat.Le (k * a) x) (Nat.mul_comm k b) (Nat.mul_le_mul_left k a b h))
+/-- `a ≤ b → c ≤ d → a * c ≤ b * d`. -/
+def Nat.mul_le_mul (a b c d : Nat) (h : Nat.Le a b) (h' : Nat.Le c d) : Nat.Le (a * c) (b * d) :=
+  Nat.le_trans (a * c) (b * c) (b * d) (Nat.mul_le_mul_right c a b h) (Nat.mul_le_mul_left b c d h')
+/-- A product of positive numbers is positive. -/
+def Nat.mul_pos (a b : Nat) (ha : Nat.Lt 0 a) (hb : Nat.Lt 0 b) : Nat.Lt 0 (a * b) :=
+  Nat.mul_le_mul 1 a 1 b ha hb
+
+-- ## Subtraction (truncated: `2 - 3 = 0`)
+
+/-- `pred (subFrom a (b + 1)) = subFrom a b`, the step behind `Nat.succ_sub_succ`. -/
+def Nat.pred_subFrom_succ : (a b : Nat) → Nat.pred (Nat.subFrom a (Nat.succ b)) = Nat.subFrom a b
+  | .zero, _ => rfl
+  | .succ a, b => congrArg Nat.pred (Nat.pred_subFrom_succ a b)
+/-- `(b + 1) - (a + 1) = b - a`. -/
+def Nat.succ_sub_succ (b a : Nat) : Nat.succ b - Nat.succ a = b - a := Nat.pred_subFrom_succ a b
+/-- `n - 0 = n`, by computation. -/
+def Nat.sub_zero (n : Nat) : n - 0 = n := rfl
+/-- `0 - n = 0`. -/
+def Nat.zero_sub : (n : Nat) → 0 - n = 0
+  | .zero => rfl
+  | .succ n => congrArg Nat.pred (Nat.zero_sub n)
+/-- `(a + k) - a = k`. -/
+def Nat.add_sub_cancel_left : (a k : Nat) → a + k - a = k
+  | .zero, _ => rfl
+  | .succ a, k => Eq.trans (Nat.succ_sub_succ (a + k) a) (Nat.add_sub_cancel_left a k)
+/-- `n - (n + k) = 0`. -/
+def Nat.sub_self_add : (n k : Nat) → n - (n + k) = 0
+  | .zero, k => Nat.zero_sub k
+  | .succ n, k => Eq.trans (Nat.succ_sub_succ n (n + k)) (Nat.sub_self_add n k)
+/-- `(a + k) - (b + k) = a - b`. -/
+def Nat.add_sub_add_right : (a b k : Nat) → (a + k) - (b + k) = a - b
+  | a, b, .zero =>
+    congrArg2 (fun x y => x - y) (Nat.add_zero a) (Nat.add_zero b)
+  | a, b, .succ k =>
+    Eq.trans (congrArg2 (fun x y => x - y) (Nat.add_succ a k) (Nat.add_succ b k))
+      (Eq.trans (Nat.succ_sub_succ (a + k) (b + k)) (Nat.add_sub_add_right a b k))
+/-- `a ≤ b → a + (b - a) = b`: the difference. -/
+def Nat.add_sub_of_le : (a b : Nat) → Nat.Le a b → a + (b - a) = b
+  | .zero, _, _ => rfl
+  | .succ a, .zero, h => absurd (Nat.not_succ_le_zero a h)
+  | .succ a, .succ b, h => congrArg Nat.succ (Eq.trans (congrArg (fun x => a + x) (Nat.succ_sub_succ b a)) (Nat.add_sub_of_le a b h))

@@ -1,7 +1,8 @@
 # Release tarballs (stages 26d, 26g): what `tower` installs with `--source release`, and
 # what you can untar by hand (scripts/release-tarball.sh describes the layout).
 #
-# * a tag vX.Y.Z: a GitHub release of that tag with wiz-x86_64-linux.tar.gz (+ .sha256);
+# * a tag vX.Y.Z: a GitHub release of that tag with wiz-x86_64-linux.tar.gz (+ .sha256),
+#   once the exercise tree builds (the `exercises` job; nothing is published if it fails);
 # * a push to master: the pre-release `snapshot-<sha>` of that commit, then old snapshots
 #   are pruned (scripts/release-snapshots.sh); the tag `nightly` moves to it only once CI
 #   has passed on that commit (nightly.yml);
@@ -51,8 +52,47 @@ permissions:
   contents: write # creating releases and uploading assets
 
 jobs:
+  # The exercise tree, generated from this one (docs/exercises.md): it must build, checked
+  # only for a release tag (between releases it may bitrot). The tarball job waits for it,
+  # so a tag whose exercise tree doesn't build publishes nothing. Its Lake cache is saved
+  # by tag runs only (a few per year), so it doesn't crowd the main builds out of the
+  # repository's 10 GB Actions cache.
+  exercises:
+    name: exercise tree
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: nix develop --command bash -eo pipefail {0}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup
+        with:
+          cachix-name: badlydrawnwizards
+      - name: Generate the exercise tree
+        run: python3 scripts/mkexercises.py . "$RUNNER_TEMP/exercises"
+      - name: Cache its Lake build
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/exercises/.lake
+          key: exercises-${{ runner.os }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-${{ hashFiles('lakefile.*', '**/*.lean') }}
+          restore-keys: exercises-${{ runner.os }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-
+      - name: lake build (exercise tree)
+        env:
+          LAKE_CACHE_DIR: ${{ runner.temp }}/exercises/.lake/cache
+        run: |
+          # (the dev shell comes from this checkout's flake; the build runs in the copy)
+          cd "$RUNNER_TEMP/exercises"
+          lake build wiz grail tests
+
   tarball:
     name: release tarball (x86_64-linux)
+    # after the exercise tree for a tag; without one (master, PRs, dispatch) it is skipped
+    needs: exercises
+    if: ${{ !cancelled() && (needs.exercises.result == 'success' || needs.exercises.result == 'skipped') }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
@@ -242,6 +282,17 @@ jobs:
           PATH="$d/.tower/bin:$PATH" wiz check io.wiz
           PATH="$d/.tower/bin:$PATH" wiz build io.wiz -o io && ./io | head -1
           PATH="$d/.tower/bin:$PATH" tower toolchain list
+      # docs/release.md: tower-init.sh installs this tarball as the toolchain of a tag (a
+      # simulated one in a scratch directory for master; the tag itself for a tag push), and
+      # the toolchain's URLs, contents and commands are checked; a tag publishes nothing if
+      # it fails. Not for PRs (their branch may predate the repository's URLs) or a
+      # dispatched old commit (its tarball predates the checks).
+      - name: Install smoke test (tower-init.sh, a tag, the wiz-pl URLs)
+        if: steps.bundle.outputs.cc == 'yes' && github.event_name == 'push' && inputs.commit == ''
+        run: |
+          tag=v0.0.0
+          case "$GITHUB_REF" in refs/tags/v*) tag=$GITHUB_REF_NAME ;; esac
+          sh .release-tools/scripts/test-release-install.sh dist/wiz-x86_64-linux.tar.gz "$tag" "${{ github.repository }}"
       - name: Mirror the bundle's downloads (the release bundle-inputs, the last mirror bundle-cc.sh tries)
         if: steps.bundle.outputs.cc == 'yes' && github.event_name == 'push' && github.ref == 'refs/heads/master'
         continue-on-error: true
@@ -262,13 +313,27 @@ jobs:
         with:
           name: wiz-x86_64-linux
           path: dist/
+          # tags and snapshots are also release assets (which cost no Actions storage);
+          # the artifact is a convenience: 90 days for a tag, 7 for a snapshot, 3 for a PR
+          retention-days: ${{ startsWith(github.ref, 'refs/tags/') && 90 || (github.event_name == 'pull_request' && 3 || 7) }}
       - name: Publish (a tag)
         if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
+        # the notes are the tag's section of CHANGELOG.md (`## [X.Y.Z] - date`), which must
+        # exist. A tag's assets are never replaced (docs/stability.md): if the release
+        # exists already (a re-run), this fails; delete a half-made draft by hand first
         run: |
-          gh release create "${GITHUB_REF_NAME}" dist/* --title "Wiz ${GITHUB_REF_NAME}" --notes "Wiz ${GITHUB_REF_NAME}: install with tower (docs/stages/26-tower.md)" ||
-            gh release upload "${GITHUB_REF_NAME}" dist/* --clobber
+          v=${GITHUB_REF_NAME#v}
+          notes=$RUNNER_TEMP/notes.md
+          awk -v h="## [$v]" 'index($0, h) == 1 { on = 1; next } on && /^## \[/ { exit } on' CHANGELOG.md > "$notes"
+          if ! grep -q '[^[:space:]]' "$notes"; then echo "CHANGELOG.md has no section [$v]"; exit 1; fi
+          printf '\nInstall: `curl -sSfL https://raw.githubusercontent.com/%s/%s/scripts/tower-init.sh | sh -s -- %s` (docs/install.md).\n' \
+            "${{ github.repository }}" "$GITHUB_REF_NAME" "$GITHUB_REF_NAME" >> "$notes"
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            echo "release ${GITHUB_REF_NAME} exists already: its assets are not replaced"; exit 1
+          fi
+          gh release create "${GITHUB_REF_NAME}" dist/* --verify-tag --title "Wiz ${GITHUB_REF_NAME}" --notes-file "$notes"
       # snapshot-<sha>, then pruning (26g); nightly.yml moves nightly once CI passed
       - name: Publish (snapshot, from master)
         if: github.event_name == 'push' && github.ref == 'refs/heads/master'

@@ -217,6 +217,36 @@ def within {α : Type} (secs mb : Nat) (act : Unit → IO α) : IO α := do
     throw (IO.userError s!"took {ms} ms and {peak} MB (bounds: {secs} s, {mb} MB)")
   pure a
 
+/-- A bundle `Bn` of `n` leaves, `deriving Bundle` alone. -/
+def plainBundle (n : Nat) : String :=
+  s!"structure B{n} (r : HwTy → Type) where\n" ++ String.join ((List.range n).map (s!"  l{·} : r (HwTy.bits 8)\n")) ++
+  "  deriving Bundle\n"
+
+/-- The number of instructions of an IR body, without the projections. (Reading field k
+of a structure, a right-nested Σ, is k projections in the IR wherever it is written: so
+`S.pack` still has a quadratic number of projections, the lowering's to remove.) -/
+partial def bodySize : IR.Body → Nat
+  | .vdecl _ (.proj _ _) b => bodySize b
+  | .vdecl _ _ b | .dup _ b | .drop _ b => bodySize b + 1
+  | .case _ alts => alts.foldl (fun n a => n + bodySize a) 1
+  | .jdecl _ _ body k => bodySize body + bodySize k + 1
+  | _ => 1
+
+/-- The lowered IR of the derived `pack` and `unpack` of bundles of `ns` leaves (each
+field: (size of `pack`, size of `unpack`)), with every library importable. -/
+def bundleIRSizes (ns : List Nat) : IO (List (Nat × Nat)) := do
+  let src := "import Hdl.Core\n" ++ String.join (ns.map plainBundle)
+  let st := runFrontend (R := ZeroOneMany) src { trustedModule := Tests.libModule, loader := ← Tests.Elab.libLoader }
+  let errs := (st.messages.filter (·.severity == .error)).map fun m => m.render src
+  unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
+  ns.mapM fun n => do
+    let size (f : String) : IO Nat := do
+      let ds ← loweredOf st [s!"B{n}.{f}"]
+      match ds.find? (·.name == s!"B{n}.{f}") with
+      | some d => pure (bodySize d.body)
+      | none => throw (IO.userError s!"no IR for B{n}.{f}")
+    pure (← size "pack", ← size "unpack")
+
 /-- A list of `n` numerals written out: `List.cons 0 (List.cons 1 (… List.nil))`. -/
 def listSource (n : Nat) : String :=
   String.join ((List.range n).map (s!"List.cons {·} (")) ++ "List.nil" ++ String.ofList (List.replicate n ')')
@@ -275,6 +305,26 @@ def m : Nat := List.length (Netlist.simulate (Circuit.netlist \"c\" ctr) (Hdl.ma
 #eval m
 "
 
+/-- A RAM read every cycle for 50000 cycles, written in the first only: a disabled write is
+the memory itself (no extra function per cycle), so each read costs the number of enabled
+writes, and the run is linear (it was quadratic: artix-target, wiz-rv). -/
+def hdlMemScaleSrc : String := "import Hdl.Core
+def m4 : HwTy := HwTy.mem 4 8
+def ram : Circuit (HwTy.prod (HwTy.bits 1) (HwTy.bits 8)) (HwTy.bits 8) :=
+  Circuit.mk m4 (fun (a : BitVec 4) => BitVec.ofNat 8 0)
+    (fun s x => Hw.pair (Hw.memWrite s (Hw.fst x) (Hw.lit 4 5) (Hw.snd x)) (Hw.memRead s (Hw.lit 4 5)))
+def off (m : HwTy.El m4) (a : BitVec 4) (d : BitVec 8) : HwTy.El.memWrite m (BitVec.ofNat 1 0) a d = m := rfl
+def Rep.go : Nat → List (HwTy.El (HwTy.prod (HwTy.bits 1) (HwTy.bits 8))) → List (HwTy.El (HwTy.prod (HwTy.bits 1) (HwTy.bits 8)))
+  | .zero, acc => List.cons (BitVec.ofNat 1 1, BitVec.ofNat 8 42) acc
+  | .succ k, acc => Rep.go k (List.cons (BitVec.ofNat 1 0, BitVec.ofNat 8 7) acc)
+def last : List (HwTy.El (HwTy.bits 8)) → Nat
+  | .nil => 0
+  | .cons x .nil => BitVec.toNat x
+  | .cons _ xs => last xs
+def r : Nat := last (Circuit.run ram (Rep.go 50000 List.nil))
+#eval r
+"
+
 def group : Group where
   name := "scaling"
   exercise := "super-linear time and memory"
@@ -323,6 +373,21 @@ def group : Group where
         unless bad.isEmpty do throw (IO.userError "they differ on the projection chain") },
     { name := "the IR of a step over bundles of 8, 16 and 32 fields (reuse was exponential: 20 took 115 s)", run := fun _ =>
         checksLibsWithin 240 ("import Hdl.Core\n" ++ String.join ([8, 16, 32].map wideBundle)) },
+    -- `deriving Bundle` wrote field k of `S.unpack` as `Hw.fst (Hw.snd^k x)`, and each
+    -- `Hw.pair`/`Hw.snd` took the literal code of the rest of the product as an implicit
+    -- argument, which is relevant (`{ω a b : HwTy}`): quadratic code (cubic in `unpack`),
+    -- about n^2.7 to elaborate and compile (wiz-rv's 20-field core state: a 14k-line IR
+    -- function). Now `unpack` is a chain of `let`s and every tail of the code a definition:
+    -- linear (but for `pack`'s field projections: see `bodySize`). `#ir` before → after:
+    -- unpack, 32 fields 169k → 2.9k lines, 48 fields 567k → 4.4k; pack, 64 fields 39k → 9k.
+    { name := "deriving Bundle: pack and unpack of 32 and 64 fields are linear in the fields (unpack was cubic)", run := fun _ => do
+        let r ← within 240 3000 fun _ => bundleIRSizes [32, 64]
+        let [(p32, u32), (p64, u64)] := r | throw (IO.userError "two bundles expected")
+        -- twice the fields, at most 2.25 times the code (quadratic: 4, cubic: 8)
+        unless 4 * p64 ≤ 9 * p32 && 4 * u64 ≤ 9 * u32 do
+          throw (IO.userError s!"not linear: pack {p32} → {p64}, unpack {u32} → {u64}")
+        unless p64 ≤ 200 * 64 && u64 ≤ 200 * 64 do
+          throw (IO.userError s!"too large: pack {p64}, unpack {u64} at 64 fields") },
     -- `insertRC` recomputed the free variables of the rest of the body at each binding
     -- (and kept them while handling the rest): quadratic in time and space along a chain
     -- of bindings, the constant a literal becomes (6000 characters: 18 000 bindings, about
@@ -389,7 +454,11 @@ def group : Group where
     -- cycles (the old interpreter: about 5·10⁸ list steps), compared with the values;
     -- then `Circuit.run` and `Netlist.simulate` on a 200000-cycle trace.
     { name := "the HDL's netlist simulation is O(n log n) per cycle; long traces run", run := fun _ =>
-        within 120 1500 fun _ => Tests.Elab.okLibs hdlScaleSrc ["(.true, 3258)", "200000", "200000"] }]
+        within 120 1500 fun _ => Tests.Elab.okLibs hdlScaleSrc ["(.true, 3258)", "200000", "200000"] },
+    -- a disabled memory write is the memory itself at values (`off` by `rfl`), so a RAM's
+    -- value simulation is linear in cycles: 50000 cycles of reads after one write
+    { name := "the HDL's value simulation of a memory is linear in cycles (a disabled write adds nothing)", run := fun _ =>
+        within 120 1500 fun _ => Tests.Elab.okLibs hdlMemScaleSrc ["42"] }]
 
 
 /-! ### A probe (`tests --probe-checker [unbox] [rc]`): where building the self-hosted checker spends

@@ -1,4 +1,5 @@
 import Wiz.Elab.Recursor
+import Wiz.Elab.Mark
 import Wiz.Compiler.Run
 import Wiz.Compiler.IRRun
 import Wiz.Compiler.Lower
@@ -157,6 +158,25 @@ structure CommandState (R : Type) where
   node kind: they decide the spacing of printed notation -/
   rawAtoms : Std.HashMap Name (Array String) := {}
 
+/-- Run a kernel entry on a declaration, with the proof markers the kernel requires
+(`Mark`) **when it asks for them**. The marking pass is a typed traversal of the whole
+term, about as much work as the kernel's own check, and most declarations need at most a
+marker on their body. So the kernel is tried on, in turn:
+
+1. the declaration with a marker on its body, if the body is a proof that is not
+   neutral-shaped (`Decl.withTopMarks`: a theorem; any other declaration is left as it is);
+2. the declaration marked by the pass (`Decl.withMarks`), only if the kernel answered
+   "unmarked proof" to the first.
+
+The error reported is the last attempt's, and the kernel has accepted exactly the term
+that is stored. -/
+def withMarksOnDemand (g : Globals R) (d : Decl R) (k : Decl R → TCM (Globals R)) : TCM (Globals R) :=
+  match k (d.withTopMarks g) with
+  | .error (.unmarkedProof t ty l) =>
+    let go := fun (_ : Unit) => k (d.withMarks g)
+    if g.traceProofSteps then dbgTrace s!"marks-on-demand {d.name}: {(t.take 80).replace "\n" " "} : {(ty.take 60).replace "\n" " "} in Sort {l}" go else go ()
+  | r => r
+
 /-- (11s) The doc comment of a declaration, if it has one. -/
 def CommandState.docOf? (s : CommandState R) (n : Name) : Option String :=
   (s.declDocs.get? n).bind (·.doc)
@@ -212,15 +232,17 @@ def privacyCheck (g : Globals R) (d : Decl R) (kind : Globals R → Decl R → T
     throw (.other (s!"{d.name} depends on the definition of {", ".intercalate (used.map show1)}, which is hidden outside " ++
       s!"its module (it has private parts): with the definition hidden, {e}"))
 
-/-- `addDecl` with the sorts of the elaborator's `Π`/`Σ` filled in first (`Sorts`), and then
-the privacy check. -/
+/-- `addDecl` with the sorts of the elaborator's `Π`/`Σ` filled in first (`Sorts`), the
+proof markers the kernel requires (`withMarksOnDemand`), and then the privacy check (with
+the markers too: an unmarked proof is not a privacy failure). -/
 def addDeclSorted (g : Globals R) (d : Decl R) : TCM (Globals R) := do
   -- the kernel's own check is against the full environment: never the elaborator's view,
   -- whose `hidden` definitions (13b) `conv` would consult
   unless g.hidden.isEmpty do throw (.other s!"internal error: {d.name} checked against the elaborator's view")
   let d := d.withSorts g
-  let g' ← addDecl g d
-  privacyCheck g d
+  let kind := fun (g' : Globals R) (d' : Decl R) => withMarksOnDemand g' d' (addDecl g')
+  let g' ← kind g d
+  privacyCheck g d kind
   pure g'
 
 /-- Replace each const `n` by `f n`. -/
@@ -242,8 +264,9 @@ def renamePrivate (s : CommandState R) (added : Array Name) : CommandState R :=
                                                    impl := d.impl.map rn, witness := d.witness.map rn }
     | none => m) g.decls
   let order := g.order.map f
+  let heights := Std.HashMap.ofList (order.toList.zipIdx)
   let rb (bs : List (Name × Name)) := bs.map fun (k, n) => (k, f n)
-  { s with globals := { g with decls, order, builtins := rb g.builtins, assumed := rb g.assumed },
+  { s with globals := { g with decls, order, heights, builtins := rb g.builtins, assumed := rb g.assumed },
            builtins := rb s.builtins }
 
 /-- Metas are untyped, so `?A : Sort ?u` never learns `?u` from `?A := A`. For each
@@ -263,7 +286,7 @@ def solveSortConstraints : ElabM R Unit := do
       if !t.mvars.isEmpty then continue
       let kctx : Ctx R := { globals := ← getGlobals, env := ctx.env, names := ctx.names,
                             qtys := ctx.names.map fun _ => QPoly.const QuantitySyntax.explicitDefault,
-                            types := ctx.types, lvl := ctx.lvl }
+                            types := ctx.types, lvl := ctx.lvl, proof := true }
       if let .ok (ty, _) := Wiz.infer kctx t then
         if let .sort l' ← force ty then
           try unifyLevel l l' catch e => throwAt ctx.info e.msg
@@ -277,7 +300,9 @@ def elabDeclTerms (binders : Array Syntax) (typeStx : Option Syntax) (valStx : O
     | some s => pure (← Elab.checkType ctx s).1
     | none => freshMeta ctx "the type of this definition"
   -- (for the language server) the type after the binders, and where ` : T` would go
-  if let some (n, ni, at_) := declName? then pushInfo (.decl ni n ctx ty typeStx.isSome at_)
+  if let some (n, ni, at_) := declName? then
+    pushInfo (.decl ni n ctx ty typeStx.isSome at_)
+    modify fun s => { s with defining := some n }
   -- the type's instance problems that are already determined, solved before the body is
   -- checked: an equation stuck on such a hole then computes when it meets the body's type
   -- (`unifyAt`). (The type isn't zonked here: an equation that stays as written lets
@@ -627,6 +652,86 @@ def elabDefEqns (name : Name) (cmd : Syntax) (isPartial : Bool := false) :
 partial def mentionsIdent (n : Name) (stx : Syntax) : Bool :=
   (stx.isOfKind "term.ident" && (stx.getArg 0).getId? == some n) || stx.args.any (mentionsIdent n)
 
+/-- The names a `fun`'s binders bind, and its body under any nested `fun`s; `none` for an
+implicit or instance binder. -/
+partial def peelFunBinders (t : Syntax) (acc : Array Name := #[]) : Option (Array Name × Syntax) :=
+  if t.isOfKind "term.fun" then do
+    let mut acc := acc
+    for b in (t.getArg 1).args do
+      match b with
+      | .ident _ n => acc := acc.push n
+      | _ =>
+        if b.isOfKind "term.hole" then acc := acc.push "_"
+        else if b.isOfKind "binder.explicit" then
+          for n in (b.getArg 2).args do
+            acc := acc.push (match n with | .ident _ m => m | _ => "_")
+        else none
+    peelFunBinders (t.getArg 3) acc
+  else some (acc, t)
+
+/-- A recursive `def f bs : T := fun ys => match x₁, …, xₖ with | p… => rhs …` whose
+scrutinees are parameters (of `bs` or `ys`), as the equations it means:
+`def f bs₀ : (bs₁) → T | q… => rhs …`, where `bs₁` are the parameters from the first
+scrutinee on (moved into the type; explicit, with a type) and the columns `q` are the
+alternative's pattern for a scrutinee (`x@p` if the right-hand side mentions `x`) and the
+variable itself for any other parameter. A plain `def` can't call itself (it is no
+global yet); its equations are structurally recursive. `none` if the body has another
+shape: it is then elaborated as it is. -/
+def defMatchAsEqns? (name : Name) (cmd : Syntax) : Option Syntax := do
+  let val := cmd.getArg 6
+  guard (syntaxMentions name val)
+  let tyStx ← (cmd.getArg 4).args[1]?
+  -- the def's binders, one per name: (name, the binder for it alone, explicit with a type)
+  let mut items : Array (Name × Option Syntax × Bool) := #[]
+  for b in (cmd.getArg 3).args do
+    if b.isOfKind "binder.explicit" || b.isOfKind "binder.implicit" then
+      for n in (b.getArg 2).args do
+        let single : Syntax := .node b.info b.kind #[b.getArg 0, b.getArg 1, .node {} "null" #[n], b.getArg 3, b.getArg 4]
+        let nm := match n with | .ident _ m => m | _ => "_"
+        items := items.push (nm, some single, b.isOfKind "binder.explicit" && (b.getArg 3).args.size > 0)
+    else items := items.push ("inst✝", some b, false)
+  let (funNames, body) ← peelFunBinders val
+  guard (body.isOfKind "term.match")
+  let nDef := items.size
+  for n in funNames do items := items.push (n, none, true)
+  let scruts := (body.getArg 1).args.filter (!· matches .atom ..)
+  let scrutNames ← scruts.toList.mapM fun t =>
+    if t.isOfKind "term.ident" then (t.getArg 0).getId? else none
+  guard (scrutNames.eraseDups.length == scrutNames.length)
+  -- each scrutinee is exactly one parameter (not `_`, not shadowed)
+  for x in scrutNames do
+    guard (x != "_" && (items.filter (·.1 == x)).size == 1)
+  let i0 ← items.findIdx? fun (n, _, _) => scrutNames.contains n
+  let moved := items.extract i0 items.size
+  guard (moved.all (·.2.2))
+  let info := cmd.info
+  let ident (n : Name) : Syntax := .node {} "term.ident" #[.ident {} n]
+  let hole : Syntax := .node {} "term.hole" #[.atom {} "_"]
+  -- the type: the moved binders of the def, then `T`
+  let movedDef := (items.extract i0 nDef).toList
+  let ty := movedDef.foldr (fun (_, b, _) acc => match b with
+    | some b => Syntax.node info "term.depArrow" #[b, .atom {} "→", acc]
+    | none => acc) tyStx
+  let kept := (items.extract 0 (min i0 nDef)).filterMap (·.2.1)
+  let alts ← (body.getArg 3).args.mapM fun a => do
+    guard (a.isOfKind "match.alt")
+    let ps := (a.getArg 1).args.filter (!· matches .atom ..)
+    guard (ps.size == scrutNames.length)
+    let rhs := a.getArg 3
+    let cols := moved.toList.map fun (n, _, _) =>
+      match scrutNames.idxOf? n with
+      | some k =>
+        let p := ps[k]!
+        let simple := p.isOfKind "term.ident" && (p.getArg 0).getId? == some n
+        if !simple && mentionsIdent n rhs then
+          Syntax.node p.info "term.asPat" #[ident n, .atom {} "@", p]
+        else p
+      | none => if n == "_" then hole else ident n
+    let sep := (cols.flatMap fun c => [Syntax.atom {} ",", c]).drop 1
+    pure (Syntax.node a.info "match.alt" #[a.getArg 0, .node {} "null" sep.toArray, a.getArg 2, rhs])
+  pure (.node info "command.defEqns" #[cmd.getArg 0, cmd.getArg 1, cmd.getArg 2, .node {} "null" kept,
+    .node {} "null" #[.atom {} ":", ty], .node {} "null" alts])
+
 /-- How the fields of the coinductive type `T` sit in its payload (Q4: a small field is
 lifted, `descFieldLifts`), read off `T.desc`. -/
 def coinductiveLifts (g : Globals R) (T : Name) : List FieldLift :=
@@ -834,7 +939,8 @@ def runElabH (g : Globals R) (x : ElabM R α) (levelParams : List Name := [])
   let runProcMacro f stx scope := match compileCode [f, "Macro.run"] with
     | .ok code => Elab.runProcMacro code f stx scope (macroEnv g)
     | .error e => (#[], .error e)
-  let kernelInfer (ctx : Ctx R) (t : Term R) := (Wiz.infer ctx t).map (·.1) |>.mapError toString
+  -- (the elaborator's terms carry no proof markers yet: `proof`)
+  let kernelInfer (ctx : Ctx R) (t : Term R) := (Wiz.infer { ctx with proof := true } t).map (·.1) |>.mapError toString
   -- (13b) structures with a constructor private to another module don't unfold here
   match x.run { globals := g.elabView, levelParams, macros, builtins, procMacros, runProcMacro, tactics, compileCode,
                 kernelInfer, classes, instances, termInfo } with
@@ -1355,6 +1461,10 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     let binders := (cmd.getArg 3).args
     let typeStx := (cmd.getArg 4).args[1]?
     let valStx := if cmd.isOfKind "command.def" then some (cmd.getArg 6) else none
+    -- a recursive `:= match` on the parameters: the equations it means
+    if let some eqns := (if cmd.isOfKind "command.def" && !s.globals.contains name then defMatchAsEqns? name cmd else none) then
+      elabCommand eqns
+      return
     if s.globals.contains name then
       reportDup (cmd.getArg 1).info name
     else match runElabH (macros := s.macros) (builtins := s.builtins) (procMacros := s.procMacros) (tactics := s.tactics) (metaCode := s.metaCode) (classes := s.classes) (instances := s.instances) (termInfo := s.termInfo) s.globals (elabDeclTerms binders typeStx valStx cmd.info (declName? := some (name, (cmd.getArg 1).info, declInsertAt cmd))) levelParams with
@@ -1409,9 +1519,10 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
             return
           | .error e => report .error e.info e.msg; return
         let pd := Decl.withSorts g { name, levelParams, type := ty, value := none, witness := some w }
+        let addP := fun (g' : Globals R) (d' : Decl R) => withMarksOnDemand g' d' (addPartialDecl g')
         match (do
             unless g.hidden.isEmpty do throw (.other s!"internal error: {pd.name} checked against the elaborator's view")
-            let g' ← addPartialDecl g pd; privacyCheck g pd addPartialDecl; pure g' : TCM (Globals R)) with
+            let g' ← addP g pd; privacyCheck g pd addP; pure g' : TCM (Globals R)) with
         | .ok g' => g := g'
         | .error e => report .error (d.getArg 1).info s!"kernel rejected {name}: {e}"; return
         sigs := sigs.push (d, name, levelParams)
@@ -1431,7 +1542,13 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
         let v := match g.find? name with
           | some d => Sorts.value g #[] [] v (eval g [] d.type)
           | none => v
-        match addPartialImpl g name v with
+        -- (the proof markers, if the kernel asks for them: `withMarksOnDemand`)
+        let r := match addPartialImpl g name v with
+          | .error (.unmarkedProof ..) => match g.find? name with
+            | some d => addPartialImpl g name (Mark.check { globals := g } v (eval g [] d.type))
+            | none => addPartialImpl g name v
+          | r => r
+        match r with
         | .ok g' => g := g'
         | .error e => report .error d.info s!"kernel rejected {name}: {e}"; return
       | (.error e, hv) => addInfos hv; reportErr e; return
@@ -1457,8 +1574,10 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
       solveSortConstraints
       let t ← zonk 0 t
       ensureNoMVars t
+      -- (P2) with its proofs marked: `nf` suspends them, and reads each back within the
+      -- step budget (a proof need not have a normal form)
       let g ← getGlobals
-      pure ((nf g t).pretty [] (some g))
+      pure ((nf g (Mark.infer { globals := g } t).1).pretty [] (some g))
     match r with
     | .ok text => report .info cmd.info text
     | .error e => report .error e.info e.msg
@@ -2360,7 +2479,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     match r with
     | .error e => report .error e.info e.msg
     | .ok t =>
-      let ctx : Ctx R := { globals := s.globals }
+      let ctx : Ctx R := { globals := s.globals, proof := true }
       let result := do
         let (ty, _) ← Wiz.infer ctx t
         let e ← eraseTop ctx t ty
@@ -2385,7 +2504,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     match r with
     | .error e => report .error e.info e.msg
     | .ok t =>
-      let ctx : Ctx R := { globals := s.globals }
+      let ctx : Ctx R := { globals := s.globals, proof := true }
       let result : Except String (VTy R × RVal) := do
         let (ty, _) ← (Wiz.infer ctx t).mapError toString
         let e ← (eraseTop ctx t ty).mapError toString
@@ -2474,7 +2593,8 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
             -- located output (Elab/ProcMacro.lean): diagnostics and generated source,
             -- placed at a node of the macro's input
             let info := Elab.pathInfo cmd (c.getArg 0)
-            let text := Elab.atomText (c.getArg 1)
+            -- marked source (Elab/ProcMacro.lean, "Positions inside generated source")
+            let (text, spans) := Elab.stripMarks (Elab.atomText (c.getArg 1))
             match c.kind with
             | "macro.error" => report .error info text
             | "macro.info" => report .info info text
@@ -2486,7 +2606,14 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
                 if skipWs chars pos ≥ chars.size then break
                 match parseCommand chars (← get).tables pos with
                 | .ok (stx, stop) =>
-                  elabCommand (Elab.setInfoAll info stx)
+                  let before := (← get).globals.order.size
+                  elabCommand (Elab.locateMarked cmd info spans stx)
+                  -- what it declares is declared at the input node (go to definition
+                  -- inside the block; the frontend keeps these over the whole command)
+                  if !spans.isEmpty then
+                    modify fun s =>
+                      let added := s.globals.order.extract before s.globals.order.size
+                      { s with declSites := added.foldl (fun m n => m.insert n (info, s.module)) s.declSites }
                   pos := stop
                 | .error e =>
                   report .error info s!"macro {f}: the generated source does not parse: {e.render text}\n{text}"

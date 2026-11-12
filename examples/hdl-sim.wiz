@@ -1,0 +1,125 @@
+-- The fast netlist simulation (`import Hdl.Sim`, compiled code only): `Netlist.simFast`
+-- against `Netlist.simulate` (hash-consed and naive netlists) and the value simulation
+-- `Circuit.run`, cycle for cycle, on random traces through every netlist operation,
+-- widths up to 70 bits (beyond a machine word), reset and enable, a table as a
+-- multiplexer tree, and a netlist that is not well formed (where `simFast` is
+-- `simulate`). Run by the `hdl` test group.
+import Hdl.Core
+import Hdl.Sim
+import IO
+
+def Bit : HwTy := HwTy.bits 1
+def B2 : HwTy := HwTy.bits 2
+def B8 : HwTy := HwTy.bits 8
+def B70 : HwTy := HwTy.bits 70
+
+structure Alu (r : HwTy → Type) where
+  acc : r B8
+  wide : r B70
+  flag : r Bit
+  deriving Bundle
+structure AluIn (r : HwTy → Type) where
+  sel : r B2
+  x : r B8
+  deriving Bundle
+structure AluOut (r : HwTy → Type) where
+  acc : r B8
+  lowWide : r B8
+  topWide : r (HwTy.bits 6)
+  flag : r Bit
+  deriving Bundle
+
+-- a table of 16 entries as a balanced multiplexer tree on the address bits
+def tbl : List Nat := .cons 3 (.cons 141 (.cons 59 (.cons 26 (.cons 53 (.cons 58 (.cons 97 (.cons 93
+  (.cons 238 (.cons 46 (.cons 26 (.cons 43 (.cons 38 (.cons 32 (.cons 79 (.cons 50 .nil)))))))))))))))
+def romAt {r : HwTy → Type} [Hw r] {ω n : Nat} (a : r (HwTy.bits n)) : Nat → Nat → r B8
+  | .zero, base => Hw.lit 8 (Hdl.nthD 0 tbl base)
+  | .succ k, base => Hw.mux (Hw.slice k 1 a) (romAt a k (base + Nat.pow 2 k)) (romAt a k base)
+
+def aluStep {r : HwTy → Type} [Hw r] (s : Alu r) (x : AluIn r) : r (HwTy.prod Alu.code AluOut.code) :=
+  let a := s.acc;
+  let sum := Hw.add a x.x;
+  let diff := Hw.sub a x.x;
+  let prod := Hw.mul a x.x;
+  let logic := Hw.xor (Hw.and a x.x) (Hw.or (Hw.not a) (Hw.slice 1 8 (Hw.cat x.x (Hw.lit 1 1))));
+  let pick := Hw.mux (Hw.eq x.sel (Hw.lit 2 0)) sum
+    (Hw.mux (Hw.eq x.sel (Hw.lit 2 1)) diff
+    (Hw.mux (Hw.eq x.sel (Hw.lit 2 2)) prod logic));
+  let next := Hw.xor pick (romAt (Hw.slice 0 4 a) 4 0);
+  let w := s.wide;
+  let wideNext := Hw.add (Hw.mul w (Hw.lit 70 3)) (Hw.cat (Hw.lit 62 0) x.x);
+  let wideSub := Hw.sub (Hw.not w) (Hw.cat x.x (Hw.lit 62 12345));
+  Hw.pair
+    (Alu.pack (Alu.mk next (Hw.mux s.flag wideNext wideSub) (Hw.ult a x.x)))
+    (AluOut.pack (AluOut.mk a (Hw.slice 0 8 w) (Hw.slice 64 6 w) (Hw.ult (Hw.slice 3 8 w) a)))
+
+def alu : Circuit AluIn.code AluOut.code :=
+  Circuit.bundled Alu.bundle AluIn.bundle AluOut.bundle
+    (Alu.mk (BitVec.ofNat 8 0) (BitVec.ofNat 70 1180591620717411303423) (BitVec.ofNat 1 0)) aluStep
+
+-- with a synchronous reset and a clock enable
+def aluRE : Circuit (HwTy.prod (HwTy.named "rst" HwTy.bit) (HwTy.prod (HwTy.named "en" HwTy.bit) AluIn.code)) AluOut.code :=
+  Circuit.withReset (Circuit.withEnable alu)
+
+-- composition: a delay line after the ALU, a feedback loop around an adder
+def acc8 : Circuit B8 B8 := Circuit.mk B8 (BitVec.ofNat 8 0) (fun s x => Hw.pair (Hw.add s x) s)
+def piped : Circuit AluIn.code B8 :=
+  Circuit.seq (Circuit.mapOut (fun y => Hw.untag (Hw.fst y)) alu) (Circuit.seq (Circuit.delay B8 (BitVec.ofNat 8 7)) acc8)
+
+-- (H14 S4) shifts by a signal and signed comparisons, at 70 and 8 bits (amounts past
+-- the width included)
+def shiftStep {r : HwTy → Type} [Hw r] (s : r B70) (x : r B8) : r (HwTy.prod B70 B8) :=
+  let amt := Hw.slice 0 7 x;
+  let up := Hw.add (Hw.shlBy s (Hw.slice 0 3 x)) (Hw.cat x (Hw.lit 62 77));
+  let down := Hw.mux (Hw.slt s (Hw.cat x (Hw.lit 62 0))) (Hw.ashrBy s amt) (Hw.lshrBy s amt);
+  Hw.pair (Hw.xor up down)
+    (Hw.xor (Hw.slice 0 8 s) (Hw.mux (Hw.slt x (Hw.slice 62 8 s)) (Hw.ashrBy x (Hw.slice 4 4 x)) (Hw.shlBy x (Hw.slice 5 3 x))))
+def shifter : Circuit B8 B8 := Circuit.mk B70 (BitVec.ofNat 70 1000000000000000000001) shiftStep
+
+def Rng.next (s : Nat) : Nat := Nat.mod (s * 1103515245 + 12345) 2147483648
+def Rng.trace (m : Nat) : Nat → Nat → List Nat
+  | .zero, _ => .nil
+  | .succ k, s => .cons (Nat.mod (Nat.div s 256) m) (Rng.trace m k (Rng.next s))
+
+def leavesEq : List (List Nat) → List (List Nat) → Bool
+  | .nil, .nil => .true
+  | .cons a as, .cons b bs => Bool.and (Hdl.natsEq a b) (leavesEq as bs)
+  | _, _ => .false
+
+def sumAll : List (List Nat) → Nat → Nat
+  | .nil, acc => acc
+  | .cons l ls, acc => sumAll ls (Nat.mod (Hdl.sum l + acc * 3) 1000000007)
+
+def yes (b : Bool) : String := match b with
+  | .true => "yes"
+  | .false => "NO"
+
+-- the four simulations agree; the cycles and a checksum of the outputs
+def report {ω i o : HwTy} (name : String) (c : Circuit i o) (xs : List Nat) : String :=
+  let ω ins := Hdl.map (HwTy.unpack i) xs;
+  let ω v := Circuit.runLeaves c ins;
+  let ω f := Circuit.simFast c ins;
+  let ω ok := Bool.and (leavesEq f v) (Bool.and (leavesEq f (Circuit.simLeaves .true c ins))
+    (leavesEq (Netlist.simFast (Circuit.netlistNaive "c" c) (Hdl.map (HwTy.leaves i) ins)) v));
+  name <+> ": " <+> yes ok <+> ", " <+> Hdl.show (List.length f) <+> " cycles, well formed " <+> yes (Netlist.wellFormed (Circuit.netlist "c" c))
+    <+> ", checksum " <+> Hdl.show (sumAll f 0)
+
+-- a node reading a later node, and an output past the end: not well formed
+def badNet : Netlist :=
+  Netlist.mk "bad"
+    (.cons (NetNode.mk (NetOp.input 0) 4 .nil) (.cons (NetNode.mk NetOp.add 4 (.cons 0 (.cons 2 .nil)))
+      (.cons (NetNode.mk (NetOp.reg 0) 4 .nil) .nil)))
+    (.cons (NetReg.mk "r" 4 5 1 .none .none) .nil)
+    (.cons (NetPort.mk "x" 4 0) .nil)
+    (.cons (NetPort.mk "y" 4 1) (.cons (NetPort.mk "z" 4 7) .nil))
+    .nil .nil .nil
+
+def badIns : List (List Nat) := Hdl.map (fun (k : Nat) => List.cons k List.nil) (Rng.trace 16 20 9)
+
+def main : IO Unit := do
+  IO.println (report "alu" alu (Rng.trace 1024 3000 1));
+  IO.println (report "alu with reset and enable" aluRE (Rng.trace 4096 3000 2));
+  IO.println (report "piped" piped (Rng.trace 1024 3000 3));
+  IO.println (report "shifter" shifter (Rng.trace 256 3000 4));
+  IO.println ("not well formed: " <+> yes (Bool.not (Netlist.wellFormed badNet)) <+> ", simFast = simulate: "
+    <+> yes (leavesEq (Netlist.simFast badNet badIns) (Netlist.simulate badNet badIns)))
