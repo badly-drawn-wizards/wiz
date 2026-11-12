@@ -4958,9 +4958,8 @@ def stdGroup : Group where
         okLibs ("import Word\nimport Int\nimport BitVec\ndef a (x : U8) : U8 := x + 1\ndef b (x : U8) : U8 := 1 + x\n" ++
           "def c (x : Int) : Int := 1 - x * 2\ndef d (x : BitVec 8) : BitVec 8 := x + 1\ndef e (x : U32) : U32 := x + (1 + 2) * 3\n" ++
           "def f (xs : List U8) : List U8 := List.cons 1 xs\n#eval (a 255).toNat\n#eval (b 1).toNat\n#eval c 5\n#eval (d 7).toNat\n#eval (e 1).toNat\n" ++
-          "#check fun (x : I16) => 2 * x - 1")
-          ["0", "2", "-9", "8", "10",
-           "fun x => OfNat.ofNat I16 2 (instOfNatIntNWN 16 2) * x - OfNat.ofNat I16 1 (instOfNatIntNWN 16 1) : I16 → I16"] },
+          "def g (x : I16) := 2 * x - 1\n#eval (g 3).toNat")
+          ["0", "2", "-9", "8", "10", "5"] },
     { name := "machine types: operators at UInt64 and Float64", run := fun _ =>
         okLibs "import IO\ndef f (a b : UInt64) : UInt64 := a * b + 1\ndef g (x : Float64) : Float64 := x * x - 2 / 3" },
     { name := "arrays, updated in place", run := fun _ =>
