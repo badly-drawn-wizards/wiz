@@ -517,6 +517,12 @@ def group : Group where
           "#eval a\n#eval b\n#eval c (P.mk 3 4)") ["1", "3", "7"] },
     { name := "dotted names through a derived definition: `Cnt.bundle.toEl` (cohesion-hardware)", run := fun _ =>
         okLibs "import Hdl.Core\ndef B4 : HwTy := HwTy.bits 4\ndef Bit : HwTy := HwTy.bit\nstructure Cnt (r : HwTy → Type) where\n  count : r B4\n  up : r Bit\n  deriving Bundle\ndef z : Cnt HwTy.El := Cnt.mk (BitVec.ofNat 4 3) (BitVec.ofNat 1 1)\ndef e1 : HwTy.El Cnt.bundle.code := Bundle.toEl Cnt.bundle z\ndef e2 : HwTy.El Cnt.bundle.code := Cnt.bundle.toEl z\n" },
+    { name := "an equation at a product type: η for projected holes, stale casts (cohesion-hardware)", run := fun _ =>
+        -- `Eq.congrArg f e`/`fstEq e` with `e : f y = (y, y)`: the expected `?p = ?q` computes
+        -- to `(?p.1 = ?q.1) × …` and `?q.1 =?= y` is solved by η (`?q := (?a, ?b)`); a cast
+        -- computed while the second component's type was a hole is dropped once its two
+        -- types are the same (it would compute away)
+        okLibs "import Logic\ndef fstEq {A B : Type} {p q : (_ : A) × B} (e : p = q) : p.1 = q.1 := Eq.congrArg (fun (r : (_ : A) × B) => r.1) e\ndef t1 (f : Nat → (_ : Nat) × Nat) (h : (x : Nat) → f x = (x, x)) (y : Nat) : (f y).1 = y := fstEq (h y)\ndef t2 (f : Nat → (_ : Nat) × Nat) (y : Nat) (h : f y = (y, y)) : (f y).1 = y := fstEq h\ndef t3 (f : Nat → (_ : Nat) × Nat) (h : (x : Nat) → f x = (x, x)) (y : Nat) : (f y).1 = y :=\n  Eq.congrArg (fun (r : (_ : Nat) × Nat) => r.1) (h y)\n" },
     { name := "pruning: a `let` of an inferred `match` (icestick-cpu C6)", run := fun _ =>
         -- the match's type `?T n` meets `List (?A n x✝)` from a branch, where `x✝` (the
         -- scrutinee) is in scope: `?A` can't depend on `x✝`, so it is pruned to `?A' n`
