@@ -139,10 +139,11 @@ cached between runs.
   If a shard stays over the limit after the refresh, raise its `"split"` or make it a
   split shard. `scripts/ci.py plan` shows the predicted parts. One case longer than the
   limit cannot be split: `grail-selfhost` is one case of about 3.5 min.
-* **The exercise tree** (the `exercise tree` job) is generated with
-  `scripts/mkexercises.py` into a temporary directory and built (`lake build wiz grail
-  tests`), with a Lake cache of its own; it runs beside the test shards. It does not run
-  the exercise tree's tests (almost all of them fail by design). See
+* **The exercise tree** is checked only for a release tag: the `exercise tree` job of
+  `release.yml` generates it with `scripts/mkexercises.py` into a temporary directory
+  and builds it (`lake build wiz grail tests`), and the tarball job (which publishes)
+  waits for it. Pull requests and master pushes don't build it. It does not run the
+  exercise tree's tests (almost all of them fail by design). See
   [exercises.md](exercises.md).
 * **The bootstrap fixpoint** (`scripts/fixpoint.sh`: the stage-1 C of the toolchain
   equals its stage-2 C) runs weekly on `master`, or from "Run workflow" with

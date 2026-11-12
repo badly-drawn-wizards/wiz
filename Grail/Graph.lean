@@ -245,21 +245,26 @@ abbrev TestResults := IO.Ref (Std.HashMap String TestResult)
 def Runner.judgeTest (r : Runner) (file : String) (update : Bool) (results : TestResults)
     (actual : Except String String) : IO Finish := do
   let (expFile, expected) ← expectedOf r.ctx.dir file
-  let report (res : TestResult) : IO Finish := do
+  -- (a pass is recorded under the key of the expected output it was compared with: with
+  -- `--update`, only if that didn't change)
+  let report (res : TestResult) (record : Bool := !update) : IO Finish := do
     results.modify (·.insert file res)
     let log := if res.ok then s!"  ✓ {file}{if res.message.isEmpty then "" else s!" ({res.message})"}\n"
       else s!"  ✗ {file}\n      {res.message}\n"
-    pure { res := if res.ok then .ok () else .error res.message, record := res.ok && !update, log }
+    pure { res := if res.ok then .ok () else .error res.message, record := res.ok && record, log }
   match actual with
   | .error e => report { file, ok := false, message := e }
   | .ok actual =>
   if update then
     if expected != some actual then IO.FS.writeFile expFile actual
     return ← report { file, ok := true, message := if expected == some actual then "" else "updated" }
+      (record := expected == some actual)
   match expected with
   | none => report { file, ok := false, message := s!"no {expFile} (grail test --update writes it)" }
   | some e =>
-    if e != actual then report { file, ok := false, message := firstDifference e actual }
+    if e != actual then
+      let note := TestKind.defaultNote (← IO.FS.readFile (r.ctx.dir / file))
+      report { file, ok := false, message := firstDifference e actual ++ note }
     else report { file, ok := true }
 
 /-- (23i) A command whose dependencies are done: its key, and the job that runs it. -/

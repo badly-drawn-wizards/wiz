@@ -48,7 +48,10 @@ def interpTm (l : Level) : Term R :=
   let mrec := lams ["q", "j", "E", "ih", "X", "i"] (.sigma "_" (v 5) (.app (v 1) (v 4)) (apps (v 3) [v 2, v 1]) (some (.succ l)))
   -- i0 X1 ih2 E3 j4 H5 q6
   let mhrec := lams ["q", "H", "j", "E", "ih", "X", "i"]
-    (.sigma "_" (v 6) (pi "h" (v 5) (.app (v 2) (.app (v 5) (v 0)))) (apps (v 3) [v 2, v 1]) (some (.succ l)))
+    -- (the field `(h : H) → X (j h)` with its sort too, `H` and `X (j h)` being in
+    -- `Sort (l+1)`: a cast at a `Π` without one is stuck, U5b)
+    (.sigma "_" (v 6) (.pi "h" .default (.qlit QuantitySyntax.explicitDefault) (v 5) (.app (v 2) (.app (v 5) (v 0))) (some (.succ l)))
+      (apps (v 3) [v 2, v 1]) (some (.succ l)))
   lams ["I", "D"] (.delim (.succ (.succ l)) P mret marg mrec mhrec (v 0))
 
 private def interpApp (l : Level) (I E X i : Term R) : Term R := apps (interpTm l) [I, E, X, i]
@@ -71,7 +74,10 @@ def allTm (l v' : Level) : Term R :=
   -- xs0 i1 P2 X3 ih4 E5 j6 H7 q8
   let mhrec := lams ["q", "H", "j", "E", "ih", "X", "P", "i", "xs"]
     (.sigma "_" (.qlit QuantitySyntax.explicitDefault)
-      (pi "h" (v 7) (apps (v 3) [.app (v 7) (v 0), .app (.fst (v 1)) (v 0)]))
+      -- (with its sort, `H` being in `Sort (l+1)` and `P …` in `Sort v'`: a cast at a `Π`
+      -- without one is stuck, U5b)
+      (.pi "h" .default (.qlit QuantitySyntax.explicitDefault) (v 7)
+        (apps (v 3) [.app (v 7) (v 0), .app (.fst (v 1)) (v 0)]) (some (.imax (.succ l) v')))
       (apps (v 5) [v 4, v 3, v 2, .snd (v 1)]) (some (.max (.succ l) v')))
   lams ["I", "D"] (.delim (.max (.succ (.succ l)) (.succ v')) P mret marg mrec mhrec (v 0))
   --|ex
