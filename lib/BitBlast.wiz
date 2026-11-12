@@ -1,5 +1,6 @@
 import Sat
 import Word
+import Ring
 -- Bits of numbers and words, for bit-blasting (`import BitBlast`; stage 28d).
 --
 -- `Bits.bit n i` is bit `i` of `n` (structural: by halving), and each word operation's
@@ -324,3 +325,98 @@ def Bits.nat_ext : (w a b : Nat) → Nat.lt a (Nat.pow 2 w) = .true → Nat.lt b
 def Bits.word_ext {ω w : Nat} (x y : UIntN w) (h : Bits.eqUpTo (UIntN.toNat x) (UIntN.toNat y) w = .true) : x = y :=
   UIntN.ext x y (Bits.nat_ext w (UIntN.toNat x) (UIntN.toNat y) (UIntN.toNat_lt x) (UIntN.toNat_lt y)
     (Bits.eqUpTo_bits (UIntN.toNat x) (UIntN.toNat y) w h))
+
+-- # Arithmetic (28d, part 2)
+--
+-- ## Division by `m ≥ 1`, and the low and high bits
+
+def Bits.dselG (t : Bool) (y : Nat) : Nat := match t with
+  | .true => .zero
+  | .false => .succ y
+def Bits.divStepG (f n m : Nat) (h : Nat.lt n m = .false) :
+    Nat.divGo (Nat.succ f) n m = Nat.succ (Nat.divGo f (Nat.sub n m) m) :=
+  transp (fun t _ => Bits.dselG t (Nat.divGo f (Nat.sub n m) m) = Nat.succ (Nat.divGo f (Nat.sub n m) m))
+    (refl (Nat.succ (Nat.divGo f (Nat.sub n m) m))) (Eq.symm h)
+-- `m + x < m` is false
+def Bits.not_lt_add : (m x : Nat) → Nat.lt (Nat.add m x) m = .false
+  | .zero, x => Bits.ltz x
+  | .succ m, x => Bits.not_lt_add m x
+def Bits.divGo_small (f r m : Nat) (hr : Nat.lt r m = .true) : Nat.divGo f r m = 0 := match f with
+  | .zero => rfl
+  | .succ f => transp (fun t _ => Bits.dselG t (Nat.divGo f (Nat.sub r m) m) = 0) rfl (Eq.symm hr)
+-- `divGo f (m q + r) m = q` for `r < m`, with fuel `f ≥ q`
+def Bits.divGoG (m r : Nat) (hr : Nat.lt r m = .true) : (q f : Nat) → Nat.le q f = .true → Nat.divGo f (Nat.add (Nat.mul m q) r) m = q
+  | .zero, f, _ => transp (fun t _ => Nat.divGo f t m = 0) (Bits.divGo_small f r m hr) (Eq.symm (nat_ring! m * 0 + r = r))
+  | .succ q, .zero, h => absurd (Sat.contra (Nat.lt q 0) h (Bits.ltz q))
+  | .succ q, .succ f, h =>
+    let e : m * Nat.succ q + r = Nat.add m (m * q + r) := nat_ring! m * Nat.succ q + r = m + (m * q + r);
+    transp (fun t _ => Nat.divGo (Nat.succ f) t m = Nat.succ q)
+      (Eq.trans (Bits.divStepG f (Nat.add m (m * q + r)) m (Bits.not_lt_add m (m * q + r)))
+        (Bits.congr Nat.succ (transp (fun t _ => Nat.divGo f t m = q) (Bits.divGoG m r hr q f h)
+          (Eq.symm (Nat.add_sub_cancel_left m (m * q + r))))))
+      (Eq.symm e)
+
+-- `n = 2 (n / 2) + n % 2`, in natives
+def Bits.ndecomp (n : Nat) : Bits.cons (Nat.isOdd n) (Nat.div n 2) = n :=
+  transp (fun t _ => Bits.cons t (Nat.div n 2) = n)
+    (transp (fun t _ => Bits.cons (Bits.odd n) t = n) (Bits.decomp n) (Eq.symm (Bits.div2 n)))
+    (Eq.symm (Bits.isOdd n))
+def Bits.pos_succ : (m : Nat) → Nat.lt 0 m = .true → m = Nat.succ (Nat.pred m)
+  | .zero, h => absurd h.1
+  | .succ _, _ => rfl
+def Bits.sub_one : (x : Nat) → Nat.sub x 1 = Nat.pred x
+  | .zero => rfl
+  | .succ _ => rfl
+-- `div` and `mod` of `m q + r` by `m`, for `r < m`
+def Bits.le_mq (E q r : Nat) : Nat.le q (Nat.add (Nat.mul (Nat.succ E) q) r) = .true :=
+  transp (fun t _ => Nat.le q t = .true) (Bits.le_add q (E * q + r)) (Eq.symm (nat_ring! Nat.succ E * q + r = q + (E * q + r)))
+def Bits.div_mq (E q r : Nat) (hr : Nat.lt r (Nat.succ E) = .true) : Nat.div (Nat.add (Nat.mul (Nat.succ E) q) r) (Nat.succ E) = q :=
+  Bits.divGoG (Nat.succ E) r hr q (Nat.add (Nat.mul (Nat.succ E) q) r) (Bits.le_mq E q r)
+def Bits.mod_mq (E q r : Nat) (hr : Nat.lt r (Nat.succ E) = .true) : Nat.mod (Nat.add (Nat.mul (Nat.succ E) q) r) (Nat.succ E) = r :=
+  transp (fun t _ => Nat.sub (Nat.add (Nat.mul (Nat.succ E) q) r) (Nat.mul (Nat.succ E) t) = r)
+    (Nat.add_sub_cancel_left (Nat.mul (Nat.succ E) q) r) (Eq.symm (Bits.div_mq E q r hr))
+
+-- the low `w` bits and the rest
+def Bits.low : Nat → Nat → Nat
+  | .zero, _ => 0
+  | .succ w, n => Bits.cons (Nat.isOdd n) (Bits.low w (Nat.div n 2))
+def Bits.high : Nat → Nat → Nat
+  | .zero, n => n
+  | .succ w, n => Bits.high w (Nat.div n 2)
+def Bits.cons_add : (c : Bool) → (X Y : Nat) → Bits.cons c (Nat.add X Y) = Nat.add (Nat.mul 2 X) (Bits.cons c Y)
+  | .true, X, Y => nat_ring! Nat.succ (2 * (X + Y)) = 2 * X + Nat.succ (2 * Y)
+  | .false, X, Y => nat_ring! 2 * (X + Y) = 2 * X + 2 * Y
+def Bits.split : (w n : Nat) → n = Nat.add (Nat.mul (Nat.pow 2 w) (Bits.high w n)) (Bits.low w n)
+  | .zero, n => nat_ring! n = 1 * n + 0
+  | .succ w, n =>
+    let ih := Bits.split w (Nat.div n 2);
+    let P := Nat.pow 2 w;
+    let H := Bits.high w (Nat.div n 2);
+    let L := Bits.low w (Nat.div n 2);
+    Eq.trans (Eq.symm (Bits.ndecomp n))
+      (Eq.trans (Bits.congr (Bits.cons (Nat.isOdd n)) ih)
+        (Eq.trans (Bits.cons_add (Nat.isOdd n) (Nat.mul P H) L)
+          (Bits.congr (fun t => Nat.add t (Bits.cons (Nat.isOdd n) L)) (nat_ring! 2 * (P * H) = 2 * P * H))))
+def Bits.cons_le_ss : (c : Bool) → (L : Nat) → Nat.le (Nat.succ (Bits.cons c L)) (Nat.succ (Nat.succ (Nat.mul 2 L))) = .true
+  | .true, L => Bits.le_refl (Nat.mul 2 L)
+  | .false, L => Bits.le_succ_r (Nat.mul 2 L) (Nat.mul 2 L) (Bits.le_refl (Nat.mul 2 L))
+def Bits.cons_lt (c : Bool) (L P : Nat) (h : Nat.lt L P = .true) : Nat.lt (Bits.cons c L) (Nat.mul 2 P) = .true :=
+  Bits.le_trans (Nat.succ (Bits.cons c L)) (Nat.succ (Nat.succ (Nat.mul 2 L))) (Nat.mul 2 P) (Bits.cons_le_ss c L)
+    (@Bits.le_congr (Nat.mul 2 (Nat.succ L)) (Nat.succ (Nat.succ (Nat.mul 2 L))) (Nat.mul 2 P) (Nat.mul 2 P)
+      (Bits.mul2_succ L) (refl (Nat.mul 2 P)) (Bits.le2 (Nat.succ L) P h))
+def Bits.low_lt : (w n : Nat) → Nat.lt (Bits.low w n) (Nat.pow 2 w) = .true
+  | .zero, _ => rfl
+  | .succ w, n => Bits.cons_lt (Nat.isOdd n) (Bits.low w (Nat.div n 2)) (Nat.pow 2 w) (Bits.low_lt w (Nat.div n 2))
+def Bits.low_bit : (w n i : Nat) → Nat.lt i w = .true → Bits.bit (Bits.low w n) i = Bits.bit n i
+  | .zero, _, i, h => absurd (Sat.contra (Nat.lt i 0) h (Bits.ltz i))
+  | .succ w, n, .zero, _ => Bits.bit_cons0 (Nat.isOdd n) (Bits.low w (Nat.div n 2))
+  | .succ w, n, .succ i, h => Eq.trans (Bits.bit_consS (Nat.isOdd n) (Bits.low w (Nat.div n 2)) i) (Bits.low_bit w (Nat.div n 2) i h)
+-- `n mod 2^w` is the low `w` bits
+def Bits.mod_pow (w n : Nat) : Nat.mod n (Nat.pow 2 w) = Bits.low w n :=
+  let P := Nat.pow 2 w;
+  let e := Bits.pos_succ P (Word.pow_pos w);
+  let r : Nat.mod (Nat.add (Nat.mul (Nat.succ (Nat.pred P)) (Bits.high w n)) (Bits.low w n)) (Nat.succ (Nat.pred P)) = Bits.low w n :=
+    Bits.mod_mq (Nat.pred P) (Bits.high w n) (Bits.low w n) (transp (fun t _ => Nat.lt (Bits.low w n) t = .true) (Bits.low_lt w n) e);
+  let r2 : Nat.mod (Nat.add (Nat.mul P (Bits.high w n)) (Bits.low w n)) P = Bits.low w n :=
+    transp (fun t _ => Nat.mod (Nat.add (Nat.mul t (Bits.high w n)) (Bits.low w n)) t = Bits.low w n) r (Eq.symm e);
+  transp (fun t _ => Nat.mod t P = Bits.low w n) r2 (Eq.symm (Bits.split w n))
