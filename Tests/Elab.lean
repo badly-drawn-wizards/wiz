@@ -7150,7 +7150,7 @@ def regionsGroup : Group where
         -- Objects allocated without the scope / with one / with two nested (before: 3 15
         -- 29), and lifted decls (before: 8 23).
         checkEq "3 4 6" s!"{← libsAllocs s "t0"} {← libsAllocs s "t1"} {← libsAllocs s "t2"}"
-        checkEq "1 1" s!"{(← libsIR s "scoped").length} {(← libsIR s "nested").length}"
+        checkEq "1 1" s!"{(← libsIR s "scoped").length} {(← libsIR s "nested").length}" }
   ]
 
 
