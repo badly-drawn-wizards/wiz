@@ -4734,7 +4734,8 @@ def selfHostGroup : Group where
           (infer (R := ZeroOneMany) { globals := g } (Mark.infer (R := ZeroOneMany) { globals := g } t.toTerm).1).toBool
         for (n, t, _, okG) in samples do
           unless ground t == okG do throw (IO.userError s!"{n}: the Lean kernel's fast path says {ground t}, expected {okG}")
-        let okV := "def okVerdict (t : Tm) : String := match infer (TCtx.inProof empty) t with\n  | .err _ => \"error\"\n  | .ok _ _ => match infer empty (MR.tm (markInfer empty t)) with\n    | .ok _ _ => \"ok\"\n    | .err _ => \"error\"\n"
+        -- (mandatory sorts: the holes `MTm` writes are filled by the sorts pass first)
+        let okV := "def okVerdict (t0 : Tm) : String := match infer (TCtx.inProof empty) (sortsInfer t0) with\n  | .err _ => \"error\"\n  | .ok _ _ => match infer empty (MR.tm (markInfer empty (sortsInfer t0))) with\n    | .ok _ _ => \"ok\"\n    | .err _ => \"error\"\n"
         let calls := samples.map fun (_, t, _, _) => s!"(okVerdict {t.toWiz})"
         let printAll := "def printAll : List String → IO Unit\n  | .nil => IO.pure ()\n  | .cons s ss => do\n    IO.println s;\n    printAll ss\n"
         ioRun (kernel ++ "\n" ++ wizVerdict ++ okV ++ printAll ++ s!"def main : IO Unit := printAll {wizList calls}\n")
