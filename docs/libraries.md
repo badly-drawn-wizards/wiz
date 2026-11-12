@@ -206,10 +206,12 @@ it for every input of the domain, and `allBelow_sound` turns that into a `∀`.
 | smooth-min table | entry i = (4i)²/256 (i ≤ 16), else 0 | all 32 | kernel |
 | smooth-min correction by e = abs(d₂ − d₁) | g = max(64 − e, 0), c ≤ g²/256 < c + 2 | e < 64 | kernel |
 | | | all 2¹² | native |
-| smooth minimum (`sminK`) | `min(d₁, d₂) − c − 1`, c as above | d₁, d₂ ∈ [−64, 960) (the march's) | native |
+| smooth minimum (`sminK`) | `min(d₁, d₂) − c − 1`, c as above | d₁, d₂ ∈ [−64, 192) | native |
+| | | d₁, d₂ ∈ [−64, 960) (the march's) | native, on demand |
 | octagonal length (`norm2`), its 11/16 | 16t ≤ 11s < 16t + 38 | s < 2048 (a, c < 1024) | kernel |
 | | | all 2¹² | native |
-| octagonal length | n² ≤ a² + c² ≤ 1.21 (n + 2)² | a, c < 1024 | native |
+| octagonal length | n² ≤ a² + c² ≤ 1.21 (n + 2)² | a, c < 256 | native |
+| | | a, c < 1024 | native, on demand |
 
 Two structure lemmas tie the 24-bit units to the kernel-checked pieces by definition
 (`rfl`): `sminK_eq` (the smooth minimum is `smin12 − c(abs(d₂ − d₁)) − 1`) and `norm2_eq`
@@ -219,7 +221,9 @@ Two structure lemmas tie the 24-bit units to the kernel-checked pieces by defini
 **Trust.** `examples/hdl-verified.wiz` is kernel-checked, nothing trusted.
 `examples/hdl-verified-native.wiz` uses `native_refl` (27a): with `--trust-native` only,
 one axiom per check (`#print axioms` lists it), trusting erasure and the interpreter.
-Both run in the test group *hdl-verified* (a heavy shard: minutes).
+Both run in the test group *hdl-verified* (a heavy shard: minutes). The two 2²⁰-input
+checks (about ten minutes) are `examples/hdl-verified-full.wiz`, run on demand:
+`wiz check --trust-native examples/hdl-verified-full.wiz`.
 
 **What was hard (findings).** `sat_decide` (28b/28c, PRs #197/#208) was meant to do the word-level
 units, but: (F1) it is Boolean only, and nothing bit-blasts `UIntN`/`BitVec` (the bit

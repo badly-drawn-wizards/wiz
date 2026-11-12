@@ -221,13 +221,13 @@ def Hv.corrOk (e : Nat) : Bool :=
   Bool.and (Nat.beq (@sminG HwTy.El _ w).toNat g)
     (Bool.and (Nat.le (256 * c) (g * g)) (Nat.lt (g * g) (256 * (c + 2))))
 
--- the whole smooth minimum, for distances d₁, d₂ in [-64, 960) (the march's: a ball's
--- distance is at least −R = −48 and at most about 770 units; 12-bit two's complement,
--- here as D = d + 2048, k = 1024 (D₁ − 1984) + (D₂ − 1984)): the result, as
--- O = out + 2048, is min(D₁, D₂) − c − 1 with c as in `corrOk`
-def Hv.sminOk (k : Nat) : Bool :=
-  let D1 := Nat.div k 1024 + 1984;
-  let D2 := Nat.mod k 1024 + 1984;
+-- the whole smooth minimum, for distances d₁, d₂ in [-64, w − 64) (w = 1024 covers the
+-- march's: a ball's distance is at least −R = −48 and at most about 770 units; 12-bit
+-- two's complement, here as D = d + 2048, k = w (D₁ − 1984) + (D₂ − 1984)): the result,
+-- as O = out + 2048, is min(D₁, D₂) − c − 1 with c as in `corrOk`
+def Hv.sminOk (w k : Nat) : Bool :=
+  let D1 := Nat.div k w + 1984;
+  let D2 := Nat.mod k w + 1984;
   let out := @sminK HwTy.El _ (BitVec.ofNat 12 (D1 + 2048)) (BitVec.ofNat 12 (D2 + 2048));
   let O := Nat.mod (out.toNat + 2048) 4096;
   let m := Hv.minN D1 D2;
@@ -237,11 +237,11 @@ def Hv.sminOk (k : Nat) : Bool :=
     | .false => 0;
   let c := m - 1 - O;
   Bool.and (Nat.lt O m) (Bool.and (Nat.le (256 * c) (g * g)) (Nat.lt (g * g) (256 * (c + 2))))
--- the length estimate, for a, c < 1024 (k = 1024 a + c): from below, n² ≤ a² + c², and
+-- the length estimate, for a, c < w ≤ 1024 (k = w a + c): from below, n² ≤ a² + c², and
 -- |(a, c)| ≤ 1.1 (n + 2)
-def Hv.normOk (k : Nat) : Bool :=
-  let a := Nat.div k 1024;
-  let c := Nat.mod k 1024;
+def Hv.normOk (w k : Nat) : Bool :=
+  let a := Nat.div k w;
+  let c := Nat.mod k w;
   let n := (@norm2 HwTy.El _ (BitVec.ofNat 12 a) (BitVec.ofNat 12 c)).toNat;
   let l := a * a + c * c;
   Bool.and (Nat.le (n * n) l) (Nat.le (100 * l) (121 * ((n + 2) * (n + 2))))

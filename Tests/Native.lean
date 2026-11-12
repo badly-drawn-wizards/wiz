@@ -225,7 +225,8 @@ def group : Group where
 
 /-- H14 V1 (docs/libraries.md): the OLED demo's arithmetic units, against their Nat
 definitions. Slow (minutes: kernel evaluation over every input of each unit's domain,
-and native_refl over 2^20 inputs), so a group of its own, in a heavy shard. -/
+and native_refl), so a group of its own, in a heavy shard. The 2^20-input checks,
+examples/hdl-verified-full.wiz, are run on demand only. -/
 def hdlVerifiedGroup : Group where
   name := "hdl-verified"
   exercise := "—"
@@ -239,9 +240,9 @@ def hdlVerifiedGroup : Group where
         let ms ← msgs (← IO.FS.readFile "examples/hdl-verified-native.wiz")
         noErrors ms
         expect ms "root_full is accepted on the strength of native evaluation"
-        expect ms "norm_full is accepted on the strength of native evaluation"
-        expect ms "smin_full is accepted on the strength of native evaluation"
-        expect ms "'smin_full' depends on axioms: [smin_full.native✝" } ]
+        expect ms "norm_256 is accepted on the strength of native evaluation"
+        expect ms "smin_256 is accepted on the strength of native evaluation"
+        expect ms "'smin_256' depends on axioms: [smin_256.native✝" } ]
 
 def groups : List Group := [group, hdlVerifiedGroup]
 
