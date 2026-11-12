@@ -49,7 +49,9 @@ runtime (`runtime/wiz.c`), which needs GMP; programs from the self-hosted compil
 need the Boehm GC. The release toolchains (what tower installs) bring all of that in
 `share/wiz/cc` (docs/stages/26-tower.md, 26f): clang, a glibc 2.27 sysroot, and GMP and the
 GC as static libraries (the bundled clang needs glibc 2.30 or later; programs it builds
-need glibc 2.27 or later and nothing else). A checkout uses `cc` and the system's GMP unless you pass
+need glibc 2.27 or later and nothing else), and CaDiCaL, a SAT solver that writes LRAT
+proofs (the Lean toolchain's copy, MIT licence, in `share/wiz/cc/LICENSES/lean4-LICENSES`
+with Lean's third-party licences; z3 is not bundled). A checkout uses `cc` and the system's GMP unless you pass
 `--cc`/`--cflags`/`--ldflags` (the Nix dev shell writes them to `grail.local.wiz`).
 
 **Licences of what is linked into your programs.** The Wiz Runtime Library Exception
@@ -137,10 +139,11 @@ cached between runs.
   If a shard stays over the limit after the refresh, raise its `"split"` or make it a
   split shard. `scripts/ci.py plan` shows the predicted parts. One case longer than the
   limit cannot be split: `grail-selfhost` is one case of about 3.5 min.
-* **The exercise tree** (the `exercise tree` job) is generated with
-  `scripts/mkexercises.py` into a temporary directory and built (`lake build wiz grail
-  tests`), with a Lake cache of its own; it runs beside the test shards. It does not run
-  the exercise tree's tests (almost all of them fail by design). See
+* **The exercise tree** is checked only for a release tag: the `exercise tree` job of
+  `release.yml` generates it with `scripts/mkexercises.py` into a temporary directory
+  and builds it (`lake build wiz grail tests`), and the tarball job (which publishes)
+  waits for it. Pull requests and master pushes don't build it. It does not run the
+  exercise tree's tests (almost all of them fail by design). See
   [exercises.md](exercises.md).
 * **The bootstrap fixpoint** (`scripts/fixpoint.sh`: the stage-1 C of the toolchain
   equals its stage-2 C) runs weekly on `master`, or from "Run workflow" with
