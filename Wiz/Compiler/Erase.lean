@@ -646,6 +646,13 @@ partial def eraseCheck (ctx : Ctx R) (t : Term R) (ty : VTy R) (inDesc : Bool :=
     let v' ← if p.isErased then pure .erased else eraseCheck ctx v vTy
     let b' ← eraseCheck (ctx.define x p vTy (ctx.eval v)) b ty inDesc
     return .letE x v' b'
+  -- (linear-case stage 2) `let () := u; b`: `u` is evaluated, then `b` (a strict `let`
+  -- whose variable `b` doesn't use; never dropped as dead code: `u` is a call, not a
+  -- pure value, unless it is `()` itself)
+  | .letUnit u b, _ => do
+    let u' ← if u matches .tt then pure .erased else pure (← eraseInfer ctx u).1
+    let b' ← eraseCheck ctx b ty inDesc
+    return .letE "_" u' (b'.lift 1 0)
   -- the type is known (and not erasable), so don't infer the whole application again
   | .app .., _ => match unfoldCases? g t with
     | some t' => eraseCheck ctx t' ty inDesc
@@ -699,7 +706,7 @@ partial def eraseInfer (ctx : Ctx R) (t : Term R) (known : Option (VTy R) := non
       | some t' => pure (← eraseInfer ctx t' ty inDesc).1
       | none => pure (← eraseSpine ctx t).1
     | .ann tm ty' => eraseCheck ctx tm (ctx.eval ty') inDesc
-    | .letE .. => eraseCheck ctx t ty inDesc
+    | .letE .. | .letUnit .. => eraseCheck ctx t ty inDesc
     | .fst p => do
       let (p', pty) ← eraseInfer ctx p
       pure (if unboxedSigma g ctx.lvl pty then p' else .proj 0 p')

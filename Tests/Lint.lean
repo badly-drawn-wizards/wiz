@@ -202,6 +202,7 @@ def termTable : List TermRow := [
   ⟨"tt", [], 0, fun _ _ => .tt⟩,
   ⟨"empty", [], 1, fun _ l => .empty (l 0)⟩,
   ⟨"absurd", [0, 0], 0, fun c _ => .absurd (c 0) (c 1)⟩,
+  ⟨"letUnit", [0, 0], 0, fun c _ => .letUnit (c 0) (c 1)⟩,
   ⟨"eq", [0, 0, 0], 0, fun c _ => .eq (c 0) (c 1) (c 2)⟩,
   ⟨"eqTy", [0, 0], 0, fun c _ => .eqTy (c 0) (c 1)⟩,
   ⟨"refl", [0, 0], 0, fun c _ => .refl (c 0) (c 1)⟩,
@@ -345,7 +346,8 @@ def evalDrops : List (String × Nat × String) := [
   ("letE", 0, "a let's quantity is not part of its value"),
   ("letE", 1, "a let's type annotation is not part of its value"),
   ("letE", 2, "a let's value is reached through the body's variable (the witness body does not use it)"),
-  ("ann", 1, "an annotation is not part of the value")]
+  ("ann", 1, "an annotation is not part of the value"),
+  ("letUnit", 0, "η for Unit: the eliminator is its body (its scrutinee is evaluated by compiled code only)")]
 
 /-- The children that read-back erases when `quoteErasesProofs` (the kernel's own
 comparisons, `sameVal`): the proof positions the syntax marks (P2). -/
@@ -837,7 +839,8 @@ def wizFns : List WizFn := [
   { fn := "eval", ty := "Tm", arg := 1,
     exempt := closedConst "a constant's type is not part of its value" ++ [
       ("letE", "ty", "a let's type is not part of its value"), ("letq", "ty", "as letE"),
-      ("ann", "ty", "an annotation is not part of the value")] },
+      ("ann", "ty", "an annotation is not part of the value"),
+      ("letUnit", "u", "η for Unit: the eliminator is its body (its scrutinee is evaluated by compiled code only)")] },
   { fn := "forceSp", ty := "Spine", arg := 1,
     pending := some "`| v, _ => v` drops ecase/delim/ind/sfix/scase/out from a suspended proof's spine when it is read back (display only today; audit review C-3; prf-conv rewrites this function)" },
   { fn := "fromAbsurd", ty := "Spine", arg := 0,

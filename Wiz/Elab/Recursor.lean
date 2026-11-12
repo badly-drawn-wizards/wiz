@@ -112,7 +112,7 @@ quantity 1, `(1 x : T Δ ξ)`. Its body is the case at quantity 1 (`scase_1`, K1
 hands the payload over at 1, and takes the payload apart with `split`s at 1 instead of
 projections (a projection uses its pair ω times): the tag comes out at `1·ω`, each field
 at `1·q` (its declared quantity, as the method takes it), the index equation at 0, and
-the final `Unit` goes unused (K2a). -/
+the final `Unit` is consumed by the unit eliminator `let () := u; …`. -/
 def mkRecursor (g : Globals R) (T : Name) (ctors : List Name) (withIH : Bool) (sized : Bool := false)
     (nondep : Bool := false) (additive : Bool := false) (linear : Bool := false) : Except String (Decl R) := do
   let additive := additive || linear
@@ -319,13 +319,16 @@ def mkRecursor (g : Globals R) (T : Name) (ctors : List Name) (withIH : Bool) (s
           else
           -- (casesOn1) `let 1 (f₁, r₁) := rest; …; let 1 (e, u) := rₙ; m 'c f…`: the
           -- `k`-th split's motive is the goal with the payload rebuilt from the fields so
-          -- far and the remainder `z`; `u : Unit` is left unused (K2a)
+          -- far and the remainder `z`; the final `u : Unit` is consumed by `let () := u`
           let goalWith (pay : B R) : B R := motApp mot (unpack i ++ [conAt i (pair tag pay)])
           let rec chain (k : Nat) (cur : B R) (acc : List (B R)) : B R :=
             B.split (qlit 1) cur (fun z => goalWith (acc.foldr pair z)) fun f r' =>
               if k < n then chain (k + 1) r' (acc ++ [f])
               else
-                -- `f` is the equation `e`, `r'` the final `()`
+                -- `f` is the equation `e`, `r'` the final `()`, consumed by the unit
+                -- eliminator `let () := r'; …`
+                let consume (body : B R) : B R := fun d => .letUnit (r' d) (body d)
+                consume <|
                 let rawFs := acc
                 let fs : List (B R) := rawFs.zipIdx.map fun (f, k) => fun d => (lifts[k]?.getD .none).unwrap (f d)
                 let σ := Δv ++ fs.toArray

@@ -467,21 +467,21 @@ compare by equivalence. What this costs, and why:
 ## 4h: linear case analysis
 
 A value of an inductive type held at quantity 1 can be taken apart (linear-case stage 2;
-design in `wiz-notes/linear-case-design.md`, K1 and K2a; rules and soundness argument in
+design in `wiz-notes/linear-case-design.md`, K1 and the unit eliminator (K2a withdrawn); rules and soundness argument in
 `docs/CoreSpec.md` §10.2 and §10.2a).
 
 * **K1, `scase` at a quantity.** `Term.scase` carries a quantity `q`. The method runs once
   and receives the payload at `q`; the scrutinee is used `q` times (`U_m + q·U_x`). At ω
   this is the old case; at 1 a linear value is taken apart; at 0 the scrutinee is erased
   and the method can't branch on it. Both kernels (`Check.lean`, `Kernel.wiz`).
-* **K2a, unit-shaped binders.** A variable whose type is `Unit`, or `(0 x : D) → … →
-  Unit` written as such (not a global that unfolds to one), may go unused at any
-  quantity. A constructor payload's final `Unit` and a structure's marker tail are of
-  this shape, so `let 1 ⟨a, b⟩ := s` on a structure now checks. A token type (an
-  axiom, a definition of `Unit`, a field-less structure) is never exempt.
+* **The unit eliminator** `let () := u; b` consumes a `u : Unit` (its usage counts once)
+  and is compiled as "evaluate `u`, then `b`". It is the only way a linear `Unit` is
+  used up. (K2a, "a unit-shaped binder may go unused", was implemented and withdrawn:
+  a closure of a unit-shaped type can hold a resource; `docs/CoreSpec.md` §10.2a lists
+  the counterexamples.)
 * **`T.casesOn1`**, generated for every inductive next to `T.casesOnA`: the additive case
   with the scrutinee at 1, built on `scase` at 1 and `split`s at 1 (fields come out at
-  their declared quantities). `match` uses it when the scrutinee mentions a variable
+  their declared quantities), ending in `let () := u` for the payload's final `Unit`. `match` uses it when the scrutinee mentions a variable
   bound at 1 (the scrutinee is then bound at 1 too), and a field bound at 1 is linear
   again for a nested match.
 
@@ -495,5 +495,6 @@ def rebuild (1 r : Res1 Tok) : Res1 Tok := match r with
 ```
 
 A field that holds a resource must be declared at 1 (`1 val : S`): an ω field puts its
-value in an ω position. Tests: the group `linear-case`, and `linearCaseRule` (both
+value in an ω position. A *structure* held at 1 still can't be taken apart (its marker
+tail can't be consumed); linear data is a one-constructor `inductive`. Tests: the group `linear-case`, and `linearCaseRule` (both
 kernels) in the self-hosted group.
