@@ -280,16 +280,21 @@ def HwTy.El.resetToAt : (ω t : HwTy) → HwTy.El HwTy.bit → HwTy.El t → HwT
   | .mem _ _, c, v, x => x
 def HwTy.El.resetTo {ω t : HwTy} (c : HwTy.El HwTy.bit) (v : HwTy.El t) (x : HwTy.El t) : HwTy.El t :=
   HwTy.El.resetToAt t c v x
--- one word of a memory, if written: `d` where the write is enabled and hits, else `old`
-def Hdl.memUpd {A : Type} : Bool → Bool → A → A → A
-  | .true, .true, d, old => d
-  | .true, .false, d, old => old
-  | .false, hit, d, old => old
+-- `d` at a hit, else `old`
+def Hdl.memPick {A : Type} : Bool → A → A → A
+  | .true, d, old => d
+  | .false, d, old => old
+-- A write: a disabled one is the memory itself, so that a simulation does not wrap the
+-- memory in one more function per cycle (a read would cost the number of cycles so far,
+-- not the number of writes).
+def Hdl.memWr {aw dw : Nat} : Bool → (BitVec aw → BitVec dw) → BitVec aw → BitVec dw → (BitVec aw → BitVec dw)
+  | .false, m, a, d => m
+  | .true, m, a, d => fun (b : BitVec aw) => Hdl.memPick (BitVec.beq a b) d (m b)
 def HwTy.El.memRead {0 aw : Nat} {ω dw : Nat} (m : HwTy.El (HwTy.mem aw dw)) (a : HwTy.El (HwTy.bits aw)) : HwTy.El (HwTy.bits dw) :=
   (m : BitVec aw → BitVec dw) a
 def HwTy.El.memWrite {0 aw : Nat} {ω dw : Nat} (m : HwTy.El (HwTy.mem aw dw)) (we : HwTy.El HwTy.bit) (a : HwTy.El (HwTy.bits aw))
     (d : HwTy.El (HwTy.bits dw)) : HwTy.El (HwTy.mem aw dw) :=
-  fun (b : BitVec aw) => Hdl.memUpd (BitVec.isTrue (we : BitVec 1)) (BitVec.beq (a : BitVec aw) b) (d : BitVec dw) ((m : BitVec aw → BitVec dw) b)
+  Hdl.memWr (BitVec.isTrue (we : BitVec 1)) (m : BitVec aw → BitVec dw) (a : BitVec aw) (d : BitVec dw)
 
 instance : Hw HwTy.El where
   lit := fun n k => BitVec.ofNat n k
@@ -1252,18 +1257,18 @@ def Circuit.stepEl_withEnable {i o : HwTy} (c : Circuit i o) (s : HwTy.El c.st) 
   refl (Circuit.stepEl (Circuit.withEnable c) s (en, x))
 
 -- memories at values: a read sees an enabled write to its address, and nothing else
-def Hdl.memUpd_miss {A : Type} : (we : Bool) → (d old : A) → Hdl.memUpd we .false d old = old
-  | .true, d, old => rfl
-  | .false, d, old => rfl
+def Hdl.memWr_miss {aw dw : Nat} (m : BitVec aw → BitVec dw) (a : BitVec aw) (d : BitVec dw) (b : BitVec aw)
+    (h : BitVec.beq a b = .false) : (we : Bool) → Hdl.memWr we m a d b = m b
+  | .false => rfl
+  | .true => Eq.substProp (fun (hit : Bool) => Hdl.memPick hit d (m b) = m b) (Eq.symm h) rfl
 def HwTy.El.memRead_write_miss {aw dw : Nat} (m : HwTy.El (HwTy.mem aw dw)) (we : HwTy.El HwTy.bit) (a : HwTy.El (HwTy.bits aw))
     (d : HwTy.El (HwTy.bits dw)) (b : HwTy.El (HwTy.bits aw)) (h : BitVec.beq (a : BitVec aw) b = .false) :
     HwTy.El.memRead (HwTy.El.memWrite m we a d) b = HwTy.El.memRead m b :=
-  Eq.substProp (fun (hit : Bool) => Hdl.memUpd (BitVec.isTrue (we : BitVec 1)) hit (d : BitVec dw) ((m : BitVec aw → BitVec dw) b) = (m : BitVec aw → BitVec dw) b)
-    (Eq.symm h) (Hdl.memUpd_miss (BitVec.isTrue (we : BitVec 1)) (d : BitVec dw) ((m : BitVec aw → BitVec dw) b))
+  Hdl.memWr_miss (m : BitVec aw → BitVec dw) (a : BitVec aw) (d : BitVec dw) b h (BitVec.isTrue (we : BitVec 1))
 def HwTy.El.memRead_write_hit {aw dw : Nat} (m : HwTy.El (HwTy.mem aw dw)) (a : HwTy.El (HwTy.bits aw))
     (d : HwTy.El (HwTy.bits dw)) (b : HwTy.El (HwTy.bits aw)) (h : BitVec.beq (a : BitVec aw) b = .true) :
     HwTy.El.memRead (HwTy.El.memWrite m (BitVec.ofNat 1 1) a d) b = d :=
-  Eq.substProp (fun (hit : Bool) => Hdl.memUpd .true hit (d : BitVec dw) ((m : BitVec aw → BitVec dw) b) = d) (Eq.symm h) rfl
+  Eq.substProp (fun (hit : Bool) => Hdl.memPick hit (d : BitVec dw) ((m : BitVec aw → BitVec dw) b) = d) (Eq.symm h) rfl
 def HwTy.El.memRead_write_off {aw dw : Nat} (m : HwTy.El (HwTy.mem aw dw)) (a : HwTy.El (HwTy.bits aw))
     (d : HwTy.El (HwTy.bits dw)) (b : HwTy.El (HwTy.bits aw)) :
     HwTy.El.memRead (HwTy.El.memWrite m (BitVec.ofNat 1 0) a d) b = HwTy.El.memRead m b := rfl
