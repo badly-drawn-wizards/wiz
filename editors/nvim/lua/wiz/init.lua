@@ -21,6 +21,9 @@ local function buffer_maps(buf)
   end
   map('n', '<LocalLeader>i', require('wiz.infoview').toggle, 'toggle the infoview')
   map('n', '<LocalLeader>r', require('wiz.infoview').refresh, 'refresh the infoview')
+  map('n', '<LocalLeader>b', function()
+    require('wiz.infoview').open_browser(buf)
+  end, 'open the infoview in a browser')
   map('n', '<LocalLeader>\\', '<Cmd>WizAbbrev<CR>', 'how to type the character under the cursor')
 end
 

@@ -2,11 +2,12 @@
 # A release tarball of the Wiz toolchain (stage 26d): what `tower` installs from GitHub
 # Releases, and what you can untar by hand.
 #
-#   scripts/release-tarball.sh OUT.tar.gz [BINDIR] [REVISION] [CCDIR]
+#   scripts/release-tarball.sh OUT.tar.gz [BINDIR] [REVISION] [CCDIR] [WEBDIR]
 #
 # BINDIR (default .lake/build/bin) holds the built wiz, grail and tower; the standard
 # library, the nvim plugin and the docs come from this checkout. CCDIR is the C toolchain
-# made by scripts/bundle-cc.sh (stage 26f; the release job passes it). The tarball is one
+# made by scripts/bundle-cc.sh (stage 26f; the release job passes it); WEBDIR the web
+# infoview built by web/build.sh (11w: `wiz lsp` serves it). The tarball is one
 # directory, wiz-ARCH-linux/:
 #
 #   bin/wiz, bin/grail       wrappers: the binary with -I share/wiz/lib (no other flags:
@@ -17,7 +18,13 @@
 #   share/wiz/.lake/build/bin/{wiz,grail}   the binaries (grail finds lib/ from there)
 #   share/wiz/editors/       the editor plugins, when the checkout has them
 #   share/wiz/cc/            the C compiler, glibc 2.27 sysroot, static GMP and GC (CCDIR)
+#   share/wiz/web/           the web infoview: page, script, Wasm (WEBDIR)
 #   share/wiz/REVISION       the commit
+#   share/wiz/LICENSE, COPYING.RUNTIME, NOTICE   Wiz's licence, the runtime exception,
+#                            and what third-party code is in the toolchain
+#                            (scripts/release-licenses/NOTICE, beside this script)
+#   share/wiz/LICENSES/      third-party licence texts: Lean's (lean --print-prefix, when
+#                            there is a lean) and scripts/release-licenses/*-LICENSE
 #   share/wiz/TOOLCHAIN      a marker: editors find the toolchain a library file belongs to
 #
 # OUT.tar.gz.sha256 is written next to it.
@@ -26,6 +33,7 @@ out=$1
 bindir=${2:-.lake/build/bin}
 rev=${3:-$(git rev-parse HEAD 2>/dev/null || echo unknown)}
 ccdir=${4:-}
+webdir=${5:-}
 arch=$(uname -m)
 name=wiz-$arch-linux
 work=$(mktemp -d)
@@ -39,7 +47,29 @@ done
 cp -R lib "$top/share/wiz/lib"
 [ -d editors ] && cp -R editors "$top/share/wiz/editors"
 echo "$rev" > "$top/share/wiz/REVISION"
+# (the licence files come from this script's directory: the release job runs the
+# current scripts on an older commit too)
+lic=$(cd "$(dirname "$0")" && pwd)/release-licenses
+for f in LICENSE COPYING.RUNTIME; do [ -f "$f" ] && cp "$f" "$top/share/wiz/"; done
+cp "$lic/NOTICE" "$top/share/wiz/NOTICE"
+mkdir -p "$top/share/wiz/LICENSES"
+cp "$lic/"*-LICENSE "$top/share/wiz/LICENSES/"
+if lean=$(lean --print-prefix 2>/dev/null) && [ -f "$lean/LICENSE" ]; then
+  cp "$lean/LICENSE" "$top/share/wiz/LICENSES/lean4-LICENSE"
+  [ -f "$lean/LICENSES" ] && cp "$lean/LICENSES" "$top/share/wiz/LICENSES/lean4-third-party"
+else
+  echo "release-tarball: no lean on PATH: Lean's licence texts are not in the tarball" >&2
+fi
 [ -n "$ccdir" ] && cp -R "$ccdir" "$top/share/wiz/cc"
+if [ -n "$webdir" ]; then
+  mkdir -p "$top/share/wiz/web"
+  # (11s) tagged.js is shared by the infoview and the documentation's pages (`wiz doc`,
+  # which also copies scroll.*); a web dir from before 11s has none of them
+  for f in infoview.html infoview.js wiz-infoview.mjs wiz-infoview.wasm; do cp "$webdir/$f" "$top/share/wiz/web/$f"; done
+  for f in tagged.js scroll.js scroll-search.js scroll.css; do
+    if [ -f "$webdir/$f" ]; then cp "$webdir/$f" "$top/share/wiz/web/$f"; fi
+  done
+fi
 echo 'A Wiz toolchain: lib/ is its standard library, .lake/build/bin/ its binaries, ../../bin/ its commands (editors use this file to find them).' > "$top/share/wiz/TOOLCHAIN"
 cat > "$top/bin/wiz" <<'EOF'
 #!/bin/sh

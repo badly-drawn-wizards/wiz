@@ -1,6 +1,7 @@
 import Wiz.Elab.Command
 import Wiz.Module
 import Wiz.Rig.Instances
+import Wiz.Parser.DocComment
 
 /-!
 # The frontend
@@ -75,8 +76,14 @@ partial def isoKey (base : CommandState R) (m : Name) : Option UInt64 := do
   unless base.pristine && base.globals.order.isEmpty && base.imported.isEmpty && base.infos.isEmpty do none
   let g := base.globals
   -- (every option of `Globals` that a module's state depends on or carries)
+  -- (and every field of `Globals` that is not data checked empty above: the kept state
+  -- carries them to the importer, `pp.notation` included)
+  unless g.decls.isEmpty && g.privates.isEmpty && g.opaques.isEmpty && g.declModule.isEmpty do none
+  let ppKeys (m : List Name) : List Name := m.mergeSort (fun a b => decide (a ≤ b))
   let settings := hash (base.termInfo, base.nextScope, g.eager, g.predicativeProp, toString (repr g.regularity),
     toString (repr g.inertReg), g.builtins, g.unboxStructs, g.lazyProofs)
+  let settings := mixHash settings (hash (g.assumed, g.quoteErasesProofs, g.pushCalls, g.strictPrivacy, g.module,
+    g.pp.useNotation, ppKeys (g.pp.unexpanders.toList.map (·.1)), ppKeys (g.pp.formats.toList.map (·.1))))
   let (k, _) ← go [] m {}
   pure (mixHash settings k)
 where
@@ -96,6 +103,82 @@ where
           let (kn, memo) ← go (m :: stack) n memo
           pure (mixHash k kn, memo)) (k₀, memo)
         pure (k, memo.insert m k)
+
+/-! ## Doc comments (11s) -/
+
+/-- The first identifier among a node's own arguments (a declaration's name). -/
+def Syntax.firstIdent? (stx : Syntax) : Option Name :=
+  stx.args.findSome? (·.getId?)
+
+/-- The nodes of kind `k` in `stx` (not looking inside them). -/
+partial def Syntax.nodesOfKind (k : Name) (stx : Syntax) : Array Syntax :=
+  if stx.isOfKind k then #[stx] else stx.args.foldl (fun acc a => acc ++ a.nodesOfKind k) #[]
+
+/-- Is `n` the declaration written `x` (or its private kernel name)? -/
+def declIs (n x : Name) : Bool := n == x || n.endsWith ("._0." ++ x)
+
+/-- What a command's declarations are, and their doc comments (`docCommentBefore`, at
+the command, a constructor, a field). `added`: the names the command declared, in order.
+A `mutual` block's commands each have their own; `private`, `partial`, `sealed` and
+`local` keep the comment before them. -/
+partial def declDocsOf (chars : Array Char) (cmd : Syntax) (added : Array Name)
+    (m : Std.HashMap Name DeclDoc) : Std.HashMap Name DeclDoc :=
+  let m := (go cmd (docCommentBefore chars cmd.info.start) "" m)
+  -- what is left is the elaborator's own
+  added.foldl (fun m n => if m.contains n then m else m.insert n { kind := "auxiliary" }) m
+where
+  go (c : Syntax) (doc : Option String) (pre : String) (m : Std.HashMap Name DeclDoc) : Std.HashMap Name DeclDoc :=
+    let k := c.kind
+    if k == "command.mutual" then
+      c.args.foldl (fun m a => (a.args.foldl (fun m c => go c (docCommentBefore chars c.info.start) pre m)) m) m
+    else if k == "command.private" || k == "command.sealed" || k == "command.local" || k == "command.partial" then
+      let inner := c.args.back?.getD .missing
+      let word := if k == "command.local" then "" else (k.drop 8).toString ++ " "
+      go inner doc (pre ++ word) m
+    else
+      let kind := match (k.drop 8).toString with
+        | "defEqns" => "def"
+        | "foreignType" => "foreign type"
+        | w => w
+      let primary : Option Name := match c.firstIdent? with
+        | some x => added.find? (declIs · x)
+        | none => if k == "command.instance" then added.find? (!m.contains ·) else none
+      match primary with
+      | none => m
+      | some p =>
+        let m := m.insert p { kind := pre ++ kind, doc, start := c.info.start }
+        -- constructors (`| c …`), and a structure's own (`where mk ::`)
+        let m := (c.nodesOfKind "inductive.ctor").foldl (fun m ctor =>
+          match ctor.firstIdent? with
+          | some x => match added.find? (· == p ++ "." ++ x) with
+            | some n => m.insert n { kind := "constructor", parent := some p, doc := docAt ctor, start := ctor.info.start }
+            | none => m
+          | none => m) m
+        let m := (c.nodesOfKind "structure.where").foldl (fun m w =>
+          match (w.args.findSome? fun a => a.firstIdent?) with
+          | some x => match added.find? (· == p ++ "." ++ x) with
+            | some n => m.insert n { kind := "constructor", parent := some p }
+            | none => m
+          | none => m) m
+        let m := (c.nodesOfKind "structure.field").foldl (fun m f =>
+          match f.firstIdent? with
+          | some x => match added.find? (· == p ++ "." ++ x) with
+            | some n => m.insert n { kind := "field", parent := some p, doc := docAt f, start := f.info.start }
+            | none => m
+          | none => m) m
+        -- a structure's constructor, by default `mk`
+        if (k == "command.structure" || k == "command.class" || k == "command.coinductive") then
+          match added.find? (· == p ++ ".mk") with
+          | some n => if m.contains n then m else m.insert n { kind := "constructor", parent := some p }
+          | none => m
+        else m
+  /-- before the node, or (`| /-- … -/ c`) before its name -/
+  docAt (node : Syntax) : Option String :=
+    match docCommentBefore chars node.info.start with
+    | some d => some d
+    | none => match node.args.find? (·.getId?.isSome) with
+      | some x => docCommentBefore chars x.info.start
+      | none => none
 
 variable [IsoCache R]
 
@@ -191,7 +274,7 @@ where
           -- (13m) the module's `local` notation stays in it
           let infos := if s.termInfo then s.infos.push (.importMod (cmd.getArg 1).info m) else s.infos
           go' input base chars stop { (inner.endModule s) with messages := msgs, module := s.module, infos } memo
-      else go' input base chars stop (step cmd s) memo
+      else go' input base chars stop (step chars cmd s) memo
     | .error e =>
       -- (13o) a keyword where a name was expected: which notation, from which module
       let e := e.explainKeywords s.tables (fun k => (s.kindSites[k]?).map (·.2))
@@ -200,13 +283,15 @@ where
         { s with messages := s.messages.push { info := { start := e.pos, stop := e.pos },
                                                 severity := .error, text := msg } } memo
 
-  /-- Elaborate one command, recording where the declarations it adds come from. -/
-  step (cmd : Syntax) (s : CommandState R) : CommandState R :=
+  /-- Elaborate one command, recording where the declarations it adds come from, and
+  (11s) what they are and their doc comments. -/
+  step (chars : Array Char) (cmd : Syntax) (s : CommandState R) : CommandState R :=
     let before := s.globals.order.size
     -- (11q) for the language server: the syntax the command uses, by where it was declared
     let s := if s.termInfo then { s with infos := s.infos ++ syntaxRefs s cmd } else s
     let s' := ((elabCommand cmd).run { s with pristine := false }).2
     let added := s'.globals.order.extract before s'.globals.order.size
-    { s' with declSites := added.foldl (fun m n => m.insert n (cmd.info, s.module)) s'.declSites }
+    { s' with declSites := added.foldl (fun m n => m.insert n (cmd.info, s.module)) s'.declSites,
+              declDocs := if added.isEmpty then s'.declDocs else declDocsOf chars cmd added s'.declDocs }
 
 end Wiz

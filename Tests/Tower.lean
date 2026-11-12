@@ -190,6 +190,15 @@ def cases (impl : IO Impl) : List Case := [
         tower e ["update"]
         checkHas (← runOut shim ["check"] (proj / "sub")) "wiz 3"
         checkHas (← runOut shim ["check"] proj) "wiz 1"
+        -- with a tag `nightly`, every source installs the tag's commit, not the branch's
+        -- tip: a channel names the same commit whatever the source
+        let _ ← gitIn work ["push", "--quiet", bare.toString, "HEAD~1:refs/tags/nightly"]
+        tower e ["update"]
+        checkHas (← runOut shim ["check"] (proj / "sub")) "wiz 2"
+        checkHas (← readFile? (e.tcDir "nightly" / "tower.info")) s!"commit {← gitIn work ["rev-parse", "HEAD~1"]}"
+        let _ ← gitIn work ["push", "--quiet", "--force", bare.toString, "HEAD:refs/tags/nightly"]
+        tower e ["update"]
+        checkHas (← runOut shim ["check"] (proj / "sub")) "wiz 3"
         -- uninstall; without auto-install the shim says how to install it
         tower e ["toolchain", "uninstall", "v1"]
         tower e ["set", "auto-install", "false"]
