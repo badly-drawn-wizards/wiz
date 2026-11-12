@@ -25,6 +25,13 @@ def msgs (input : String) (trust : Bool := true) : IO (List String) := do
   pure (s.messages.toList.map fun m =>
     s!"{match m.severity with | .error => "error" | .warning => "warning" | .info => "info"}: {m.text}")
 
+/-- `msgs` with every module of `lib/` importable (Hdl.Verified, …). -/
+def msgsLibs (input : String) (trust : Bool := true) : IO (List String) := do
+  let loader ← Elab.libLoader
+  let s := runFrontend (R := ZeroOneMany) input { loader, trustedModule := Tests.libModule, trustNative := trust }
+  pure (s.messages.toList.map fun m =>
+    s!"{match m.severity with | .error => "error" | .warning => "warning" | .info => "info"}: {m.text}")
+
 def has (ms : List String) (fragment : String) : Bool := ms.any fun m => (m.splitOn fragment).length > 1
 
 def expect (ms : List String) (fragment : String) : IO Unit :=
@@ -232,12 +239,12 @@ def hdlVerifiedGroup : Group where
   exercise := "—"
   cases := [
     { name := "V1: kernel-checked on the units' domains, nothing trusted (examples/hdl-verified.wiz)", run := fun _ => do
-        let ms ← msgs (← IO.FS.readFile "examples/hdl-verified.wiz") (trust := false)
+        let ms ← msgsLibs (← IO.FS.readFile "examples/hdl-verified.wiz") (trust := false)
         noErrors ms
         expect ms "info: (20, 19)"
         if has ms "native" then throw (IO.userError s!"the kernel-checked file mentions native evaluation:\n{"\n".intercalate ms}") },
     { name := "V1: full widths by native_refl, each an axiom #print axioms names (examples/hdl-verified-native.wiz)", run := fun _ => do
-        let ms ← msgs (← IO.FS.readFile "examples/hdl-verified-native.wiz")
+        let ms ← msgsLibs (← IO.FS.readFile "examples/hdl-verified-native.wiz")
         noErrors ms
         expect ms "root_full is accepted on the strength of native evaluation"
         expect ms "norm_256 is accepted on the strength of native evaluation"

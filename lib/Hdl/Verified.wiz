@@ -183,7 +183,7 @@ def allBelow_sound (p : Nat → Bool) : (n k : Nat) → allBelow p n = .true →
     (fun e => Eq.substProp (fun (j : Nat) => p j = .true) (Eq.symm e) (Hv.andL (p n) (allBelow p n) h))
 
 -- ## The properties, one input at a time (decided for every input below a bound by `rfl`
--- in examples/hdl-verified.wiz, or by `native_refl` in examples/hdl-verified-native.wiz)
+-- in examples/hdl-verified.wiz, or by trusted evaluation in examples/hdl-verified-native.wiz)
 
 def Hv.isqrtOk (h m : Nat) : Bool := Bool.and (Nat.le (h * h) m) (Nat.lt m ((h + 1) * (h + 1)))
 def Hv.minN (a b : Nat) : Nat := match Nat.lt a b with
