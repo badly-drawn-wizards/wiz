@@ -392,3 +392,35 @@ package's `lib` targets with its module roots (dependencies included), into
   `wiz lsp --web DIR`. With `?follow=1` the page has no editor of its own: it follows
   the editor's cursor (`wiz/infoview/cursor`, §8.2). `wiz lsp` now always runs the
   multi-connection loop (`serveWith`), so this works without `--ws`.
+
+## 11v: the outline, workspace symbols and folding
+
+* **Document symbols** (`textDocument/documentSymbol`, `Wiz/Symbols.lean`): one symbol per
+  command, named after the first declaration it makes, with the others it makes (a
+  structure's fields and constructor, an inductive type's constructors) as children; a
+  type is a `Struct`, a constructor a `Constructor`, the rest `Function`, with the type as
+  `detail`. The elaborator's own names (`.desc`, `.casesOn`, `.rec`, …) are left out.
+* **Workspace symbols** (`workspace/symbol`): the declarations of the open documents and
+  of the modules they import whose name contains the query, ignoring case, at most 300,
+  each where it was declared (library modules by their path).
+* **Folding ranges** (`textDocument/foldingRange`): commands spanning several lines,
+  `by` blocks, `match`es, and block comments (kind `comment`).
+* wiz.nvim: `gO` (Neovim 0.11) lists the outline; `lsp.folding = true` folds with the
+  server's ranges (`vim.lsp.foldexpr`).
+
+## 11y: references, highlights and rename
+
+`Wiz/Refs.lean`, from the info tree's identifiers (each records what it resolved to):
+
+* **References** (`textDocument/references`): for a global, its uses in every open
+  document and in the package's other modules (the library modules that aren't the
+  toolchain's, so under `grail lsp` the package's own and its dependencies'), each
+  elaborated once per source and kept by the server, plus the name in its declaration.
+  For a local, its binder and the uses that see that binder (the nearest binder of the
+  name before the use, inside the declaration).
+* **Document highlights** (`textDocument/documentHighlight`, also what tells the
+  infoview where the cursor is): the same, in the document.
+* **Rename** (`textDocument/prepareRename`, `textDocument/rename`): edits every place
+  that spells the whole name, in all those documents; it refuses a declaration of the
+  toolchain's library and a new name that isn't one. A use through generalised field
+  notation (`p.norm` for `Point.norm`) is not edited.
