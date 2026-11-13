@@ -1160,6 +1160,13 @@ where
       let (e, ety) ← infer ctx (stx.getArg 1)
       match ← force ety with
       | .empty _ => return .absurd (quote (← getGlobals) ctx.lvl expected) e
+      | ety@(.sigma ..) =>
+        -- (#258) a Σ with a `False` component (a constructor equation that computed, as
+        -- `Bool.false = Bool.true`): the proof of that component
+        let g ← getGlobals
+        match findAbsurd g ety (← evalIn ctx e) with
+        | some prf => return .absurd (quote g ctx.lvl expected) (quote g ctx.lvl prf)
+        | none => throwAt (ctx.withInfo (stx.getArg 1)).info s!"absurd expects a proof of False or Empty, got {← showVal ctx ety}"
       | ety => throwAt (ctx.withInfo (stx.getArg 1)).info s!"absurd expects a proof of False or Empty, got {← showVal ctx ety}"
     | "term.hole" => freshMeta ctx
     | "term.syntheticHole" => freshMeta ctx s!"?{((stx.getArg 1).getId?).getD "_"}"

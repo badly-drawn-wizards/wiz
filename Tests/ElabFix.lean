@@ -708,6 +708,11 @@ def group : Group where
           "def r : R 3 := R.refl 3\ndef r2 : R 4 := .refl 4\n" ++
           "def f : R 3 → Nat\n  | .refl n => n\n" ++
           "def e : f r = 3 := refl 3\ndef refl2 (n : Nat) : n = n := refl n\n#eval f r") ["3"] },
+    { name := "#258: absurd sees through a computed constructor equation", run := fun _ => do
+        okLib ("import Prelude\ndef f (h : Bool.false = Bool.true) : False := absurd h\n" ++
+          "def g (n : Nat) (h : Nat.succ n = 0) : Nat := absurd h\n" ++
+          "def k (h : @Option.some Nat 1 = .none) : Bool := absurd h\n")
+        failsLibW "import Prelude\ndef f (n : Nat) (h : n = n) : False := absurd h\n" "absurd expects a proof of False or Empty" },
     { name := "#249: recursion over a family refines later arguments at non-variable indices", run := fun _ =>
         okLib ("import Prelude\ninductive R : Nat → Nat → Type where\n  | done (s : Nat) : R s s\n" ++
           "  | step (s t u : Nat) (r : R t u) : R s u\n" ++
