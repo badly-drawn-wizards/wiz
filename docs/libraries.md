@@ -702,3 +702,8 @@ def v (p q : Q) : (p + q) * (p + q) ≈ p * p + 2 * p * q + q * q :=
   integer identity and `q_ring!` is `int_ring!` on numerators and denominators. Use the
   congruences (`Q.add_congr`, `Q.le_congr`, …) to rewrite under `≈`.
 * `Vec.wiz` and `Hoare.wiz` import `Nat` for the lemmas they used to define themselves.
+## Native structures: word arrays, word maps, interned strings ✅
+
+`lib/WordArray.wiz` (`U8Array`, `U32Array`, `U64Array`), `lib/WordMap.wiz` (`U64Map V`)
+and `lib/Intern.wiz` (`InternTable`, ids as `U32`): list models with laws, run natively
+in compiled code, updated in place when unique. See `docs/stages/29-natives.md`.
