@@ -310,8 +310,10 @@ counter (the counter lemmas `Rx.incs` are already per value).
   (refinement under an invariant of the specification), `Mealy.follows` (a run along a
   known path), `Mealy.seq` and `Mealy.seq_stateAt`/`seq_outAt` (`Circuit.seq` on traces),
   `Nat.All`/`Nat.all_spec` (finite case tables), `Bool.all`/`Bool.forall9` (Boolean
-  enumeration by evaluation), `BitVec.eqOfNat` (word equality from numbers, `UIntN.ext`
-  once #145 lands), `Bool.indP`.
+  enumeration by evaluation), `Bool.indP`. Word equality from numbers is `UIntN.ext`
+  (lib/Word.wiz): a word carries its range, so the four lemmas below call `UIntN.ext`
+  directly instead of the old `BitVec.eqOfNat` helper (whose `rfl` premises no longer
+  hold).
 * The temporal vocabulary had no *rigid (local) variables* (SVA's `(go, v = data) |=> …`):
   `Tx.frameTL` quantifies the byte outside the formula. `TL.during` reads its formula at
   absolute times, so "bit m/4 at offset m" is written as an explicit `∀ m < 40`.
