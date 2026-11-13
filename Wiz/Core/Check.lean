@@ -1188,15 +1188,24 @@ method ignores the hypotheses and calls the definition directly):
 By induction on the scrutinee this gives `value ≡ impl` on every closed argument, with
 the implementation's own recursive calls standing for the value (the induction
 hypothesis): what compiled code computes is what the kernel computes. An implementation
-convertible to the value passes at once. -/
+convertible to the value passes at once; a proposition-valued definition is a proof, whose
+value is suspended (P2) and any two of which are convertible (proof irrelevance), so a
+well-typed implementation agrees with it. -/
 partial def checkImplAgrees (g : Globals R) (d : Decl R) (value impl : Term R) : TCM Unit := do
   let fail {α : Type} (why : String) : TCM α :=
     throw (.other s!"the compiled equations of {d.name} do not agree with its definition: {why}")
+  -- A proposition-valued definition is a proof: the evaluator suspends its value (P2), so
+  -- there is no split to compare, and conversion takes any two proofs as equal (proofs
+  -- are erased and nothing runs them). A well-typed implementation agrees with it.
+  let ty0 := eval g [] d.type
+  if ((Ctx.sortOf? ({ globals := g } : Ctx R)) ty0).any (·.isZero) then
+    if conv g #[] ty0 (eval g [] value) (eval g [] impl) then return
+    fail "its value is a proposition, and its implementation is not convertible to it"
   -- An implementation that does not call the definition (a hand-written one, say) agrees
   -- with the value if it is convertible to it. One that calls it is checked below; the
   -- whole-term comparison would compare the two eliminators structurally first, and fail.
   if !mentionsConst d.name impl then
-    if conv g #[] (eval g [] d.type) (eval g [] value) (eval g [] impl) then return
+    if conv g #[] ty0 (eval g [] value) (eval g [] impl) then return
     fail "it is not convertible to the value and does not call the definition"
   -- (P2: the conversion goes through the markers too: a level-generic value is
   -- `prf.{l} (fun …)`, with `l` symbolic, which evaluates to its body's value)
@@ -1206,7 +1215,7 @@ partial def checkImplAgrees (g : Globals R) (d : Decl R) (value impl : Term R) :
     | _ => 0
   let k := lams value
   let mut tys : Array (VTy R) := #[]
-  let mut ty := eval g [] d.type
+  let mut ty := ty0
   for i in [0:k] do
     match whnf ty with
     | .pi _ _ _ A B _ => tys := tys.push A; ty := Closure.inst g B (Val.var i)
@@ -1215,7 +1224,7 @@ partial def checkImplAgrees (g : Globals R) (d : Decl R) (value impl : Term R) :
   -- calls stay calls, compared by their arguments (see the hypotheses below)
   let fL := k
   let fV : Val R := Val.var fL
-  tys := tys.push (eval g [] d.type)
+  tys := tys.push ty0
   let args := (List.range k).map Val.var
   let a := whnf (args.foldl (vApp g) (eval g [] value))
   -- (the implementation with `F` for the definition: everything it says but the calls is

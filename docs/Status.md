@@ -508,7 +508,9 @@ set the status (open PRs in *italics*). Sections: §3 fixed, §4 open, §5 stuck
   variables). What these conversions prove is `impl[f := value] ≡ value`: the value is a
   fixpoint of the compiled equations. So **if compiled code terminates, its result is the
   value's** (induction on the run). They do not prove that it terminates (t1-review M1,
-  below). A
+  below). A proposition-valued definition is a proof: its value is suspended (P2), there
+  is no split to compare, and any two proofs are convertible (proof irrelevance), so a
+  well-typed implementation agrees with it. A
   definition whose index variable escapes into a method gets no `impl` (compiled from its
   value). `#print axioms` lists nothing for compiled equations (it did, as `compiled f`,
   between the two steps).
