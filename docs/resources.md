@@ -5,7 +5,7 @@ locks, effects), built at different stages. This page shows what they have in co
 how they fit together, using **one running example**: swapping two numbers through two
 mutable borrows. The example is `examples/resources.wiz` (checked by the test group
 `feral`). The design behind this page, with the plan for what comes next, is in
-`/workspace/wiz-notes/cohesion-resources.md`.
+`wiz-notes/cohesion-resources.md`.
 
 | layer | what it says | where |
 |---|---|---|
