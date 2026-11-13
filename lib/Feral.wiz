@@ -2854,7 +2854,7 @@ def Fe.specLin (sig : Fe.Sig) (hs : List String) (cls : List (Nat × Syntax))
         +++ Fe.words (Fe.map (fun (q : String × Fe.Ty) => "(" +++ q.1 +++ " : " +++ Fe.tyStr (Fe.paramTyL hs q) +++ ")") sig.params)
         +++ ": Prop :=\n  " +++ Fe.arrows reqs
           ("Result.Holds (fun (r : " +++ Fe.nestTy (Fe.tyStr sig.ret) hts +++ ") => "
-            +++ Fe.joinWith " × " enss +++ ") (\n    " +++ scope +++ ")"))
+            +++ Fe.joinWith " × " enss +++ ") (\n    " +++ scope +++ ")")))
 def Fe.specText (g : Fe.Glob) (p : List Nat) (it : Syntax) : Except String String :=
   let f := Fe.id (Fe.arg it 1);
   match Fe.findSig f g.sigs with
