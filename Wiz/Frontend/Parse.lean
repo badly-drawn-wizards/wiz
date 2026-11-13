@@ -65,18 +65,20 @@ def ParseError.explainKeywords (tables : ParserTables) (site : Name → Option S
     (e : ParseError) : ParseError :=
   let pre := "identifier ('"
   let post := "' is a keyword)"
-  { e with expected := e.expected.map fun x =>
-      if x.startsWith pre && x.endsWith post then
-        let v := ((x.drop pre.length).dropEnd post.length).toString
-        match tables.reservedBy? v with
-        | some (k, d) =>
-          let from_ := match site k with
-            | some "" => " of this file"
-            | some m => s!" of module {m}"
-            | none => ""
-          s!"identifier ('{v}' is a keyword: the notation `{d.sketch}`{from_})"
-        | none => x
-      else x }
+  -- (the message renders `shown`, not `expected`: both are explained)
+  let explain (x : String) : String :=
+    if x.startsWith pre && x.endsWith post then
+      let v := ((x.drop pre.length).dropEnd post.length).toString
+      match tables.reservedBy? v with
+      | some (k, d) =>
+        let from_ := match site k with
+          | some "" => " of this file"
+          | some m => s!" of module {m}"
+          | none => ""
+        s!"identifier ('{v}' is a keyword: the notation `{d.sketch}`{from_})"
+      | none => x
+    else x
+  { e with expected := e.expected.map explain, shown := e.shown.map explain }
 
 /-- Parse the command starting at (or after whitespace following) `pos`. -/
 def parseCommand (chars : Array Char) (tables : ParserTables) (pos : Nat) :

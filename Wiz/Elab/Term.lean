@@ -2480,17 +2480,21 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
       | t => t) v) with
     | some t => (t.descTag?.map (·.1)).getD []
     | none => []
-  -- a constructor pattern of another type would match nothing (and the cases it was meant
-  -- for would be reported missing): say so where it is
+  -- (13o) a constructor pattern of another type would match nothing (and the cases it was
+  -- meant for would be reported missing): say so where it is, rather than report the
+  -- scrutinee's constructors as missing (`if n then …` at `n : Nat` is a match on
+  -- `.true`/`.false`). A pattern a macro wrote is reported at the match.
   unless ctors.isEmpty do
     for cl in clauses do
       if let (_, .ctor _ c' _) ← pview (cl.pats[k]!) then
         -- (`✝none`: #250's empty match names no constructor on purpose)
         unless ctors.contains c' || c' == "✝none" do
-          -- (a pattern a macro wrote, such as `if`'s `.true`, has no place of its own)
           let pi := (cl.pats[k]!).info
           let at_ := if pi.stop == 0 || pi.synthetic then ctx.info else pi
-          throwAt at_ s!"{T} has no constructor {c'} (its constructors are {", ".intercalate ctors})"
+          let hint := if c' == "true" || c' == "false" then
+            "; the condition of `if`, `&&` and `||` is a Bool" else ""
+          throwAt at_ (s!"the value matched has type {T}, which has no constructor .{c'} " ++
+            s!"(its constructors: {", ".intercalate (ctors.map (s!".{·}"))}){hint}")
   let nΞ := ξ.length
   -- a motive that depends on neither the indices nor the scrutinee: the non-dependent
   -- eliminator (`T.recN`), whose branches need no cast along the index equation
@@ -2534,18 +2538,6 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
   for a in Δargs ++ sizeArgs ++ [← evalIn ctx motive] do
     let .pi _ _ _ _ cod _ ← force fty | throwAt ctx.info "internal error: eliminator type"
     fty ← instM cod a
-  -- (13o) a constructor pattern of another type: say so, rather than report the
-  -- scrutinee's constructors as missing (`if n then …` at `n : Nat` is a match on
-  -- `.true`/`.false`). A pattern a macro wrote is reported at the match.
-  for cl' in clauses do
-    if let some p := cl'.pats[k]? then
-      if let (_, .ctor _ c' _) ← pview p then
-        unless ctors.contains c' do
-          let info := if p.info.synthetic || p.info.stop == 0 then ctx.info else p.info
-          let hint := if c' == "true" || c' == "false" then
-            "; the condition of `if`, `&&` and `||` is a Bool" else ""
-          throwAt info (s!"the value matched has type {T}, which has no constructor .{c'} " ++
-            s!"(its constructors: {", ".intercalate (ctors.map (s!".{·}"))}){hint}")
   -- (21v, additive) the bundle's type `(t : Enum ls) → Br t`, and its branches
   let mut bundleTy : Option (VTy R × Closure R) := none
   let mut ups : Array (Term R) := #[]
