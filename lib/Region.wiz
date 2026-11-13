@@ -215,3 +215,124 @@ def MutOpt.ofAffine {ρ : Region} {A S : Type} : Affine A S → MutOpt ρ A S
 def MutOpt.over {ρ : Region} {A S : Type} (f : A → A) : MutOpt ρ A S → Uniq ρ S
   | .some m => Mut.release (Mut.set m (f (Mut.get m)))
   | .none r => r
+
+-- ## Linear handles (cohesion M4a; /workspace/wiz-notes/cohesion-resources.md §7, §10)
+--
+-- `Uniq1 ρ A` is `&'a mut A` used at quantity 1 (linear-case stage 2: `scase` at 1 for a
+-- linear scrutinee, `T.casesOn1`). It is a one-constructor inductive, not a structure: a
+-- linear structure can't be taken apart (its marker tail can't be consumed), a linear
+-- inductive can. The value field is ω (the value is ordinary, reference-counted data);
+-- the handle is what is linear. A scope's body takes the handle at 1 and must hand it back
+-- on every path, the error path included (D8), in a `Result1`. So the kernel rejects using
+-- a `&mut` twice (E0499, `swap r r`) and keeping one past its scope (packing it with its
+-- region), not only the shape of Feral's lowering. The lender stays an ω value: reading the
+-- lender under a renamed `Lent` token while it is lent (E0502) is still only ruled out by
+-- the lowering; closing it needs linear lenders, and so a Copy notion for reading `*x` out
+-- of a linear value (K3, `sfix_π`).
+--
+-- Feral's lowering moves onto these in M4b; until then the ω handles above stay.
+
+/-- `&'ρ mut A` as a linear handle (M4b): the value, privately constructed, so only this
+module's operations reach it. -/
+inductive Uniq1 (ρ : Region) (A : Type) where
+  | private mk (val : A)
+
+-- what a scope's body gives back: a result or an error, and the handle either way
+/-- What a scope's body gives back: a result (`ok`) or an error (`err`), and the handle
+either way. -/
+inductive Result1 (B H : Type) where
+  | ok (b : B) (1 h : H)
+  | err (e : Error) (1 h : H)
+
+-- `*r`: the value, and the handle back
+/-- `*r`: the value, and the handle back. -/
+def Uniq1.read {ρ : Region} {A B : Type} (1 r : Uniq1 ρ A) (1 k : (a : A) → (1 r : Uniq1 ρ A) → B) : B :=
+  match r with
+  | .mk v => k v (Uniq1.mk v)
+-- `*r := a`
+/-- `*r := a`: the handle with the new value. -/
+def Uniq1.write {ρ : Region} {A : Type} (1 r : Uniq1 ρ A) (a : A) : Uniq1 ρ A :=
+  match r with
+  | .mk v => Uniq1.mk a
+-- (a handle is taken apart by `match` on it: the value comes out at ω, the handle is used
+-- once. A function returning the value, `Uniq1.finish r`, would charge `r` once per use of
+-- its result.)
+
+-- end a borrow: its final value to `k`
+/-- The borrow's last use: the lender comes back, from the value `k` gives. -/
+def Uniq1.end {ρ : Region} {S R : Type} (1 r : Uniq1 ρ S) (1 k : (v : S) → R) : R :=
+  match r with
+  | .mk v => k v
+
+-- `let r := &mut s` until its last use: the lender comes back with the final value (the
+-- error path drops it: a panic unwinds)
+/-- `Result (B × S)`. -/
+def Uniq1.borrow {S B : Type} (0 σ : Region) (s : S)
+    (1 body : (0 ρ : Region) → (0 h : Outlives σ ρ) → (0 l : Lent ρ S) → (1 r : Uniq1 ρ S) → Result1 B (Uniq1 ρ S)) :
+    Result (B × S) :=
+  match body σ (Outlives.refl σ) (Lent.mk ()) (Uniq1.mk s) with
+  | .ok b r => (match r with
+    | .mk v => .ok (b, v))
+  | .err e r => (match r with
+    | .mk v => .err e)
+-- the same inside a scope that holds other handles `H` (a call borrowing two locals: the
+-- outer handle is threaded through the inner scope and handed back with the result)
+/-- `Result1 (B × S) H`. -/
+def Uniq1.borrowIn {S B H : Type} (0 σ : Region) (s : S) (1 outer : H)
+    (1 body : (0 ρ : Region) → (0 h : Outlives σ ρ) → (0 l : Lent ρ S) → (1 o : H) → (1 r : Uniq1 ρ S) →
+      Result1 B ((1 _ : H) × Uniq1 ρ S)) :
+    Result1 (B × S) H :=
+  match body σ (Outlives.refl σ) (Lent.mk ()) outer (Uniq1.mk s) with
+  | .ok b q => let 1 (o, r) := q; Uniq1.end r (fun v => .ok (b, v) o)
+  | .err e q => let 1 (o, r) := q; Uniq1.end r (fun v => .err e o)
+-- `&mut *r` at a shorter region
+/-- `Result1 B (Uniq1 ρ S)`. -/
+def Uniq1.reborrow {ρ : Region} {S B : Type} (1 r : Uniq1 ρ S)
+    (1 body : (0 ρ' : Region) → (0 h : Outlives ρ ρ') → (0 l : Lent ρ' S) → (1 r : Uniq1 ρ' S) → Result1 B (Uniq1 ρ' S)) :
+    Result1 B (Uniq1 ρ S) :=
+  match r with
+  | .mk v => (match body ρ (Outlives.refl ρ) (Lent.mk ()) (Uniq1.mk v) with
+    | .ok b r' => (match r' with
+      | .mk w => .ok b (Uniq1.mk w))
+    | .err e r' => (match r' with
+      | .mk w => .err e (Uniq1.mk w)))
+-- `&*r`, a shared reborrow of a mutable one
+/-- `Result1 B (Uniq1 ρ S)`. -/
+def Uniq1.share {ρ : Region} {S B : Type} (1 r : Uniq1 ρ S)
+    (body : (0 ρ' : Region) → (0 h : Outlives ρ ρ') → Shr ρ' S → Result B) : Result1 B (Uniq1 ρ S) :=
+  match r with
+  | .mk v => (match body ρ (Outlives.refl ρ) (Shr.mk v) with
+    | .ok b => .ok b (Uniq1.mk v)
+    | .err e => .err e (Uniq1.mk v))
+-- `&mut r.p` for a place with a lens
+/-- `Result1 B (Uniq1 ρ S)`. -/
+def Uniq1.zoom {ρ : Region} {S X B : Type} (l : Lens S X) (1 r : Uniq1 ρ S)
+    (1 body : (0 ρ' : Region) → (0 h : Outlives ρ ρ') → (0 t : Lent ρ' S) → (1 x : Uniq1 ρ' X) → Result1 B (Uniq1 ρ' X)) :
+    Result1 B (Uniq1 ρ S) :=
+  match r with
+  | .mk v => (let st := l v;
+    match body ρ (Outlives.refl ρ) (Lent.mk ()) (Uniq1.mk st.1) with
+    | .ok b r' => (match r' with
+      | .mk w => .ok b (Uniq1.mk (st.2 w)))
+    | .err e r' => (match r' with
+      | .mk w => .err e (Uniq1.mk (st.2 w))))
+-- a borrow of a pair is two borrows, live at once; they come back as a linear pair
+/-- `Result1 C (Uniq1 ρ (A × B))`. -/
+def Uniq1.both {ρ : Region} {A B C : Type} (1 p : Uniq1 ρ (A × B))
+    (1 body : (0 ρ' : Region) → (0 h : Outlives ρ ρ') → (1 a : Uniq1 ρ' A) → (1 b : Uniq1 ρ' B) →
+      Result1 C ((1 _ : Uniq1 ρ' A) × Uniq1 ρ' B)) :
+    Result1 C (Uniq1 ρ (A × B)) :=
+  match p with
+  | .mk v => (match body ρ (Outlives.refl ρ) (Uniq1.mk v.1) (Uniq1.mk v.2) with
+    | .ok c q => let 1 (ra, rb) := q; Uniq1.end ra (fun a => Uniq1.end rb (fun b => .ok c (Uniq1.mk (a, b))))
+    | .err e q => let 1 (ra, rb) := q; Uniq1.end ra (fun a => Uniq1.end rb (fun b => .err e (Uniq1.mk (a, b)))))
+
+attribute [inline] Uniq1.read
+attribute [inline] Uniq1.end
+attribute [inline] Uniq1.write
+attribute [inline] Uniq1.borrow
+attribute [inline] Uniq1.borrowIn
+attribute [inline] Uniq1.reborrow
+attribute [inline] Uniq1.share
+attribute [inline] Uniq1.zoom
+attribute [inline] Uniq1.both

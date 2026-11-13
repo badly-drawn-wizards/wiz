@@ -48,6 +48,8 @@ import Wiz.FFI.CGlue
 import Wiz.Query
 import Wiz.Infoview
 import Wiz.Actions
+import Wiz.Inlay
+import Wiz.Semantic
 import Wiz.Completion
 import Wiz.Signature
 import Wiz.Refs

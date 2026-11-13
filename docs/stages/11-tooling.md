@@ -44,7 +44,11 @@ after it).
 * **Code actions** (`Wiz/Actions.lean`): diagnostics carry a code and data; the server
   offers *did you mean* (edit distance ≤ 2 over locals and globals), *add missing cases*
   (`| .c x y => ?c` per missing constructor) and *add type ascription* to a `def` without
-  a type, with edits inline or through `codeAction/resolve`.
+  a type, with edits inline or through `codeAction/resolve`. The common errors have
+  stable codes (`Wiz/Core/ErrorCode.lean`, listed in [error-codes.md](../error-codes.md)),
+  and the quick fixes are keyed on them: also *did you mean* for fields, constructors and
+  imports, *add the missing import*, and `@f` / dropping the `@` when the argument count
+  is off by the implicit parameters.
 
 ```
 def k : Nat → Bool → Nat := by
@@ -473,6 +477,23 @@ none; the library's declarations are documented (`lib/`), so `Nat.add` explains 
   `by` blocks, `match`es, and block comments (kind `comment`).
 * wiz.nvim: `gO` (Neovim 0.11) lists the outline; `lsp.folding = true` folds with the
   server's ranges (`vim.lsp.foldexpr`).
+
+## 11x: inlay hints
+
+`textDocument/inlayHint` (`Wiz/Inlay.lean`) shows the type the elaborator gave a `fun`
+or `let` binder written without one, `fun x : Nat => …`, from the info tree's binders
+(`recordBinder`): a local identifier whose text is the binder's own name, with `fun`/`λ`
+(past the other binders of its group) or `let` before it and `=>`/`↦`/`:=` or another
+binder after it, not `:`. wiz.nvim: `lsp.inlay_hints = true` turns them on.
+## 11z: semantic tokens for the file's own keywords
+
+`textDocument/semanticTokens/full` (`Wiz/Semantic.lean`, one token type `keyword`)
+marks what a fixed syntax file can't know: the words of declared syntax (`syntax`,
+`notation`, the Prelude's tactics, a keyword-scoped DSL's `when … yes … no`) inside the
+nodes of that kind the info tree saw (`syntaxRef`), and the words that declared `term`
+and `command` rules reserve everywhere (`run_calc`, `done`). A DSL keyword used as a name
+outside the DSL (`def no (yes : Nat)`) stays a name. Comments and strings are skipped.
+Neovim shows them as `@lsp.type.keyword` (linked to `@keyword`) without configuration.
 
 ## 11y: references, highlights and rename
 
