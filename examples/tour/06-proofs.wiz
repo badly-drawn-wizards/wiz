@@ -1,0 +1,34 @@
+-- The tour, section 6: propositions and proofs (docs/tour.md).
+import Logic
+
+-- `a = b` is a proposition; `rfl` proves it when both sides compute to the same value
+def two_plus_two : 2 + 2 = 4 := rfl
+
+def double (n : Nat) : Nat := n + n
+def double_three : double 3 = 6 := rfl
+
+-- a proof about every `n` is a function: induction is recursion
+def congrSucc {a b : Nat} (e : a = b) : Nat.succ a = Nat.succ b :=
+  transp (fun b _ => Nat.succ a = Nat.succ b) (refl (Nat.succ a)) e
+
+def zero_add : (n : Nat) → 0 + n = n
+  | .zero => rfl
+  | .succ n => congrSucc (zero_add n)
+
+-- the same proofs with tactics
+def two_plus_two' : 2 + 2 = 4 := by rfl
+
+def same_double (m n : Nat) (h : m = n) : double m = double n := by
+  rw h
+  rfl
+
+-- the connectives of lib/Logic.wiz: ∧, ∨, ¬, ↔, ∃
+def and_swap {P Q : Prop} (h : P ∧ Q) : Q ∧ P := And.intro h.2 h.1
+def or_swap {P Q : Prop} (h : P ∨ Q) : Q ∨ P :=
+  Or.elim h (fun p => Or.inr p) (fun q => Or.inl q)
+def exists_double : ∃ n, double n = 8 := Ex.intro (fun n => double n = 8) 4 rfl
+
+-- functions that are equal at every argument are equal (`funext` in lib/Logic.wiz is this one line)
+def funext' {A B : Type} (f g : A → B) (h : (x : A) → f x = g x) : f = g := h
+
+#print axioms zero_add

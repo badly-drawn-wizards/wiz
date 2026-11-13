@@ -1,0 +1,74 @@
+import FeralCore
+import Feral
+import HeapBorrow
+import HoareExamples
+-- One program, every resource layer (docs/resources.md): Feral's `swap`, its lowering
+-- over lib/Region.wiz, its functional specification, and the same function run on two
+-- heap cells and verified with the separation-logic `x`-tactics (lib/HoareTactics.wiz)
+-- through the bridge lib/HeapBorrow.wiz. Checked by test group `feral`.
+
+-- ## 1. The surface: two `&mut` borrows (drafts/feral/surface/01_swap.wiz)
+
+feral
+  fn swap {'a 'b} (x : &'a mut U64) (y : &'b mut U64) : Unit := {
+    let t := *x;
+    *x := *y;
+    *y := t
+  }
+
+  -- the caller lends two locals and gets them back
+  fn swap_vals (a : U64) (b : U64) : U64 × U64 := {
+    let mut x := a;
+    let mut y := b;
+    swap (&mut x) (&mut y);
+    (x, y)
+  }
+
+  -- specifications, as Wiz propositions: `final x` is `x`'s value when the borrow ends
+  spec swap ensures (final x = old y) ensures (final y = old x)
+  spec swap_vals ensures (result = (b, a))
+end
+
+-- ## 2. The functional model: a `&mut` is a value handed in and handed back
+--
+-- `swap` lowered takes `Uniq ρa U64` and `Uniq ρb U64` and returns them with its result;
+-- `swap_vals` opens two borrow scopes (`Uniq.borrow`) around the call. Its specification
+-- is a statement about values, proved by computation (no heap in sight).
+
+-- `spec` generated `swap.Spec` and `swap_vals.Spec`; both hold by computation
+def swap_ok {ρa ρb : Region} (x : Uniq ρa U64) (y : Uniq ρb U64) : swap.Spec x y := (rfl, rfl)
+def swap_vals_spec (a b : U64) : swap_vals.Spec a b := rfl
+
+#eval Result.map (fun (p : U64 × U64) => (p.1.val, p.2.val)) (swap_vals (U64.lit 1) (U64.lit 2))
+
+-- ## 3. On the heap: the same function, its arguments in two cells
+--
+-- `Prog.borrowMut2 p q f` reads the two cells, runs `f` on the values and writes the final
+-- values back. `swapCells` is the lowered Feral `swap` with its two handles opened over the
+-- cells' values (the shape `Uniq.borrow` gives a caller).
+
+def swapCells (p q : Nat) : Prog U64 Unit :=
+  Prog.borrowMut2 p q (fun a b => Result.map (fun (r : U64 × U64) => ((), r)) (swap_vals a b))
+
+-- (a) by the x-tactics directly: `xgo` steps through the reads, the Feral function (which
+-- computes to `.ok (b, a)`) and the writes
+def swapCells_spec (p q : Nat) (a b : U64) :
+    Triple ((p ↦ a) ⋆ (q ↦ b)) (swapCells p q) (fun _ => (p ↦ b) ⋆ (q ↦ a)) := by
+  xgo
+
+-- (b) by the bridge: the functional specification gives the heap triple, with no
+-- reasoning about the heap at all (CS9, Aeneas-style)
+def swapCells_spec' (p q : Nat) (a b : U64) :
+    Triple ((p ↦ a) ⋆ (q ↦ b)) (swapCells p q)
+      (fun _ => hexists (fun (v : U64) => hexists (fun (w : U64) =>
+        hpure (v = b ∧ w = a) ⋆ ((p ↦ v) ⋆ (q ↦ w))))) :=
+  Prog.borrowMut2_spec p q a b _ (fun _ v w => v = b ∧ w = a) (rfl, rfl)
+
+-- (c) the frame rule: a third cell that `swap` is not given is untouched (the reading of
+-- "a Feral function can't touch what it isn't lent" in separation logic)
+def swapCells_frame (p q r : Nat) (a b c : U64) :
+    Triple ((p ↦ a) ⋆ ((q ↦ b) ⋆ (r ↦ c))) (swapCells p q) (fun _ => (p ↦ b) ⋆ ((q ↦ a) ⋆ (r ↦ c))) := by
+  xapp (swapCells_spec p q a b)
+
+-- and it runs: cells 1 and 2 swapped, cell 3 kept
+#eval Prog.show (swapCells 1 2) (Heap.ofList (.cons (U64.lit 10) (.cons (U64.lit 20) (.cons (U64.lit 30) .nil))) 1) 4 4

@@ -64,7 +64,7 @@ def List.atL_set_under {A : Type} (x : A) (i : Nat) (xs : List A) : (r : Result 
     Result.All (fun (st : Store A (List A)) => (fin : A) → st.2 fin = List.set i xs fin) r →
     Result.All (fun (st : Store A (List A)) => (fin : A) → st.2 fin = List.cons x (List.set i xs fin))
       (Store.underR (List.cons x) r)
-  | .ok st, h => fun fin => @Optic.congrArg (List A) (List A) (List.cons x) (st.2 fin) (List.set i xs fin) (h fin)
+  | .ok st, h => fun fin => @Eq.congrArg (List A) (List A) (List.cons x) (st.2 fin) (List.set i xs fin) (h fin)
   | .err e, h => ()
 def List.atL_set {A : Type} : (i : Nat) → (s : List A) →
     Result.All (fun (st : Store A (List A)) => (fin : A) → st.2 fin = List.set i s fin) (List.atL i s)
@@ -90,8 +90,8 @@ def get_mut.spec_place (s : Vec U64) (i : U64) : (r : Result (Store U64 (List U6
       (Vec.index s i = .ok st.1) × ((fin : U64) → (st.2 fin).items = List.set i.val s.items fin))
       (Store.underR Vec.mkL r)
   | .ok st, hg, hs =>
-    (@Optic.subst (Option U64) (fun (o : Option U64) => Option.okOr .outOfBounds o = Result.ok st.1)
-       (Option.some st.1) (List.getOpt i.val s.items) (Optic.sym hg) (refl (Result.ok st.1)),
+    (@Eq.substProp (Option U64) (fun (o : Option U64) => Option.okOr .outOfBounds o = Result.ok st.1)
+       (Option.some st.1) (List.getOpt i.val s.items) (Eq.symm hg) (refl (Result.ok st.1)),
      hs)
   | .err e, hg, hs => ()
 def get_mut.spec_holds {ρ : Region} (v : Uniq ρ (Vec U64)) (i : U64) : get_mut.spec v i :=
