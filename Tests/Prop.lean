@@ -58,6 +58,7 @@ compile until it is added here (and to `ctorName`). -/
   | .lam x b => return .lam x (← f 1 b)
   | .app a b => return .app (← f 0 a) (← f 0 b)
   | .letE x q t v b => return .letE x (← f 0 q) (← f 0 t) (← f 0 v) (← f 1 b)
+  | .letUnit u b => return .letUnit (← f 0 u) (← f 0 b)
   | .ann a b => return .ann (← f 0 a) (← f 0 b)
   | .mvar i => pure (.mvar i)
   | .sigma x q a b s => return .sigma x (← f 0 q) (← f 0 a) (← f 1 b) (← s.mapM fl)
@@ -101,8 +102,8 @@ compile until it is added here (and to `ctorName`). -/
   | .sizeLt s => return .sizeLt (← f 0 s)
   | .sfix l I D v P g s i x =>
     return .sfix (← fl l) (← f 0 I) (← f 0 D) (← fl v) (← f 0 P) (← f 0 g) (← f 0 s) (← f 0 i) (← f 0 x)
-  | .scase l I D v P m s i x =>
-    return .scase (← fl l) (← f 0 I) (← f 0 D) (← fl v) (← f 0 P) (← f 0 m) (← f 0 s) (← f 0 i) (← f 0 x)
+  | .scase l q I D v P m s i x =>
+    return .scase (← fl l) (← f 0 q) (← f 0 I) (← f 0 D) (← fl v) (← f 0 P) (← f 0 m) (← f 0 s) (← f 0 i) (← f 0 x)
   | .cocon x => return .cocon (← f 0 x)
   | .scofix l I D A g s i a =>
     return .scofix (← fl l) (← f 0 I) (← f 0 D) (← f 0 A) (← f 0 g) (← f 0 s) (← f 0 i) (← f 0 a)
@@ -122,7 +123,7 @@ def mapKids (fl : Level → Level) (f : Nat → Tm → Tm) (t : Tm) : Tm :=
 
 def ctorName : Tm → String
   | .var _ => "var" | .const .. => "const" | .sort _ => "sort" | .pi .. => "pi" | .lam .. => "lam"
-  | .app .. => "app" | .letE .. => "letE" | .ann .. => "ann" | .mvar _ => "mvar" | .sigma .. => "sigma"
+  | .app .. => "app" | .letE .. => "letE" | .letUnit .. => "letUnit" | .ann .. => "ann" | .mvar _ => "mvar" | .sigma .. => "sigma"
   | .pair .. => "pair" | .fst _ => "fst" | .snd _ => "snd" | .split .. => "split" | .unit _ => "unit"
   | .tt => "tt" | .empty _ => "empty" | .absurd .. => "absurd" | .eq .. => "eq" | .eqTy .. => "eqTy"
   | .refl .. => "refl" | .reflTy _ => "reflTy" | .cast .. => "cast" | .transp .. => "transp"
@@ -137,7 +138,7 @@ def ctorName : Tm → String
 /-- Every constructor of `Term`, by name. (`ctorName` is exhaustive; a name it returns
 that is missing here fails the coverage gate as "unknown".) -/
 def allCtors : List String :=
-  ["var", "const", "sort", "pi", "lam", "app", "letE", "ann", "mvar", "sigma", "pair", "fst", "snd",
+  ["var", "const", "sort", "pi", "lam", "app", "letE", "letUnit", "ann", "mvar", "sigma", "pair", "fst", "snd",
    "split", "unit", "tt", "empty", "absurd", "eq", "eqTy", "refl", "reflTy", "cast", "transp", "qty",
    "qlit", "enum", "tag", "ecase", "desc", "dret", "darg", "drec", "dhrec", "delim", "mu", "con", "ind",
    "nu", "out", "size", "szInf", "szSuc", "sizeLt", "sfix", "scase", "cocon", "scofix", "coit",
@@ -211,6 +212,7 @@ def inferable : Tm → Bool
   -- (P2: a marker is transparent; the underlying term decides)
   | .prf _ t => inferable t
   | .letE _ _ _ _ b => inferable b
+  | .letUnit _ b => inferable b
   | _ => true
 
 def mkInf (t T : Tm) : Tm := if inferable t then t else .ann t T
@@ -246,6 +248,7 @@ partial def toM : Tm → Option MTm
   | .app f a => return .app (← toM f) (← toM a)
   | .letE _ (.qlit .many) t v b => return .letE (← toM t) (← toM v) (← toM b)
   | .letE _ (.qlit q) t v b => return .letq q (← toM t) (← toM v) (← toM b)
+  | .letUnit u b => return .letUnit (← toM u) (← toM b)
   | .ann t ty => return .ann (← toM t) (← toM ty)
   | .pair a b => return .pair (← toM a) (← toM b)
   | .fst p => return .fst (← toM p)
@@ -290,8 +293,10 @@ partial def toM : Tm → Option MTm
     return .coit (← l.toNat?) (← toM I) (← toM D) (← toM S) (← toM st) (← toM i) (← toM s)
   | .sfix l I D v P f s i x =>
     return .sfix (← l.toNat?) (← toM I) (← toM D) (← v.toNat?) (← toM P) (← toM f) (← toM s) (← toM i) (← toM x)
-  | .scase l I D v P m s i x =>
+  | .scase l (.qlit .many) I D v P m s i x =>
     return .scase (← l.toNat?) (← toM I) (← toM D) (← v.toNat?) (← toM P) (← toM m) (← toM s) (← toM i) (← toM x)
+  | .scase l (.qlit q) I D v P m s i x =>
+    return .scaseq q (← l.toNat?) (← toM I) (← toM D) (← v.toNat?) (← toM P) (← toM m) (← toM s) (← toM i) (← toM x)
   | .size => some .size
   | .szInf => some .szInf
   | .szSuc s => return .szSuc (← toM s)
@@ -826,6 +831,11 @@ partial def genTm (cx : Cx) (T : Tm) (fuel : Nat) : Gen Tm := do
           let v ← genTm cx A f
           let body ← genTm (cx.push A) (liftT 1 T) f
           return .letE "x" (.qlit .many) A v body),
+      -- `let () := u; b` (1-elimination at a unit type; computes to `b`)
+      (do let l ← if (← choose 2) == 1 then pure (1 : Level) else pure 0
+          let u ← genTm cx (.unit l) f
+          let body ← genTm cx T f
+          return .letUnit u body),
       -- projections of an annotated pair
       (do let B ← genTy cx 1 f
           let t ← genTm cx T f
@@ -885,9 +895,9 @@ partial def genTm (cx : Cx) (T : Tm) (fuel : Nat) : Gen Tm := do
                 let x ← genTm cx dt f
                 return .ind ld I D l P m i x)
           if w.sizes then alts := alts ++ #[
-            (do let m ← genTm cx (quote g cx.k.lvl (scaseMethodTy g ld vI vD vP .szInf .many)) f
+            (do let m ← genTm cx (quote g cx.k.lvl (scaseMethodTy g ld vI vD vP .szInf (cx.k.eval (.qlit .many)))) f
                 let x ← genTm cx dt f
-                return .scase ld I D l P m .szInf i x),
+                return .scase ld (.qlit .many) I D l P m .szInf i x),
             (do let fn ← genTm cx (quote g cx.k.lvl (sfixFunTy g ld vI vD vP .many)) f
                 let x ← genTm cx dt f
                 return .sfix ld I D l P fn .szInf i x)]
