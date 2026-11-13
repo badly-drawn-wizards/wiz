@@ -17,8 +17,9 @@ each of which unfolds to Word's model (`BitVec.add a b` is
 word is its bits: no allocation below 2^63) and Word's natives, through the operation
 each one calls.
 
-Operations that compute `2^n` take the width at runtime (`{ω n : Nat}`); the others
-(`toNat`, comparisons, `ofVec`) take it erased.
+Operations that compute `2^n` take the width at runtime (`{ω n : Nat}`), as do
+`BitVec.toVec` and `BitVec.ofVec` (they build or read the `n` bits); the others
+(`toNat`, comparisons) take it erased.
 
 Main definitions: `BitVec`, `BitVec.ofNat`, arithmetic (`BitVec.add`, `BitVec.mul`,
 `BitVec.udiv`, …), bitwise operations and shifts, signed comparisons, the width
