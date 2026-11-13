@@ -302,7 +302,7 @@ def unifyAt0 (ctx : LocalCtx R) (stx : Syntax) (expected inferred : VTy R) : Ela
       .error { info := (ctx.withInfo stx).info,
                msg := s!"type mismatch\n  expected: {show' expected}\n  inferred: {show' inferred}" ++
                  mismatchReason (show' expected) (show' inferred) e.msg,
-               code := e.code,
+               code := if e.code == ErrorCode.nonPattern then e.code else ErrorCode.typeMismatch,
                -- what was recorded up to here (the info tree, `trace`s)
                state? := some s }
 
@@ -376,7 +376,8 @@ partial def elabFields (ctx : LocalCtx R) (t : Term R) (ty : VTy R) (fields : Li
       let g ← getGlobals
       if g.opaques.contains S then
         let some d := g.find? (S ++ "." ++ f)
-          | throwAt ctx.info s!"no field '{f}' in a value of type {← showVal ctx ty}"
+          | throwFix ctx.info s!"no field '{f}' in a value of type {← showVal ctx ty}" ErrorCode.noSuchField
+              [("name", [f]), ("type", [S])]
         if let some m := g.privateTo? (S ++ "." ++ f) then
           throwAt ctx.info s!"'{Globals.privateBase S}.{f}' is private to module {m}" "private"
         let fty : VTy R := eval g [] (d.type.instLevels d.levelParams us)
@@ -411,8 +412,11 @@ partial def elabFields (ctx : LocalCtx R) (t : Term R) (ty : VTy R) (fields : Li
       match structHead? g (← forceMeta ty0) with
       | some (S, _, _) =>
         let fields := ((structLayout? g S).map (·.fields)).getD []
-        throwAt ctx.info s!"{Globals.privateBase S} has no field '{f}' (its fields are {", ".intercalate fields})"
-      | none => throwAt ctx.info s!"no field '{f}' in a value of type {← showVal ctx ty0}"
+        throwFix ctx.info s!"{Globals.privateBase S} has no field '{f}' (its fields are {", ".intercalate fields})"
+          ErrorCode.noSuchField [("name", [f]), ("type", [S]), ("fieldsOnly", [])]
+      | none =>
+        let msg := s!"no field '{f}' in a value of type {← showVal ctx ty0}"
+        throwFix ctx.info msg ErrorCode.noSuchField [("name", [f]), ("type", (hint?.map (·.1)).toList)]
     let rec walk (t : Term R) (ty : VTy R) : ElabM R (Term R × VTy R) := do
       match ← force ty with
       | .sigma x _ A B _ =>
@@ -829,7 +833,7 @@ def sameSides (ctx : LocalCtx R) (A? : Option (VTy R)) (a b : Val R) : ElabM R U
       | none => pure (convTy g tys a b || convTy g tys (vEqType g a a) (vEqType g a b))
     unless ok do
       let (l, r) := (← showVal ctx a, ← showVal ctx b)
-      throwAt ctx.info (s!"rfl: the two sides are not definitionally equal\n  left:  {l}\n  right: {r}" ++ mismatchReason l r e.msg)
+      throwAt ctx.info (s!"rfl: the two sides are not definitionally equal\n  left:  {l}\n  right: {r}" ++ mismatchReason l r e.msg) ErrorCode.notDefeq
 
 /-- A value evaluated again after its solved holes are filled in (an equation is computed
 when it is formed, perhaps while the implicit arguments of its sides are still holes:
@@ -977,7 +981,7 @@ partial def checkType (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × Lev
     let u ← freshLevelMeta
     unifyAt ctx stx (.sort u) ty
     pure (t, u)
-  | ty => throwAt (ctx.withInfo stx).info s!"type expected, got a term of type {← showVal ctx ty}"
+  | ty => throwAt (ctx.withInfo stx).info s!"type expected, got a term of type {← showVal ctx ty}" ErrorCode.typeExpected
 
 /-- `check` of a variable or an application against a glued definition `D a…` that
 unfolds to an implicit or instance Π: if the term's own type is `D b…` too, unify the
@@ -1202,14 +1206,14 @@ partial def checkFun (ctx : LocalCtx R) (bs : List BinderView) (body : Syntax) (
           let vq' ← evalIn ctx q'
           let ok ← tryCatch (do unify ctx.lvl q vq'; pure true) (fun _ => pure false)
           unless ok do
-            throwAt b.info s!"binder quantity {showTerm ctx q'} does not match the expected {← showVal ctx q}"
+            throwAt b.info s!"binder quantity {showTerm ctx q'} does not match the expected {← showVal ctx q}" ErrorCode.binderMismatch
         recordBinder ctx b.info b.name dom
         let t ← checkFun (ctx.bindQ b.name dom ((Val.toPoly? q).bind (·.isConst?))) rest body (← instM cod (Val.var ctx.lvl))
         return .lam b.name t
       else if bi == .implicit || bi == .instImplicit then
         let t ← checkFun (ctx.bind x dom) bs body (← instM cod (Val.var ctx.lvl))
         return .lam x t
-      else throwAt b.info "unexpected implicit binder: the expected type takes an explicit argument"
+      else throwAt b.info "unexpected implicit binder: the expected type takes an explicit argument" ErrorCode.binderMismatch
     | expected =>
       let (t, ty) ← inferFun ctx bs body
       unifyAt ctx body expected ty
@@ -1237,7 +1241,7 @@ partial def checkData? (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) :
     match expected with
     | .mu l I D i sz (some (T, us, args)) =>
       unless (← getGlobals).contains (T ++ "." ++ c) do
-        throwAt h.info s!"{T} has no constructor {c}"
+        throwFix h.info s!"{T} has no constructor {c}" ErrorCode.unknownConstructor [("name", [c]), ("type", [T])]
       let ident : Syntax := .node h.info "term.ident" #[.ident h.info (T ++ "." ++ c)]
       let stx' := if stx.isOfKind "term.app" then .node stx.info "term.app" #[ident, stx.getArg 1] else ident
       let sizedBase := match (sizeView sz).1 with
@@ -1269,7 +1273,7 @@ partial def checkData? (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) :
     | .nu _ _ _ _ _ (some (T, _, _)) =>
       -- `.mk h t`: the coconstructor of a coinductive type (`T.mk`, a `cocon`)
       unless (← getGlobals).contains (T ++ "." ++ c) do
-        throwAt h.info s!"{T} has no coconstructor {c}"
+        throwFix h.info s!"{T} has no coconstructor {c}" ErrorCode.unknownConstructor [("name", [c]), ("type", [T])]
       let ident : Syntax := .node h.info "term.ident" #[.ident h.info (T ++ "." ++ c)]
       let stx' := if stx.isOfKind "term.app" then .node stx.info "term.app" #[ident, stx.getArg 1] else ident
       return some (← check ctx stx' expected)
@@ -1505,7 +1509,7 @@ partial def elabLetPat (ctx : LocalCtx R) (stx : Syntax) (expected : Option (VTy
     | some e => return (← check ctx m e, e)
     | none => return ← infer ctx m
   let some expected := expected
-    | throwAt ctx.info "cannot infer the type of this expression; add a type ascription"
+    | throwAt ctx.info "cannot infer the type of this expression; add a type ascription" ErrorCode.cannotInfer
   let q ← elabQuantity ctx .default (some qStx)
   let g ← getGlobals
   let v ← match patView g pat with
@@ -1527,13 +1531,13 @@ partial def elabLetPat (ctx : LocalCtx R) (stx : Syntax) (expected : Option (VTy
       let ps ← match v with
         | .ctor T c ps =>
           unless c == "mk" && (T.isNone || T == some S) do
-            throwAt pat.info s!"{S} is a structure: its constructor is {S}.mk, not {(T.map (· ++ ".")).getD "."}{c}"
+            throwAt pat.info s!"{S} is a structure: its constructor is {S}.mk, not {(T.map (· ++ ".")).getD "."}{c}" ErrorCode.unknownConstructor
           pure ps
         | .anon ps => pure ps
         | _ => throwAt pat.info s!"`let` with a quantity expects a pattern ⟨…⟩ or (.mk …) for the structure {S}"
       let n := L.fields.length
       unless ps.length == n do
-        throwAt pat.info s!"{S}.mk expects {n} argument{if n == 1 then "" else "s"} (the fields {", ".intercalate L.fields}), got {ps.length}"
+        throwAt pat.info s!"{S}.mk expects {n} argument{if n == 1 then "" else "s"} (the fields {", ".intercalate L.fields}), got {ps.length}" ErrorCode.wrongArgumentCount
       -- a component that is not a field, bound at `q` and never used
       let leftoverOk := match q with
         | .qlit r => QRig.le (0 : R) r
@@ -1617,14 +1621,15 @@ partial def structUpdateCore (ctx : LocalCtx R) (stx : Syntax) (s : Term R) (sty
   for (path, u) in ups do
     let f :: rest := path | continue
     unless L.fields.contains f do
-      throwAt u.info s!"{S} has no field '{f}' (its fields are {", ".intercalate L.fields})"
+      throwFix u.info s!"{S} has no field '{f}' (its fields are {", ".intercalate L.fields})" ErrorCode.noSuchField
+        [("name", [f]), ("type", [S]), ("fieldsOnly", []), ("update", [])]
     match rest with
     | [] =>
       if direct.any (·.1 == f) || nested.any (·.1 == f) then
-        throwAt u.info s!"field '{pathStr f}' is updated twice"
+        throwAt u.info s!"field '{pathStr f}' is updated twice" ErrorCode.namedArgument
       direct := direct ++ [(f, u.getArg 2, u)]
     | _ =>
-      if direct.any (·.1 == f) then throwAt u.info s!"field '{pathStr f}' is updated twice"
+      if direct.any (·.1 == f) then throwAt u.info s!"field '{pathStr f}' is updated twice" ErrorCode.namedArgument
       nested := match nested.lookup f with
         | some us' => nested.map fun (h, l) => if h == f then (h, us' ++ [(rest, u)]) else (h, l)
         | none => nested ++ [(f, [(rest, u)])]
@@ -2020,6 +2025,25 @@ partial def checkApp (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : Elab
   solveReady
   pure (respine f)
 
+/-- (`wrong-argument-count`) What the quick fixes "give the implicit arguments with `@f`"
+and "drop the `@`" need about an application of `fStx` to `n` arguments: its head, if it
+is a global whose type has implicit (or instance) parameters, where the head starts, how
+many explicit and implicit parameters the type has, and whether `@` was written. -/
+partial def implicitsFix (ctx : LocalCtx R) (fStx : Syntax) (n : Nat) : ElabM R (Option (List (String × List String))) := do
+  let explicitMode := fStx.isOfKind "term.explicit"
+  unless fStx.isOfKind "term.ident" || explicitMode do return none
+  if fStx.info.stop == 0 || fStx.info.synthetic then return none
+  let some x := (fStx.getArg (if explicitMode then 1 else 0)).getId? | return none
+  if (lookupLocal ctx x).isSome then return none
+  let g ← getGlobals
+  let some d := g.find? (g.resolve (stripScope x)) | return none
+  let ps := piInfos d.type
+  let nexp := (ps.filter (·.2.1 == .default)).length
+  let nimp := ps.length - nexp
+  if nimp == 0 then return none
+  return some [("head", [x]), ("at", [toString fStx.info.start]), ("explicit", [toString nexp]),
+    ("implicit", [toString nimp]), ("given", [toString n]), ("written", if explicitMode then ["@"] else [])]
+
 /-- **Exercise 3.9.** Infer the type of an application `f a₁ … aₙ` (`term.app`, with
 `f` = `stx.getArg 0` and the arguments in `(stx.getArg 1).args`).
 
@@ -2043,6 +2067,12 @@ partial def inferApp (ctx : LocalCtx R) (stx : Syntax) (postpone : Bool := true)
     let t ← checkApp ctx stx vT
     return (t, vT)
   let (f, fty) ← infer ctx fStx
+  -- (`@f a…` with as many arguments as `f` has explicit parameters: the `@` is likely
+  -- one too many, for the quick fix of whatever error the arguments give)
+  if explicitMode then
+    if let some data ← implicitsFix ctx fStx (stx.getArg 1).args.size then
+      if (stx.getArg 1).args.size == (((data.lookup "explicit").bind (·.head?)).bind String.toNat?).getD 0 then
+        pushInfo (.done (.fix stx.info "explicit-app" data))
   let mut f := f
   let mut fty := fty
   -- arguments whose type couldn't be unified yet (outside the pattern fragment): they
@@ -2062,7 +2092,9 @@ partial def inferApp (ctx : LocalCtx R) (stx : Syntax) (postpone : Bool := true)
         pure pi
       | ty => do
         let msg := s!"function expected\n  {showTerm ctx f} : {← showVal ctx ty}" ++ tooManyArgsHint f
-        throwAt (ctx.withInfo fStx).info msg
+        match ← implicitsFix ctx fStx (stx.getArg 1).args.size with
+        | some data => throwFix (ctx.withInfo fStx).info msg ErrorCode.wrongArgumentCount data
+        | none => throwAt (ctx.withInfo fStx).info msg ErrorCode.wrongArgumentCount
     match fty' with
     | .pi x bi _ dom cod _ =>
       -- `@f … _ …` at an instance argument: a problem for instance resolution
@@ -2129,7 +2161,7 @@ partial def inferAppNamed (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R ×
     if a.isOfKind "term.namedArg" then
       let x := ((a.getArg 1).getId?).getD "_"
       if named.any (·.1 == x) then
-        throwAt (ctx.withInfo a).info s!"argument '{x}' was already given"
+        throwAt (ctx.withInfo a).info s!"argument '{x}' was already given" ErrorCode.namedArgument
       named := named.push (x, a.getArg 3, a)
     else positional := positional.push a
   let (f, fty) ← infer ctx fStx
@@ -2139,9 +2171,9 @@ partial def inferAppNamed (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R ×
   while pos < positional.size || !named.isEmpty do
     let .pi x bi _ dom cod _ ← force fty
       | if let some (y, _, a) := named[0]? then
-          throwAt (ctx.withInfo a).info s!"no parameter named '{y}' (the function's type is {← showVal ctx fty})"
+          throwAt (ctx.withInfo a).info s!"no parameter named '{y}' (the function's type is {← showVal ctx fty})" ErrorCode.unknownParameter
         else
-          throwAt (ctx.withInfo fStx).info (s!"function expected\n  {showTerm ctx f} : {← showVal ctx fty}" ++ tooManyArgsHint f)
+          throwAt (ctx.withInfo fStx).info (s!"function expected\n  {showTerm ctx f} : {← showVal ctx fty}" ++ tooManyArgsHint f) ErrorCode.wrongArgumentCount
     let a ← match named.findIdx? (·.1 == x) with
       | some i =>
         let (_, e, _) := named[i]!
@@ -2161,8 +2193,8 @@ partial def inferAppNamed (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R ×
             let later ← binderNames ctx.lvl fty
             let (y, _, a) := named[0]!
             if let some (y, _, a) := named.find? (!later.contains ·.1) then
-              throwAt (ctx.withInfo a).info s!"no parameter named '{y}' (the function's type is {← showVal ctx fty})"
-            throwAt (ctx.withInfo a).info s!"named argument '{y}' comes after the explicit parameter '{x}', which has no argument"
+              throwAt (ctx.withInfo a).info s!"no parameter named '{y}' (the function's type is {← showVal ctx fty})" ErrorCode.unknownParameter
+            throwAt (ctx.withInfo a).info s!"named argument '{y}' comes after the explicit parameter '{x}', which has no argument" ErrorCode.namedArgument
         else if bi == .instImplicit then do
           let m ← freshMeta ctx s!"instance {x}"
           addInstProblem ctx m dom
@@ -2211,7 +2243,7 @@ partial def structPattern? (ctx : LocalCtx R) (vars : List Lvl) (clauses : List 
       let ps? ← match v with
         | .ctor T c ps =>
           unless c == "mk" && (T.isNone || T == some S) do
-            throwAt p.info s!"{S} is a structure: its constructor is {S}.mk, not {(T.map (· ++ ".")).getD "."}{c}"
+            throwAt p.info s!"{S} is a structure: its constructor is {S}.mk, not {(T.map (· ++ ".")).getD "."}{c}" ErrorCode.unknownConstructor
           pure (some ps)
         | .anon ps => pure (some ps)
         | _ => pure none
@@ -2219,7 +2251,7 @@ partial def structPattern? (ctx : LocalCtx R) (vars : List Lvl) (clauses : List 
       | none => pure none
       | some ps =>
         unless ps.length == n do
-          throwAt p.info s!"{S}.mk expects {n} argument{if n == 1 then "" else "s"} (the fields {", ".intercalate L.fields}), got {ps.length}"
+          throwAt p.info s!"{S}.mk expects {n} argument{if n == 1 then "" else "s"} (the fields {", ".intercalate L.fields}), got {ps.length}" ErrorCode.wrongArgumentCount
         pure (some (L.tuplePattern p.info ps))
   | none =>
     let first ← match patViewAs g p0 with
@@ -2372,7 +2404,7 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
       let ihType (l : Lvl) : Option (VTy R) := ctx.types[ctx.lvl - l - 1]?
       match rewriteRecCalls g rc binds ihType ctx.lvl ctx.types.reverse.toArray cl.rhs with
       | .ok (r, extra) => rhs := r; binds := binds ++ extra
-      | .error e => throwAt cl.rhs.info e
+      | .error e => throwAt cl.rhs.info e ErrorCode.notStructural
     let mut ctx' := ctx
     for (n, ty, val) in binds do ctx' := ctx'.define n ty val
     -- (11q) the pattern variables, in the arm's context
@@ -2431,7 +2463,7 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
     let w1 : Term R := if erased1 then .qlit 0 else w
     return .letE "fst✝" w1 (q A) (q v1) (.letE "snd✝" w (quote g (ctx.lvl + 1) ty2) (quote g (ctx.lvl + 1) v2) body)
   if rc.isSome && top && k != 0 then
-    throwAt cl.rhs.info "structural recursion: the first argument must be matched first"
+    throwAt cl.rhs.info "structural recursion: the first argument must be matched first" ErrorCode.notStructural
   let x := vars[k]!
   let rsAll := vars.drop (k + 1)
   let xty ← force (typeOf x)
@@ -2462,7 +2494,7 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
   -- a scrutinee of finite size is split with the sized eliminator, keeping field sizes
   let sized := !(xsz matches .szInf)
   if sized && useRec then
-    throwAt ctx.info "structural recursion on a sized argument: give the definition a sized signature instead"
+    throwAt ctx.info "structural recursion on a sized argument: give the definition a sized signature instead" ErrorCode.notStructural
   -- G := Π rs. goal
   let w : Term R := .qlit QuantitySyntax.explicitDefault
   let mut G := q goal
@@ -2490,7 +2522,8 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
           -- (a pattern a macro wrote, such as `if`'s `.true`, has no place of its own)
           let pi := (cl.pats[k]!).info
           let at_ := if pi.stop == 0 || pi.synthetic then ctx.info else pi
-          throwAt at_ s!"{T} has no constructor {c'} (its constructors are {", ".intercalate ctors})"
+          throwFix at_ s!"{T} has no constructor {c'} (its constructors are {", ".intercalate ctors})"
+            ErrorCode.unknownConstructor [("name", [c']), ("type", [T])]
   let nΞ := ξ.length
   -- a motive that depends on neither the indices nor the scrutinee: the non-dependent
   -- eliminator (`T.recN`), whose branches need no cast along the index equation
@@ -2660,7 +2693,7 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
             if c' == c then
               unless ps.length == explicitIdx.length do
                 throwAt (cl'.pats[k]!).info (s!"the constructor {c} has {plural explicitIdx.length "explicit field"}, " ++
-                  s!"but the pattern gives it {plural ps.length "argument"}")
+                  s!"but the pattern gives it {plural ps.length "argument"}") ErrorCode.wrongArgumentCount
               let sub := (List.range fieldInfos.length).map fun i =>
                 match explicitIdx.idxOf? i with
                 | some j => ps[j]!
@@ -3120,8 +3153,8 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
       return (.cast (quote g ctx.lvl X) (quote g ctx.lvl Y) e t, Y)
     -- (4g) an equation between data types computes (to the equation of their codes), and so
     -- do equations between `Π`s and `Σ`s: then the target can't be read off the proof's type
-    | .neutral .. | .unfold .. => throwAt ctx.info "cannot infer the type of this cast; add a type ascription"
-    | _ => throwAt ctx.info "cannot infer the type of this cast: its proof's type is an equation that has computed, so it no longer shows the target type; write `(cast e t : T)`"
+    | .neutral .. | .unfold .. => throwAt ctx.info "cannot infer the type of this cast; add a type ascription" ErrorCode.cannotInfer
+    | _ => throwAt ctx.info "cannot infer the type of this cast: its proof's type is an equation that has computed, so it no longer shows the target type; write `(cast e t : T)`" ErrorCode.cannotInfer
   | "term.match" =>
     -- stage 13: the type is found from the alternatives (a metavariable, in `Type`)
     -- (not depending on the scrutinised variables: the motive abstracts them, which
@@ -3134,12 +3167,12 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
     let ty ← evalIn ctx (← freshMeta ctx' "the type of this match")
     return (← check ctx stx ty, ty)
   | "term.letPair" | "term.letTuple" | "term.absurd" | "term.rfl" =>
-    throwAt ctx.info "cannot infer the type of this expression; add a type ascription"
+    throwAt ctx.info "cannot infer the type of this expression; add a type ascription" ErrorCode.cannotInfer
   | "term.nativeRefl" =>
     throwAt ctx.info "native_refl can only be the whole body of a definition, `def X : a = b := native_refl` (with --trust-native)"
   -- (13g–i) as-patterns, anonymous constructors, pattern `let`, structure update
   | "term.asPat" => throwAt ctx.info "an as-pattern `x@p` is only allowed in a pattern"
-  | "term.anon" => throwAt ctx.info "cannot infer the type of an anonymous constructor ⟨…⟩; add a type ascription"
+  | "term.anon" => throwAt ctx.info "cannot infer the type of an anonymous constructor ⟨…⟩; add a type ascription" ErrorCode.cannotInfer
   | "term.letPat" => elabLetPat ctx stx none
   | "term.structUpdate" => elabStructUpdate ctx stx
   | "term.omega" => return (← elabQtyLit ctx stx "ω", .qty)
@@ -3163,7 +3196,7 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
     if k.startsWith "quote." then
       let syntaxTy ← evalIn {} (.const "Syntax" [])
       return (← elabQuote ctx syntaxTy "" (stx.getArg 3), syntaxTy)
-    throwAt ctx.info s!"the syntax {k} has no meaning: no `macro_rules` (or `attribute [macro {k}] f`) for it is in scope (if one is defined above, it was rejected: see its error)"
+    throwAt ctx.info s!"the syntax {k} has no meaning: no `macro_rules` (or `attribute [macro {k}] f`) for it is in scope (if one is defined above, it was rejected: see its error)" ErrorCode.unknownSyntax
 
 
 -- Tactics (see `Elab/Tactic.lean`)
@@ -3182,7 +3215,7 @@ partial def evalTacticStx (code : Code) (st : TacState R) (stx : Syntax) (record
     pushInfo (.tactic stx.info false before (← openGoals st'))
     return st'
   if let some stx' ← expand? stx then return ← evalTacticStx code st stx'
-  let some f := (← get).tactics.lookup stx.kind | throwAt stx.info s!"the tactic syntax {stx.kind} has no meaning: no `attribute [tactic {stx.kind}] f` (or macro) for it is in scope (if one is defined above, it was rejected: see its error)"
+  let some f := (← get).tactics.lookup stx.kind | throwAt stx.info s!"the tactic syntax {stx.kind} has no meaning: no `attribute [tactic {stx.kind}] f` (or macro) for it is in scope (if one is defined above, it was rejected: see its error)" ErrorCode.unknownSyntax
   if stx.info.stop > 0 then pushInfo (.done (.expansion stx.info stx.kind (.fn "tactic" f) none))
   let t := apply code (run code [] (.global "TacticM.run")) (apply code (run code [] (.global f)) (encodeSyntax stx))
   runTac code stx.info st t
@@ -3230,7 +3263,7 @@ partial def runTac (code : Code) (info : SourceInfo) (st : TacState R) (v : RVal
   let tag := (v.tag?).getD 1000
   if tag == TacTag.done then return st
   if tag == TacTag.result then throwAt info "a tactic may not return syntax"
-  if tag == TacTag.fail then throwAt info (((fld 0).toString?).getD "tactic failed")
+  if tag == TacTag.fail then throwAt info (((fld 0).toString?).getD "tactic failed") ErrorCode.tacticFailed
   if tag == TacTag.trace then
     pushTrace info (((fld 0).toString?).getD "")
     return ← runTac code info st (fld 1)
@@ -3313,14 +3346,14 @@ partial def runTac (code : Code) (info : SourceInfo) (st : TacState R) (v : RVal
     return ← runTac code info st (apply code (fld 1) (encodeList hyps.toList))
   if tag == TacTag.intro then
     let x ← str (fld 1)
-    let .pi _ _ _ dom cod _ ← force gl.ty | throwAt info "intro: the goal is not a function type"
+    let .pi _ _ _ dom cod _ ← force gl.ty | throwAt info "intro: the goal is not a function type" ErrorCode.tacticFailed
     let ctx' := gl.ctx.bind x dom
     let m ← freshMeta ctx' "goal"
     unifyGoal gl (.lam x m)
     let (st, id) := addGoal st { ctx := ctx', ty := ← instM cod (Val.var lvl), tm := m }
     return ← runTac code info st (apply code (fld 2) (.nat id))
   if tag == TacTag.introFresh then
-    let .pi bx _ _ dom cod _ ← force gl.ty | throwAt info "intro: the goal is not a function type"
+    let .pi bx _ _ dom cod _ ← force gl.ty | throwAt info "intro: the goal is not a function type" ErrorCode.tacticFailed
     let x := introName gl.ctx.names (← str (fld 1)) bx (isProp g gl.ctx.types.reverse.toArray dom)
       (decodeBool (fld 2) == some true)
     let ctx' := gl.ctx.bind x dom
@@ -3330,14 +3363,14 @@ partial def runTac (code : Code) (info : SourceInfo) (st : TacState R) (v : RVal
     return ← runTac code info st (apply code (fld 3) (encodePair (encodeString x) (.nat id)))
   if tag == TacTag.rename then
     let i ← num (fld 1)
-    unless i < lvl do throwAt info "rename: no such hypothesis"
+    unless i < lvl do throwAt info "rename: no such hypothesis" ErrorCode.tacticFailed
     -- names are not part of terms: the same hole, in a context that differs in a name
     let (st, id) := addGoal st { gl with ctx := { gl.ctx with names := gl.ctx.names.set i (← str (fld 2)) } }
     return ← runTac code info st (apply code (fld 3) (.nat id))
   if tag == TacTag.change then
     let ty ← evalIn gl.ctx (← reify st.handles (fld 1) lvl)
     try unify lvl gl.ty ty
-    catch e => throwAt info s!"change: the new goal is not convertible with the old one ({e.msg})"
+    catch e => throwAt info s!"change: the new goal is not convertible with the old one ({e.msg})" ErrorCode.tacticFailed
     let m ← freshMeta gl.ctx "goal"
     unifyGoal gl m
     let (st, id) := addGoal st { ctx := gl.ctx, ty, tm := m }
@@ -3360,18 +3393,18 @@ partial def runTac (code : Code) (info : SourceInfo) (st : TacState R) (v : RVal
   if tag == TacTag.rewrite then
     let h ← zonk lvl (← reify st.handles (fld 1) lvl)
     let rtl := decodeBool (fld 2) == some true
-    unless h.mvars.isEmpty do throwAt info "rewrite: the equation has holes"
+    unless h.mvars.isEmpty do throwAt info "rewrite: the equation has holes" ErrorCode.tacticFailed
     let hty ← match (← get).kernelInfer (gl.kernelCtx g) h with
       | .ok ty => pure ty
-      | .error e => throwAt info s!"rewrite: {e}"
+      | .error e => throwAt info s!"rewrite: {e}" ErrorCode.tacticFailed
     let (A, a, b) ← match ← force hty with
       | .neutral (.eq A a b) #[] => pure (quote g lvl A, quote g lvl a, quote g lvl b)
-      | v => throwAt info s!"rewrite: not an equation between two terms: {← showVal gl.ctx v}"
+      | v => throwAt info s!"rewrite: not an equation between two terms: {← showVal gl.ctx v}" ErrorCode.tacticFailed
     let goalT ← zonk lvl (quote g lvl gl.ty)
     -- the side to replace, and its replacement
     let (old, new) := if rtl then (b, a) else (a, b)
     let (body, found) := (abstractOcc old goalT).run false
-    unless found do throwAt info s!"rewrite: the goal does not mention {showTerm gl.ctx old}"
+    unless found do throwAt info s!"rewrite: the goal does not mention {showTerm gl.ctx old}" ErrorCode.tacticFailed
     let newT := body.instantiateAt 0 new
     -- `P x _ := G[x] = G[a]` (or `G[a] = G[x]`, right to left), transported along `h : a = b`
     let Ga := body.instantiateAt 0 a
@@ -3398,7 +3431,7 @@ partial def runTac (code : Code) (info : SourceInfo) (st : TacState R) (v : RVal
     if t.mvars.isEmpty then
       match (← get).kernelInfer (gl.kernelCtx g) t with
       | .ok ty => unifyAt gl.ctx .missing gl.ty ty
-      | .error e => throwAt info s!"assign: {e}"
+      | .error e => throwAt info s!"assign: {e}" ErrorCode.tacticFailed
     else
       -- with holes its type can't be inferred yet: at the end of the block (`elabBy`)
       st := { st with unchecked := st.unchecked.push (gl, t) }
@@ -3466,13 +3499,13 @@ partial def elabBy (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : ElabM 
   -- type with a private constructor is opaque), not left to the kernel
   for (gl, t) in st.unchecked do
     let t ← zonk gl.ctx.lvl t
-    unless t.mvars.isEmpty do throwAt ctx.info "assign: the assigned term still has holes at the end of the tactic block"
+    unless t.mvars.isEmpty do throwAt ctx.info "assign: the assigned term still has holes at the end of the tactic block" ErrorCode.tacticFailed
     -- (the context's types with their holes solved: they may have been holes when the
     -- goal was made, and the kernel takes a hole as rigid)
     let kctx := { gl.kernelCtx (← getGlobals) with types := (← zonkedTypes gl.ctx).toList.reverse }
     match (← get).kernelInfer kctx t with
     | .ok ty => unifyAt gl.ctx stx gl.ty ty
-    | .error e => throwAt ctx.info s!"assign: {e}"
+    | .error e => throwAt ctx.info s!"assign: {e}" ErrorCode.tacticFailed
   pure m
 
 end

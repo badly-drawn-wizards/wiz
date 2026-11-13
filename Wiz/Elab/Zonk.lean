@@ -125,8 +125,8 @@ def ensureNoMVars (t : Term R) (info : SourceInfo := {}) : ElabM R Unit := do
       else if e.desc.startsWith "implicit argument " then
         s!"; give it by name, as in f ({e.desc.drop 18} := …), or add a type ascription"
       else ""
-    throwAt e.info s!"could not infer {e.desc}{hint}"
+    throwAt e.info s!"could not infer {e.desc}{hint}" ErrorCode.unsolvedHole
   if t.hasLevelMVar then
-    throwAt info "could not infer a universe level; add a universe parameter or annotation"
+    throwAt info "could not infer a universe level; add a universe parameter or annotation" ErrorCode.unsolvedLevel
 
 end Wiz

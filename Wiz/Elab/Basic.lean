@@ -178,10 +178,13 @@ inductive Info (R : Type) where
   /-- (11q) an instance argument found by instance search: the instance term and the class
   type it solves (in `names`) -/
   | inst (info : SourceInfo) (names : List Name) (type : Term R) (inst : Term R)
+  /-- what a quick fix for the error of code `code` at `info` needs (`ErrorCode`): named
+  lists of strings, such as the name that was not found and the type it was looked up in -/
+  | fix (info : SourceInfo) (code : String) (data : List (String × List String))
 
 def Info.info : Info R → SourceInfo
   | .ident i .. | .term i .. | .tactic i .. | .matchCases i .. | .decl i .. | .unknownIdent i .. | .warning i .. | .trace i ..
-  | .syntaxRef i .. | .expansion i .. | .importMod i .. | .inst i .. => i
+  | .syntaxRef i .. | .expansion i .. | .importMod i .. | .inst i .. | .fix i .. => i
 
 /-- An `Info` as recorded during elaboration, before quoting and zonking. -/
 inductive RawInfo (R : Type) where
@@ -355,6 +358,20 @@ def editDistance (a b : String) : Nat := Id.run do
     prev := cur
   prev[b.size]!
 
+/-- The candidates closest to `x` by edit distance (at most `limit`, sorted): within 2 edits,
+one for names up to four letters, none for one or two letters (a short name is "close"
+to too many others); only those at the smallest distance found. -/
+def closest (x : String) (cands : Array String) (limit : Nat := 5) : Array String :=
+  if x.length ≤ 2 then #[] else
+  let maxD := if x.length ≤ 4 then 1 else 2
+  let scored := cands.filterMap fun n =>
+    if n == x || (n.length + maxD < x.length) || (x.length + maxD < n.length) then none else
+    let d := editDistance x n
+    if d ≤ maxD then some (d, n) else none
+  let best := scored.foldl (fun m (d, _) => min m d) maxD
+  let sorted := (scored.filter (·.1 == best)).qsort fun (_, n) (_, n') => n < n'
+  (sorted.map (·.2)).toList.eraseDups.toArray.extract 0 limit
+
 /-- Names within edit distance 2 of `x` (closest first, at most `limit`): the locals, then
 the globals `g` (in the user's spelling: this module's private names without their
 prefix; other modules' private names and names the elaborator made up are left out). -/
@@ -367,18 +384,7 @@ def closeNames (g : Globals R) (x : Name) (locals : List Name) (limit : Nat := 5
   let internal := [".desc", ".rec", ".recN", ".casesOn", ".casesOnN", ".scasesOn", ".scasesOnN"]
   let cands := (locals.filter (!·.contains '✝')).toArray ++
     globals.filter fun n => !n.contains '✝' && !internal.any (fun s => n.endsWith s)
-  -- a short name is "close" to too many others: none for one or two letters, one edit
-  -- up to four
-  if x.length ≤ 2 then #[] else
-  let maxD := if x.length ≤ 4 then 1 else 2
-  let scored := cands.filterMap fun n =>
-    if n == x || (n.length + maxD < x.length) || (x.length + maxD < n.length) then none else
-    let d := editDistance x n
-    if d ≤ maxD then some (d, n) else none
-  -- only the closest ones
-  let best := scored.foldl (fun m (d, _) => min m d) maxD
-  let sorted := (scored.filter (·.1 == best)).qsort fun (_, n) (_, n') => n < n'
-  (sorted.map (·.2)).toList.eraseDups.toArray.extract 0 limit
+  closest x cands limit
 
 /-- The hint for an unknown identifier `x`: `did you mean 'y'?`, or `""`. -/
 def didYouMean (g : Globals R) (x : Name) (locals : List Name) : String :=
@@ -399,6 +405,12 @@ def pushInfo (i : RawInfo R) : ElabM R Unit :=
   -- another file, or the whole call's), except messages
   if i.isSynthetic then pure () else
   modify fun s => { s with infos := s.infos.push i }
+
+/-- Throw an error with a code, recording what its quick fix needs (`Info.fix`; nothing at
+a macro's output, which has no place of its own). -/
+def throwFix (info : SourceInfo) (msg code : String) (data : List (String × List String)) : ElabM R α := do
+  pushInfo (.done (.fix info code data))
+  throwAt info msg code
 
 /-- A `trace` of a tactic or macro at `info`: an info message, in the order traced. It is
 part of the elaborator state, so a trace in a branch that fails and is caught (`try`,
