@@ -74,3 +74,32 @@ def Process.spawnOwned {B : Type} (cmd : String) (args : List String) (stdin std
 -- wait for it; `k` gets the exit status, or the error
 def Child.releaseOwned {B : Type} (c : Child) (1 o : Owned c) (1 k : (r : Except String ExitStatus) → IO B) : IO B :=
   fun w => let 1 (u, w') := Owned.burn o w; IO.bind (Child.wait c) k w'
+
+-- ## Direct style: operations on owned handles as `IO1` actions (cohesion M6 part 2)
+--
+-- The token goes in and comes back as the second component of the result, so a block is
+-- straight-line code in `do1` (`(r, o) ⇐ File.writeOwned f o "x";`, lib/IO.wiz) instead
+-- of nested continuations. lib/Sys.wiz's ω API is unchanged; only these owned variants
+-- are `IO1`. Acquisition stays in continuation style (`File.withOwned`), since taking a
+-- linear token out of an `Except` needs a linear `match` (linear-case stage 2).
+
+-- any operation on an owned handle: its result, and the token back
+def Handle.use1 {H A : Type} (h : H) (1 o : Owned h) (act : H → IO A) : IO1 ((a : A) × Owned h) := fun w =>
+  let 1 (a, w') := act h w; ((a, o), w')
+
+def File.writeOwned (f : File) (1 o : Owned f) (s : String) : IO1 ((r : Except String Unit) × Owned f) :=
+  Handle.use1 f o (fun (f : File) => File.write f s)
+def File.readLineOwned (f : File) (1 o : Owned f) : IO1 ((r : Except String (Option String)) × Owned f) :=
+  Handle.use1 f o (fun (f : File) => File.readLine f)
+def File.readAllOwned (f : File) (1 o : Owned f) : IO1 ((r : Except String String) × Owned f) :=
+  Handle.use1 f o (fun (f : File) => File.readAll f)
+def File.flushOwned (f : File) (1 o : Owned f) : IO1 ((r : Except String Unit) × Owned f) :=
+  Handle.use1 f o (fun (f : File) => File.flush f)
+def Fd.writeOwned (f : Fd) (1 o : Owned f) (b : Bytes) : IO1 ((r : Except String Unit) × Owned f) :=
+  Handle.use1 f o (fun (f : Fd) => Fd.write f b)
+def Fd.readOwned (f : Fd) (1 o : Owned f) (n : Nat) : IO1 ((r : Except String (Option Bytes)) × Owned f) :=
+  Handle.use1 f o (fun (f : Fd) => Fd.read f n)
+-- close, in direct style: the token is used up, the result is unrestricted
+def File.closeOwned (f : File) (1 o : Owned f) : EIO Unit := File.releaseOwned f o (fun r => IO.pure r)
+def Fd.closeOwned (f : Fd) (1 o : Owned f) : EIO Unit := Fd.releaseOwned f o (fun r => IO.pure r)
+def Child.waitOwned (c : Child) (1 o : Owned c) : EIO ExitStatus := Child.releaseOwned c o (fun r => IO.pure r)
