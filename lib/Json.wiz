@@ -251,8 +251,9 @@ def Json.hex4 : List Char → Option (Nat × List Char)
     | .false => .none
   | _ => .none
 
-/-- `a - b`, opaque to the elaborator: today `(hi - 0xD800) * 1024 + …` written out makes
-elaboration unfold the subtraction 55296 times and run out of memory. -/
+-- `a - b`, opaque to the elaborator: today `(hi - 0xD800) * 1024 + …` written out makes
+-- elaboration unfold the subtraction 55296 times and run out of memory
+/-- `a - b`, opaque to the elaborator (see the note above). -/
 partial def Json.sub (a b : Nat) : Nat := a - b
 /-- After `\u` and a high surrogate `hi`: a following `\u` low surrogate makes a pair (the
 code point above 0xFFFF); otherwise U+FFFD. -/

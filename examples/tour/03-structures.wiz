@@ -1,0 +1,27 @@
+-- The tour, section 3: structures (docs/tour.md).
+import Deriving
+
+structure Point where
+  x : Nat
+  y : Nat
+  deriving Repr
+
+def origin : Point := ⟨0, 0⟩                -- `Point.mk 0 0`, from the expected type
+def p : Point := Point.mk (y := 4) (x := 3)  -- named arguments, in any order
+#eval p.x + p.y
+
+-- update a copy, and take a structure apart with a pattern
+def shiftRight (q : Point) : Point := { q with x := q.x + 1 }
+#eval Repr.repr (shiftRight p)
+
+def manhattan (q : Point) : Nat :=
+  let ⟨a, b⟩ := q
+  a + b
+#eval manhattan p
+
+-- a field's type can depend on an earlier one: here a proof about it
+structure Positive where
+  n : Nat
+  pos : Nat.lt 0 n = .true
+def five : Positive := ⟨5, rfl⟩
+#eval five.n

@@ -36,11 +36,12 @@ import BitVec
 /-- `BitVec n`: `n` bits, the number they spell below `2^n`. It is `UIntN n` itself. -/
 def BitVec (n : Nat) : Type := UIntN n
 
+-- the bits as a number, and a number as bits (modulo `2^n`; `mk` is `ofNat` with the
+-- width inferred)
 /-- The bits as a number, below `2^n`. -/
 def BitVec.toNat {0 n : Nat} (a : BitVec n) : Nat := UIntN.toNat a
-/-- A number below `2^n` as bits, unchecked: `mk` doesn't reduce (it is
-`UIntN.ofBitsTrusted`), so the caller keeps `x < 2^n`. Use `BitVec.ofNat` otherwise. -/
-def BitVec.mk {0 n : Nat} (x : Nat) : BitVec n := UIntN.ofBitsTrusted x
+/-- A number as bits, modulo `2^n`: `mk` is `ofNat` with the width inferred. -/
+def BitVec.mk {ω n : Nat} (x : Nat) : BitVec n := UIntN.ofNat n x
 
 /-- `x` mod `2^n` as an `n`-bit vector: `BitVec.ofNat 4 17` is `1`. -/
 def BitVec.ofNat (n x : Nat) : BitVec n := UIntN.ofNat n x
@@ -105,7 +106,7 @@ def BitVec.sle {ω n : Nat} (a b : BitVec n) : Bool := IntN.le (UIntN.toIntN a) 
 
 -- Widths.
 /-- `hi` on top of `lo`: an `m + n`-bit vector whose low `n` bits are `lo`. -/
-def BitVec.concat {0 m : Nat} {ω n : Nat} (hi : BitVec m) (lo : BitVec n) : BitVec (m + n) :=
+def BitVec.concat {ω m n : Nat} (hi : BitVec m) (lo : BitVec n) : BitVec (m + n) :=
   BitVec.mk (Nat.shiftLeft hi.toNat n + lo.toNat)
 /-- Bits `hi` down to `lo` (inclusive), as in Verilog `a[hi:lo]`:
 `BitVec.extract 3 2 (BitVec.ofNat 8 12)` is `3` (12 is `1100` in binary). -/
@@ -132,7 +133,7 @@ def BitVec.bitValue : Bool → Nat
   | .false => 0
   | .true => 1
 /-- A vector of bits, least significant first, as a bit vector. -/
-def BitVec.ofVec {0 n : Nat} (v : Vec Bool n) : BitVec n :=
+def BitVec.ofVec {ω n : Nat} (v : Vec Bool n) : BitVec n :=
   BitVec.mk (Vec.foldr (fun b acc => BitVec.bitValue b + acc + acc) 0 v)
 
 -- Theorems. A bit vector is a word, by definition: the operations are Word's.
@@ -149,3 +150,13 @@ def BitVec.toNat_eq {0 n : Nat} (a : BitVec n) : BitVec.toNat a = UIntN.toNat (B
 /-- Addition of bit vectors is commutative. -/
 def BitVec.add_comm {ω n : Nat} (a b : BitVec n) : BitVec.add a b = BitVec.add b a :=
   congrArg (UIntN.ofNat n) (Nat.add_comm a.toNat b.toNat)
+/-- A one-bit word is 0 or 1 (its bits are below 2: `UIntN.toNat_lt`). -/
+def BitVec.lt2_cases : (n : Nat) → Nat.lt n 2 = .true → (n = 0) ∨ (n = 1)
+  | .zero, _ => Or.inl rfl
+  | .succ .zero, _ => Or.inr rfl
+  | .succ (.succ .zero), h => absurd h.1
+  | .succ (.succ (.succ _)), h => absurd h.1
+/-- A `UIntN 1` is `0` or `1`. -/
+def UIntN.cases1 (x : UIntN 1) : x = 0 ∨ x = 1 :=
+  Or.elim (BitVec.lt2_cases x.toNat (UIntN.toNat_lt x))
+    (fun e => Or.inl (UIntN.ext x 0 e)) (fun e => Or.inr (UIntN.ext x 1 e))

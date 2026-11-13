@@ -369,7 +369,8 @@ def Option.substP {V : Type} (0 P : Option V → Prop) {a b : Option V} (e : a =
 
 
 -- (`Nat.beq_eq` is in lib/Nat.wiz)
-/-- `m + succ n = succ (m + n)` (`Nat.add_succ` from lib/Nat.wiz, under the name the proofs below use). -/
+-- (`Nat.add_succ` from lib/Nat.wiz, under the name the proofs below use)
+/-- `m + succ n = succ (m + n)`. -/
 def Nat.add_succ_r (m n : Nat) : m + Nat.succ n = Nat.succ (m + n) := Nat.add_succ m n
 /-- A location above `n` is not `n`. -/
 def Nat.beq_succ_add : (n m : Nat) → Nat.beq n (Nat.succ (m + n)) = .false

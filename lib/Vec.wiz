@@ -1,4 +1,5 @@
 import Nat
+
 /-!
 # Vec
 
@@ -13,7 +14,7 @@ length of a `Vec` is an erased index (quantity 0): at runtime a vector is a list
 Main definitions: `Fin` (`Fin.of`, `Fin.zero`, `Fin.succ`, `Fin.last`), `Vec` with
 `Vec.get`, `Vec.set`, `Vec.map`, `Vec.zipWith`, `Vec.foldr`, `Vec.append`,
 `Vec.reverse`, `Vec.splitAt`, conversions to and from `List`, and lemmas such as
-`Vec.get_set` and `Vec.map_map`.
+`Vec.get_set` and `Vec.map_map`. The `Nat` lemmas the indices need are in lib/Nat.wiz.
 
 ```
 import Vec
@@ -24,9 +25,7 @@ def v : Vec Nat 3 := Vec.fromList [1, 2, 3]
 ```
 -/
 
--- (`congrArg`, `Nat.add_zero`, `Nat.add_succ` and `Nat.add_comm` are in lib/Nat.wiz)
-
-/-- `n < n + 1`. -/
+/-- (`congrArg`, `Nat.add_zero`, `Nat.add_succ` and `Nat.add_comm` are in lib/Nat.wiz) -/
 def Nat.lt_self : (n : Nat) → Nat.lt n (Nat.succ n) = .true
   | .zero => rfl
   | .succ n => Nat.lt_self n

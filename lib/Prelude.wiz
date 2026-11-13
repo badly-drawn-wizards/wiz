@@ -309,57 +309,131 @@ instance : Mul Nat := Mul.mk Nat.mul
 instance : Div Nat := Div.mk Nat.div
 /-- `m % n` at `Nat` is `Nat.mod m n`. -/
 instance : Mod Nat := Mod.mk Nat.mod
-/-- A numeral at `Nat` is itself. -/
-instance {ω n : Nat} : OfNat Nat n := OfNat.mk n
-infixl:65 " + " => Add.add
-infixl:65 " - " => Sub.sub
-infixl:70 " * " => Mul.mul
-infixl:70 " / " => Div.div
-infixl:70 " % " => Mod.mod
+/-- A numeral at `Nat` is itself (the default instance, at priority 100, so that a
+homogeneous operator's instance decides first). -/
+instance instOfNatNat {ω n : Nat} : OfNat Nat n := OfNat.mk n
+
+-- Heterogeneous operators (7f), as in Lean: `a + b` is `HAdd.hAdd a b` at an instance
+-- `HAdd A B C` (the result type `C` is an output), and the default instance `instHAdd`
+-- makes it `Add.add` when nothing else decides (`x + 1`: `HAdd A A A`). A numeral's type is
+-- decided by what it meets; one that meets nothing is a `Nat` (the default instance
+-- `instOfNatNat`, at a lower priority, so `instHAdd` decides first). The operators are
+-- `binop`s: a numeral operand takes the type of the other operand (`x + 1`, `1 + x` at
+-- `x : U8`) or of the result, without waiting for a default. `^` is not one: `x ^ 2` has a
+-- `Nat` exponent (`Pow A Nat`). At `Nat`, `a + b` unfolds to `Add.add a b` and on to
+-- `Nat.add a b`, so it computes natively, and compiled code is the native `nat.add`.
+
+/-- Marks a class parameter that instance resolution determines from the others (type
+classes, stage 7). As a function it is the identity. -/
+def outParam.{u} (A : Sort u) : Sort u := A
+/-- Heterogeneous addition, written `a + b`: `C` (an output) is the result type. -/
+class HAdd (A B : Type) (C : outParam Type) where
+  hAdd : A → B → C
+/-- Heterogeneous subtraction, written `a - b`. -/
+class HSub (A B : Type) (C : outParam Type) where
+  hSub : A → B → C
+/-- Heterogeneous multiplication, written `a * b`. -/
+class HMul (A B : Type) (C : outParam Type) where
+  hMul : A → B → C
+/-- Heterogeneous division, written `a / b`. -/
+class HDiv (A B : Type) (C : outParam Type) where
+  hDiv : A → B → C
+/-- Heterogeneous remainder, written `a % b`. -/
+class HMod (A B : Type) (C : outParam Type) where
+  hMod : A → B → C
+/-- Heterogeneous exponentiation, written `a ^ b`. -/
+class HPow (A B : Type) (C : outParam Type) where
+  hPow : A → B → C
+/-- Types with exponentiation, written `a ^ b` (at `^` the exponent is a `Nat`). -/
+class Pow (A B : Type) where
+  pow : A → B → A
+/-- `a + b` at a type with `Add` is `Add.add` (the default instance). -/
+instance instHAdd {A : Type} [Add A] : HAdd A A A := HAdd.mk Add.add
+/-- `a - b` at a type with `Sub` is `Sub.sub`. -/
+instance instHSub {A : Type} [Sub A] : HSub A A A := HSub.mk Sub.sub
+/-- `a * b` at a type with `Mul` is `Mul.mul`. -/
+instance instHMul {A : Type} [Mul A] : HMul A A A := HMul.mk Mul.mul
+/-- `a / b` at a type with `Div` is `Div.div`. -/
+instance instHDiv {A : Type} [Div A] : HDiv A A A := HDiv.mk Div.div
+/-- `a % b` at a type with `Mod` is `Mod.mod`. -/
+instance instHMod {A : Type} [Mod A] : HMod A A A := HMod.mk Mod.mod
+/-- `a ^ b` at a type with `Pow` is `Pow.pow`. -/
+instance instHPow {A B : Type} [Pow A B] : HPow A B A := HPow.mk Pow.pow
+/-- `a ^ b` at `Nat` is `Nat.pow`. -/
+instance instPowNat : Pow Nat Nat := Pow.mk Nat.pow
+attribute [default_instance] instHAdd
+attribute [default_instance] instHSub
+attribute [default_instance] instHMul
+attribute [default_instance] instHDiv
+attribute [default_instance] instHMod
+attribute [default_instance] instHPow
+attribute [default_instance 100] instOfNatNat
+attribute [binop] HAdd.hAdd
+attribute [binop] HSub.hSub
+attribute [binop] HMul.hMul
+attribute [binop] HDiv.hDiv
+attribute [binop] HMod.hMod
+infixl:65 " + " => HAdd.hAdd
+infixl:65 " - " => HSub.hSub
+infixl:70 " * " => HMul.hMul
+infixl:70 " / " => HDiv.hDiv
+infixl:70 " % " => HMod.hMod
+-- (`T^s` without spaces is a sized type, stage 12)
+infixr:75 " ^ " => HPow.hPow
 syntax:75 (name := neg) "-" term:75 : term
 macro_rules
   | `(term| - $x) => `(term| Neg.neg $x)
--- Bitwise classes (H14 S2), as in Lean: `a &&& b`, `a ||| b`, `a ^^^ b`, `~~~a`, and the
--- shifts `a <<< k`, `a >>> k` by a number of places `k : Nat` (Lean's take it at the
--- operand's type; a fixed amount is what hardware shifts by wiring). Precedences as in
--- Lean: `|||` 55, `^^^` 58, `&&&` 60 (below `+`), shifts 75, `~~~` max. Instances: `Nat`
--- here, words in lib/Word.wiz, HDL signals in lib/Hdl/Core.wiz.
-/-- Types with a bitwise and, written `a &&& b` (precedence 60). -/
+/-- Bitwise classes (H14 S2), as in Lean: `a &&& b`, `a ||| b`, `a ^^^ b`, `~~~a`, and the
+shifts `a <<< k`, `a >>> k` by a number of places `k : Nat` (Lean's take it at the
+operand's type; a fixed amount is what hardware shifts by wiring). Precedences as in
+Lean: `|||` 55, `^^^` 58, `&&&` 60 (below `+`), shifts 75, `~~~` max. Instances: `Nat`
+here, words in lib/Word.wiz, HDL signals in lib/Hdl/Core.wiz. -/
 class AndOp (A : Type) where
   and : A → A → A
-/-- Types with a bitwise or, written `a ||| b` (precedence 55). -/
+/-- Types with bitwise or, written `a ||| b`. -/
 class OrOp (A : Type) where
   or : A → A → A
-/-- Types with a bitwise exclusive or, written `a ^^^ b` (precedence 58). -/
+/-- Types with bitwise exclusive or, written `a ^^^ b`. -/
 class XorOp (A : Type) where
   xor : A → A → A
-/-- Types with a bitwise complement, written `~~~a`. `Nat` has none (it has no width);
-words do (lib/Word.wiz). -/
+/-- Types with bitwise complement, written `~~~a`. -/
 class Complement (A : Type) where
   complement : A → A
-/-- Types with a left shift by a number of places, written `a <<< k` (`k : Nat`,
-precedence 75): `5 <<< 2 = 20` at `Nat`. -/
+/-- Types with a left shift by a number of places, written `a <<< k`. -/
 class ShiftLeft (A : Type) where
   shiftLeft : A → Nat → A
-/-- Types with a right shift by a number of places, written `a >>> k` (`k : Nat`,
-precedence 75): `20 >>> 2 = 5` at `Nat`. -/
+/-- Types with a right shift by a number of places, written `a >>> k`. -/
 class ShiftRight (A : Type) where
   shiftRight : A → Nat → A
-/-- `a &&& b` at `Nat` is `Nat.land a b`, bit by bit. -/
+/-- `a &&& b` at `Nat` is `Nat.land`. -/
 instance : AndOp Nat := AndOp.mk Nat.land
-/-- `a ||| b` at `Nat` is `Nat.lor a b`, bit by bit. -/
+/-- `a ||| b` at `Nat` is `Nat.lor`. -/
 instance : OrOp Nat := OrOp.mk Nat.lor
-/-- `a ^^^ b` at `Nat` is `Nat.xor a b`, bit by bit. -/
+/-- `a ^^^ b` at `Nat` is `Nat.xor`. -/
 instance : XorOp Nat := XorOp.mk Nat.xor
-/-- `a <<< k` at `Nat` is `Nat.shiftLeft a k`, `a * 2 ^ k`. -/
+/-- `a <<< k` at `Nat` is `Nat.shiftLeft`. -/
 instance : ShiftLeft Nat := ShiftLeft.mk Nat.shiftLeft
-/-- `a >>> k` at `Nat` is `Nat.shiftRight a k`, `a / 2 ^ k`. -/
+/-- `a >>> k` at `Nat` is `Nat.shiftRight`. -/
 instance : ShiftRight Nat := ShiftRight.mk Nat.shiftRight
 infixl:55 " ||| " => OrOp.or
 infixl:58 " ^^^ " => XorOp.xor
 infixl:60 " &&& " => AndOp.and
-infixl:75 " <<< " => ShiftLeft.shiftLeft
-infixl:75 " >>> " => ShiftRight.shiftRight
+/-- The notation takes the amount at any type `B` (Lean's `HShiftLeft A B C`, the result
+type `C` an output): `ShiftLeft A` gives `HShiftLeft A Nat A`, and
+an HDL signal also shifts by a signal (H14 S4). A numeral amount is a `Nat` (the
+default type of a numeral). -/
+class HShiftLeft (A B : Type) (C : outParam Type) where
+  hShiftLeft : A → B → C
+/-- Heterogeneous right shift (as `HShiftLeft`): `a >>> b` at `HShiftRight A B C`, the
+result type `C` an output. -/
+class HShiftRight (A B : Type) (C : outParam Type) where
+  hShiftRight : A → B → C
+/-- `a <<< k` at a type with `ShiftLeft` is `ShiftLeft.shiftLeft` (the default instance). -/
+instance {A : Type} [ShiftLeft A] : HShiftLeft A Nat A := HShiftLeft.mk ShiftLeft.shiftLeft
+/-- `a >>> k` at a type with `ShiftRight` is `ShiftRight.shiftRight` (the default instance). -/
+instance {A : Type} [ShiftRight A] : HShiftRight A Nat A := HShiftRight.mk ShiftRight.shiftRight
+infixl:75 " <<< " => HShiftLeft.hShiftLeft
+infixl:75 " >>> " => HShiftRight.hShiftRight
 notation:max "~~~" a:max => Complement.complement a
 -- (end of the numeric classes)
 
@@ -391,12 +465,10 @@ app_unexpander Bool.casesOn
   | `(term| $f $m Bool.false $b $a) => `(term| $a && $b)
   | `(term| $f $m $b Bool.true $a) => `(term| $a || $b)
   | `(term| $f $m $e $t $c) => `(term| if $c then $t else $e)
--- A condition that is a signal (H14 S2): when the type `C` of `c` is not a data type and
--- has an instance `Mux C C` (an HDL signal, lib/Hdl/Core.wiz), `if c then a else b` is
--- `Mux.mux c a b`, a multiplexer, at an instance `Mux C A` for the branches' type `A`.
--- Any other condition is the `match` above (and its messages).
-/-- Multiplexers: `Mux.mux c a b` chooses `a` or `b` by a condition `c : C` that is not a
-`Bool` (an HDL signal). `if c then a else b` with such a `c` is `Mux.mux c a b`. -/
+/-- A condition that is a signal (H14 S2): when the type `C` of `c` is not a data type and
+has an instance `Mux C C` (an HDL signal, lib/Hdl/Core.wiz), `if c then a else b` is
+`Mux.mux c a b`, a multiplexer, at an instance `Mux C A` for the branches' type `A`.
+Any other condition is the `match` above (and its messages). -/
 class Mux (C A : Type) where
   mux : C → A → A → A
 app_unexpander Mux.mux
@@ -450,6 +522,15 @@ inductive IndView where
   | mk (name : String) (levelParams : List String) (params : List ParamView)
        (indices : List ParamView) (ctors : List CtorView) (isStructure : Bool)
 
+/-- (stage 28b) What the SAT solver said about a CNF (`Tac.satSolve`): a refutation as
+LRAT steps `(id, clause, hints)` (deletions dropped), a model (the literals that are
+true), or why there is no answer. Literals are numbers: `2 v` is variable `v`, `2 v + 1`
+its negation. Untrusted: `sat_decide` checks the refutation in the kernel. -/
+inductive SatAnswer where
+  | unsat (proof : List (Nat × List Nat × List Nat))
+  | sat (model : List Nat)
+  | error (msg : String)
+
 /-- Requests to the elaborator, each with what to do with the answer: a free monad (its
 continuations are infinitary fields). The elaborator interprets them; the order of
 the constructors is fixed (`Elab/Tactic.lean`), and new requests are appended.
@@ -496,6 +577,11 @@ inductive Tac where
   -- is `n` a definition (something `unfold` can unfold: not a constructor, an axiom, …)?
   -- `none` if there is no constant `n`
   | isDefinition (n : String) (k : Option Bool → Tac)
+  -- solvers (stage 28b): ask the SAT solver about a CNF over variables `0 … nvars-1`
+  -- (untrusted: `sat_decide` checks the proof); look inside an equation (an opaque handle
+  -- `a = b` at `A`: `(A, a, b)`)
+  | satSolve (nvars : Nat) (clauses : List (List Nat)) (k : SatAnswer → Tac)
+  | eqView (g : Nat) (e : Expr) (k : Option (Expr × Expr × Expr) → Tac)
 
 /-- The metaprogramming monad: requests to the elaborator (`Tac`) in
 continuation-passing style, so `bind` is just composition. Macros (`MacroM`) and
@@ -591,13 +677,17 @@ def TacticM.ctorInfo (n : String) : TacticM (Option (String × Nat × Nat)) := f
 or an axiom: for those `unfold` returns the term unchanged)? `none` if there is no
 constant `n`. -/
 def TacticM.isDefinition (n : String) : TacticM (Option Bool) := fun k => Tac.isDefinition n k
+/-- Ask the SAT solver about a CNF over variables `0 … nvars-1` (untrusted: `sat_decide`
+checks the proof). -/
+def TacticM.satSolve (nvars : Nat) (clauses : List (List Nat)) : TacticM SatAnswer := fun k => Tac.satSolve nvars clauses k
+/-- Look inside an equation (an opaque handle `a = b` at `A`): `(A, a, b)`. -/
+def TacticM.eqView (g : Nat) (e : Expr) : TacticM (Option (Expr × Expr × Expr)) := fun k => Tac.eqView g e k
 /-- Run `t`; if it fails, undo it and run `h` on the error message instead. -/
 def TacticM.tryCatch (t : TacticM Unit) (h : String → TacticM Unit) : TacticM Unit :=
   fun k => Tac.catch (TacticM.run t) (fun e => TacticM.run (h e)) (k ())
 
-/-- Marks a class parameter that instance resolution determines from the others (type
-classes, stage 7). As a function it is the identity. -/
-def outParam.{u} (A : Sort u) : Sort u := A
+-- Type classes (stage 7). `outParam` (defined with the numeric classes, above) marks a
+-- class parameter that instance resolution determines (it is the identity).
 
 /-- Monads: `pure` and `bind`, which `do` notation is written with (`do x ← e; rest` is
 `Monad.bind e (fun x => do rest)`).
@@ -1202,7 +1292,14 @@ class Append (A : Type) where
 instance {A : Type} : Append (List A) := Append.mk List.append
 /-- `a ++ b` on strings is `String.append`. -/
 instance : Append String := Append.mk String.append
-infixr:67 " ++ " => Append.append
+/-- heterogeneous, as the numeric operators (7f): `HAppend A B C`, `HAppend A A A` by default -/
+class HAppend (A B : Type) (C : outParam Type) where
+  hAppend : A → B → C
+/-- `a ++ b` at a type with `Append` is `Append.append` (the default instance). -/
+instance instHAppend {A : Type} [Append A] : HAppend A A A := HAppend.mk Append.append
+attribute [default_instance] instHAppend
+attribute [binop] HAppend.hAppend
+infixr:67 " ++ " => HAppend.hAppend
 -- `[a, b, c]` is `List.cons a (List.cons b (List.cons c List.nil))` and `[]` is
 -- `List.nil`, in terms and in patterns. Instance binders (`[Monad m] → …`) still parse:
 -- a dependent arrow is longer than a list literal followed by an arrow.

@@ -227,20 +227,23 @@ def xw.app {V A : Type} (c : Prog V A) (0 P : HProp V) (0 Q' : A → HProp V) (t
         Entails.trans (star.mono_r (Q' r) (hforall.elim (fun (r' : A) => Q' r' −∗ Q r') r))
           (wand.cancel (Q' r) (Q r))))))
 
--- The parts of a command, read off the program as it is written: when what a program
--- computes to can't be put in a proof term (see `XT.hasOpaque`), the x-tactics name its
--- parts through these, and conversion computes them.
+/-- The parts of a command, read off the program as it is written: when what a program
+computes to can't be put in a proof term (see `XT.hasOpaque`), the x-tactics name its
+parts through these, and conversion computes them. -/
 def Prog.loc {V A : Type} : Prog V A → Nat
   | .get l _ => l
   | .set l _ _ => l
   | .free l _ => l
   | _ => 0
+/-- A `get`'s continuation, applied to the value (or the program itself). -/
 def Prog.getK {V A : Type} : Prog V A → V → Prog V A
   | .get _ k, v => k v
   | c, _ => c
+/-- The value a `set` writes (or `d`). -/
 def Prog.setV {V A : Type} (d : V) : Prog V A → V
   | .set _ v _ => v
   | _ => d
+/-- The program after a `set` or a `free` (the rest, or the program itself). -/
 def Prog.next {V A : Type} : Prog V A → Prog V A
   | .set _ _ k => k
   | .free _ k => k
@@ -491,8 +494,6 @@ def XT.introAs (g : Nat) (hint : String) : List String → TacticM (String × (N
     r ← TacticM.introFresh g hint;
     TacticM.pure (r.1, (r.2, .nil))
 
--- reflexivity, through unification (the term `rfl` is not checked against its expected
--- equation by the elaborator, only by the kernel: wishful elab-rfl-unchecked)
 /-- Reflexivity, through unification. -/
 def XT.refl {A : Type} (a : A) : a = a := refl a
 /-- Run a tactic on goal `g` alone, catching its failure; did it close the goal? -/
@@ -1020,20 +1021,21 @@ def XT.withCell (w : XT.WpGoal) (l : Expr) (k : Nat → Expr → List Expr → T
 -- (13b: "cannot infer a type for (a, fun phantom✝ fields✝ => ())"). So a part with a
 -- handle is named through the program as it is written (`Prog.loc c`, `Prog.getK c v`,
 -- `Prog.setV u c`, `Prog.next c`), and conversion computes it.
+/-- Whether an expression contains an opaque handle (see the note above). -/
 def XT.hasOpaque : Expr → Bool
   | .opaque _ => .true
   | .app f a => Bool.or (XT.hasOpaque f) (XT.hasOpaque a)
   | .lam _ b => XT.hasOpaque b
   | .pi _ _ q d b => Bool.or (XT.hasOpaque q) (Bool.or (XT.hasOpaque d) (XT.hasOpaque b))
   | _ => .false
--- `e` under one more binder
+/-- `e` with its free variables (those `≥ c`) shifted up by one. -/
 def XT.shift : Nat → Expr → Expr
   | c, .var i => XT.sel (Nat.lt i c) (Expr.var i) (Expr.var (Nat.succ i))
   | c, .app f a => .app (XT.shift c f) (XT.shift c a)
   | c, .lam x b => .lam x (XT.shift (Nat.succ c) b)
   | c, .pi x i q d b => .pi x i (XT.shift c q) (XT.shift c d) (XT.shift (Nat.succ c) b)
   | _, e => e
--- a part as computed, or (if it has a handle) named through the program
+/-- A part as computed, or (if it has an opaque handle) named through the program. -/
 def XT.orPart (e : Expr) (folded : Expr) : Expr := XT.sel (XT.hasOpaque e) folded e
 
 /-- One command (with fuel for nested binds and unfoldings); the new goals. -/

@@ -1,5 +1,6 @@
 import BitVec
 import Logic
+import Trace
 import Deriving
 /-!
 # Hdl.Core: hardware description
@@ -7,7 +8,7 @@ import Deriving
 The HDL library (`import Hdl.Core`): describe digital circuits in Wiz, simulate them,
 prove things about them, and synthesise them to a netlist, Verilog, a test bench, a VCD
 waveform and pin constraints. docs/libraries.md ("H14 S0", "H14 S1") describes it; design
-notes are in drafts/hdl/Synth.wiz.
+notes are in drafts/hdl/Synth.wiz and /workspace/wiz-notes/hdl-usability.md.
 
 Combinational logic is *tagless-final* code, polymorphic in its representation
 `r : HwTy → Type` (the class `Hw`), with two instances: values (`HwTy.El`, for simulation
@@ -21,6 +22,9 @@ whose step is such code; its state is the registers.
 * **Wires are structured**: a value of a product type is a product of node ids, so pairs
   and projections cost nothing, and ports and registers are one per leaf, named by the
   path of `named` segments (`tx_cnt`).
+* **Memories**: `HwTy.mem aw dw`, `2^aw` words of `dw` bits, a function at values; read
+  with `Hw.memRead` (combinational), written with `Hw.memWrite` (at the clock edge, when
+  it is the state's next value). In Verilog an array, which yosys maps to block RAM.
 * **Bundles**: structures of signals (`structure Tx (r : HwTy → Type) where line : r Bit …`)
   are `Bundle`s: `deriving Bundle` gives their code and the conversions, and field access
   is the ordinary `s.line`.
@@ -135,6 +139,7 @@ inductive HwTy where
   | bits (n : Nat)
   | prod (a b : HwTy)
   | named (s : String) (t : HwTy)
+  | mem (aw dw : Nat)
 
 /-- The values of a hardware type: `BitVec n` for `bits n`, pairs for `prod`. This is the
 representation used for simulation and proofs (`instance : Hw HwTy.El`). -/
@@ -142,12 +147,14 @@ def HwTy.El : HwTy → Type
   | .bits n => BitVec n
   | .prod a b => HwTy.El a × HwTy.El b
   | .named _ t => HwTy.El t
+  | .mem aw dw => BitVec aw → BitVec dw
 
 /-- The total number of bits of a hardware type: `HwTy.width (.prod (.bits 3) (.bits 5)) = 8`. -/
 def HwTy.width : HwTy → Nat
   | .bits n => n
   | .prod a b => HwTy.width a + HwTy.width b
   | .named _ t => HwTy.width t
+  | .mem _ _ => 0
 
 /-- The bus encoding of a value: all its bits as one number, the first component in the high
 bits. `HwTy.unpack` is its inverse. -/
@@ -155,6 +162,7 @@ def HwTy.pack : (ω t : HwTy) → HwTy.El t → Nat
   | .bits n, v => v.toNat
   | .prod a b, v => Nat.shiftLeft (HwTy.pack a v.1) (HwTy.width b) + HwTy.pack b v.2
   | .named _ t, v => HwTy.pack t v
+  | .mem _ _, v => 0
 
 /-- A value from its bus encoding (`HwTy.pack`): the inverse direction, cutting the number
 into the leaves' bit fields. -/
@@ -162,6 +170,7 @@ def HwTy.unpack : (ω t : HwTy) → Nat → HwTy.El t
   | .bits n, k => BitVec.ofNat n k
   | .prod a b, k => (HwTy.unpack a (Nat.shiftRight k (HwTy.width b)), HwTy.unpack b k)
   | .named _ t, k => HwTy.unpack t k
+  | .mem aw dw, k => fun (a : BitVec aw) => BitVec.ofNat dw 0
 
 -- (`HwTy.bit` rather than `HwTy.bits 1`: class field types are elaborated without
 --  numerals or macros; wishful: numerals-in-class-decls)
@@ -169,11 +178,13 @@ def HwTy.unpack : (ω t : HwTy) → Nat → HwTy.El t
 def HwTy.bit : HwTy := HwTy.bits 1
 
 /-- The leaves of a code, in order (first component first): the widths of its bit vectors.
+Memories are not leaves (no port or register carries one); `HwTy.memShapes` lists them.
 `HwTy.leafWidths (.prod (.bits 1) (.bits 8)) = [1, 8]`. -/
 def HwTy.leafWidths : HwTy → List Nat
   | .bits n => .cons n .nil
   | .prod a b => List.append (HwTy.leafWidths a) (HwTy.leafWidths b)
   | .named _ t => HwTy.leafWidths t
+  | .mem _ _ => .nil
 
 /-- A value's leaves as numbers, in the order of `HwTy.leafWidths` (one per port when the
 value is a circuit's input or output). `HwTy.ofLeaves` goes back. -/
@@ -181,6 +192,7 @@ def HwTy.leaves : (ω t : HwTy) → HwTy.El t → List Nat
   | .bits n, v => .cons v.toNat .nil
   | .prod a b, v => List.append (HwTy.leaves a v.1) (HwTy.leaves b v.2)
   | .named _ t, v => HwTy.leaves t v
+  | .mem _ _, v => .nil
 /-- Read a value of type `t` from the front of a list of leaves; also returns the leaves
 left over. A missing leaf reads as 0. -/
 def HwTy.ofLeavesAux : (ω t : HwTy) → List Nat → HwTy.El t × List Nat
@@ -191,6 +203,7 @@ def HwTy.ofLeavesAux : (ω t : HwTy) → List Nat → HwTy.El t × List Nat
     let ω q := HwTy.ofLeavesAux b p.2;
     ((p.1, q.1), q.2)
   | .named _ t, ks => HwTy.ofLeavesAux t ks
+  | .mem aw dw, ks => (fun (a : BitVec aw) => BitVec.ofNat dw 0, ks)
 /-- A value from its leaves (`HwTy.leaves` in reverse). -/
 def HwTy.ofLeaves (ω t : HwTy) (ks : List Nat) : HwTy.El t := (HwTy.ofLeavesAux t ks).1
 
@@ -204,6 +217,7 @@ def HwTy.pathsAux : String → HwTy → List String
   | pre, .bits _ => .cons pre .nil
   | pre, .prod a b => List.append (HwTy.pathsAux pre a) (HwTy.pathsAux pre b)
   | pre, .named s t => HwTy.pathsAux (Hdl.joinName pre s) t
+  | pre, .mem _ _ => .nil
 /-- How often a string occurs in a list. -/
 def Hdl.countName (s : String) : List String → Nat
   | .nil => 0
@@ -238,6 +252,37 @@ ports are `HwTy.portNames "x" i`, its outputs `"y"`, its registers `"r"`. -/
 def HwTy.portNames (base : String) (t : HwTy) : List String :=
   let ω ps := Hdl.map (Hdl.orBase base) (HwTy.pathsAux "" t);
   Hdl.dedup ps (Hdl.indexed 0 ps)
+
+/-- The memories of a code, in order: their shapes (address and data widths), names
+(as `portNames`) and contents (word `a` at index `a`). -/
+def HwTy.memShapes : HwTy → List (Nat × Nat)
+  | .bits _ => .nil
+  | .prod a b => List.append (HwTy.memShapes a) (HwTy.memShapes b)
+  | .named _ t => HwTy.memShapes t
+  | .mem aw dw => .cons (aw, dw) .nil
+/-- The path name of every memory of a code, under the prefix. -/
+def HwTy.memPathsAux : String → HwTy → List String
+  | pre, .bits _ => .nil
+  | pre, .prod a b => List.append (HwTy.memPathsAux pre a) (HwTy.memPathsAux pre b)
+  | pre, .named s t => HwTy.memPathsAux (Hdl.joinName pre s) t
+  | pre, .mem _ _ => .cons pre .nil
+/-- Memory names, made unique like `HwTy.portNames`. -/
+def HwTy.memNames (base : String) (t : HwTy) : List String :=
+  let ω ps := Hdl.map (Hdl.orBase base) (HwTy.memPathsAux "" t);
+  Hdl.dedup ps (Hdl.indexed 0 ps)
+/-- `Hdl.upto n k = [k, k + 1, …, k + n - 1]`. -/
+def Hdl.upto : Nat → Nat → List Nat
+  | .zero, k => .nil
+  | .succ n, k => .cons k (Hdl.upto n (Nat.succ k))
+/-- A memory's contents as a list: word `a` at index `a`. -/
+def Hdl.memWords {ω aw dw : Nat} (m : BitVec aw → BitVec dw) : List Nat :=
+  Hdl.map (fun (a : Nat) => (m (BitVec.ofNat aw a)).toNat) (Hdl.upto (Nat.pow 2 aw) 0)
+/-- The memories of a value, in order: their contents (word `a` at index `a`). -/
+def HwTy.memContents : (ω t : HwTy) → HwTy.El t → List (List Nat)
+  | .bits _, v => .nil
+  | .prod a b, v => List.append (HwTy.memContents a v.1) (HwTy.memContents b v.2)
+  | .named _ t, v => HwTy.memContents t v
+  | .mem aw dw, v => .cons (Hdl.memWords v) .nil
 
 ------------------------------------------------------------------------------------
 -- The combinational operations, tagless final
@@ -274,6 +319,18 @@ class Hw (r : HwTy → Type) where
   eq : {ω n : Nat} → r (HwTy.bits n) → r (HwTy.bits n) → r HwTy.bit
   /-- Unsigned less-than, as one bit. -/
   ult : {ω n : Nat} → r (HwTy.bits n) → r (HwTy.bits n) → r HwTy.bit
+  -- (H14 S4) shifts by an amount that is a signal (barrel shifters): `shlBy a s` is `a`
+  -- moved up by `s` places (zeros in), `lshrBy` down (zeros in), `ashrBy` down (copies
+  -- of the sign bit in); by `n` places or more, all zeros (or all sign). `slt`: signed
+  -- (two's complement) less-than
+  /-- `shlBy a s`: `a` shifted up by `s` places (zeros in); by `n` or more, all zeros. -/
+  shlBy : {ω n m : Nat} → r (HwTy.bits n) → r (HwTy.bits m) → r (HwTy.bits n)
+  /-- `lshrBy a s`: `a` shifted down by `s` places, zeros in at the top. -/
+  lshrBy : {ω n m : Nat} → r (HwTy.bits n) → r (HwTy.bits m) → r (HwTy.bits n)
+  /-- `ashrBy a s`: `a` shifted down by `s` places, copies of the sign bit in. -/
+  ashrBy : {ω n m : Nat} → r (HwTy.bits n) → r (HwTy.bits m) → r (HwTy.bits n)
+  /-- Signed (two's complement) less-than, as one bit. -/
+  slt : {ω n : Nat} → r (HwTy.bits n) → r (HwTy.bits n) → r HwTy.bit
   /-- `mux c x y`: `x` when `c` is 1, else `y` (at any type, leaf by leaf). -/
   mux : {ω t : HwTy} → r HwTy.bit → r t → r t → r t
   /-- Concatenation: the first argument in the high bits. -/
@@ -304,6 +361,11 @@ class Hw (r : HwTy → Type) where
   built with it (`Circuit.withEnable`), the netlist records a clock enable on the
   register instead of a multiplexer. -/
   hold : {ω t : HwTy} → r HwTy.bit → r t → r t → r t
+  -- memories: the word at an address, and the memory with one word written when the
+  -- enable is high (reads of the result see the write; a memory that is a circuit's state
+  -- takes its writes at the clock edge). A reset leaves a memory's contents alone.
+  memRead : {ω aw dw : Nat} → r (HwTy.mem aw dw) → r (HwTy.bits aw) → r (HwTy.bits dw)
+  memWrite : {ω aw dw : Nat} → r (HwTy.mem aw dw) → r HwTy.bit → r (HwTy.bits aw) → r (HwTy.bits dw) → r (HwTy.mem aw dw)
 
 /-- Auto-share: the elaborator turns `let x := v; body` into `ShareLet.share v (fun x =>
 body)` when an instance `ShareLet A B` exists for the value's type `A` and the body's
@@ -323,6 +385,35 @@ def Bool.toBits (b : Bool) : BitVec 1 := match b with
 /-- Whether a bit vector is non-zero (how a condition bit is read). -/
 def BitVec.isTrue {0 n : Nat} (v : BitVec n) : Bool := Bool.not (Nat.beq v.toNat 0)
 
+-- (H14 S4) The shifts by a signal and the signed comparison on numbers below `2^w`: the
+-- value simulation, the netlist simulation and `Hdl.Sim` all compute with these. An
+-- amount of `w` or more gives 0 (or all sign bits) without computing `2^s`.
+/-- `a` shifted up by `s` places below `2^w` (0 when `s ≥ w`). -/
+def Hdl.shlN (w a s : Nat) : Nat := match Nat.lt s w with
+  | .true => Nat.mod (Nat.shiftLeft a s) (Nat.pow 2 w)
+  | .false => 0
+/-- `a` shifted down by `s` places (0 when `s ≥ w`). -/
+def Hdl.lshrN (w a s : Nat) : Nat := match Nat.lt s w with
+  | .true => Nat.shiftRight a s
+  | .false => 0
+/-- The sign bit of a `w`-bit number (none at width 0). -/
+def Hdl.negN (w a : Nat) : Bool := match w with
+  | .zero => .false
+  | .succ v => Bool.not (Nat.lt a (Nat.pow 2 v))
+/-- Arithmetic shift right: copies of the sign bit come in. -/
+def Hdl.ashrN (w a s : Nat) : Nat := match Hdl.negN w a with
+  | .false => Hdl.lshrN w a s
+  | .true => (match Nat.lt s w with
+    | .true => Nat.shiftRight a s + (Nat.pow 2 w - Nat.pow 2 (w - s))
+    | .false => Nat.pow 2 w - 1)
+/-- Signed (two's complement) `a < b` on numbers below `2^w`. -/
+def Hdl.sltN (w a b : Nat) : Bool := match Hdl.negN w a, Hdl.negN w b with
+  | .true, .false => .true
+  | .false, .true => .false
+  | _, _ => Nat.lt a b
+
+-- Simulation: the values themselves. (Named functions where an implicit width is
+-- needed: a lambda can't bind one; wishful: implicit-lambda-binders.)
 /-- The multiplexer on values: `x` when the condition bit is 1, else `y`. (Named functions
 like this one stand in the value instance where an implicit width is needed: a lambda
 can't bind one; wishful: implicit-lambda-binders.) -/
@@ -331,20 +422,59 @@ def HwTy.El.mux {ω t : HwTy} (c : HwTy.El HwTy.bit) (x y : HwTy.El t) : HwTy.El
   | .true => x
   | .false => y
 /-- Concatenation on values: `a` in the high bits, `b` in the low ones. -/
-def HwTy.El.cat {0 m : Nat} {ω n : Nat} (a : HwTy.El (HwTy.bits m)) (b : HwTy.El (HwTy.bits n)) :
+def HwTy.El.cat {ω m n : Nat} (a : HwTy.El (HwTy.bits m)) (b : HwTy.El (HwTy.bits n)) :
     HwTy.El (HwTy.bits (Nat.add m n)) := BitVec.concat a b
 /-- `HwTy.El.slice lo w a`: the `w` bits of `a` starting at bit `lo`. -/
 def HwTy.El.slice (ω lo w : Nat) {ω n : Nat} (a : HwTy.El (HwTy.bits n)) : HwTy.El (HwTy.bits w) :=
   BitVec.ofNat w (Nat.shiftRight (a : BitVec n).toNat lo)
+/-- `shlBy` on values: `a` shifted up by the amount `s`. -/
+def HwTy.El.shlBy {ω n : Nat} {0 m : Nat} (a : HwTy.El (HwTy.bits n)) (s : HwTy.El (HwTy.bits m)) : HwTy.El (HwTy.bits n) :=
+  BitVec.ofNat n (Hdl.shlN n (a : BitVec n).toNat (s : BitVec m).toNat)
+/-- `lshrBy` on values: `a` shifted down by the amount `s`. -/
+def HwTy.El.lshrBy {ω n : Nat} {0 m : Nat} (a : HwTy.El (HwTy.bits n)) (s : HwTy.El (HwTy.bits m)) : HwTy.El (HwTy.bits n) :=
+  BitVec.ofNat n (Hdl.lshrN n (a : BitVec n).toNat (s : BitVec m).toNat)
+/-- `ashrBy` on values: `a` shifted down by `s`, copies of the sign bit in. -/
+def HwTy.El.ashrBy {ω n : Nat} {0 m : Nat} (a : HwTy.El (HwTy.bits n)) (s : HwTy.El (HwTy.bits m)) : HwTy.El (HwTy.bits n) :=
+  BitVec.ofNat n (Hdl.ashrN n (a : BitVec n).toNat (s : BitVec m).toNat)
+/-- `slt` on values: signed less-than, as one bit. -/
+def HwTy.El.slt {ω n : Nat} (a b : HwTy.El (HwTy.bits n)) : HwTy.El HwTy.bit :=
+  Bool.toBits (Hdl.sltN n (a : BitVec n).toNat (b : BitVec n).toNat)
 /-- Into a named type, on values: the identity. -/
 def HwTy.El.tag (ω s : String) {ω t : HwTy} (x : HwTy.El t) : HwTy.El (HwTy.named s t) := x
 /-- Out of a named type, on values: the identity. -/
 def HwTy.El.untag {ω s : String} {ω t : HwTy} (x : HwTy.El (HwTy.named s t)) : HwTy.El t := x
 /-- A wire name, on values: the identity. -/
 def HwTy.El.label (ω s : String) {ω t : HwTy} (x : HwTy.El t) : HwTy.El t := x
+-- a reset: `v` where `c` is high, leaf by leaf; memories keep their contents (as block
+-- RAM does: its contents are set only when the device is configured)
+/-- A reset on values: `v` where `c` is 1, else `x` (leaf by leaf; a memory keeps its
+contents). -/
+def HwTy.El.resetToAt : (ω t : HwTy) → HwTy.El HwTy.bit → HwTy.El t → HwTy.El t → HwTy.El t
+  | .bits n, c, v, x => @HwTy.El.mux (HwTy.bits n) c v x
+  | .prod a b, c, v, x => (HwTy.El.resetToAt a c v.1 x.1, HwTy.El.resetToAt b c v.2 x.2)
+  | .named _ t, c, v, x => HwTy.El.resetToAt t c v x
+  | .mem _ _, c, v, x => x
 /-- `resetTo c v x` on values: `v` when `c` is 1, else `x`. -/
 def HwTy.El.resetTo {ω t : HwTy} (c : HwTy.El HwTy.bit) (v : HwTy.El t) (x : HwTy.El t) : HwTy.El t :=
-  HwTy.El.mux c v x
+  HwTy.El.resetToAt t c v x
+/-- `d` at a hit, else `old` -/
+def Hdl.memPick {A : Type} : Bool → A → A → A
+  | .true, d, old => d
+  | .false, d, old => old
+/-- A write: a disabled one is the memory itself, so that a simulation does not wrap the
+memory in one more function per cycle (a read would cost the number of cycles so far,
+not the number of writes). -/
+def Hdl.memWr {aw dw : Nat} : Bool → (BitVec aw → BitVec dw) → BitVec aw → BitVec dw → (BitVec aw → BitVec dw)
+  | .false, m, a, d => m
+  | .true, m, a, d => fun (b : BitVec aw) => Hdl.memPick (BitVec.beq a b) d (m b)
+/-- Read a memory at an address (combinational). -/
+def HwTy.El.memRead {0 aw : Nat} {ω dw : Nat} (m : HwTy.El (HwTy.mem aw dw)) (a : HwTy.El (HwTy.bits aw)) : HwTy.El (HwTy.bits dw) :=
+  (m : BitVec aw → BitVec dw) a
+/-- Write a memory (at the clock edge, when it is the state's next value); a disabled write
+is the memory itself. -/
+def HwTy.El.memWrite {0 aw : Nat} {ω dw : Nat} (m : HwTy.El (HwTy.mem aw dw)) (we : HwTy.El HwTy.bit) (a : HwTy.El (HwTy.bits aw))
+    (d : HwTy.El (HwTy.bits dw)) : HwTy.El (HwTy.mem aw dw) :=
+  Hdl.memWr (BitVec.isTrue (we : BitVec 1)) (m : BitVec aw → BitVec dw) (a : BitVec aw) (d : BitVec dw)
 
 /-- Simulation: the value instance (`HwTy.El`), where hardware code computes bit vectors. -/
 instance : Hw HwTy.El where
@@ -358,6 +488,10 @@ instance : Hw HwTy.El where
   not := fun a => BitVec.not a
   eq := fun a b => Bool.toBits (BitVec.beq a b)
   ult := fun a b => Bool.toBits (BitVec.ult a b)
+  shlBy := HwTy.El.shlBy
+  lshrBy := HwTy.El.lshrBy
+  ashrBy := HwTy.El.ashrBy
+  slt := HwTy.El.slt
   mux := HwTy.El.mux
   cat := HwTy.El.cat
   slice := HwTy.El.slice
@@ -371,6 +505,8 @@ instance : Hw HwTy.El where
   label := HwTy.El.label
   resetTo := HwTy.El.resetTo
   hold := HwTy.El.mux
+  memRead := HwTy.El.memRead
+  memWrite := HwTy.El.memWrite
 
 ------------------------------------------------------------------------------------
 -- The netlist IR: flat, widths concrete, one node per bit-vector operation
@@ -397,6 +533,11 @@ inductive NetOp where
   | slice (lo : Nat)
   | resetTo (v : Nat)
   | hold
+  | memRead (m : Nat)
+  | shl     -- (H14 S4) by a signal: `a << s`, `a >> s`, `$signed(a) >>> s`, `$signed(a) < $signed(b)`
+  | lshr
+  | ashr
+  | slt
 
 /-- A netlist node: its operation, its width and its arguments (ids of earlier nodes). -/
 structure NetNode where
@@ -415,6 +556,15 @@ structure NetReg where
   rst : Option Nat
   en : Option Nat
 
+/-- A memory: its name, address and data widths, initial contents (word `a` at index `a`)
+and its writes, in order (a later one wins): (enable, address, data) nodes. -/
+structure NetMem where
+  name : String
+  aw : Nat
+  dw : Nat
+  init : List Nat
+  writes : List (Nat × (Nat × Nat))
+
 /-- A port: its name, width and the node it is (an input) or shows (an output). -/
 structure NetPort where
   name : String
@@ -432,6 +582,8 @@ structure Netlist where
   inputs : List NetPort
   outputs : List NetPort
   hints : List (Nat × String) -- wire names (`Hw.label`)
+  mems : List NetMem         -- memory k is the k-th; read by `memRead k` nodes
+  errors : List String       -- what the netlist cannot express (a memory used wrongly)
 
 /-- Hash-consing keys: an operation as a code and its payload. With the width and the
 arguments (`NetNode.key`) it identifies a node. -/
@@ -453,6 +605,11 @@ def NetOp.code : NetOp → List Nat
   | .slice lo => List.cons 14 (List.cons lo List.nil)
   | .resetTo v => List.cons 15 (List.cons v List.nil)
   | .hold => List.cons 16 List.nil
+  | .memRead m => List.cons 17 (List.cons m List.nil)
+  | .shl => List.cons 20 List.nil
+  | .lshr => List.cons 21 List.nil
+  | .ashr => List.cons 22 List.nil
+  | .slt => List.cons 23 List.nil
 
 /-- Whether the operation is commutative (its two arguments are sorted for hash-consing,
 so `a + b` and `b + a` are one node). -/
@@ -545,9 +702,11 @@ structure NetS where
   cse : Bool
   work : Nat
   hints : List (Nat × String)
+  mems : List NetMem         -- newest first
+  errs : List String
 
 /-- The empty builder state, hash-consing if `cse`. -/
-def NetS.init (cse : Bool) : NetS := NetS.mk 0 List.nil HTrie.tip cse 0 List.nil
+def NetS.init (cse : Bool) : NetS := NetS.mk 0 List.nil HTrie.tip cse 0 List.nil List.nil List.nil
 
 /-- Building netlists: a state monad over `NetS`. -/
 def NetM (A : Type) : Type := NetS → A × NetS
@@ -564,14 +723,14 @@ instance : Monad NetM where
 
 /-- Append a new node (always a new id), with the table to keep. -/
 def NetS.push (s : NetS) (op : NetOp) (w : Nat) (args : List Nat) (table : HTrie Nat) : Nat × NetS :=
-  (s.next, NetS.mk (Nat.succ s.next) (List.cons (NetNode.mk op w args) s.nodes) table s.cse (Nat.succ s.work) s.hints)
+  (s.next, NetS.mk (Nat.succ s.next) (List.cons (NetNode.mk op w args) s.nodes) table s.cse (Nat.succ s.work) s.hints s.mems s.errs)
 
 /-- Emit a node through the hash-consing table: an identical node already built is reused. -/
 def NetM.emitKeyed (op : NetOp) (w : Nat) (args : List Nat) (s : NetS) : Nat × NetS :=
   let key := NetNode.key op w args
   let h := NatList.hash key 7
   match HTrie.find key h HTrie.depth s.table with
-  | .some k => (k, NetS.mk s.next s.nodes s.table s.cse (Nat.succ s.work) s.hints)
+  | .some k => (k, NetS.mk s.next s.nodes s.table s.cse (Nat.succ s.work) s.hints s.mems s.errs)
   | .none => NetS.push s op w args (HTrie.insert key s.next h HTrie.depth s.table)
 
 /-- Emit a node `op` of width `w` with arguments `args` and return its id (hash-consed
@@ -582,7 +741,22 @@ def NetM.emit (op : NetOp) (w : Nat) (args : List Nat) : NetM Nat := fun s => ma
 
 /-- Record a wire name for node `k`. -/
 def NetM.hint (k : Nat) (name : String) : NetM Unit := fun s =>
-  ((), NetS.mk s.next s.nodes s.table s.cse s.work (List.cons (k, name) s.hints))
+  ((), NetS.mk s.next s.nodes s.table s.cse s.work (List.cons (k, name) s.hints) s.mems s.errs)
+
+/-- a new memory (its index), a problem, and a memory's writes -/
+def NetM.newMem (m : NetMem) : NetM Nat := fun s =>
+  (List.length s.mems, NetS.mk s.next s.nodes s.table s.cse s.work s.hints (List.cons m s.mems) s.errs)
+/-- Record a problem the netlist cannot express. -/
+def NetM.error (e : String) : NetM Unit := fun s =>
+  ((), NetS.mk s.next s.nodes s.table s.cse s.work s.hints s.mems (List.cons e s.errs))
+/-- (memories are kept newest first: memory k is at position `count - 1 - k`) -/
+def Hdl.setWritesAux (ws : List (Nat × (Nat × Nat))) : Nat → List NetMem → List NetMem
+  | _, .nil => .nil
+  | .zero, .cons m ms => .cons (NetMem.mk m.name m.aw m.dw m.init ws) ms
+  | .succ j, .cons m ms => .cons m (Hdl.setWritesAux ws j ms)
+/-- Set the writes of memory `k`. -/
+def NetM.setWrites (k : Nat) (ws : List (Nat × (Nat × Nat))) : NetM Unit := fun s =>
+  ((), NetS.mk s.next s.nodes s.table s.cse s.work s.hints (Hdl.setWritesAux ws (List.length s.mems - 1 - k) s.mems) s.errs)
 
 /-- Synthesis: the node ids of a signal of type `t`, one per leaf. A wire is a computation
 that emits nodes and returns these (`Wire`). -/
@@ -590,12 +764,15 @@ def HwTy.Ids : HwTy → Type
   | .bits _ => Nat
   | .prod a b => HwTy.Ids a × HwTy.Ids b
   | .named _ t => HwTy.Ids t
+  -- a memory, and the writes made to it so far (enable, address, data)
+  | .mem _ _ => Nat × List (Nat × (Nat × Nat))
 
 /-- The ids of a signal as a list, in leaf order. -/
 def HwTy.idsLeaves : (ω t : HwTy) → HwTy.Ids t → List Nat
   | .bits _, k => .cons k .nil
   | .prod a b, p => List.append (HwTy.idsLeaves a p.1) (HwTy.idsLeaves b p.2)
   | .named _ t, p => HwTy.idsLeaves t p
+  | .mem _ _, p => .nil
 /-- Read the ids of a signal of type `t` from the front of a list; also returns the rest. -/
 def HwTy.idsTake : (ω t : HwTy) → List Nat → HwTy.Ids t × List Nat
   | .bits _, .nil => (0, .nil)
@@ -605,6 +782,23 @@ def HwTy.idsTake : (ω t : HwTy) → List Nat → HwTy.Ids t × List Nat
     let ω q := HwTy.idsTake b p.2;
     ((p.1, q.1), q.2)
   | .named _ t, ks => HwTy.idsTake t ks
+  | .mem _ _, ks => ((0, .nil), ks)
+/-- the ids of a state: leaves from the list, memories numbered from `k` -/
+def HwTy.idsState : (ω t : HwTy) → List Nat → Nat → HwTy.Ids t × (List Nat × Nat)
+  | .bits _, .nil, k => (0, (.nil, k))
+  | .bits _, .cons x xs, k => (x, (xs, k))
+  | .prod a b, ks, k =>
+    let ω p := HwTy.idsState a ks k;
+    let ω q := HwTy.idsState b p.2.1 p.2.2;
+    ((p.1, q.1), q.2)
+  | .named _ t, ks, k => HwTy.idsState t ks k
+  | .mem _ _, ks, k => ((k, .nil), (ks, Nat.succ k))
+/-- the memories of a value's ids -/
+def HwTy.idsMems : (ω t : HwTy) → HwTy.Ids t → List (Nat × List (Nat × (Nat × Nat)))
+  | .bits _, p => .nil
+  | .prod a b, p => List.append (HwTy.idsMems a p.1) (HwTy.idsMems b p.2)
+  | .named _ t, p => HwTy.idsMems t p
+  | .mem _ _, p => .cons p .nil
 
 /-- The netlist representation: a wire of type `t` is a builder computation that emits the
 nodes computing it and returns their ids. `instance : Hw Wire` makes hardware code build
@@ -622,6 +816,40 @@ def Wire.op1 (op : NetOp) (w : Nat) (a : NetM Nat) : NetM Nat := do
   x ← a;
   NetM.emit op w (List.cons x List.nil)
 
+-- A choice between two memories: the writes both have made, then the other writes of
+-- each, enabled only on its side (the sides exclude each other, so their order does not
+-- matter). Two different memories cannot be chosen between. A memory can only be
+-- written, not chosen, so choosing between two different ones is an error.
+/-- Whether two writes are the same (enable, address and data nodes). -/
+def Hdl.wEq (a b : Nat × (Nat × Nat)) : Bool := Bool.and (Nat.beq a.1 b.1) (Bool.and (Nat.beq a.2.1 b.2.1) (Nat.beq a.2.2 b.2.2))
+/-- The writes both lists start with, then the rest of each. -/
+def Hdl.commonW : List (Nat × (Nat × Nat)) → List (Nat × (Nat × Nat)) → List (Nat × (Nat × Nat)) × (List (Nat × (Nat × Nat)) × List (Nat × (Nat × Nat)))
+  | .cons x xs, .cons y ys => (match Hdl.wEq x y with
+    | .true => let ω r := Hdl.commonW xs ys; (.cons x r.1, r.2)
+    | .false => (.nil, (.cons x xs, .cons y ys)))
+  | xs, ys => (.nil, (xs, ys))
+/-- Writes enabled only when `g` is high. -/
+def Wire.guardW (g : Nat) : List (Nat × (Nat × Nat)) → NetM (List (Nat × (Nat × Nat)))
+  | .nil => NetM.pure .nil
+  | .cons w ws => do
+    e ← NetM.emit NetOp.and 1 (.cons g (.cons w.1 .nil));
+    rest ← Wire.guardW g ws;
+    NetM.pure (.cons (e, w.2) rest)
+/-- A choice between two memories: the writes both have made, then the other writes of
+each, enabled on its side. -/
+def Wire.memChoice (c : Nat) (a b : Nat × List (Nat × (Nat × Nat))) : NetM (Nat × List (Nat × (Nat × Nat))) :=
+  match Nat.beq a.1 b.1 with
+  | .false => do
+    NetM.error "a choice between two different memories (a memory can only be written, not chosen)";
+    NetM.pure a
+  | .true => do
+    let ω r := Hdl.commonW a.2 b.2;
+    nc ← NetM.emit NetOp.not 1 (.cons c .nil);
+    xs ← Wire.guardW c r.2.1;
+    ys ← Wire.guardW nc r.2.2;
+    NetM.pure (a.1, List.append r.1 (List.append xs ys))
+
+-- per-leaf multiplexers, constants, resets, holds, names
 /-- Per-leaf multiplexers: one `mux` node for each leaf of `t`. -/
 def Wire.muxIds : (ω t : HwTy) → Nat → HwTy.Ids t → HwTy.Ids t → NetM (HwTy.Ids t)
   | .bits n, c, a, b => NetM.emit NetOp.mux n (List.cons c (List.cons a (List.cons b List.nil)))
@@ -630,6 +858,7 @@ def Wire.muxIds : (ω t : HwTy) → Nat → HwTy.Ids t → HwTy.Ids t → NetM (
     q ← Wire.muxIds y c a.2 b.2;
     NetM.pure (p, q)
   | .named _ x, c, a, b => Wire.muxIds x c a b
+  | .mem _ _, c, a, b => Wire.memChoice c a b
 /-- Per-leaf `hold` nodes (clock-enable candidates). -/
 def Wire.holdIds : (ω t : HwTy) → Nat → HwTy.Ids t → HwTy.Ids t → NetM (HwTy.Ids t)
   | .bits n, c, a, b => NetM.emit NetOp.hold n (List.cons c (List.cons a (List.cons b List.nil)))
@@ -638,6 +867,7 @@ def Wire.holdIds : (ω t : HwTy) → Nat → HwTy.Ids t → HwTy.Ids t → NetM 
     q ← Wire.holdIds y c a.2 b.2;
     NetM.pure (p, q)
   | .named _ x, c, a, b => Wire.holdIds x c a b
+  | .mem _ _, c, a, b => Wire.memChoice c a b
 /-- A constant of any type: one `const` node per leaf. -/
 def Wire.constIds : (ω t : HwTy) → HwTy.El t → NetM (HwTy.Ids t)
   | .bits n, v => NetM.emit (NetOp.const (v : BitVec n).toNat) n List.nil
@@ -646,6 +876,10 @@ def Wire.constIds : (ω t : HwTy) → HwTy.El t → NetM (HwTy.Ids t)
     q ← Wire.constIds y v.2;
     NetM.pure (p, q)
   | .named _ x, v => Wire.constIds x v
+  -- a constant memory: a ROM
+  | .mem aw dw, v => do
+    k ← NetM.newMem (NetMem.mk "rom" aw dw (Hdl.memWords v) .nil);
+    NetM.pure (k, .nil)
 /-- Per-leaf `resetTo` nodes (synchronous-reset candidates). -/
 def Wire.resetIds : (ω t : HwTy) → Nat → HwTy.El t → HwTy.Ids t → NetM (HwTy.Ids t)
   | .bits n, c, v, a => NetM.emit (NetOp.resetTo (v : BitVec n).toNat) n (List.cons c (List.cons a List.nil))
@@ -654,6 +888,7 @@ def Wire.resetIds : (ω t : HwTy) → Nat → HwTy.El t → HwTy.Ids t → NetM 
     q ← Wire.resetIds y c v.2 a.2;
     NetM.pure (p, q)
   | .named _ x, c, v, a => Wire.resetIds x c v a
+  | .mem _ _, c, v, a => NetM.pure a
 /-- Record names for several nodes (pairwise). -/
 def NetM.hints : List Nat → List String → NetM Unit
   | .cons k ks, .cons n ns => do
@@ -681,6 +916,23 @@ def Wire.not {ω n : Nat} (a : Wire (HwTy.bits n)) : Wire (HwTy.bits n) := Wire.
 def Wire.eq {ω n : Nat} (a b : Wire (HwTy.bits n)) : Wire HwTy.bit := Wire.op2 NetOp.eq 1 a b
 /-- `Hw.ult` on wires: a one-bit node. -/
 def Wire.ult {ω n : Nat} (a b : Wire (HwTy.bits n)) : Wire HwTy.bit := Wire.op2 NetOp.ult 1 a b
+-- (an amount of width 0 is no shift; at width 0 there is nothing to shift or compare)
+/-- A shift by a signal: one `op` node (the shifts' amount is an operand). -/
+def Wire.shiftBy (op : NetOp) {ω n m : Nat} (a : Wire (HwTy.bits n)) (s : Wire (HwTy.bits m)) : Wire (HwTy.bits n) :=
+  match Nat.beq n 0, Nat.beq m 0 with
+  | .true, _ => a
+  | _, .true => a
+  | _, _ => Wire.op2 op n a s
+/-- `shlBy` on wires. -/
+def Wire.shlBy {ω n m : Nat} (a : Wire (HwTy.bits n)) (s : Wire (HwTy.bits m)) : Wire (HwTy.bits n) := Wire.shiftBy NetOp.shl a s
+/-- `lshrBy` on wires. -/
+def Wire.lshrBy {ω n m : Nat} (a : Wire (HwTy.bits n)) (s : Wire (HwTy.bits m)) : Wire (HwTy.bits n) := Wire.shiftBy NetOp.lshr a s
+/-- `ashrBy` on wires. -/
+def Wire.ashrBy {ω n m : Nat} (a : Wire (HwTy.bits n)) (s : Wire (HwTy.bits m)) : Wire (HwTy.bits n) := Wire.shiftBy NetOp.ashr a s
+/-- Signed less-than on wires (0 at width 0). -/
+def Wire.slt {ω n : Nat} (a b : Wire (HwTy.bits n)) : Wire HwTy.bit := match Nat.beq n 0 with
+  | .true => Wire.lit 1 0
+  | .false => Wire.op2 NetOp.slt 1 a b
 /-- `Hw.mux` on wires: per-leaf multiplexers. -/
 def Wire.mux {ω t : HwTy} (c : Wire HwTy.bit) (x y : Wire t) : NetM (HwTy.Ids t) := do
   k ← c;
@@ -732,6 +984,32 @@ def Wire.hold {ω t : HwTy} (c : Wire HwTy.bit) (x y : Wire t) : NetM (HwTy.Ids 
   b ← y;
   Wire.holdIds t k a b
 
+-- A read: the word in the memory, then each write made to it in this cycle, in order,
+-- where it is enabled and hits the address.
+/-- The read's value, with the writes made to the memory in this cycle applied in order
+(so that a later write wins). -/
+def Wire.bypass (dw x : Nat) : Nat → List (Nat × (Nat × Nat)) → NetM Nat
+  | acc, .nil => NetM.pure acc
+  | acc, .cons w ws => do
+    hit ← NetM.emit NetOp.eq 1 (.cons w.2.1 (.cons x .nil));
+    g ← NetM.emit NetOp.and 1 (.cons w.1 (.cons hit .nil));
+    v ← NetM.emit NetOp.mux dw (.cons g (.cons w.2.2 (.cons acc .nil)));
+    Wire.bypass dw x v ws
+/-- A combinational read of a memory: the stored word, then this cycle's writes (bypass). -/
+def Wire.memRead {ω aw dw : Nat} (m : Wire (HwTy.mem aw dw)) (a : Wire (HwTy.bits aw)) : NetM Nat := do
+  mm ← m;
+  x ← a;
+  base ← NetM.emit (NetOp.memRead mm.1) dw (.cons x .nil);
+  Wire.bypass dw x base mm.2
+/-- A write at the clock edge: a disabled write is the memory unchanged. -/
+def Wire.memWrite {ω aw dw : Nat} (m : Wire (HwTy.mem aw dw)) (we : Wire HwTy.bit) (a : Wire (HwTy.bits aw)) (d : Wire (HwTy.bits dw)) :
+    NetM (Nat × List (Nat × (Nat × Nat))) := do
+  mm ← m;
+  e ← we;
+  x ← a;
+  y ← d;
+  NetM.pure (mm.1, List.append mm.2 (.cons (e, (x, y)) .nil))
+
 /-- Synthesis: the wire instance, where hardware code builds a netlist. -/
 instance : Hw Wire where
   lit := Wire.lit
@@ -744,6 +1022,10 @@ instance : Hw Wire where
   not := Wire.not
   eq := Wire.eq
   ult := Wire.ult
+  shlBy := Wire.shlBy
+  lshrBy := Wire.lshrBy
+  ashrBy := Wire.ashrBy
+  slt := Wire.slt
   mux := Wire.mux
   cat := Wire.cat
   slice := Wire.slice
@@ -757,6 +1039,8 @@ instance : Hw Wire where
   label := Wire.label
   resetTo := Wire.resetTo
   hold := Wire.hold
+  memRead := Wire.memRead
+  memWrite := Wire.memWrite
 
 /-- Run a wire computation from scratch (for combinational tests): its ids and the
 builder's state. -/
@@ -843,8 +1127,8 @@ def Nat.ofBool (b : Bool) : Nat := match b with
 /-- Whether a number is 0. -/
 def Hdl.isZero (v : Nat) : Bool := Nat.beq v 0
 
-/-- A node prepared for simulation: `aux` is the width of the second argument of a `concat`
-(how far the first is shifted). -/
+/-- A node prepared for simulation: `aux` is the width of the second argument (the shift
+of a `concat`; the operands' width of an `slt`). -/
 structure SimNode where
   op : NetOp
   width : Nat
@@ -858,9 +1142,20 @@ def SimNode.ofNodes : List NetNode → Hdl.Vec Nat → List SimNode
     .cons (SimNode.mk n.op n.width n.args (Hdl.Vec.get 0 ws (Hdl.nthD 0 n.args 1)))
       (SimNode.ofNodes ns (Hdl.Vec.push ws n.width))
 
-/-- One node's value, given the values of the nodes before it, the input port values and the
-register values. -/
-def SimNode.eval (n : SimNode) (vals : Hdl.Vec Nat) (ins : List Nat) (regs : Hdl.Vec Nat) : Nat :=
+-- A memory's contents in simulation: address ↦ word (absent: 0).
+/-- A memory's initial contents as a trie (word `k` at address `k`), from index `k` on. -/
+def Hdl.memOfAux : Nat → List Nat → HTrie Nat → HTrie Nat
+  | _, .nil, t => t
+  | k, .cons w ws, t => Hdl.memOfAux (Nat.succ k) ws (HTrie.putN k w t)
+/-- A memory's initial contents as a trie: word `k` at address `k`. -/
+def Hdl.memOf (ws : List Nat) : HTrie Nat := Hdl.memOfAux 0 ws HTrie.tip
+/-- The word at an address of a simulated memory (0 if unset). -/
+def Hdl.memGet (t : HTrie Nat) (a : Nat) : Nat := match HTrie.getN a t with
+  | .some v => v
+  | .none => 0
+/-- One node's value, given the values of the nodes before it, the input port values, the
+register values and the memories. -/
+def SimNode.eval (n : SimNode) (vals : Hdl.Vec Nat) (ins : List Nat) (regs : Hdl.Vec Nat) (mems : Hdl.Vec (HTrie Nat)) : Nat :=
   let ω arg := fun (i : Nat) => Hdl.Vec.get 0 vals (Hdl.nthD 0 n.args i);
   let ω w := n.width;
   match n.op with
@@ -876,6 +1171,10 @@ def SimNode.eval (n : SimNode) (vals : Hdl.Vec Nat) (ins : List Nat) (regs : Hdl
   | .not => Nat.pow 2 w - 1 - arg 0
   | .eq => Nat.ofBool (Nat.beq (arg 0) (arg 1))
   | .ult => Nat.ofBool (Nat.lt (arg 0) (arg 1))
+  | .shl => Hdl.shlN w (arg 0) (arg 1)
+  | .lshr => Hdl.lshrN w (arg 0) (arg 1)
+  | .ashr => Hdl.ashrN w (arg 0) (arg 1)
+  | .slt => Nat.ofBool (Hdl.sltN n.aux (arg 0) (arg 1))
   | .mux => (match Hdl.isZero (arg 0) with
     | .true => arg 2
     | .false => arg 1)
@@ -884,14 +1183,26 @@ def SimNode.eval (n : SimNode) (vals : Hdl.Vec Nat) (ins : List Nat) (regs : Hdl
   | .resetTo v => (match Hdl.isZero (arg 0) with
     | .true => arg 1
     | .false => v)
-  | .hold => match Hdl.isZero (arg 0) with
+  | .hold => (match Hdl.isZero (arg 0) with
     | .true => arg 2
-    | .false => arg 1
+    | .false => arg 1)
+  | .memRead m => Hdl.memGet (Hdl.Vec.get HTrie.tip mems m) (arg 0)
 
 /-- The values of all nodes in one cycle, in order. -/
-def SimNode.evalAll (ins : List Nat) (regs : Hdl.Vec Nat) : List SimNode → Hdl.Vec Nat → Hdl.Vec Nat
+def SimNode.evalAll (ins : List Nat) (regs : Hdl.Vec Nat) (mems : Hdl.Vec (HTrie Nat)) : List SimNode → Hdl.Vec Nat → Hdl.Vec Nat
   | .nil, vals => vals
-  | .cons n ns, vals => SimNode.evalAll ins regs ns (Hdl.Vec.push vals (SimNode.eval n vals ins regs))
+  | .cons n ns, vals => SimNode.evalAll ins regs mems ns (Hdl.Vec.push vals (SimNode.eval n vals ins regs mems))
+
+/-- a memory at the clock edge: its enabled writes, in order -/
+def NetMem.storeAux (vals : Hdl.Vec Nat) : List (Nat × (Nat × Nat)) → HTrie Nat → HTrie Nat
+  | .nil, t => t
+  | .cons w ws, t => NetMem.storeAux vals ws (match Hdl.isZero (Hdl.Vec.get 0 vals w.1) with
+    | .true => t
+    | .false => HTrie.putN (Hdl.Vec.get 0 vals w.2.1) (Hdl.Vec.get 0 vals w.2.2) t)
+/-- The memories' contents after one cycle's writes, in order. -/
+def NetMem.storeAll (vals : Hdl.Vec Nat) : List NetMem → List (HTrie Nat) → List (HTrie Nat)
+  | .cons m ms, .cons t ts => .cons (NetMem.storeAux vals m.writes t) (NetMem.storeAll vals ms ts)
+  | _, _ => .nil
 
 /-- The value a register loads at the clock edge: `init` under reset, its own value `cur`
 without enable, else its `next` node. -/
@@ -915,19 +1226,21 @@ def NetReg.loadAll (vals : Hdl.Vec Nat) : List NetReg → List Nat → List Nat
 /-- An output port's value in a cycle. -/
 def NetPort.read (vals : Hdl.Vec Nat) (p : NetPort) : Nat := Hdl.Vec.get 0 vals p.node
 
-/-- The simulation loop: register values, the inputs still to come, the outputs so far. -/
-def Netlist.simulateGo (n : Netlist) (prog : List SimNode) : List Nat → List (List Nat) → List (List Nat) → List (List Nat)
-  | _, .nil, acc => Hdl.reverse acc
-  | regs, .cons ins rest, acc =>
-    let ω vals := SimNode.evalAll ins (Hdl.Vec.ofList regs) prog Hdl.Vec.empty;
-    Netlist.simulateGo n prog (NetReg.loadAll vals n.regs regs) rest
+/-- The simulation loop: register values, memory contents, the inputs still to come, the
+outputs so far. -/
+def Netlist.simulateGo (n : Netlist) (prog : List SimNode) : List Nat → List (HTrie Nat) → List (List Nat) → List (List Nat) → List (List Nat)
+  | _, _, .nil, acc => Hdl.reverse acc
+  | regs, mems, .cons ins rest, acc =>
+    let ω vals := SimNode.evalAll ins (Hdl.Vec.ofList regs) (Hdl.Vec.ofList mems) prog Hdl.Vec.empty;
+    Netlist.simulateGo n prog (NetReg.loadAll vals n.regs regs) (NetMem.storeAll vals n.mems mems) rest
       (List.cons (Hdl.map (NetPort.read vals) n.outputs) acc)
 
 /-- A clocked simulation of a netlist: one input vector per cycle (one value per input
 port), the output vectors (one value per output port). O(nodes · log nodes) per cycle.
 `Circuit.simLeaves` compares it with the value semantics. -/
 def Netlist.simulate (n : Netlist) (inputs : List (List Nat)) : List (List Nat) :=
-  Netlist.simulateGo n (SimNode.ofNodes n.nodes Hdl.Vec.empty) (Hdl.map (fun (r : NetReg) => r.init) n.regs) inputs List.nil
+  Netlist.simulateGo n (SimNode.ofNodes n.nodes Hdl.Vec.empty) (Hdl.map (fun (r : NetReg) => r.init) n.regs)
+    (Hdl.map (fun (m : NetMem) => Hdl.memOf m.init) n.mems) inputs List.nil
 
 /-- The number of nodes whose operation satisfies `p`. -/
 def Netlist.countAux (p : NetOp → Bool) : List NetNode → Nat
@@ -1058,17 +1371,36 @@ def Net.liveSet : List Bool → Nat → Hdl.Set → Hdl.Set
     | .true => Net.liveSet bs (Nat.succ k) (HTrie.putN k () s)
     | .false => Net.liveSet bs (Nat.succ k) s
 
+-- The netlist of a builder's state, with registers and ports. Roots: the ports, the
+-- nodes that read the registers and what the registers load.
+/-- The nodes a memory's writes read. -/
+def NetMem.reads : List (Nat × (Nat × Nat)) → List Nat
+  | .nil => .nil
+  | .cons w ws => .cons w.1 (.cons w.2.1 (.cons w.2.2 (NetMem.reads ws)))
+/-- The nodes the memories' writes read. -/
+def NetMem.readsAll : List NetMem → List Nat
+  | .nil => .nil
+  | .cons m ms => List.append (NetMem.reads m.writes) (NetMem.readsAll ms)
+/-- A memory's writes with their node ids renumbered. -/
+def NetMem.remapW (m : HTrie Nat) : List (Nat × (Nat × Nat)) → List (Nat × (Nat × Nat))
+  | .nil => .nil
+  | .cons w ws => .cons (Net.mapId m w.1, (Net.mapId m w.2.1, Net.mapId m w.2.2)) (NetMem.remapW m ws)
+/-- A memory with its writes renumbered. -/
+def NetMem.remap (m : HTrie Nat) (x : NetMem) : NetMem := NetMem.mk x.name x.aw x.dw x.init (NetMem.remapW m x.writes)
+
 /-- The netlist of a builder's state, with registers and ports; nodes nothing reads are
 dropped. Roots: the ports, the nodes that read the registers and what the registers load. -/
 def Net.finish (name : String) (s : NetS) (regs : List NetReg) (regReads : List Nat)
     (ins outs : List NetPort) : Netlist :=
+  let ω mems := Hdl.reverse s.mems;
   let ω roots := List.append (Hdl.map (fun (p : NetPort) => p.node) ins)
     (List.append regReads (List.append (Hdl.map (fun (p : NetPort) => p.node) outs)
-      (NetReg.readsAll regs)));
+      (List.append (NetReg.readsAll regs) (NetMem.readsAll mems))));
   let ω live := Net.liveAux s.nodes (s.next - 1) (Hdl.Set.addAll roots HTrie.tip) List.nil;
   let ω r := Net.renumber (Hdl.reverse s.nodes) live 0 0 HTrie.tip List.nil;
   Netlist.mk name r.1 (Hdl.map (NetReg.remap r.2) regs) (Hdl.map (NetPort.remap r.2) ins)
     (Hdl.map (NetPort.remap r.2) outs) (Net.remapHints (Net.liveSet live 0 HTrie.tip) r.2 (Hdl.reverse s.hints))
+    (Hdl.map (NetMem.remap r.2) mems) (Hdl.reverse s.errs)
 
 ------------------------------------------------------------------------------------
 -- Circuits: Mealy machines whose step is tagless-final code. The only way to make
@@ -1122,6 +1454,36 @@ def Circuit.runAcc_eq {i o : HwTy} (c : Circuit i o) : (s : HwTy.El c.st) → (x
 /-- `Circuit.run` agrees with the specification `Circuit.runFrom`. -/
 def Circuit.run_eq {i o : HwTy} (c : Circuit i o) (xs : List (HwTy.El i)) : Circuit.run c xs = Circuit.runFrom c c.init xs :=
   Circuit.runAcc_eq c c.init xs List.nil
+
+/-- The infinite semantics (lib/Trace.wiz): a circuit is a Mealy machine, and its run along
+an input trace is a trace. `run` and `runFrom` are its finite prefixes
+(`Mealy.runFrom_take`, `Circuit.run_take`); temporal properties are stated over `Circuit.trace` and
+`Circuit.obs`. -/
+def Circuit.mealy {i o : HwTy} (c : Circuit i o) : Mealy (HwTy.El c.st) (HwTy.El i) (HwTy.El o) := Circuit.stepEl c
+/-- The state at each cycle, along an input trace. -/
+def Circuit.stateAt {ω i o : HwTy} (c : Circuit i o) (xs : Trace (HwTy.El i)) : Trace (HwTy.El c.st) :=
+  Mealy.stateAt (Circuit.mealy c) c.init xs
+/-- The outputs at each cycle, along an input trace. -/
+def Circuit.trace {ω i o : HwTy} (c : Circuit i o) (xs : Trace (HwTy.El i)) : Trace (HwTy.El o) :=
+  Mealy.outAt (Circuit.mealy c) c.init xs
+/-- the state and the input at each cycle -/
+def Circuit.obs {ω i o : HwTy} (c : Circuit i o) (xs : Trace (HwTy.El i)) : Trace (HwTy.El c.st × HwTy.El i) :=
+  Mealy.obs (Circuit.mealy c) c.init xs
+
+/-- `runFrom` is `Mealy.runFrom` of the step, so simulating `n` cycles gives the first `n`
+elements of the trace. -/
+def Circuit.runFrom_mealy {i o : HwTy} (c : Circuit i o) : (s : HwTy.El c.st) → (xs : List (HwTy.El i)) →
+    Circuit.runFrom c s xs = Mealy.run (Circuit.mealy c) s xs
+  | s, .nil => rfl
+  | s, .cons x xs => Eq.congrArg (List.cons (Circuit.stepEl c s x).2) (Circuit.runFrom_mealy c (Circuit.stepEl c s x).1 xs)
+/-- (the statement lib/Hdl/Temporal.wiz uses) -/
+def Mealy.runFrom_take {i o : HwTy} (c : Circuit i o) (n : Nat) (s : HwTy.El c.st) (xs : Trace (HwTy.El i)) :
+    Circuit.runFrom c s (Trace.take n xs) = Trace.take n (Mealy.outAt (Circuit.stepEl c) s xs) :=
+  Eq.trans (Circuit.runFrom_mealy c s (Trace.take n xs)) (Mealy.run_take (Circuit.mealy c) n s xs)
+/-- `Circuit.run` of `n` cycles is the first `n` elements of `Circuit.trace`. -/
+def Circuit.run_take {i o : HwTy} (c : Circuit i o) (n : Nat) (xs : Trace (HwTy.El i)) :
+    Circuit.run c (Trace.take n xs) = Trace.take n (Circuit.trace c xs) :=
+  Eq.trans (Circuit.run_eq c (Trace.take n xs)) (Mealy.runFrom_take c n c.init xs)
 
 ------------------------------------------------------------------------------------
 -- Composition. Each combinator's state is made of its parts' states; the lemmas after
@@ -1206,6 +1568,34 @@ def Circuit.withEnable {ω i o : HwTy} (c : Circuit i o) : Circuit (HwTy.prod (H
     let rc := c.step s (Hw.snd x);
     Hw.pair (Hw.hold (Hw.untag (Hw.fst x)) (Hw.fst rc) s) (Hw.snd rc))
 
+/-- (H14 S4) The reset and enable convention. A design that has a reset or a clock enable
+takes them as its first inputs, named `rst` and `en`, reset first: `rst` wins over
+`en` (a held register is still reset), and both are synchronous and active high (as
+`if (rst) r <= init; else if (en) r <= next;`). For a whole circuit:
+`Circuit.withResetEnable c`; for one register: `Circuit.registerR`/`registerE`/
+`registerRE`; for one field of a state inside a step function: `Hw.regNext rst en init
+cur next` (the next value of a register whose value is `cur`). Each of them becomes
+the register's reset and enable in the netlist, not a multiplexer. Every register still
+has its initial value (`initial` in Verilog: the iCE40 needs no reset). -/
+def Circuit.withResetEnable {ω i o : HwTy} (c : Circuit i o) :
+    Circuit (HwTy.prod (HwTy.named "rst" HwTy.bit) (HwTy.prod (HwTy.named "en" HwTy.bit) i)) o :=
+  Circuit.withReset (Circuit.withEnable c)
+/-- a register (`Circuit.delay`) with a reset to its initial value, with an enable, with both -/
+def Circuit.registerR (ω t : HwTy) (init : HwTy.El t) : Circuit (HwTy.prod (HwTy.named "rst" HwTy.bit) t) t :=
+  Circuit.withReset (Circuit.delay t init)
+/-- A register with an enable (`Circuit.delay` with `Circuit.withEnable`). -/
+def Circuit.registerE (ω t : HwTy) (init : HwTy.El t) : Circuit (HwTy.prod (HwTy.named "en" HwTy.bit) t) t :=
+  Circuit.withEnable (Circuit.delay t init)
+/-- A register with a reset and an enable. -/
+def Circuit.registerRE (ω t : HwTy) (init : HwTy.El t) :
+    Circuit (HwTy.prod (HwTy.named "rst" HwTy.bit) (HwTy.prod (HwTy.named "en" HwTy.bit) t)) t :=
+  Circuit.withResetEnable (Circuit.delay t init)
+/-- inside a step function: `init` under `rst`, else `next` under `en`, else `cur` (for the
+netlist to see a reset, `init` must be the register's initial value; to see an enable,
+`cur` must be the register itself) -/
+def Hw.regNext {r : HwTy → Type} [Hw r] {ω t : HwTy} (rst en : r HwTy.bit) (init : HwTy.El t) (cur next : r t) : r t :=
+  Hw.resetTo rst init (Hw.hold en next cur)
+
 ------------------------------------------------------------------------------------
 -- What the combinators do to the semantics.
 
@@ -1285,13 +1675,47 @@ def Circuit.inst_el {i o : HwTy} (c : Circuit i o) (s : HwTy.El c.st) (x : HwTy.
 /-- Reset, one cycle: the next state is `c.init` when `rst` is 1. -/
 def Circuit.stepEl_withReset {i o : HwTy} (c : Circuit i o) (s : HwTy.El c.st) (rst : HwTy.El HwTy.bit) (x : HwTy.El i) :
     Circuit.stepEl (Circuit.withReset c) s (rst, x) =
-      (@HwTy.El.mux c.st rst c.init (Circuit.stepEl c s x).1, (Circuit.stepEl c s x).2) :=
+      (HwTy.El.resetToAt c.st rst c.init (Circuit.stepEl c s x).1, (Circuit.stepEl c s x).2) :=
   refl (Circuit.stepEl (Circuit.withReset c) s (rst, x))
 /-- Enable, one cycle: the state holds when `en` is 0. -/
 def Circuit.stepEl_withEnable {i o : HwTy} (c : Circuit i o) (s : HwTy.El c.st) (en : HwTy.El HwTy.bit) (x : HwTy.El i) :
     Circuit.stepEl (Circuit.withEnable c) s (en, x) =
       (@HwTy.El.mux c.st en (Circuit.stepEl c s x).1 s, (Circuit.stepEl c s x).2) :=
   refl (Circuit.stepEl (Circuit.withEnable c) s (en, x))
+/-- the registers, cycle by cycle: the output is the current value; the next one is `init`
+under reset (memories keep their contents, `resetToAt`), the input under enable, else
+the current value -/
+def Circuit.stepEl_registerRE {ω t : HwTy} (v : HwTy.El t) (s : HwTy.El t) (rst en : HwTy.El HwTy.bit) (x : HwTy.El t) :
+    Circuit.stepEl (Circuit.registerRE t v) s (rst, (en, x)) = (HwTy.El.resetToAt t rst v (HwTy.El.mux en x s), s) :=
+  rfl
+/-- `Circuit.registerR`'s step: `init` under reset, else the input (the state holds). -/
+def Circuit.stepEl_registerR {ω t : HwTy} (v : HwTy.El t) (s : HwTy.El t) (rst : HwTy.El HwTy.bit) (x : HwTy.El t) :
+    Circuit.stepEl (Circuit.registerR t v) s (rst, x) = (HwTy.El.resetToAt t rst v x, s) :=
+  rfl
+/-- `Circuit.registerE`'s step: the input under enable, else the current state. -/
+def Circuit.stepEl_registerE {ω t : HwTy} (v : HwTy.El t) (s : HwTy.El t) (en : HwTy.El HwTy.bit) (x : HwTy.El t) :
+    Circuit.stepEl (Circuit.registerE t v) s (en, x) = (HwTy.El.mux en x s, s) :=
+  rfl
+
+/-- memories at values: a read sees an enabled write to its address, and nothing else -/
+def Hdl.memWr_miss {aw dw : Nat} (m : BitVec aw → BitVec dw) (a : BitVec aw) (d : BitVec dw) (b : BitVec aw)
+    (h : BitVec.beq a b = .false) : (we : Bool) → Hdl.memWr we m a d b = m b
+  | .false => rfl
+  | .true => Eq.substProp (fun (hit : Bool) => Hdl.memPick hit d (m b) = m b) (Eq.symm h) rfl
+/-- A read after a write to another address is the read before it. -/
+def HwTy.El.memRead_write_miss {aw dw : Nat} (m : HwTy.El (HwTy.mem aw dw)) (we : HwTy.El HwTy.bit) (a : HwTy.El (HwTy.bits aw))
+    (d : HwTy.El (HwTy.bits dw)) (b : HwTy.El (HwTy.bits aw)) (h : BitVec.beq (a : BitVec aw) b = .false) :
+    HwTy.El.memRead (HwTy.El.memWrite m we a d) b = HwTy.El.memRead m b :=
+  Hdl.memWr_miss (m : BitVec aw → BitVec dw) (a : BitVec aw) (d : BitVec dw) b h (BitVec.isTrue (we : BitVec 1))
+/-- A read after an enabled write to its address is the word written. -/
+def HwTy.El.memRead_write_hit {aw dw : Nat} (m : HwTy.El (HwTy.mem aw dw)) (a : HwTy.El (HwTy.bits aw))
+    (d : HwTy.El (HwTy.bits dw)) (b : HwTy.El (HwTy.bits aw)) (h : BitVec.beq (a : BitVec aw) b = .true) :
+    HwTy.El.memRead (HwTy.El.memWrite m (BitVec.ofNat 1 1) a d) b = d :=
+  Eq.substProp (fun (hit : Bool) => Hdl.memPick hit (d : BitVec dw) ((m : BitVec aw → BitVec dw) b) = d) (Eq.symm h) rfl
+/-- A disabled write leaves every read unchanged. -/
+def HwTy.El.memRead_write_off {aw dw : Nat} (m : HwTy.El (HwTy.mem aw dw)) (a : HwTy.El (HwTy.bits aw))
+    (d : HwTy.El (HwTy.bits dw)) (b : HwTy.El (HwTy.bits aw)) :
+    HwTy.El.memRead (HwTy.El.memWrite m (BitVec.ofNat 1 0) a d) b = HwTy.El.memRead m b := rfl
 
 /-- `Circuit.runFrom_seq` for `Circuit.run`. -/
 def Circuit.run_seq {ω i m o : HwTy} (a : Circuit i m) (b : Circuit m o) (xs : List (HwTy.El i)) :
@@ -1327,13 +1751,36 @@ def NetM.emitLeaves (mk : Nat → NetOp) : Nat → List Nat → NetM (List Nat)
     rest ← NetM.emitLeaves mk (Nat.succ k) ws;
     NetM.pure (List.cons x rest)
 
+/-- Make the state's memories, numbered from 0 (they are made first). -/
+def NetM.stateMems : List String → List (Nat × Nat) → List (List Nat) → NetM Unit
+  | .cons nm nms, .cons sh shs, .cons ws wss => do
+    k ← NetM.newMem (NetMem.mk nm sh.1 sh.2 ws .nil);
+    NetM.stateMems nms shs wss
+  | _, _, _ => NetM.pure ()
+/-- The next value of state memory `k` must be memory `k` with writes. -/
+def NetM.memNexts : Nat → List (Nat × List (Nat × (Nat × Nat))) → NetM Unit
+  | _, .nil => NetM.pure ()
+  | k, .cons m ms => do
+    (match Nat.beq m.1 k with
+     | .true => NetM.setWrites k m.2
+     | .false => NetM.error "a memory in the state must be written, not replaced by another memory");
+    NetM.memNexts (Nat.succ k) ms
+/-- Inputs and outputs carry no memories. -/
+def NetM.noMems (what : String) (t : HwTy) : NetM Unit := match HwTy.memShapes t with
+  | .nil => NetM.pure ()
+  | .cons _ _ => NetM.error (String.append "a memory in the " what)
+
 /-- Build a circuit's step at wires: input nodes, register nodes, then the step. The ids of
 the inputs, the registers, the next state and the outputs. -/
 def Circuit.build {ω i o : HwTy} (c : Circuit i o) : NetM (List Nat × (List Nat × (List Nat × List Nat))) := do
+  NetM.noMems "input" i;
+  NetM.noMems "output" o;
+  NetM.stateMems (HwTy.memNames "m" c.st) (HwTy.memShapes c.st) (HwTy.memContents c.st c.init);
   ins ← NetM.emitLeaves NetOp.input 0 (HwTy.leafWidths i);
   cur ← NetM.emitLeaves NetOp.reg 0 (HwTy.leafWidths c.st);
-  res ← (Circuit.stepWire c (NetM.pure (HwTy.idsTake c.st cur).1) (NetM.pure (HwTy.idsTake i ins).1) :
+  res ← (Circuit.stepWire c (NetM.pure (HwTy.idsState c.st cur 0).1) (NetM.pure (HwTy.idsTake i ins).1) :
     NetM (HwTy.Ids c.st × HwTy.Ids o));
+  NetM.memNexts 0 (HwTy.idsMems c.st res.1);
   NetM.pure (ins, (cur, (HwTy.idsLeaves c.st res.1, HwTy.idsLeaves o res.2)))
 
 /-- The netlist of a circuit (hash-consed if `cse`), and the builder's final state (for
@@ -1467,6 +1914,7 @@ structure VNames where
   ins : List String
   outs : List String
   regs : List String
+  mems : List String
   used : Hdl.Set
 
 /-- Unique identifiers for a netlist's ports and registers (shared by `Verilog.emit`,
@@ -1475,7 +1923,8 @@ def Verilog.portIdents (n : Netlist) : VNames :=
   let ω a := Verilog.freshAll Verilog.reserved (Hdl.names (fun (p : NetPort) => p.name) n.inputs);
   let ω b := Verilog.freshAll a.2 (Hdl.names (fun (p : NetPort) => p.name) n.outputs);
   let ω c := Verilog.freshAll b.2 (Hdl.names (fun (r : NetReg) => r.name) n.regs);
-  VNames.mk a.1 b.1 c.1 c.2
+  let ω d := Verilog.freshAll c.2 (Hdl.names (fun (m : NetMem) => m.name) n.mems);
+  VNames.mk a.1 b.1 c.1 d.1 d.2
 
 /-- A sized decimal literal: `Verilog.lit 8 5 = "8'd5"` (width 0 is written `1'd0`). -/
 def Verilog.lit (w v : Nat) : String := match w with
@@ -1515,6 +1964,7 @@ def Verilog.hintMap : List (Nat × String) → HTrie String → HTrie String
 
 /-- What printing an expression needs: every node's reference and the nodes themselves. -/
 structure VCtx where
+  mems : List String
   names : Hdl.Vec String
   nodes : Hdl.Vec NetNode
 
@@ -1558,6 +2008,14 @@ def Verilog.expr (cx : VCtx) (n : NetNode) : String := match n.op with
     | _ => "?")
   | .eq => Verilog.bin cx "==" n.args
   | .ult => Verilog.bin cx "<" n.args
+  | .shl => Verilog.bin cx "<<" n.args
+  | .lshr => Verilog.bin cx ">>" n.args
+  | .ashr => (match n.args with
+    | .cons a (.cons s _) => "$signed(" <+> VCtx.ref cx a <+> ") >>> " <+> VCtx.ref cx s
+    | _ => "?")
+  | .slt => (match n.args with
+    | .cons a (.cons b _) => "$signed(" <+> VCtx.ref cx a <+> ") < $signed(" <+> VCtx.ref cx b <+> ")"
+    | _ => "?")
   | .concat => (match n.args with
     | .cons a (.cons b _) => Verilog.concat cx a b
     | _ => "?")
@@ -1569,6 +2027,9 @@ def Verilog.expr (cx : VCtx) (n : NetNode) : String := match n.op with
     | .cons c (.cons a _) => VCtx.ref cx c <+> " ? " <+> Verilog.lit n.width v <+> " : " <+> VCtx.ref cx a
     | _ => "?")
   | .hold => Verilog.mux3 cx n.args
+  | .memRead m => (match n.args with
+    | .cons a _ => Hdl.nthD "?" cx.mems m <+> "[" <+> VCtx.ref cx a <+> "]"
+    | _ => "?")
 
 /-- Whether a node gets a `wire` of its own: not ports, registers, constants or zero-width
 nodes. -/
@@ -1609,6 +2070,39 @@ def Verilog.updates (cx : VCtx) : List String → List NetReg → String
     | .zero => ""
     | .succ _ => "  always @(posedge clk) " <+> Verilog.load cx nm r <+> "\n") <+> Verilog.updates cx nms rs
   | _, _ => ""
+-- A memory: an array with its contents, then (after the wires) its writes in one block,
+-- in order, so that a later write wins. yosys infers block RAM (iCE40: SB_RAM40_4K) when a
+-- read's address or data goes through a register.
+/-- A memory's initial contents: `nm[k] = value;` for each word. -/
+def Verilog.memInit (nm : String) (dw : Nat) : Nat → List Nat → String
+  | _, .nil => ""
+  | k, .cons w ws => "    " <+> nm <+> "[" <+> Hdl.show k <+> "] = " <+> Verilog.lit dw w <+> ";\n" <+> Verilog.memInit nm dw (Nat.succ k) ws
+/-- A memory's declaration: an array with its initial contents. -/
+def Verilog.memDecls : List String → List NetMem → String
+  | .cons nm nms, .cons m ms => (match m.dw with
+    | .zero => ""
+    | .succ _ => "  reg " <+> Verilog.range m.dw <+> nm <+> " [0:" <+> Hdl.show (Nat.pow 2 m.aw - 1) <+> "];\n"
+      <+> "  initial begin\n" <+> Verilog.memInit nm m.dw 0 m.init <+> "  end\n")
+    <+> Verilog.memDecls nms ms
+  | _, _ => ""
+/-- The writes of a memory in one `always` block. -/
+def Verilog.memWrites (cx : VCtx) (nm : String) : List (Nat × (Nat × Nat)) → String
+  | .nil => ""
+  | .cons w ws => "    if (" <+> VCtx.ref cx w.1 <+> ") " <+> nm <+> "[" <+> VCtx.ref cx w.2.1 <+> "] <= " <+> VCtx.ref cx w.2.2 <+> ";\n"
+    <+> Verilog.memWrites cx nm ws
+/-- The `always @(posedge clk)` block of each memory that is written. -/
+def Verilog.memUpdates (cx : VCtx) : List String → List NetMem → String
+  | .cons nm nms, .cons m ms => (match m.writes, m.dw with
+    | .nil, _ => ""
+    | _, .zero => ""
+    | _, .succ _ => "  always @(posedge clk) begin\n" <+> Verilog.memWrites cx nm m.writes <+> "  end\n")
+    <+> Verilog.memUpdates cx nms ms
+  | _, _ => ""
+/-- What the netlist could not express, as Verilog comments. -/
+def Verilog.errors : List String → String
+  | .nil => ""
+  | .cons e es => "  // error: " <+> e <+> "\n" <+> Verilog.errors es
+
 /-- The port declarations of one direction (`, input [7:0] x`). -/
 def Verilog.portDecls (dir : String) : List String → List NetPort → String
   | .cons nm nms, .cons p ps => (match p.width with
@@ -1624,7 +2118,7 @@ def Verilog.assigns (cx : VCtx) : List String → List NetPort → String
 
 /-- The printing context of a netlist. -/
 def Verilog.ctx (n : Netlist) (vn : VNames) : VCtx :=
-  VCtx.mk (Verilog.refs vn (Verilog.hintMap n.hints HTrie.tip) 0 n.nodes vn.used Hdl.Vec.empty) (Hdl.Vec.ofList n.nodes)
+  VCtx.mk vn.mems (Verilog.refs vn (Verilog.hintMap n.hints HTrie.tip) 0 n.nodes vn.used Hdl.Vec.empty) (Hdl.Vec.ofList n.nodes)
 
 /-- A netlist as a Verilog-2005 module: one port per leaf (and `clk`), one `reg` per
 register (with its reset and enable), one `wire` per node that is neither a port, a
@@ -1638,8 +2132,9 @@ def Verilog.emit (n : Netlist) : String :=
   let ω vn := Verilog.portIdents n;
   let ω cx := Verilog.ctx n vn;
   "module " <+> Verilog.ident n.name <+> "(input clk" <+> Verilog.portDecls "input" vn.ins n.inputs
-  <+> Verilog.portDecls "output" vn.outs n.outputs <+> ");\n" <+> Verilog.regDecls vn.regs n.regs
-  <+> Verilog.wires cx 0 n.nodes <+> Verilog.updates cx vn.regs n.regs
+  <+> Verilog.portDecls "output" vn.outs n.outputs <+> ");\n" <+> Verilog.errors n.errors <+> Verilog.regDecls vn.regs n.regs
+  <+> Verilog.memDecls vn.mems n.mems
+  <+> Verilog.wires cx 0 n.nodes <+> Verilog.updates cx vn.regs n.regs <+> Verilog.memUpdates cx vn.mems n.mems
   <+> Verilog.assigns cx vn.outs n.outputs <+> "endmodule\n"
 
 ------------------------------------------------------------------------------------
@@ -1779,14 +2274,17 @@ def HdlDerive.fieldUnpack (r : String) (x : Syntax) (f : FieldView) : Syntax :=
 -- `Hw.fst x✝i` (the last one `x✝(n-1)` itself). So `S.unpack` is linear in the number of
 -- fields (`Hw.snd` applied i times for field i was quadratic, and slow to elaborate and
 -- compile for wide bundles). `ω`: a plain let, not auto-shared (the body is a structure).
+/-- The `i`-th tail of the product the fields are unpacked from (the variable `x✝i`). -/
 def HdlDerive.tail (i : Nat) : Syntax := Derive.var "x✝" i
 -- the fields, as arguments of the constructor
+/-- The fields of `x`, unpacked, as arguments of the constructor. -/
 def HdlDerive.unpackArgs (r : String) : Nat → List FieldView → List Syntax
   | i, .nil => .nil
   | i, .cons f .nil => .cons (HdlDerive.fieldUnpack r (HdlDerive.tail i) f) .nil
   | i, .cons f fs => .cons (HdlDerive.fieldUnpack r (Syntax.mkApp (Syntax.mkVar "Hw.fst") (.cons (HdlDerive.tail i) .nil)) f)
     (HdlDerive.unpackArgs r (Nat.succ i) fs)
 -- the chain of tails around `b`
+/-- The chain of `let ω x✝(i+1) := Hw.snd x✝i;` bindings around `b`. -/
 def HdlDerive.unpackLets : Nat → List FieldView → Syntax → Syntax
   | i, .nil, b => b
   | i, .cons _ fs, b => match fs with
@@ -1827,10 +2325,12 @@ def HdlDerive.implicitPis : List ParamView → Syntax → Syntax
 -- `Hw.snd`s of `unpack` get codes of constant size for their implicit arguments (a
 -- literal product would put the whole rest of the code there, at each step: quadratic
 -- code, and the codes are built at run time, `{ω a b : HwTy}`).
+/-- The name of the `i`-th tail: `S.code` for 0, `S.code.tailᵢ` after. -/
 def HdlDerive.tailName (n : String) (i : Nat) : String := match i with
   | .zero => String.append n ".code"
   | .succ _ => Derive.name (String.append n ".code.tail") i
 -- the definitions of the tails from the `i`-th on, the last first
+/-- The definitions of the code's tails from the `i`-th on, the last first. -/
 def HdlDerive.codeDefs (n r : String) (ps : List ParamView) (delta : List Syntax) : Nat → List FieldView → List Syntax
   | i, .nil => .nil
   | i, .cons f fs =>
@@ -1844,6 +2344,8 @@ def HdlDerive.codeDefs (n r : String) (ps : List ParamView) (delta : List Syntax
       let val := HdlDerive.lams ps `(term| HwTy.prod $a $b);
       List.append (HdlDerive.codeDefs n r ps delta (Nat.succ i) fs) (.cons `(command| def $nm : $ty := $val) .nil)
 -- (no fields: `S.code Δ := HwTy.bits 0`)
+/-- The code of a structure: the product of its fields' codes (a chain of tail definitions;
+no fields is `HwTy.bits 0`). -/
 def HdlDerive.code (n r : String) (ps : List ParamView) (delta : List Syntax) (fs : List FieldView) : List Syntax :=
   match fs with
   | .nil =>
@@ -1856,6 +2358,7 @@ def HdlDerive.code (n r : String) (ps : List ParamView) (delta : List Syntax) (f
 -- `pack`: `Hw.pair f₀ (Hw.pair f₁ … : r (S.code.tail1 Δ))`, each rest ascribed its tail's
 -- name, so that the `Hw.pair`s' codes are names too (inferred from the parts, they would
 -- be the literal products)
+/-- Packing a structure: the pair of its fields, packed. -/
 def HdlDerive.pack (n r : String) (delta : List Syntax) (s : Syntax) : Nat → List FieldView → Syntax
   | i, .nil => `(term| Hw.lit 0 0)
   | i, .cons f fs => match fs with
@@ -1866,7 +2369,6 @@ def HdlDerive.pack (n r : String) (delta : List Syntax) (s : Syntax) : Nat → L
       let rv := Syntax.mkVar r;
       let t := Syntax.mkApp (Syntax.mkVar (HdlDerive.tailName n (Nat.succ i))) delta;
       `(term| Hw.pair $a ($b : $rv $t))
-
 
 /-- `deriving Bundle` for a structure `S Δ (r : HwTy → Type)` (the representation is the
 last parameter) whose fields are leaves `r T` or nested bundles `G … r` (which must
@@ -1921,6 +2423,191 @@ def deriveBundle : Deriver := fun n => do
       (.cons `(command| def $bundleN : $bundleTy := $bundleVal) .nil))))
   | _ => MacroM.throw (String.append "Bundle: not a structure: " n)
 attribute [deriver Bundle] deriveBundle
+
+------------------------------------------------------------------------------------
+-- (H14 S4) Bit packing: a value as one bit vector.
+--
+-- `Hw.packBits t x` is any code's signal as one bus (the first component in the high
+-- bits, as `HwTy.pack`), `Hw.unpackBits t` takes it apart again: wiring only
+-- (concatenations and slices), at any representation.
+
+/-- A value as one bit vector (the first component in the high bits, as `HwTy.pack`). -/
+def Hw.packBits {r : HwTy → Type} [Hw r] : (ω t : HwTy) → r t → r (HwTy.bits (HwTy.width t))
+  | .bits n, x => x
+  | .prod a b, x => Hw.share x (fun y => Hw.cat (Hw.packBits a (Hw.fst y)) (Hw.packBits b (Hw.snd y)))
+  | .named _ t, x => Hw.packBits t (Hw.untag x)
+  | .mem _ _, x => Hw.const (HwTy.bits 0) (BitVec.ofNat 0 0)
+/-- Take a packed bit vector apart again (concatenations and slices only). -/
+def Hw.unpackBits {r : HwTy → Type} [Hw r] : (ω t : HwTy) → r (HwTy.bits (HwTy.width t)) → r t
+  | .bits n, x => x
+  | .prod a b, x => Hw.share x (fun y =>
+    Hw.pair (Hw.unpackBits a (Hw.slice (HwTy.width b) (HwTy.width a) y)) (Hw.unpackBits b (Hw.slice 0 (HwTy.width b) y)))
+  | .named s t, x => Hw.tag s (Hw.unpackBits t x)
+  | .mem aw dw, x => Hw.const (HwTy.mem aw dw) (fun (a : BitVec aw) => BitVec.ofNat dw 0)
+
+/-- at values -/
+def HwTy.El.packBits (ω t : HwTy) (x : HwTy.El t) : BitVec (HwTy.width t) := Hw.packBits (r := HwTy.El) t x
+/-- At values: `Hw.unpackBits`. -/
+def HwTy.El.unpackBits (ω t : HwTy) (x : BitVec (HwTy.width t)) : HwTy.El t := Hw.unpackBits (r := HwTy.El) t x
+
+/-- A type's values as bit vectors of one width (Clash's `BitPack`). A plain value, not an
+instance, for the reason `Bundle` is one. `deriving BitPack` makes `T.bitPack`. -/
+structure BitPack (A : Type) where
+  width : Nat
+  pack : A → BitVec width
+  unpack : BitVec width → A
+
+/-- the number of bits for `k` values: the least `w` with `k ≤ 2^w` -/
+def Hdl.clog2Go : Nat → Nat → Nat → Nat
+  | .zero, w, _ => w
+  | .succ f, w, k => match Nat.lt (Nat.pow 2 w) k with
+    | .true => Hdl.clog2Go f (Nat.succ w) k
+    | .false => w
+/-- The number of bits needed for `k` values: the least `w` with `k ≤ 2^w`. -/
+def Hdl.clog2 (k : Nat) : Nat := Hdl.clog2Go k 0 k
+
+/-- `deriving BitPack`:
+* for an enumeration `T` (no parameters, constructors without fields), constructor
+`i` is the number `i`, in `w = ⌈log₂ #constructors⌉` bits:
+`T.width : Nat`, `T.code : HwTy` (= `HwTy.bits T.width`),
+`T.toNat`, `T.ofNat` (a number out of range is the first constructor),
+`T.pack : T → HwTy.El T.code`, `T.unpack`, `T.unpack_pack : T.unpack (T.pack x) = x`,
+`T.lit x : r T.code` (the constant, at any representation), `T.bitPack`;
+* for a bundle `S Δ r` (a structure whose last parameter is the representation; its
+`deriving Bundle` is made too if it is not there yet), the bundle as one bus:
+`S.width Δ`, `S.toBits Δ : S Δ r → r (HwTy.bits (S.width Δ))`, `S.ofBits Δ`,
+`S.unpack_pack Δ : S.unpack Δ (S.pack Δ s) = s` (at values), and
+`S.bitPack Δ : BitPack (S Δ HwTy.El)`. -/
+def HdlDerive.num (k : Nat) : Syntax := Syntax.mkNode "term.num" (.cons (Syntax.mkNode "num" (.cons (.atom (Syntax.decimal k)) .nil)) .nil)
+/-- The constructor names of an inductive type, as variables. -/
+def HdlDerive.ctorVars (v : IndView) : List CtorView → List Syntax
+  | .nil => .nil
+  | .cons c cs => .cons (Syntax.mkVar (Derive.ctorName v c)) (HdlDerive.ctorVars v cs)
+/-- The syntax of a list literal of these terms. -/
+def HdlDerive.listOf : List Syntax → Syntax
+  | .nil => Syntax.mkVar "List.nil"
+  | .cons x xs => Syntax.mkApp (Syntax.mkVar "List.cons") (.cons x (.cons (HdlDerive.listOf xs) .nil))
+/-- `0, 1, …` up to the number of constructors. -/
+def HdlDerive.nums : Nat → List CtorView → List Syntax
+  | _, .nil => .nil
+  | i, .cons _ cs => .cons (HdlDerive.num i) (HdlDerive.nums (Nat.succ i) cs)
+/-- `refl c` for each term (the equations of an enumeration's laws). -/
+def HdlDerive.refls : List Syntax → List Syntax
+  | .nil => .nil
+  | .cons c cs => .cons `(term| refl $c) (HdlDerive.refls cs)
+/-- Whether every constructor has no fields (an enumeration). -/
+def HdlDerive.allNullary : List CtorView → Bool
+  | .nil => .true
+  | .cons c cs => match CtorView.fields c with
+    | .nil => HdlDerive.allNullary cs
+    | _ => .false
+
+/-- `deriving BitPack` for an enumeration: a number per constructor. -/
+def HdlDerive.enumPack (v : IndView) (n : String) : MacroM (List Syntax) :=
+  let cs := IndView.ctors v;
+  let w := HdlDerive.num (Hdl.clog2 (List.length cs));
+  let tyT := Syntax.mkVar n;
+  let wN := Syntax.mkIdent (String.append n ".width");
+  let wV := Syntax.mkVar (String.append n ".width");
+  let codeN := Syntax.mkIdent (String.append n ".code");
+  let codeV := Syntax.mkVar (String.append n ".code");
+  let toNatN := Syntax.mkIdent (String.append n ".toNat");
+  let toNatV := Syntax.mkVar (String.append n ".toNat");
+  let ofNatN := Syntax.mkIdent (String.append n ".ofNat");
+  let ofNatV := Syntax.mkVar (String.append n ".ofNat");
+  let packN := Syntax.mkIdent (String.append n ".pack");
+  let packV := Syntax.mkVar (String.append n ".pack");
+  let unpackN := Syntax.mkIdent (String.append n ".unpack");
+  let unpackV := Syntax.mkVar (String.append n ".unpack");
+  let litN := Syntax.mkIdent (String.append n ".lit");
+  let lawN := Syntax.mkIdent (String.append n ".unpack_pack");
+  let lawV := Syntax.mkVar (String.append n ".unpack_pack");
+  let bpN := Syntax.mkIdent (String.append n ".bitPack");
+  let x := Syntax.mkIdent "x✝";
+  let xv := Syntax.mkVar "x✝";
+  let k := Syntax.mkIdent "k✝";
+  let kv := Syntax.mkVar "k✝";
+  let r := Syntax.mkIdent "r";
+  let rv := Syntax.mkVar "r";
+  let ctors := HdlDerive.ctorVars v cs;
+  let first := (match ctors with
+    | .cons c _ => c
+    | .nil => Syntax.mkVar "x✝");
+  let toNatBody := Syntax.mkApp (Syntax.mkVar (String.append n ".rec"))
+    (.cons `(term| fun _ => Nat) (List.append (HdlDerive.nums 0 cs) (.cons xv .nil)));
+  let ofNatBody := Syntax.mkApp (Syntax.mkVar "Hdl.nthD") (.cons first (.cons (HdlDerive.listOf ctors) (.cons kv .nil)));
+  let motive := `(term| fun $x => $unpackV ($packV $xv) = $xv);
+  let lawBody := Syntax.mkApp (Syntax.mkVar (String.append n ".rec"))
+    (.cons motive (List.append (HdlDerive.refls ctors) (.cons xv .nil)));
+  MacroM.pure (.cons `(command| def $wN : Nat := $w)
+    (.cons `(command| def $codeN : HwTy := HwTy.bits $wV)
+    (.cons `(command| def $toNatN ($x : $tyT) : Nat := $toNatBody)
+    (.cons `(command| def $ofNatN ($k : Nat) : $tyT := $ofNatBody)
+    (.cons `(command| def $packN ($x : $tyT) : HwTy.El $codeV := BitVec.ofNat $wV ($toNatV $xv))
+    (.cons `(command| def $unpackN ($x : HwTy.El $codeV) : $tyT := $ofNatV (BitVec.toNat ($xv : BitVec $wV)))
+    (.cons `(command| def $litN {$r : HwTy → Type} [Hw $rv] ($x : $tyT) : $rv $codeV := Hw.lit $wV ($toNatV $xv))
+    (.cons `(command| def $lawN ($x : $tyT) : $unpackV ($packV $xv) = $xv := $lawBody)
+    (.cons `(command| def $bpN : BitPack $tyT := BitPack.mk $wV $packV $unpackV) .nil)))))))))
+
+/-- `deriving BitPack` for a structure: its bundle's packed code. -/
+def HdlDerive.bundlePack (v : IndView) (n : String) (pre : List Syntax) : MacroM (List Syntax) :=
+  let ps := HdlDerive.init (IndView.params v);
+  let delta := Derive.paramVars ps;
+  let tyF := Syntax.mkApp (Syntax.mkVar n) delta;
+  let r := Syntax.mkIdent (HdlDerive.lastName (IndView.params v));
+  let rv := Syntax.mkVar (HdlDerive.lastName (IndView.params v));
+  let tyS := Syntax.mkApp tyF (.cons rv .nil);
+  let tyEl := Syntax.mkApp tyF (.cons `(term| HwTy.El) .nil);
+  let app := fun (suffix : String) => Syntax.mkApp (Syntax.mkVar (String.append n suffix)) delta;
+  let idt := fun (suffix : String) => Syntax.mkIdent (String.append n suffix);
+  let codeApp := app ".code";
+  let widthApp := app ".width";
+  let packApp := app ".pack";
+  let unpackApp := app ".unpack";
+  let s := Syntax.mkIdent "s✝";
+  let sv := Syntax.mkVar "s✝";
+  let x := Syntax.mkIdent "x✝";
+  let xv := Syntax.mkVar "x✝";
+  let wN := idt ".width";
+  let wTy := HdlDerive.explicitPis ps `(term| Nat);
+  let wVal := HdlDerive.lams ps `(term| HwTy.width $codeApp);
+  let tN := idt ".toBits";
+  let tTy := HdlDerive.explicitPis ps `(term| {$r : HwTy → Type} → [Hw $rv] → $tyS → $rv (HwTy.bits $widthApp));
+  let tVal := HdlDerive.lams ps `(term| fun $s => Hw.packBits $codeApp ($packApp $sv));
+  let oN := idt ".ofBits";
+  let oTy := HdlDerive.explicitPis ps `(term| {$r : HwTy → Type} → [Hw $rv] → $rv (HwTy.bits $widthApp) → $tyS);
+  let oVal := HdlDerive.lams ps `(term| fun $x => $unpackApp (Hw.unpackBits $codeApp $xv));
+  let lN := idt ".unpack_pack";
+  let lTy := HdlDerive.explicitPis ps `(term| ($s : $tyEl) → $unpackApp ($packApp $sv) = $sv);
+  let lVal := HdlDerive.lams ps `(term| fun $s => refl $sv);
+  let bN := idt ".bitPack";
+  let bTy := HdlDerive.explicitPis ps `(term| BitPack $tyEl);
+  let bVal := HdlDerive.lams ps `(term| BitPack.mk $widthApp (fun $s => HwTy.El.packBits $codeApp ($packApp $sv))
+    (fun $x => $unpackApp (HwTy.El.unpackBits $codeApp $xv)));
+  MacroM.pure (List.append pre
+    (.cons `(command| def $wN : $wTy := $wVal)
+    (.cons `(command| def $tN : $tTy := $tVal)
+    (.cons `(command| def $oN : $oTy := $oVal)
+    (.cons `(command| def $lN : $lTy := $lVal)
+    (.cons `(command| def $bN : $bTy := $bVal) .nil))))))
+
+/-- `deriving BitPack` for an enumeration (no parameters, constructors without fields) or
+a structure. -/
+def deriveBitPack : Deriver := fun n => do
+  v ← Derive.lookup "BitPack" n;
+  Derive.noIndices "BitPack" v;
+  match IndView.params v, HdlDerive.allNullary (IndView.ctors v) with
+  | .nil, .true => HdlDerive.enumPack v n
+  | .cons _ _, _ => (match IndView.isStructure v with
+    | .true => do
+      code ← MacroM.getType (String.append n ".code");
+      pre ← (match code with
+        | .some _ => MacroM.pure List.nil
+        | .none => deriveBundle n);
+      HdlDerive.bundlePack v n pre
+    | .false => MacroM.throw (String.append "BitPack: not an enumeration or a bundle: " n))
+  | .nil, .false => MacroM.throw (String.append "BitPack: not an enumeration (constructors without fields) or a bundle: " n)
+attribute [deriver BitPack] deriveBitPack
 
 ------------------------------------------------------------------------------------
 -- Test benches. `Testbench.verilog n vec cycles` replays a vector file on the module
@@ -2213,6 +2900,10 @@ def Design.runLeaves (d : Design) (xs : List (List Nat)) : List (List Nat) :=
 --   `a <ᵤ b`  `a ≤ᵤ b`  `a >ᵤ b`  `a ≥ᵤ b`   unsigned comparisons: 1 bit      (62)
 --   `a === b`  `a =/= b`                equality, inequality: a 1-bit signal   (61)
 --   `if c then a else b`, `c : r HwTy.bit`   `Hw.mux c a b`, at any type `r t`
+--   (H14 S4) `a <<< s`  `a >>> s`  `a >>>ₛ s`  (`s` a signal)   barrel shifters   (75)
+--   `a >>>ₛ k` (`k : Nat`)   arithmetic shift right by wiring                    (75)
+--   `a <ₛ b`  `a ≤ₛ b`  `a >ₛ b`  `a ≥ₛ b`   signed comparisons: 1 bit           (62)
+--   `a && b`  `a || b`  (`a b : r HwTy.bit`)   `a &&& b`, `a ||| b`             (35, 30)
 --
 -- They are the `Hw` operations, so circuits written with them have the same netlists and
 -- the same Verilog as with `Hw.add` …, and print back as written. `Hw.ofNat k` is a
@@ -2221,40 +2912,91 @@ def Design.runLeaves (d : Design) (xs : List (List Nat)) : List (List Nat) :=
 -- they return a signal, not a `Bool`, and are unsigned (`ᵤ`). As in Verilog they bind
 -- tighter than the bitwise operations, so `x === 0 &&& y <ᵤ k` needs no parentheses.
 
+/-- A numeral at `r (HwTy.bits n)` is a constant of that width. -/
 instance {r : HwTy → Type} [Hw r] {ω n k : Nat} : OfNat (r (HwTy.bits n)) k := OfNat.mk (Hw.lit n k)
+/-- A numeral as a signal whose width comes from the expected type. -/
 def Hw.ofNat {r : HwTy → Type} [Hw r] {ω n : Nat} (k : Nat) : r (HwTy.bits n) := Hw.lit n k
 
+/-- `a + b` on hardware signals is `Hw.add`. -/
 instance {r : HwTy → Type} [Hw r] {ω n : Nat} : Add (r (HwTy.bits n)) := Add.mk (fun a b => Hw.add a b)
+/-- `a - b` on hardware signals is `Hw.sub`. -/
 instance {r : HwTy → Type} [Hw r] {ω n : Nat} : Sub (r (HwTy.bits n)) := Sub.mk (fun a b => Hw.sub a b)
+/-- `a * b` on hardware signals is `Hw.mul`. -/
 instance {r : HwTy → Type} [Hw r] {ω n : Nat} : Mul (r (HwTy.bits n)) := Mul.mk (fun a b => Hw.mul a b)
+/-- `-a` on hardware signals is `Hw.sub (Hw.lit n 0) a`. -/
 instance {r : HwTy → Type} [Hw r] {ω n : Nat} : Neg (r (HwTy.bits n)) := Neg.mk (fun a => Hw.sub (Hw.lit n 0) a)
+/-- `a &&& b` on hardware signals is `Hw.and`. -/
 instance {r : HwTy → Type} [Hw r] {ω n : Nat} : AndOp (r (HwTy.bits n)) := AndOp.mk (fun a b => Hw.and a b)
+/-- `a ||| b` on hardware signals is `Hw.or`. -/
 instance {r : HwTy → Type} [Hw r] {ω n : Nat} : OrOp (r (HwTy.bits n)) := OrOp.mk (fun a b => Hw.or a b)
+/-- `a ^^^ b` on hardware signals is `Hw.xor`. -/
 instance {r : HwTy → Type} [Hw r] {ω n : Nat} : XorOp (r (HwTy.bits n)) := XorOp.mk (fun a b => Hw.xor a b)
+/-- `~~~a` on hardware signals is `Hw.not`. -/
 instance {r : HwTy → Type} [Hw r] {ω n : Nat} : Complement (r (HwTy.bits n)) := Complement.mk (fun a => Hw.not a)
 
--- Shifts by a fixed number of places are wiring: `a <<< k` is the low `n` bits of `a`
--- with `k` zeros below it, `a >>> k` the high `n` bits of `k` zeros above `a` (a
--- concatenation and a slice: no shifter). By 0 places, `a`; by `n` or more, `0`.
+/-- Shifts by a fixed number of places are wiring: `a <<< k` is the low `n` bits of `a`
+with `k` zeros below it, `a >>> k` the high `n` bits of `k` zeros above `a` (a
+concatenation and a slice: no shifter). By 0 places, `a`; by `n` or more, `0`. -/
 def Hw.shl {r : HwTy → Type} [Hw r] {ω n : Nat} (a : r (HwTy.bits n)) (k : Nat) : r (HwTy.bits n) :=
   match Nat.beq k 0 with
   | .true => a
   | .false => (match Nat.lt k n with
     | .true => Hw.slice 0 n (Hw.cat a (Hw.lit k 0))
     | .false => Hw.lit n 0)
+/-- A logical right shift by a fixed `k` places is wiring (zeros in at the top); by `n`
+or more, `0`. -/
 def Hw.lshr {r : HwTy → Type} [Hw r] {ω n : Nat} (a : r (HwTy.bits n)) (k : Nat) : r (HwTy.bits n) :=
   match Nat.beq k 0 with
   | .true => a
   | .false => (match Nat.lt k n with
     | .true => Hw.slice k n (Hw.cat (Hw.lit k 0) a)
     | .false => Hw.lit n 0)
+/-- `a <<< k` on hardware signals is `Hw.shl` (wiring for a `Nat`). -/
 instance {r : HwTy → Type} [Hw r] {ω n : Nat} : ShiftLeft (r (HwTy.bits n)) := ShiftLeft.mk (fun a k => Hw.shl a k)
+/-- `a >>> k` on hardware signals is `Hw.lshr` (wiring for a `Nat`). -/
 instance {r : HwTy → Type} [Hw r] {ω n : Nat} : ShiftRight (r (HwTy.bits n)) := ShiftRight.mk (fun a k => Hw.lshr a k)
 
--- comparisons: one bit
+-- (H14 S4) Shifts by a signal `s : r (HwTy.bits m)`: `a <<< s`, `a >>> s` are barrel
+-- shifters (`Hw.shlBy`, `Hw.lshrBy`; Verilog `<<`, `>>`). A `Nat` amount stays wiring.
+/-- `a <<< s` by a signal is a barrel shifter (`Hw.shlBy`). -/
+instance {r : HwTy → Type} [Hw r] {ω n m : Nat} : HShiftLeft (r (HwTy.bits n)) (r (HwTy.bits m)) (r (HwTy.bits n)) :=
+  HShiftLeft.mk (fun a s => Hw.shlBy a s)
+/-- `a >>> s` by a signal is a barrel shifter (`Hw.lshrBy`). -/
+instance {r : HwTy → Type} [Hw r] {ω n m : Nat} : HShiftRight (r (HwTy.bits n)) (r (HwTy.bits m)) (r (HwTy.bits n)) :=
+  HShiftRight.mk (fun a s => Hw.lshrBy a s)
+
+/-- Arithmetic shift right, `a >>>ₛ k` (copies of the sign bit come in): by a fixed `k :
+Nat` it is wiring (the sign bit repeated `k` times on top, then a slice); by a signal,
+`Hw.ashrBy` (Verilog `$signed(a) >>> s`). -/
+def Hw.signs {r : HwTy → Type} [Hw r] {ω n : Nat} (a : r (HwTy.bits n)) (k : Nat) : r (HwTy.bits k) :=
+  Hw.mux (Hw.slice (n - 1) 1 a) (Hw.lit k (Nat.pow 2 k - 1)) (Hw.lit k 0)
+/-- An arithmetic right shift by a fixed `k` places (copies of the sign bit in); by a
+signal, `Hw.ashrBy`. -/
+def Hw.ashr {r : HwTy → Type} [Hw r] {ω n : Nat} (a : r (HwTy.bits n)) (k : Nat) : r (HwTy.bits n) :=
+  match Nat.beq k 0, Nat.beq n 0 with
+  | .true, _ => a
+  | _, .true => a
+  | _, _ => Hw.share a (fun a => match Nat.lt k n with
+    | .true => Hw.slice k n (Hw.cat (Hw.signs a k) a)
+    | .false => Hw.signs a n)
+/-- Types with an arithmetic right shift, written `a >>>ₛ b`. -/
+class AShiftRight (A B : Type) (C : outParam Type) where
+  ashr : A → B → C
+/-- `a >>>ₛ k` by a fixed amount is `Hw.ashr` (wiring). -/
+instance {r : HwTy → Type} [Hw r] {ω n : Nat} : AShiftRight (r (HwTy.bits n)) Nat (r (HwTy.bits n)) :=
+  AShiftRight.mk (fun a k => Hw.ashr a k)
+/-- `a >>>ₛ s` by a signal is `Hw.ashrBy`. -/
+instance {r : HwTy → Type} [Hw r] {ω n m : Nat} : AShiftRight (r (HwTy.bits n)) (r (HwTy.bits m)) (r (HwTy.bits n)) :=
+  AShiftRight.mk (fun a s => Hw.ashrBy a s)
+infixl:75 " >>>ₛ " => AShiftRight.ashr
+
+/-- comparisons: one bit -/
 def Hw.neq {r : HwTy → Type} [Hw r] {ω n : Nat} (a b : r (HwTy.bits n)) : r HwTy.bit := Hw.not (Hw.eq a b)
+/-- Unsigned `a ≤ b`, as one bit. -/
 def Hw.ule {r : HwTy → Type} [Hw r] {ω n : Nat} (a b : r (HwTy.bits n)) : r HwTy.bit := Hw.not (Hw.ult b a)
+/-- Unsigned `a > b`, as one bit. -/
 def Hw.ugt {r : HwTy → Type} [Hw r] {ω n : Nat} (a b : r (HwTy.bits n)) : r HwTy.bit := Hw.ult b a
+/-- Unsigned `a ≥ b`, as one bit. -/
 def Hw.uge {r : HwTy → Type} [Hw r] {ω n : Nat} (a b : r (HwTy.bits n)) : r HwTy.bit := Hw.not (Hw.ult a b)
 infix:61 " === " => Hw.eq
 infix:61 " =/= " => Hw.neq
@@ -2263,7 +3005,19 @@ infix:62 " ≤ᵤ " => Hw.ule
 infix:62 " >ᵤ " => Hw.ugt
 infix:62 " ≥ᵤ " => Hw.uge
 
+/-- (H14 S4) signed comparisons (two's complement), one bit: `<ₛ ≤ₛ >ₛ ≥ₛ` -/
+def Hw.sle {r : HwTy → Type} [Hw r] {ω n : Nat} (a b : r (HwTy.bits n)) : r HwTy.bit := Hw.not (Hw.slt b a)
+/-- Signed (two's complement) `a > b`, as one bit. -/
+def Hw.sgt {r : HwTy → Type} [Hw r] {ω n : Nat} (a b : r (HwTy.bits n)) : r HwTy.bit := Hw.slt b a
+/-- Signed (two's complement) `a ≥ b`, as one bit. -/
+def Hw.sge {r : HwTy → Type} [Hw r] {ω n : Nat} (a b : r (HwTy.bits n)) : r HwTy.bit := Hw.not (Hw.slt a b)
+infix:62 " <ₛ " => Hw.slt
+infix:62 " ≤ₛ " => Hw.sle
+infix:62 " >ₛ " => Hw.sgt
+infix:62 " ≥ₛ " => Hw.sge
+
 -- `if` on a one-bit signal (lib/Prelude.wiz, `Mux`): a multiplexer at any type
+/-- `if c then x else y` on hardware signals is `Hw.mux`. -/
 instance {r : HwTy → Type} [Hw r] {ω t : HwTy} : Mux (r HwTy.bit) (r t) := Mux.mk (fun c a b => Hw.mux c a b)
 -- and `Hw.mux c a b` prints as that `if`
 app_unexpander Hw.mux
