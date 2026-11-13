@@ -107,6 +107,7 @@ partial def term : Term R → Sx
   | .tt => .a "tt"
   | .empty l => node "empty" [level l]
   | .absurd m t => node "absurd" [term m, term t]
+  | .letUnit u b => node "letUnit" [term u, term b]
   | .eq A a b => node "eq" [term A, term a, term b]
   | .eqTy A B => node "eqTy" [term A, term B]
   | .refl A a => node "refl" [term A, term a]
@@ -134,7 +135,7 @@ partial def term : Term R → Sx
   | .szSuc s => node "szSuc" [term s]
   | .sizeLt s => node "sizeLt" [term s]
   | .sfix l I D v P f s i x => node "sfix" [level l, term I, term D, level v, term P, term f, term s, term i, term x]
-  | .scase l I D v P m s i x => node "scase" [level l, term I, term D, level v, term P, term m, term s, term i, term x]
+  | .scase l q I D v P m s i x => node "scase" [level l, term q, term I, term D, level v, term P, term m, term s, term i, term x]
   | .cocon x => node "cocon" [term x]
   | .scofix l I D A f s i a => node "scofix" [level l, term I, term D, term A, term f, term s, term i, term a]
   | .coit l I D S st i s => node "coit" [level l, term I, term D, term S, term st, term i, term s]
@@ -210,6 +211,7 @@ partial def dterm : Sx → Option (Term R)
     | "unit" => return .unit (← lv 1)
     | "empty" => return .empty (← lv 1)
     | "absurd" => return .absurd (← t 1) (← t 2)
+    | "letUnit" => return .letUnit (← t 1) (← t 2)
     | "eq" => return .eq (← t 1) (← t 2) (← t 3)
     | "eqTy" => return .eqTy (← t 1) (← t 2)
     | "refl" => return .refl (← t 1) (← t 2)
@@ -234,7 +236,7 @@ partial def dterm : Sx → Option (Term R)
     | "szSuc" => return .szSuc (← t 1)
     | "sizeLt" => return .sizeLt (← t 1)
     | "sfix" => return .sfix (← lv 1) (← t 2) (← t 3) (← lv 4) (← t 5) (← t 6) (← t 7) (← t 8) (← t 9)
-    | "scase" => return .scase (← lv 1) (← t 2) (← t 3) (← lv 4) (← t 5) (← t 6) (← t 7) (← t 8) (← t 9)
+    | "scase" => return .scase (← lv 1) (← t 2) (← t 3) (← t 4) (← lv 5) (← t 6) (← t 7) (← t 8) (← t 9) (← t 10)
     | "cocon" => return .cocon (← t 1)
     | "ulift" => return .ulift (← lv 1) (← lv 2) (← t 3)
     | "up" => return .up (← t 1)
@@ -396,6 +398,7 @@ def infoSx : Info R → Sx
     node "expansion" [info i, str k, handler, list (e.toList.map (str ·.reprint))]
   | .importMod i m => node "import" [info i, str m]
   | .inst i ns ty t => node "inst" [info i, names ns, term ty, term t]
+  | .fix i c d => node "fix" [info i, str c, list (d.map fun (k, vs) => list [str k, names vs])]
 
 def dInfo (x : Sx) : Option (Info R) := do
   let xs ← items? x
@@ -427,6 +430,11 @@ def dInfo (x : Sx) : Option (Info R) := do
     pure (.expansion (← dinfo (← a 1)) (← atom? (← a 2)) h e.head?)
   | "import" => pure (.importMod (← dinfo (← a 1)) (← atom? (← a 2)))
   | "inst" => pure (.inst (← dinfo (← a 1)) (← dnames (← a 2)) (← dterm (← a 3)) (← dterm (← a 4)))
+  | "fix" =>
+    let d ← (← items? (← a 3)).toList.mapM fun kv => do
+      let #[k, vs] ← items? kv | none
+      pure (← atom? k, ← dnames vs)
+    pure (.fix (← dinfo (← a 1)) (← atom? (← a 2)) d)
   | _ => none
 
 def Effect.toSx (e : Effect R) : Sx :=
@@ -500,7 +508,7 @@ def Effect.ofSx? (x : Sx) : Option (Effect R) := do
 /-- The cache's version: change it whenever the format or the elaborator's output changes.
 (The directory store also mixes in the binary's own hash, `binaryId`, so two builds of
 wiz never share entries; the salt is for invalidating by hand.) -/
-def salt : UInt64 := hash "wiz-cache-21-sorts-prf"  -- 21: mandatory component sorts (Π/Σ carry ⟨dom, cod⟩, ULift its content's sort) and 20: proof markers (P2: declarations are stored marked); 15: doc comments and declaration kinds (11s); 14: a builtin key is registered once; 13: witnesses, assumed registrations, warnings; 12: private constructors, observations, fields (13b); 11: 22i, marked structure tails; 9: private names (13b); 8: Q4
+def salt : UInt64 := hash "wiz-cache-30-sorts-prf"  -- 30: mandatory component sorts (Π/Σ carry ⟨dom, cod⟩, ULift its content's sort); 29: error codes, `Info.fix`, `scase` quantity (K1), `letUnit`; 20: proof markers (P2: declarations are stored marked); 15: doc comments and declaration kinds (11s); 14: a builtin key is registered once; 13: witnesses, assumed registrations, warnings; 12: private constructors, observations, fields (13b); 11: 22i, marked structure tails; 9: private names (13b); 8: Q4
 
 /-! ## Keys and atomic writes (stage 23c)
 
@@ -681,15 +689,15 @@ where
           -- what the rest of the file sees depends on the module's text, through its key
           key := mixHash key (← keyOf keys m)
           if stack.contains m then
-            s := { s with messages := s.messages.push { info := cmd.info, severity := .error, text := s!"import cycle through {m}" } }
+            s := { s with messages := s.messages.push { info := cmd.info, severity := .error, text := s!"import cycle through {m}", code := ErrorCode.importCycle } }
           else if !s.imported.contains m then
             match s.loader m with
-            | none => s := { s with messages := s.messages.push { info := cmd.info, severity := .error, text := s!"unknown module {m}" } }
+            | none => s := { s with messages := s.messages.push { info := cmd.info, severity := .error, text := s!"unknown module {m}", code := ErrorCode.unknownModule } }
             | some src =>
               let (inner, h) ← importModule keys base stack s m src
               hits := hits + h
               let errs := inner.messages.filter (·.severity == .error)
-              let msg : Msg := { info := cmd.info, severity := .error,
+              let msg : Msg := { info := cmd.info, severity := .error, code := ErrorCode.moduleErrors,
                                  text := s!"module {m} has errors: {errs.toList.map (·.render src)}" }
               -- (a module's warnings, such as an unchecked `builtin`, are shown at the import)
               let warns := (inner.messages.filter (·.severity == .warning)).map fun w =>

@@ -202,6 +202,7 @@ def termTable : List TermRow := [
   ⟨"tt", [], 0, fun _ _ => .tt⟩,
   ⟨"empty", [], 1, fun _ l => .empty (l 0)⟩,
   ⟨"absurd", [0, 0], 0, fun c _ => .absurd (c 0) (c 1)⟩,
+  ⟨"letUnit", [0, 0], 0, fun c _ => .letUnit (c 0) (c 1)⟩,
   ⟨"eq", [0, 0, 0], 0, fun c _ => .eq (c 0) (c 1) (c 2)⟩,
   ⟨"eqTy", [0, 0], 0, fun c _ => .eqTy (c 0) (c 1)⟩,
   ⟨"refl", [0, 0], 0, fun c _ => .refl (c 0) (c 1)⟩,
@@ -229,7 +230,7 @@ def termTable : List TermRow := [
   ⟨"szSuc", [0], 0, fun c _ => .szSuc (c 0)⟩,
   ⟨"sizeLt", [0], 0, fun c _ => .sizeLt (c 0)⟩,
   ⟨"sfix", [0, 0, 0, 0, 0, 0, 0], 2, fun c l => .sfix (l 0) (c 0) (c 1) (l 1) (c 2) (c 3) (c 4) (c 5) (c 6)⟩,
-  ⟨"scase", [0, 0, 0, 0, 0, 0, 0], 2, fun c l => .scase (l 0) (c 0) (c 1) (l 1) (c 2) (c 3) (c 4) (c 5) (c 6)⟩,
+  ⟨"scase", [0, 0, 0, 0, 0, 0, 0, 0], 2, fun c l => .scase (l 0) (c 0) (c 1) (c 2) (l 1) (c 3) (c 4) (c 5) (c 6) (c 7)⟩,
   ⟨"cocon", [0], 0, fun c _ => .cocon (c 0)⟩,
   ⟨"scofix", [0, 0, 0, 0, 0, 0, 0], 1, fun c l => .scofix (l 0) (c 0) (c 1) (c 2) (c 3) (c 4) (c 5) (c 6)⟩,
   ⟨"coit", [0, 0, 0, 0, 0, 0], 1, fun c l => .coit (l 0) (c 0) (c 1) (c 2) (c 3) (c 4) (c 5)⟩,
@@ -354,7 +355,8 @@ def evalDrops : List (String × Nat × String) := [
   ("letE", 0, "a let's quantity is not part of its value"),
   ("letE", 1, "a let's type annotation is not part of its value"),
   ("letE", 2, "a let's value is reached through the body's variable (the witness body does not use it)"),
-  ("ann", 1, "an annotation is not part of the value")]
+  ("ann", 1, "an annotation is not part of the value"),
+  ("letUnit", 0, "η for Unit: the eliminator is its body (its scrutinee is evaluated by compiled code only)")]
 
 /-- The children that read-back erases when `quoteErasesProofs` (the kernel's own
 comparisons, `sameVal`): the proof positions the syntax marks (P2). -/
@@ -495,7 +497,7 @@ def elimTable : List ElimRow := [
   ⟨"delim", 5, [], 1, fun c _ l => .delim (l 0) (c 0) (c 1) (c 2) (c 3) (c 4)⟩,
   ⟨"ind", 5, [], 2, fun c _ l => .ind (l 0) (c 0) (c 1) (l 1) (c 2) (c 3) (c 4)⟩,
   ⟨"sfix", 6, [], 2, fun c _ l => .sfix (l 0) (c 0) (c 1) (l 1) (c 2) (c 3) (c 4) (c 5)⟩,
-  ⟨"scase", 6, [], 2, fun c _ l => .scase (l 0) (c 0) (c 1) (l 1) (c 2) (c 3) (c 4) (c 5)⟩,
+  ⟨"scase", 7, [], 2, fun c _ l => .scase (l 0) (c 0) (c 1) (c 2) (l 1) (c 3) (c 4) (c 5) (c 6)⟩,
   ⟨"out", 0, [], 0, fun _ _ _ => .out⟩,
   ⟨"down", 0, [], 0, fun _ _ _ => .down⟩
 ]
@@ -840,7 +842,8 @@ def wizFns : List WizFn := [
   { fn := "eval", ty := "Tm", arg := 1,
     exempt := closedConst "a constant's type is not part of its value" ++ [
       ("letE", "ty", "a let's type is not part of its value"), ("letq", "ty", "as letE"),
-      ("ann", "ty", "an annotation is not part of the value")] },
+      ("ann", "ty", "an annotation is not part of the value"),
+      ("letUnit", "u", "η for Unit: the eliminator is its body (its scrutinee is evaluated by compiled code only)")] },
   { fn := "forceSp", ty := "Spine", arg := 1 },
   { fn := "fromAbsurd", ty := "Spine", arg := 0,
     exempt := [("sabsurd", "sp", "the eliminations from the last `absurd` on: what is below it is the erased proof")] },
@@ -906,7 +909,7 @@ def panicSites : List (String × Term R) := [
   ("vDelim", .delim .zero .tt .tt .tt .tt .tt .tt),
   ("vInd", .ind .zero .tt .tt .zero .tt .tt .tt .tt),
   ("vSfix", .sfix .zero .tt .tt .zero .tt .tt .tt .tt .tt),
-  ("vScase", .scase .zero .tt .tt .zero .tt .tt .tt .tt .tt),
+  ("vScase", .scase .zero .tt .tt .tt .zero .tt .tt .tt .tt .tt),
   ("vOut", .out .tt),
   ("vNatOp", .natOp "nat.add" #[.tt, .tt])
 ]

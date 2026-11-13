@@ -248,6 +248,20 @@ alternative today (`match` is built on `ind`, whose methods are scaled by ω) an
 `Result`'s payload is ω, so it needs a case whose alternatives run once (R9a, a kernel
 change). Linearity would still not be uniqueness: in-place updates stay with RC.
 
+**Linear handles (cohesion M4a, on linear-case stage 2).** `Uniq1 ρ A` is `&'a mut A`
+used at quantity 1. It is a one-constructor inductive with a private constructor, because a
+linear structure can't be taken apart; the value field is ω, and the handle is what is linear.
+The scopes are `Uniq1.borrow` and `Uniq1.borrowIn` (inside a scope that holds other handles:
+a call borrowing two locals threads the outer handle through), plus `reborrow`, `share`,
+`zoom`, `both`, `read`, `write` and `end`. A body takes its handle at 1 and returns a
+`Result1 B H`, whose `ok` *and* `err` carry the handle back (D8).
+The kernel then rejects gaps 1 and 3 (E0499 by passing one `&mut` twice; packing a handle
+with its region); see group `regions`.
+Gap 2 stays: the lender is an ω value, so a body that names the `Lent` token differently
+can still read it. Closing it needs linear lenders, and reading `*x` out of a linear value
+then needs a Copy notion (K3, `sfix_π`).
+Feral's lowering moves onto `Uniq1` in M4b; until then the ω handles remain.
+
 Linearity closes the escape for `Uniq` (the body has one handle and must hand it back,
 so it can't also pack it) but not for `Shr`, which is a copy. The scope is already rank-2
 (`(0 ρ : Region) → … → Result B`, `B` bound outside); what's missing is that `B` may

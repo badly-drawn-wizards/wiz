@@ -174,14 +174,15 @@ def sfixFunTy (g : Globals R) (l v : Level) (I D P : Val R) (w : R) : VTy R :=
         (pi "i" (tv 4, l1) (pi "y" (.mu l (tv 5) (tv 4) (tv 0) (tv 1) none, l1) (tapps (tv 4) [tv 1, tv 0], v))))
       (pi "i" (tv 4, l1) (pi "x" (.mu l (tv 5) (tv 4) (tv 0) (tv 2) none, l1) (tapps (tv 4) [tv 1, tv 0], v))))).1
 
-/-- `m : (0 j : Size< s) → (0 i : I) → (xs : ⟦D⟧ (μ^j D) i) → P i (con xs)` -/
-def scaseMethodTy (g : Globals R) (l v : Level) (I D P s : Val R) (w : R) : VTy R :=
+/-- `m : (0 j : Size< s) → (0 i : I) → (q xs : ⟦D⟧ (μ^j D) i) → P i (con xs)`: the method
+of `scase` at quantity `q` (K1) receives the payload at `q`. -/
+def scaseMethodTy (g : Globals R) (l v : Level) (I D P s q : Val R) : VTy R :=
   let l1 : Level := .succ l
-  -- j0 s1 P2 D3 I4 ; i0 j1 s2 P3 D4 I5 ; xs0 i1 j2 s3 P4 D5 I6
-  eval g [s, P, D, I] (spi 0 "j" (.sizeLt (tv 0), 1) (spi 0 "i" (tv 4, l1)
-    (spi w "xs"
-      (tapps (Templates.interpTm l) [tv 5, tv 4, .lam "j'" (.mu l (tv 6) (tv 5) (tv 0) (tv 2) none), tv 0], l1)
-      (tapps (tv 4) [tv 1, .con (tv 0)], v)))).1
+  -- j0 s1 P2 D3 I4 q5 ; i0 j1 s2 P3 D4 I5 q6 ; xs0 i1 j2 s3 P4 D5 I6
+  eval g [s, P, D, I, q] (spi 0 "j" (.sizeLt (tv 0), 1) (spi 0 "i" (tv 4, l1)
+    ((.pi "xs" .default (tv 6)
+      (tapps (Templates.interpTm l) [tv 5, tv 4, .lam "j'" (.mu l (tv 6) (tv 5) (tv 0) (tv 2) none), tv 0])
+      (tapps (tv 4) [tv 1, .con (tv 0)]) ⟨l1, v⟩), .imax l1 v))).1
 
 /-- `f : (s : Size) → ((i : I) → A i → ν^s D i) → (i : I) → A i → ν^{↑s} D i` -/
 def scofixFunTy (g : Globals R) (l : Level) (I D A : Val R) (w : R) : VTy R :=
@@ -229,7 +230,7 @@ partial def inferNe (g : Globals R) (tys : Array (VTy R)) : Val R → Option (VT
       | .out, .nu l I D i s _ =>
         ty := vInterp g l I D (nuFamilyAt l I D ((sizePred? s).getD .szInf)) i; acc := vOut g acc
       | .sfix l I D v P f s i, _ => ty := vApp g (vApp g P i) acc; acc := vSfix g l I D v P f s i acc
-      | .scase l I D v P m s i, _ => ty := vApp g (vApp g P i) acc; acc := vScase g l I D v P m s i acc
+      | .scase l q I D v P m s i, _ => ty := vApp g (vApp g P i) acc; acc := vScase g l q I D v P m s i acc
       | .down, .ulift _ _ A => ty := A; acc := vDown acc
       | _, _ => none
     pure ty
@@ -571,11 +572,12 @@ partial def convNe (g : Globals R) (tys : Array (VTy R)) (a b : Val R) : Option 
       unless conv g tys (indMethodTy g l v I D P 1) m m' && conv g tys I i i' do none
       ty := vApp g (vApp g P i) acc
       acc := vInd g l I D v P m i acc
-    | .scase l I D v P m s i, .scase _ _ _ v' P' m' s' i', _ =>
-      unless v.equiv v' && conv g tys (indMotiveTy g l v I D 1) P P' do none
-      unless conv g tys (scaseMethodTy g l v I D P s 1) m m' && sizeEq s s' && conv g tys I i i' do none
+    | .scase l q I D v P m s i, .scase _ q' _ _ v' P' m' s' i', _ =>
+      -- (K1) the quantity is compared too, though computation ignores it, as `split`'s
+      unless conv g tys .qty q q' && v.equiv v' && conv g tys (indMotiveTy g l v I D 1) P P' do none
+      unless conv g tys (scaseMethodTy g l v I D P s q) m m' && sizeEq s s' && conv g tys I i i' do none
       ty := vApp g (vApp g P i) acc
-      acc := vScase g l I D v P m s i acc
+      acc := vScase g l q I D v P m s i acc
     | .sfix l I D v P f s i, .sfix _ _ _ v' P' f' s' i', _ =>
       unless v.equiv v' && conv g tys (indMotiveTy g l v I D 1) P P' do none
       unless conv g tys (sfixFunTy g l v I D P 1) f f' && sizeEq s s' && conv g tys I i i' do none
