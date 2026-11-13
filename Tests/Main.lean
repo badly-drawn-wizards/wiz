@@ -10,6 +10,7 @@ import Tests.Meta
 import Tests.Lint
 import Tests.Allocs
 import Tests.Scaling
+import Tests.Audit
 import Tests.Feral
 import Tests.Tower
 import Tests.Native
@@ -25,6 +26,7 @@ open Tests
 /-- Every test group: each test module lists its own (`groups` at its end), so that a
 new group touches only its module (and `.github/test-shards.json`). -/
 def groups : List Group :=
+  Audit.groups ++
   Check.groups ++
   Doc.groups ++
   Elab.groups ++
@@ -225,6 +227,10 @@ def main (args : List String) : IO UInt32 := do
   -- `exitOnPanic`
   | ["--panic-probe", mode, site] => Lint.panicProbe mode site
   | "--probe-checker" :: opts => do Scaling.probeChecker opts; pure 0
+  -- the soundness audit's tests on their large grids (`Tests/Audit.lean`)
+  | ["--audit-long"] => Audit.longMain
+  | ["--audit-hurkens"] => Audit.hurkensMain
+  | "--audit-query" :: ixs => Audit.queryMain ixs
   | ["--probe-reuse"] => Scaling.probeReuse
   | "--probe-reuse-ir" :: files => Scaling.probeReuseIR files
   -- allocation counts and IR of definitions of a file (`Tests/Allocs.lean`)
