@@ -5,6 +5,7 @@ import Wiz.Infoview
 import Wiz.Actions
 import Wiz.Signature
 import Wiz.Inlay
+import Wiz.Semantic
 import Wiz.Completion
 import Wiz.Refs
 import Wiz.Symbols
@@ -155,6 +156,8 @@ def capabilities : Json :=
     ("completionProvider", Json.mkObj [("triggerCharacters", Json.arr #["."])]),
     ("signatureHelpProvider", Json.mkObj [("triggerCharacters", Json.arr #[" ", "("]), ("retriggerCharacters", Json.arr #[" "])]),
     ("inlayHintProvider", true),
+    ("semanticTokensProvider", Json.mkObj [("legend", Json.mkObj [("tokenTypes", Json.arr #["keyword"]), ("tokenModifiers", Json.arr #[])]),
+                                           ("full", true)]),
     ("documentSymbolProvider", true), ("workspaceSymbolProvider", true), ("foldingRangeProvider", true),
     ("codeActionProvider", Json.mkObj [("codeActionKinds", Json.arr #["quickfix", "refactor.rewrite"]),
                                        ("resolveProvider", true)]),
@@ -576,6 +579,10 @@ def handle (srv : Server) (msg : Json) : Server × Array Json := Id.run do
     let hs := (Inlay.hintsIn doc.state doc.text (pos "start") (pos "end")).map fun h =>
       Json.mkObj [("position", toPos doc.text h.at_), ("label", Json.str h.label), ("kind", (1 : Nat))]
     (srv, #[reply (Json.arr hs)])
+  | "textDocument/semanticTokens/full" =>
+    let some doc := srv.docs.get? uri | return (srv, #[reply Json.null])
+    let data := Semantic.encode doc.text (Semantic.keywords doc.state doc.text)
+    (srv, #[reply (Json.mkObj [("data", Json.arr (data.map fun (n : Nat) => (n : Json)))])])
   | "textDocument/references" | "textDocument/documentHighlight" | "textDocument/prepareRename" | "textDocument/rename" =>
     let some doc := srv.docs.get? uri | return (srv, #[reply Json.null])
     let off := ofPos doc.text (getNat msg ["params", "position", "line"]) (getNat msg ["params", "position", "character"])

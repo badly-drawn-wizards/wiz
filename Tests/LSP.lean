@@ -700,6 +700,36 @@ def serverGroup : Group where
         let got := hs.toList.map fun h => (LSP.ofPos src (LSP.getNat h ["position", "line"]) (LSP.getNat h ["position", "character"]), LSP.getStr h ["label"])
         checkEq [(offAfter src "fun x", " : Nat"), (offAfter src "let n", " : Nat"), (offAfter src "fun a", " : Nat"),
                  (offAfter src "fun a b", " : Bool")] got },
+    { name := "semantic tokens: the keywords of declared syntax, a keyword-scoped DSL's inside it", run := fun _ => do
+        let src := "import Prelude\ndeclare_syntax_cat calc_e (keywords := calc_kw)\n" ++
+          "syntax (name := var) ident : calc_e\nsyntax (name := host) \"[\" term \"]\" : calc_e\n" ++
+          "syntax:20 (name := ifE) \"when\" calc_e \"yes\" calc_e:20 \"no\" calc_e:20 : calc_e\n" ++
+          "syntax (name := calc) \"run_calc\" calc_e \"done\" : term\n" ++
+          "macro_rules\n  | `(term| run_calc [ $t ] done) => `(term| $t)\n" ++
+          "macro_rules\n  | `(term| run_calc when $c yes $a no $b done) => `(term| match run_calc $c done with | .true => run_calc $a done | .false => run_calc $b done)\n" ++
+          "def no (yes : Nat) : Nat := yes\n" ++
+          "#eval run_calc when [Bool.true] yes [no 1] no [3] done\n" ++
+          "def k : Nat → Nat := by\n  intro n\n  exact n\n"
+        let (srv, _) ← openDoc src
+        let (_, out) := LSP.handle srv (req "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"textDocument/semanticTokens/full\",\"params\":{\"textDocument\":{\"uri\":\"file:///t.wiz\"}}}")
+        let some (.arr d) := LSP.get? out[0]! ["result", "data"] | throw (IO.userError s!"{out[0]!.compress}")
+        let d := d.toList.map fun j => j.getNat?.toOption.getD 0
+        -- decode: absolute (line, column, length)
+        let rec go : List Nat → Nat → Nat → List (Nat × Nat × Nat)
+          | dl :: dc :: len :: _ :: _ :: rest, l, c =>
+            let l' := l + dl
+            let c' := if dl == 0 then c + dc else dc
+            (l', c', len) :: go rest l' c'
+          | _, _, _ => []
+        let toks := go d 0 0
+        let line := 11
+        let text := (src.splitOn "\n")[line]!
+        let words := (toks.filter (·.1 == line)).map fun (_, c, len) => String.ofList ((text.toList.drop c).take len)
+        checkEq ["run_calc", "when", "yes", "no", "done"] words
+        -- `no` and `yes` outside the DSL are names
+        check (!(toks.any fun (l, _, _) => l == 10)) s!"line 10: {toks}"
+        -- a tactic name
+        check (toks.any fun (l, c, len) => l == 13 && c == 2 && len == 5) s!"intro: {toks}" },
     { name := "completion: locals and expected type, globals, dot completion, tactics, commands", run := fun _ => do
         let src := completionSrc
         let (srv, _) ← openDoc src

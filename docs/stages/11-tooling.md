@@ -467,6 +467,15 @@ or `let` binder written without one, `fun x : Nat => …`, from the info tree's 
 (`recordBinder`): a local identifier whose text is the binder's own name, with `fun`/`λ`
 (past the other binders of its group) or `let` before it and `=>`/`↦`/`:=` or another
 binder after it, not `:`. wiz.nvim: `lsp.inlay_hints = true` turns them on.
+## 11z: semantic tokens for the file's own keywords
+
+`textDocument/semanticTokens/full` (`Wiz/Semantic.lean`, one token type `keyword`)
+marks what a fixed syntax file can't know: the words of declared syntax (`syntax`,
+`notation`, the Prelude's tactics, a keyword-scoped DSL's `when … yes … no`) inside the
+nodes of that kind the info tree saw (`syntaxRef`), and the words that declared `term`
+and `command` rules reserve everywhere (`run_calc`, `done`). A DSL keyword used as a name
+outside the DSL (`def no (yes : Nat)`) stays a name. Comments and strings are skipped.
+Neovim shows them as `@lsp.type.keyword` (linked to `@keyword`) without configuration.
 
 ## 11y: references, highlights and rename
 
