@@ -71,6 +71,9 @@ def unfold := 29
 def rewrite := 30
 def ctorInfo := 31
 def isDefinition := 32
+-- (stage 28) solvers
+def satSolve := 33
+def eqView := 34
 end TacTag
 
 structure Goal (R : Type) where
