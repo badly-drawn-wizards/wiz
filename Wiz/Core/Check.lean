@@ -1133,7 +1133,9 @@ column) is a field of the method's constructor (`λ fields. …`, a field variab
 variable applied to arguments, for an infinitary field). Then every call compiled code
 makes is on a strictly smaller value (a field of the scrutinee), so it terminates as the
 kernel's recursion does; the conversion check alone cannot see calls at types where every
-two values are convertible (`Unit`, propositions). -/
+two values are convertible (`Unit`, propositions). (A `mutual` block's constructors are
+named by their member, `Ev.z`, so a case's method binder `m_Ev.z` already names the
+constant; otherwise it is the family's `T.c`.) -/
 partial def callsOnFields (g : Globals R) (fn : Name) (us : List Level) (k x : Nat) (ixL : Option (List Nat))
     (impl : Term R) : Bool := Id.run do
   let rec peel : Nat → Term R → Option (Term R)
@@ -1171,7 +1173,10 @@ partial def callsOnFields (g : Globals R) (fn : Name) (us : List Level) (k x : N
   if outside.any (mentionsConst fn ·) then return false
   let methods := (args.drop (nΔ + 1)).take nc
   let ok := (ctors.zip methods).all fun (c, m) => Id.run do
-    let some cd := g.find? (T ++ "." ++ c) | return false
+    -- (a `mutual` block's constructors are named by their member, `Ev.z`, and so are the
+    -- case's method binders, `m_Ev.z`: `c` is then the constant itself; otherwise it is
+    -- the family's `T.c`)
+    let some cd := (if c.contains '.' then g.find? c else g.find? (T ++ "." ++ c)) | return false
     let F := pis cd.type - nΔ
     let some mb := peel F m | return !mentionsConst fn m
     -- in `mb` under `dd` more binders, field `j` is `var (dd + F - 1 - j)`
