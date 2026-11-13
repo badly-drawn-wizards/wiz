@@ -455,6 +455,14 @@ text cut after it, with its open brackets closed. In Neovim 0.11, `<C-s>` in ins
 ```
 def b (xs : List Nat) : Nat := List.length ‸    -- List.length {A : Type} [(_ : List A)] : Nat
 ```
+
+### Doc comments in the editor (11s, 11t, 11u)
+
+The language server shows a declaration's doc comment (`/-- … -/`, `CommandState.docOf?`)
+as Markdown: in a hover under the type (`double : Nat → Nat`, a rule, then the doc), as
+a completion item's `documentation`, and as signature help's `documentation`. Locals have
+none; the library's declarations are documented (`lib/`), so `Nat.add` explains itself.
+
 ## 11v: the outline, workspace symbols and folding
 
 * **Document symbols** (`textDocument/documentSymbol`, `Wiz/Symbols.lean`): one symbol per
