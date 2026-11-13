@@ -239,8 +239,8 @@ nothing leaks) prints the same: C library functions through headers, numbers, st
 error for a type that can't be marshalled.
 
 Not mirrored yet: `import_c` (9b: the frontend would need the preprocessed header, and a
-C parser in Wiz), `glue` (9c), `implemented_by` (22d), `Bytes`, and big numbers (a `Nat`
-is 63 bits in this runtime, so a C result above that is cut).
+C parser in Wiz), `glue` (9c), `Bytes`, and big numbers (a `Nat` is 63 bits in this
+runtime; 21p). `implemented_by`, callbacks and `c_struct` came later (21q–21t).
 
 ## 21m: written quantities in the self-hosted frontend
 
@@ -336,12 +336,7 @@ Parity with [9f](09-ffi.md) and the first half of 9g.
   result is the pair's first field), and the result is converted back (a `String` as a
   `malloc`ed `char *` the caller frees, `rt_export_str`; `Unit` as `void`).
 
-Not mirrored: callbacks (a parameter of function type, `Callback`), `c_struct` (9i),
-`--lib`/`--no-main` builds and the `.h` file of the exports, and the handle functions
-`wiz_retain`/`wiz_release`/`wiz_live_objects` (a Wiz value given to C is a plain word
-here; under reference counting C owns the reference it gets, as in 9g, but can't make or
-drop one). An exported function is called while the Wiz program runs (from C code it
-called), as in the test; the runtime isn't set up for a C `main` of its own.
+Callbacks, `c_struct`, libraries and the handle functions came later (21q–21s).
 
 ## 21p: a C `Nat` that doesn't fit is an error
 
@@ -358,3 +353,154 @@ UInt64 is unaffected (its large values are objects).
 (numbers, strings both ways, `Bool`, `IO`) called from a `link_c` file and `link_lib
 "m"`, run by the Lean compiler and by the self-hosted one in both modes, same output;
 the 63-bit error in both modes against the Lean toolchain's answer.
+
+## 21q: callbacks, self-hosted
+
+Parity with the callbacks of [9g](09-ffi.md): a foreign function's parameter of function
+type is a Wiz closure passed to C as a function pointer and a context.
+
+```
+extern "sort_some" sortSome : (Nat → Nat → Bool) → String
+extern "on_tick" onTick : Callback (Nat → IO Unit) → IO Unit
+```
+
+* **Frontend** (`callbackKind`, `callSig` in `Frontend.wiz`). A parameter whose type is a
+  function (`Nat → Nat → Bool`) has the kind `k[nn/b]`, the Lean frontend's key: the
+  kinds of the callback's parameters, `/`, `!` if its result is in `IO`, and the result's
+  kind. `Callback T` (a transparent definition in the self-hosted Prelude too) is `K[…]`.
+  The signature has the same rules as an export's (`callSig` is now shared with
+  `exportCmd`, as `ffiCallSig` is in `Elab/Command.lean`): no erased or `Unit`
+  parameters, no functions, a result that isn't a foreign pointer. The same errors: the
+  extern message now names c_structs and callbacks, and "a foreign function that takes a
+  callback in IO must be in IO itself". A runtime native (`wiz_…`) takes closures, and any
+  other value, as they are.
+* **Backend** (`cbDocs`, `callIntoWiz`). One trampoline per signature,
+  `wiz_cb_<params>_[io_]<result>` (the Lean backends' names): it takes a reference to the
+  context for the call, applies the closure to the converted arguments and converts the
+  result, the code an export's wrapper uses too. The extern's wrapper passes the
+  trampoline and the closure; a borrowed closure is released after the call, a
+  `Callback` is C's to release with `wiz_release` (21s). Under reference counting a kept
+  callback C never releases is reported as a leak at exit, as in the Lean runtime; under
+  the collector, a closure C keeps must be where the collector looks (static data of the
+  program, as in the tests), not in `malloc`ed memory.
+
+## 21r: `c_struct`, self-hosted
+
+Parity with [9i](09-ffi.md)'s structs by value.
+
+* **Frontend** (`cStructCmd`): `c_struct ["ctype"] [(header := "h")] T where fields` is the
+  structure `T` (built as a `structure` command, so `T.mk` and projections are as usual)
+  and a new `Foreign.cstruct` with the C type (default `wiz_s_T`, mangled as the Lean
+  backend mangles: `hexMangle`), the header, the field names and their kinds (`n u f s b
+  p`, `S:U` for a nested `c_struct U`). The Lean frontend's checks and messages (at least
+  one field, a field's type on its own, no `:`, `|`, `<` in the C type or header, a field
+  must be …). An extern's parameter or result of a `c_struct` type has the kind `S:T`.
+* **Backend** (`structHelpers`, `structDefinition`): the header is included, or the
+  definition is written from the fields (`struct t { … };` or a `typedef`); for each
+  struct `wiz_sin_T(&c, v)` fills `c` from the structure (borrowed; the payload `(tag,
+  (f₀, (f₁, … ◾)))`, a string converted with a reference of its own), `wiz_sfree_T` frees
+  its strings, and `wiz_sout_T(c)` builds a structure (strings copied, a pointer without a
+  finalizer). A struct argument is released after the call.
+* Not mirrored: `Bytes` fields (there is no `Bytes` here), fields at quantity 0 (a field
+  quantity is an error, 21m), `import_c`'s automatic structs (21t), structs in glue.
+
+## 21s: libraries and handles, self-hosted
+
+Parity with [9g](09-ffi.md)'s `--lib`/`--no-main` and handle functions, for a compiler
+that prints one C file.
+
+* `--lib` or `--no-main`: the C has no `main`; every export's wrapper starts the runtime
+  first if nothing has (`rt_ensure`: the collector, or the static objects of reference
+  counting). The C compiler links it with the program that calls it (`cc main.c lib.c
+  -Iselfhost …`). Since this compiler prints C and links nothing, the two flags are the
+  same.
+* `--header`: instead of the C, the header of the exports, `exportHeader`'s text in
+  `C.lean` (the `wiz_val` type, the handle functions and one prototype per export).
+* **Handles** (`rt.c`): `wiz_retain(v)` and `wiz_release(v)` take and give back a
+  reference to a Wiz value C holds (an export's result of a data type, a `Callback`'s
+  context); `wiz_live_objects()` counts the objects alive. Under reference counting that
+  is the objects allocated and not freed less the program's constants (everything the
+  roots reach: globals computed once, natives' closures), which the Lean runtime makes
+  immortal and doesn't count; under the collector they do nothing and the count is 0.
+
+## 21t: `implemented_by` and missing `link_c` files, self-hosted
+
+* `attribute [implemented_by g] f` ([22b](22-numbers.md); `implementedByCmd`, a new
+  `Foreign.impl`): the Lean frontend's checks and messages (both names exist, `f` isn't a
+  runtime native or an extern, not itself, `g`'s type converts with `f`'s). The backend
+  erases `f` as `g` (`eraseGlobals`, `implOf`), so compiled code runs `g`; the kernel
+  keeps `f`. The native representations of 22d (`implemented_by mk get` on a
+  constructor) are an error here.
+* A `link_c` file that doesn't exist is the Lean frontend's error ("link_c: no file
+  f.c (paths are relative to the .wiz file)"). The frontend is pure, so the compiler's
+  driver checks the paths after it (`missingLinks` in `Backend.wiz`, with C's `access`),
+  relative to the input's directory, and reports them with the frontend's errors (exit
+  code 1, no C). The checker (`checkerSource`) doesn't check them.
+* Still not mirrored: `import_c` (9b, 9i: it needs the preprocessed header, which the
+  driver would have to get from `cc -E`, and a C parser in Wiz, `FFI/CParse.lean`) and
+  `glue` (9c: the checked C subset of `FFI/CGlue.lean`, again a C parser and checker).
+
+**Tests** (group `selfhost`): callbacks (qsort with Wiz comparators, a string callback,
+a `Callback` kept, called in `IO` and released) and `c_struct`s (`div_t` from its header,
+a generated struct with every scalar kind passed and returned, a nested one), each run
+by the Lean compiler and the self-hosted one in both modes; a kept callback never released
+is a leak in both; the checks of callbacks, `c_struct` and `implemented_by` (same
+verdicts); a C program using a self-hosted library (`--lib` with the collector,
+`--no-main` with reference counting) and its header, with `wiz_retain`, `wiz_release`
+and `wiz_live_objects`, against the Lean `--lib` build; `implemented_by` on a definition
+and an axiom; a missing `link_c` file in both toolchains.
+## 21u: Σ types, `∀`, `#eval` and `attribute [inline]` in the self-hosted frontend
+
+`Frontend.wiz` elaborates the rest of the Lean frontend's Σ and Π syntax (`inferT2`,
+`checkTuple`): `A × B` (`term.prod`), `(x : A) × B` with a written quantity
+(`term.depSigma`, `depSigmas`), `(a, b, …)` (`term.tuple`: checked against a Σ type, or
+inferred as `A × (B × …)` and annotated, since the kernel can't infer a pair), `.1`/`.2`
+(`term.proj`), and `∀ x (y : A) {z : B}, C` (`term.forall`; a binder without a type gets a
+hole, a metavariable in `Type`). A hole `_` in a type position is now a metavariable too.
+There is still no `let (x, y) := …` (`Kernel.wiz` has no `split`, §7.1 of CoreSpec).
+
+`#eval t` is `#reduce t` (the value is printed as the kernel's normal form, not as the
+Lean toolchain prints it), and `attribute [inline] f` is checked as in the Lean frontend
+(`f` must be a declaration with a definition) and otherwise ignored: inlining is a hint
+to the Lean compiler. Not checked here: a second `attribute [inline]` of the same name
+(an error in the Lean frontend).
+
+**Tests** (group `selfhost`): 10 Σ/∀ declarations with the same verdicts in both
+frontends; `#eval` and `attribute [inline]` (5 verdicts and one output).
+
+## 21v: a linear variable in every branch of a `match` (`T.casesOnA`)
+
+Until now the Lean frontend rejected `def m1 (1 x : Nat) (b : Bool) : Nat := match b with
+| .true => x | .false => x` and the self-hosted one accepted it (21m). The self-hosted
+frontend was right: `x` is used once on every path, and the kernel's `ecase` joins its
+branches' usage (CoreSpec §5.3, `1 ⊔ 1 = 1`). The Lean elaborator compiled the match to
+`Bool.casesOn motive m_true m_false b`, whose methods are separate ω arguments, so the
+two uses added up to ω.
+
+Every inductive type now also gets `T.casesOnA` (E1 of
+/workspace/wiz-notes/linear-case-design.md; `mkRecursor … (additive := true)`): the
+methods are bundled into one argument at quantity 1, a function from the tag,
+
+    T.casesOnA : {Δ} → (motive : …) → (1 m : (t : Enum ls) → ecase t [ULift M_c, …]) →
+                 {ξ} → (x : T Δ ξ) → motive ξ x
+
+where `M_c` is `T.casesOn`'s method type for `c`, lifted to `Sort (imax (l+1) v)` so that
+all branches of the type-level `ecase` live in one universe (universes aren't cumulative).
+Its body is the sized case `scase` at `∞` (which runs its method once and doesn't scale it)
+calling `down (m 'c)` on the fields. A `match` with a variable bound at a literal
+quantity other than 0 and ω in scope (`LocalCtx.linearLvls`: `def`/`fun` binders, `let
+1`, equation parameters) passes `fun t => ecase t [up m_c, …]` instead of the separate
+methods; a reverted column that is linear is re-bound at 1. Everything else elaborates
+exactly as before, to `casesOn`. Structural recursion (`T.rec`) and sized matches are not
+additive: a linear variable used by a recursive call is used once per node.
+
+**No kernel change**: `T.casesOnA` and every term using it are checked by the kernel like
+all declarations (the usage checker is not on the path changed here; its rules for
+`ecase`, `scase`, `up`/`down` were already there). The compiler has no special case for
+`casesOnA` (Erase.lean unfolds `casesOn` calls by name), so such a match compiles through
+the generic path: correct, possibly slower; only matches with a linear variable in scope
+take it.
+
+**Tests** (group `selfhost`): 12 declarations, both frontends alike (Bool, Nat, Option,
+List, an indexed family, nested matches, `let 1`; dropping the variable in one branch, or
+using it twice or under an ω argument, rejected); a compiled program with additive matches.

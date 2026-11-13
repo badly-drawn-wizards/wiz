@@ -31,6 +31,9 @@ def id {0 A : Type} (1 x : A) : A := x
 
 ## Quick start
 
+**New to Wiz?** [docs/install.md](docs/install.md) installs a toolchain and sets up an
+editor, and [docs/tour.md](docs/tour.md) is a tour of the language.
+
 Run Wiz without a checkout, with the binaries from the public Cachix cache:
 
 ```sh
@@ -59,6 +62,8 @@ See [docs/building.md](docs/building.md) for the details, CI and caches.
 
 ## Documentation
 
+* [docs/install.md](docs/install.md): installing Wiz (tower, Nix), editors, a first package.
+* [docs/tour.md](docs/tour.md): a tour of the language, with checked examples.
 * [docs/index.md](docs/index.md): the stage-by-stage docs, one file per stage.
 * [docs/CoreSpec.md](docs/CoreSpec.md): the kernel's calculus as inference rules.
 * [docs/Status.md](docs/Status.md): what is proved, what is conjectured, and the known

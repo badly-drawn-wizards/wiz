@@ -22,7 +22,7 @@ form is canonical is what makes the procedure complete for commutative semirings
 what makes it correct.
 
 The equation is written twice, in the statement and in the proof: a term macro sees
-only its own syntax.
+only its own syntax. The tactic `by ring` (lib/RingTactic.wiz) reads the goal instead.
 
 The reifier (`Ring.Reify`) and the keys of monomials (`Ring.Key`) are shared with
 `int_ring!` (lib/IntRing.wiz) and `q_ring!` (lib/Rat.wiz).
