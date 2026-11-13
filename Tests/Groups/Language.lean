@@ -71,6 +71,14 @@ def languageGroup : Group where
   name := "language"
   exercise := "Stage 13"
   cases := [
+    { name := "string escapes: \\r, \\t, \\0, \\\\, \\\", \\', \\xHH, \\u{H}; a bad one is reported where it is", run := fun _ => do
+        okLib "import Prelude\n#eval \"a\\rb\\t\\0\\'\\x41\\u{3bb}\\\\\\\"\"" ["\"a\\x0db\\t\\x00'Aλ\\\\\\\"\""]
+        failsLib "import Prelude\ndef s : String := \"ab\\qc\"" "2:22: error: unknown escape sequence \\q"
+        failsLib "import Prelude\ndef s : String := \"ab\\x4\"" "2:22: error: the escape \\x needs two hexadecimal digits"
+        failsLib "import Prelude\ndef s : String := \"\\u{110000}\"" "2:20: error: the escape \\u{H} is not a Unicode scalar value"
+        failsLib "import Prelude\ndef s : String := \"\\u{}\"" "2:20: error: the escape \\u is written \\u{H}"
+        failsLib "import Prelude\ndef s : String := \"\\u{1234567}\"" "2:20: error: the escape \\u is written \\u{H}"
+        failsLib "import Prelude\ndef s : String := \"abc" "2:19: error: unterminated string literal" },
     -- (CoreSpec §6: proofs use nothing) a term at a proposition is checked erased, so a
     -- variable at 0 may appear in a proof (wiz-cats G2/B2, wiz-reals B2)
     { name := "a proof uses nothing: a 0-variable may appear in a proof, a linear one still must be used (both kernels)", run := fun _ => do
@@ -282,7 +290,8 @@ def languageGroup : Group where
           "def lin3 (1 p : Nat × Tok × Tok) : Unit × Unit :=\n  let 1 ⟨n, s, t⟩ := p\n  (Tok.close s, Tok.close t)\n")
           ["7", "7", "4", "2"] },
     -- the documented limitation (13h): the Σ of a structure ends in a marker tail that a
-    -- linear split leaves unused; when the encoding changes this becomes a positive test
+    -- linear split leaves unused (K2a, which would have allowed it, was withdrawn: the
+    -- tail's type has closure inhabitants that can hold a resource; linear-case stage 2)
     { name := "let 1 ⟨a, b⟩ := s on a structure: nested splits, rejected today for the leftover tail", run := fun _ => do
         failsLib ("import Prelude\nstructure Stats where\n  hits : Nat\n  misses : Nat\n" ++ "def lin (1 s : Stats) : Nat × Nat :=\n  let 1 ⟨h, m⟩ := s\n  (h, m)")
           "cannot take a value of the structure Stats apart at quantity 1"

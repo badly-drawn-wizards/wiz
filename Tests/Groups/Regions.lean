@@ -167,6 +167,39 @@ def regionsGroup : Group where
           "def use (v : List Nat) : Result (List Nat) := match esc v with\n" ++
           "  | .ok p => let (packed, v) := p; let (ρ, r) := packed; .ok (Uniq.set r List.nil).val\n  | .err e => .err e\n" ++
           "#eval use (List.cons 1 List.nil)") [".ok .nil"] },
+    { name := "linear handles (M4a): a scope's handle is used once and handed back on every path", run := fun _ => do
+        okLibs ("import Region\n" ++
+          "def swap {ρa ρb : Region} (1 x : Uniq1 ρa Nat) (1 y : Uniq1 ρb Nat) : Result1 Unit ((1 _ : Uniq1 ρa Nat) × Uniq1 ρb Nat) :=\n" ++
+          "  Uniq1.read x (fun a x => Uniq1.read y (fun b y => Result1.ok () (Uniq1.write x b, Uniq1.write y a)))\n" ++
+          "-- `let mut a := 1; let mut b := 2; swap (&mut a) (&mut b); (a, b)`\n" ++
+          "def main : Result (Nat × Nat) :=\n" ++
+          "  match Uniq1.borrow Region.static 1 (fun ρa ha la x =>\n" ++
+          "    match Uniq1.borrowIn Region.static 2 x (fun ρb hb lb x y => swap x y) with\n" ++
+          "    | .ok ub x => .ok ub.2 x\n" ++
+          "    | .err e x => .err e x) with\n" ++
+          "  | .ok p => .ok (p.2, p.1)\n" ++
+          "  | .err e => .err e\n" ++
+          "#eval main\n") [".ok (2, 1)"]
+        -- E0499 by linearity: one &mut passed twice
+        failsLibs ("import Region\n" ++
+          "def swap {ρa ρb : Region} (1 x : Uniq1 ρa Nat) (1 y : Uniq1 ρb Nat) : Result1 Unit ((1 _ : Uniq1 ρa Nat) × Uniq1 ρb Nat) :=\n" ++
+          "  Uniq1.read x (fun a x => Uniq1.read y (fun b y => Result1.ok () (Uniq1.write x b, Uniq1.write y a)))\n" ++
+          "-- E0499: one &mut passed twice\n" ++
+          "def dup : Result (Unit × Nat) := Uniq1.borrow Region.static 1 (fun ρ h l r =>\n" ++
+          "  match swap r r with\n" ++
+          "  | .ok u q => let 1 (r1, r2) := q; .ok () r1\n" ++
+          "  | .err e q => let 1 (r1, r2) := q; .err e r1)\n") "quantity 1"
+        -- no escape: a handle packed with its region can't also be handed back
+        failsLibs ("import Region\n" ++
+          "-- a handle packed with its region leaves the scope (and is also handed back)\n" ++
+          "def esc (v : List Nat) : Result (((0 r : Region) × Uniq1 r (List Nat)) × List Nat) :=\n" ++
+          "  Uniq1.borrow Region.static v (fun ρ h l r => .ok (ρ, r) r)\n") "quantity 1"
+        -- not forgeable
+        failsLibs "import Region\ndef forge {ρ : Region} (s : List Nat) : Uniq1 ρ (List Nat) := Uniq1.mk s" "private"
+        -- KNOWN GAP (pinned; needs linear lenders and Copy, K3): the lender is an ω value,
+        -- so a body that names the Lent token differently still reads it while it is lent (E0502)
+        okLibs ("import Region\ndef lender (v : List Nat) : Result (Nat × List Nat) := Uniq1.borrow Region.static v (fun ρ h tok r =>\n" ++
+          "  .ok (List.length v) (Uniq1.write r List.nil))\n#eval lender (List.cons 1 List.nil)") [".ok (1, .nil)"] },
     { name := "handles can't be forged outside lib/Region.wiz (private constructors, 13b)", run := fun _ => do
         failsLibs "import Region\ndef forge {ρ : Region} : Shr ρ Nat := Shr.mk 5" "'Shr.mk' is private to module Region"
         failsLibs "import Region\ndef forge {ρ : Region} (s : List Nat) : Uniq ρ (List Nat) := Uniq.mk s" "private"

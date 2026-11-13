@@ -65,10 +65,10 @@ def termCtor : Term ZeroOneMany → String
   | .out _ => "out" | .size => "size" | .szInf => "szInf" | .szSuc _ => "szSuc" | .sizeLt _ => "sizeLt"
   | .sfix .. => "sfix" | .scase .. => "scase" | .cocon _ => "cocon" | .scofix .. => "scofix"
   | .coit .. => "coit" | .natLit _ => "natLit" | .natOp .. => "natOp" | .ulift .. => "ulift"
-  | .up _ => "up" | .down _ => "down" | .prf .. => "prf"
+  | .up _ => "up" | .down _ => "down" | .prf .. => "prf" | .letUnit .. => "letUnit"
 
 /-- How many constructors `Term` has (the arms of `termCtor`). -/
-def termCtorCount : Nat := 55
+def termCtorCount : Nat := 56
 
 /-- One term per constructor of `Term`, with `c` in every term position and `w` in every
 level position, and how many of each there are. -/
@@ -83,9 +83,9 @@ def termSamples (c : Term ZeroOneMany) (w : Level) : List (Term ZeroOneMany × N
    (.dhrec c c c c, 4, 0), (.delim w c c c c c c, 6, 1), (.mu w c c c c (some ("h", [w], [c])), 5, 2),
    (.con c, 1, 0), (.ind w c c w c c c c, 6, 2), (.nu w c c c c (some ("h", [w], [c])), 5, 2), (.out c, 1, 0),
    (.size, 0, 0), (.szInf, 0, 0), (.szSuc c, 1, 0), (.sizeLt c, 1, 0), (.sfix w c c w c c c c c, 7, 2),
-   (.scase w c c w c c c c c, 7, 2), (.cocon c, 1, 0), (.scofix w c c c c c c c, 7, 1), (.coit w c c c c c c, 6, 1),
+   (.scase w c c c w c c c c c, 8, 2), (.cocon c, 1, 0), (.scofix w c c c c c c c, 7, 1), (.coit w c c c c c c, 6, 1),
    (.natLit 3, 0, 0), (.natOp "nat.add" #[c, c], 2, 0), (.ulift w c, 1, 1), (.up c, 1, 0), (.down c, 1, 0),
-   (.prf w c, 1, 1)]
+   (.prf w c, 1, 1), (.letUnit c c, 2, 0)]
 
 /-- The Wiz kernel's verdict on a closed term, as a Wiz definition: the term gets its proof
 markers from the Wiz marking pass first (`rawVerdict`: the term as it is). -/
@@ -405,7 +405,6 @@ def quantityDecls : List (String × Bool) := [
   ("def dup (ω x : Nat) : Nat := Nat.add x x\ndef ax2 (0 A : Type) (1 a : A) : A := a\n", true),
   ("def twice (1 x : Nat) (f : Nat → Nat → Nat) : Nat := f x x\n", false),
   ("def drop (1 x : Nat) : Nat := Nat.zero\n", false),
-  ("def m2 (1 x : Nat) : Nat := match x with\n  | .zero => 0\n  | .succ k => k\n", false),
   ("def imp {n : Nat} (x : Nat) : Nat := n\n", false),
   ("def er (0 x : Nat) : Nat := x\n", false),
   ("def bad2 (2 x : Nat) : Nat := x\n", false),
@@ -420,8 +419,12 @@ def quantityDecls : List (String × Bool) := [
 /-- (stage 21m) The pinned differences, `(declaration, Lean accepts, self-hosted accepts)`
 (docs/CoreSpec.md §15): the self-hosted kernel's descriptions have no quantities, so a
 constructor field written with one is an error there. (A linear variable used once in
-each branch of a `match` was one until 21v: `linearMatchDecls`.) -/
+each branch of a `match` was one until 21v: `linearMatchDecls`.) A `match` on a linear
+scrutinee (4h): the Lean frontend takes it apart with `T.casesOn1` (the case at 1, `Nat`'s
+ω field `k` comes out at `1·ω`), the self-hosted frontend's match is the case at ω, which
+uses the scrutinee ω times. -/
 def quantityDiffs : List (String × Bool × Bool) := [
+  ("def m2 (1 x : Nat) : Nat := match x with\n  | .zero => 0\n  | .succ k => k\n", true, false),
   ("structure P1 where\n  1 a : Nat\n", true, false),
   ("inductive V0 where\n  | mk (0 n : Nat)\n", true, false)]
 
@@ -755,7 +758,9 @@ def selfHostGroup : Group where
         let lexSrc ← IO.FS.readFile "selfhost/Lex.wiz"
         let input := "def f (x : Nat) : Nat := x + 1 -- a comment\n/- a /- nested -/ block -/ #eval f 41\n" ++
           "inductive T where | a | b (t : T)\ndef s : String := \"hi\\n\" -- strings\ndef α₁ : List.cons → Nat.add := λ x => x.1\n" ++
-          "0x3F 0b1010 0XfF 0B1 0x 0b2 0xg 007 0x7FFFFFFFFFFFFFFF 0x8000000000000000"
+          "0x3F 0b1010 0XfF 0B1 0x 0b2 0xg 007 0x7FFFFFFFFFFFFFFF 0x8000000000000000 " ++
+          -- every escape, then a bad one (both lexers stop there with the same message)
+          "def e := \"a\\r\\t\\\\\\\"\\'\\x41\\u{3bb}\\u{1F600}z\" \"bad \\q\""
         let toks := Builtin.tables.tokens
         let expected := leanTokens toks input
         let table := toks.toList.foldr (fun t acc => s!"(.cons {wizLit t} {acc})") ".nil"
@@ -1156,7 +1161,7 @@ def selfHostGroup : Group where
             throw (IO.userError s!"unexpected types {a}, {b}")
         | vs => throw (IO.userError s!"unexpected verdicts {vs}") },
     { name := "projections need an unrestricted pair; positions at 0 are erased; eliminators use their scrutinee ω times (R1; and both kernels agree on it below)", run := fun _ => do
-        for (t, ok) in MTm.projRule ++ MTm.elimRule ++ MTm.usageRule do
+        for (t, ok) in MTm.projRule ++ MTm.elimRule ++ MTm.usageRule ++ MTm.linearCaseRule do
           let v := leanVerdict t
           unless (v != "error") == ok do
             throw (IO.userError s!"expected {if ok then "accepted" else "rejected"}, got {v}: {MTm.pretty 0 t}") },

@@ -676,6 +676,8 @@ inductive MTm where
   | star
   | empty (n : Nat)
   | exfalso (m t : MTm)
+  /-- `let () := u; b`, the unit eliminator (linear-case stage 2) -/
+  | letUnit (u b : MTm)
   | enum (k : Nat)
   | tag (k i : Nat)
   | ecase (m s : MTm) (bs : List MTm)
@@ -719,6 +721,8 @@ inductive MTm where
   | scofix (l : Nat) (I D A f s i a : MTm)
   | coit (l : Nat) (I D S st i s : MTm)
   | scase (l : Nat) (I D : MTm) (v : Nat) (P m s i x : MTm)
+  /-- `scase` at a quantity (K1); `scase` is the one at ω -/
+  | scaseq (q : ZeroOneMany) (l : Nat) (I D : MTm) (v : Nat) (P m s i x : MTm)
   /-- a `Π`/`Σ` with its sort (level `l`) -/
   | sorted (l : Nat) (t : MTm)
   /-- `ULift A` in `Sort l` (Q4), its constructor and eliminator -/
@@ -782,6 +786,7 @@ partial def toWiz : MTm → String
   | star => ".star"
   | empty n => s!"(.empty {n})"
   | exfalso m t => s!"(.exfalso {m.toWiz} {t.toWiz})"
+  | letUnit u b => s!"(.letUnit {u.toWiz} {b.toWiz})"
   | enum k => s!"(.enum {k})"
   | tag k i => s!"(.tag {k} {i})"
   | ecase m s bs => s!"(.ecase {m.toWiz} {s.toWiz} {bs.foldr (fun b acc => s!"(.tcons {b.toWiz} {acc})") ".tnil"})"
@@ -828,7 +833,8 @@ partial def toWiz : MTm → String
   | cocon x => s!"(.cocon {x.toWiz})"
   | scofix l I D A f s i a => s!"(.scofix {l} {I.toWiz} {D.toWiz} {A.toWiz} {f.toWiz} {s.toWiz} {i.toWiz} {a.toWiz})"
   | coit l I D S st i s => s!"(.coit {l} {I.toWiz} {D.toWiz} {S.toWiz} {st.toWiz} {i.toWiz} {s.toWiz})"
-  | scase l I D v P m s i x => s!"(.scase {l} {I.toWiz} {D.toWiz} {v} {P.toWiz} {m.toWiz} {s.toWiz} {i.toWiz} {x.toWiz})"
+  | scaseq q l I D v P m s i x => s!"(.scase {l} {qWiz q} {I.toWiz} {D.toWiz} {v} {P.toWiz} {m.toWiz} {s.toWiz} {i.toWiz} {x.toWiz})"
+  | scase l I D v P m s i x => s!"(.scase {l} .qw {I.toWiz} {D.toWiz} {v} {P.toWiz} {m.toWiz} {s.toWiz} {i.toWiz} {x.toWiz})"
   | ulift l A => s!"(.ulift {l} {A.toWiz})"
   | up a => s!"(.up {a.toWiz})"
   | down t => s!"(.down {t.toWiz})"
@@ -850,6 +856,7 @@ partial def toTerm : MTm → Term ZeroOneMany
   | star => .tt
   | empty n => .empty (Level.ofNat (n + 1))
   | exfalso m t => .absurd m.toTerm t.toTerm
+  | letUnit u b => .letUnit u.toTerm b.toTerm
   | enum k => .enum (labels k)
   | tag k i => .tag (labels k) i
   | ecase m s bs => .ecase "z" m.toTerm s.toTerm (bs.map toTerm)
@@ -892,7 +899,8 @@ partial def toTerm : MTm → Term ZeroOneMany
   | cocon x => .cocon x.toTerm
   | scofix l I D A f s i a => .scofix (Level.ofNat l) I.toTerm D.toTerm A.toTerm f.toTerm s.toTerm i.toTerm a.toTerm
   | coit l I D S st i s => .coit (Level.ofNat l) I.toTerm D.toTerm S.toTerm st.toTerm i.toTerm s.toTerm
-  | scase l I D v P m s i x => .scase (Level.ofNat l) I.toTerm D.toTerm (Level.ofNat v) P.toTerm m.toTerm s.toTerm i.toTerm x.toTerm
+  | scaseq q l I D v P m s i x => .scase (Level.ofNat l) (.qlit q) I.toTerm D.toTerm (Level.ofNat v) P.toTerm m.toTerm s.toTerm i.toTerm x.toTerm
+  | scase l I D v P m s i x => .scase (Level.ofNat l) (.qlit .many) I.toTerm D.toTerm (Level.ofNat v) P.toTerm m.toTerm s.toTerm i.toTerm x.toTerm
   | ulift l A => .ulift (Level.ofNat l) A.toTerm
   | up a => .up a.toTerm
   | down t => .down t.toTerm
@@ -923,6 +931,7 @@ partial def ofTerm : Term ZeroOneMany → Option MTm
     | some 0 => some pfalse
     | _ => none
   | .absurd m t => return exfalso (← ofTerm m) (← ofTerm t)
+  | .letUnit u b => return letUnit (← ofTerm u) (← ofTerm b)
   | .enum ls => some (enum ls.length)
   | .tag ls i => some (tag ls.length i)
   | .ecase _ m s bs => return ecase (← ofTerm m) (← ofTerm s) (← bs.mapM ofTerm)
@@ -946,7 +955,8 @@ partial def ofTerm : Term ZeroOneMany → Option MTm
   | .scofix l I D A f s i a => return scofix (← l.toNat?) (← ofTerm I) (← ofTerm D) (← ofTerm A) (← ofTerm f) (← ofTerm s) (← ofTerm i) (← ofTerm a)
   | .coit l I D S st i s => return coit (← l.toNat?) (← ofTerm I) (← ofTerm D) (← ofTerm S) (← ofTerm st) (← ofTerm i) (← ofTerm s)
   | .sfix l I D v P f s i x => return sfix (← l.toNat?) (← ofTerm I) (← ofTerm D) (← v.toNat?) (← ofTerm P) (← ofTerm f) (← ofTerm s) (← ofTerm i) (← ofTerm x)
-  | .scase l I D v P m s i x => return scase (← l.toNat?) (← ofTerm I) (← ofTerm D) (← v.toNat?) (← ofTerm P) (← ofTerm m) (← ofTerm s) (← ofTerm i) (← ofTerm x)
+  | .scase l (.qlit .many) I D v P m s i x => return scase (← l.toNat?) (← ofTerm I) (← ofTerm D) (← v.toNat?) (← ofTerm P) (← ofTerm m) (← ofTerm s) (← ofTerm i) (← ofTerm x)
+  | .scase l (.qlit q) I D v P m s i x => return scaseq q (← l.toNat?) (← ofTerm I) (← ofTerm D) (← v.toNat?) (← ofTerm P) (← ofTerm m) (← ofTerm s) (← ofTerm i) (← ofTerm x)
   | .size => some size
   | .szInf => some szInf
   | .szSuc s => return szSuc (← ofTerm s)
@@ -978,6 +988,7 @@ partial def pretty (l : Nat) : MTm → String
   | star => "tt"
   | empty n => s!"Empty{n}"
   | exfalso m t => s!"absurd({pretty l m}, {pretty l t})"
+  | letUnit u b => s!"let () := {pretty l u}; {pretty l b}"
   | enum k => s!"Enum{k}"
   | tag _ i => s!"#{i}"
   | ecase m s bs => s!"case({pretty (l + 1) m}, {pretty l s}{String.join (bs.map fun b => ", " ++ pretty l b)})"
@@ -1012,6 +1023,7 @@ partial def pretty (l : Nat) : MTm → String
   | scofix _ _ _ A f s i a => s!"scofix({pretty l A}, {pretty l f}, {pretty l s}, {pretty l i}, {pretty l a})"
   | coit _ _ _ S st i s => s!"coit({pretty l S}, {pretty l st}, {pretty l i}, {pretty l s})"
   | sfix _ _ _ _ P f s i x => s!"sfix({pretty l P}, {pretty l f}, {pretty l s}, {pretty l i}, {pretty l x})"
+  | scaseq q _ _ _ _ P m s i x => s!"scase{q}({pretty l P}, {pretty l m}, {pretty l s}, {pretty l i}, {pretty l x})"
   | scase _ _ _ _ P m s i x => s!"scase({pretty l P}, {pretty l m}, {pretty l s}, {pretty l i}, {pretty l x})"
   | size => "Size"
   | szInf => "∞"
@@ -1194,7 +1206,7 @@ them uses no variable at all. -/
 def usageRule : List (MTm × Bool) :=
   let caseOn (q : ZeroOneMany) (bs : List MTm) :=
     ann (lam (lam (ecase (enum 2) (var 1) bs))) (pi (enum 2) (piq q (enum 2) (enum 2)))
-  [(ann (lam star) (piq .one (unit 0) (unit 0)), false),
+  [(ann (lam (tag 2 0)) (piq .one (enum 2) (enum 2)), false),
    (ann (lam star) (piq .many (unit 0) (unit 0)), true),
    (ann (lam star) (piq .zero (unit 0) (unit 0)), true),
    (ann (lam (lam (var 1))) (pi (enum 2) (piq .one (enum 2) (enum 2))), false),
@@ -1205,6 +1217,60 @@ def usageRule : List (MTm × Bool) :=
    (caseOn .one [var 0, var 0], true),
    (caseOn .one [tag 2 0, tag 2 1], false),
    (caseOn .many [var 0, tag 2 0], true)]
+
+/-- Linear-case stage 2, both kernels. **K1**: `scase` at a quantity `q` binds the payload
+at `q` and uses the scrutinee `q` times. At 1, `fun x => scase₁ … (fun j i xs => con xs) x`
+rebuilds a linear `Nat` (accepted, also for `x` at ω), a method that drops the payload or
+copies it (into a pair: an ω position) is rejected, and so is a linear `x` taken by the
+case at ω (the existing rule) or at 0 (unused). At 0 the scrutinee is erased: a method that
+ignores the payload is accepted for `x` at 0, one that reads it at run time (`xs.1`, the
+tag) is rejected. **No unused linear unit** (K2a was withdrawn): a linear `Unit`, or an erased
+function into `Unit`, left unused is rejected; `let () := u; b` consumes a `Unit` (once),
+and only a `Unit`: applied to a closure into `Unit` (linear-review's `stash`, which hides a
+linear `t` in `(0 e : A = Unit) → Unit`) it is rejected, as is dropping that closure. -/
+def linearCaseRule : List (MTm × Bool) :=
+  let rebuild := lams 3 (ann (con (var 0)) (mus 0 (unit 0) natD (var 1) (szSuc (var 2))))
+  let cs (q : ZeroOneMany) (P m : MTm) := scaseq q 0 (unit 0) natD 1 P m szInf star (var 0)
+  let natPair := sigma natTy natTy
+  [-- K1 at 1
+   (ann (lam (cs .one (lams 2 natTy) rebuild)) (piq .one natTy natTy), true),
+   (ann (lam (cs .one (lams 2 natTy) rebuild)) (piq .many natTy natTy), true),
+   (ann (lam (cs .one (lams 2 (enum 2)) (lams 3 (tag 2 0)))) (piq .one natTy (enum 2)), false),
+   (ann (lam (cs .one (lams 2 natPair)
+      (lams 3 (pair (ann (con (var 0)) natTy) (ann (con (var 0)) natTy))))) (piq .one natTy natPair), false),
+   (ann (lam (cs .one (lams 2 (enum 2)) (lams 3 (fst (var 0))))) (piq .one natTy (enum 2)), false),
+   (ann (lam (cs .many (lams 2 natTy) rebuild)) (piq .one natTy natTy), false),
+   (ann (lam (cs .zero (lams 2 (enum 2)) (lams 3 (tag 2 0)))) (piq .one natTy (enum 2)), false),
+   -- K1 at 0
+   (ann (lam (cs .zero (lams 2 (enum 2)) (lams 3 (tag 2 0)))) (piq .zero natTy (enum 2)), true),
+   (ann (lam (cs .zero (lams 2 (enum 2)) (lams 3 (fst (var 0))))) (piq .zero natTy (enum 2)), false),
+   (ann (lam (cs .zero (lams 2 (enum 2)) (lams 3 (fst (var 0))))) (piq .many natTy (enum 2)), false),
+   -- K1 at ω, as `scase`
+   (ann (lam (cs .many (lams 2 (enum 2)) (lams 3 (fst (var 0))))) (piq .many natTy (enum 2)), true),
+   -- no unit-shaped binder may go unused (K2a was withdrawn: linear-review's
+   -- counterexamples); a linear `Unit` is consumed by `let () := u; b`
+   (ann (lam star) (piq .one (unit 0) (unit 0)), false),
+   (ann (lam (tag 2 0)) (piq .one (unit 0) (enum 2)), false),
+   (letq .one (unit 0) star (tag 2 0), false),
+   (ann (lam (tag 2 0)) (piq .one (piq .zero (enum 2) (unit 0)) (enum 2)), false),
+   (ann (lam (letUnit (var 0) (tag 2 0))) (piq .one (unit 0) (enum 2)), true),
+   (ann (lam (letUnit (var 0) (letUnit (var 0) (tag 2 0)))) (piq .one (unit 0) (enum 2)), false),
+   (ann (lam (letUnit (var 0) (tag 2 0))) (piq .zero (unit 0) (enum 2)), false),
+   (letUnit star (tag 2 0), true),
+   -- the eliminator takes `Unit` only, never a function into it (a closure may hold a resource)
+   (ann (lam (letUnit (var 0) (tag 2 0))) (piq .one (piq .zero (enum 2) (unit 0)) (enum 2)), false),
+   (ann (lam (letUnit (var 0) (tag 2 0))) (piq .one (enum 1) (enum 2)), false),
+   -- linear-review's stash: `(1 t : A)` captured by a closure `(0 e : A = Unit) → Unit`, then
+   -- the closure dropped (rejected), or "eliminated" (rejected: not a `Unit`)
+   (ann (lam (lam (letq .one (piq .zero (eqTy (var 1) (unit 0)) (unit 0)) (lam (cast (var 2) (unit 0) (var 0) (var 1))) (tag 2 0))))
+     (pi (univ 0) (piq .one (var 0) (enum 2))), false),
+   (ann (lam (lam (letq .one (piq .zero (eqTy (var 1) (unit 0)) (unit 0)) (lam (cast (var 2) (unit 0) (var 0) (var 1)))
+       (letUnit (var 0) (tag 2 0)))))
+     (pi (univ 0) (piq .one (var 0) (enum 2))), false),
+   -- … and the closure passed to a binder that ignores it (leak4)
+   (ann (lam (lam (app (ann (lam (tag 2 0)) (piq .one (piq .zero (eqTy (var 1) (unit 0)) (unit 0)) (enum 2)))
+       (lam (cast (var 2) (unit 0) (var 0) (var 1))))))
+     (pi (univ 0) (piq .one (var 0) (enum 2))), false)]
 
 /-- The five eliminators that name the index type `I`, at level `l`, on the smallest
 descriptions (`ret i`, and `rec i (ret i)` for `ν`), in this order: `ind`, `sfix`,
@@ -1246,7 +1312,7 @@ def transpProp : List MTm :=
 /-- Terms the differential test always checks (well-typed ones the generator rarely
 builds whole), before the random ones. -/
 def samples : List MTm :=
-  propShapes ++ qtyApart ++ elimLevels ++ transpProp ++ sizeInf ++ sizeEq ++ sizeArgs ++ smallField ++ projRule.map (·.1) ++ elimRule.map (·.1) ++ usageRule.map (·.1) ++ [levelInEnv 0 0, levelInEnv 1 1, levelInEnv 0 1, levelInEnv 1 0,
+  propShapes ++ qtyApart ++ elimLevels ++ transpProp ++ sizeInf ++ sizeEq ++ sizeArgs ++ smallField ++ projRule.map (·.1) ++ elimRule.map (·.1) ++ usageRule.map (·.1) ++ linearCaseRule.map (·.1) ++ [levelInEnv 0 0, levelInEnv 1 1, levelInEnv 0 1, levelInEnv 1 0,
    natTy, natZero, natSucc natZero, natSucc (natSucc natZero), ann natD (desc 0 (unit 0)),
    eq natTy natZero (natSucc natZero), eq natTy (natSucc natZero) (natSucc natZero), refl natTy (natSucc natZero),
    delim 1 (lam (unit 0)) (lam star) (lams 4 star) (lams 4 star) (lams 5 star) (ann natD (desc 0 (unit 0))),
@@ -1831,16 +1897,17 @@ def failsLibs (input : String) (fragment : String) : IO Unit := do
   unless (errs[0]!.splitOn fragment).length > 1 do
     throw (IO.userError s!"error does not mention '{fragment}':\n{errs[0]!}")
 
-/-- Build `main` with the C backend, with every library importable. -/
-def cRunLibs (src : String) (expected : String) : IO Unit := do
+/-- Build `main` with the C backend (or LLVM), with every library importable. -/
+def cRunLibs (src : String) (expected : String) (llvm : Bool := false) : IO Unit := do
   let s := runFrontend (R := ZeroOneMany) src { trustedModule := Tests.libModule, loader := ← libLoader }
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
   unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
   let dir ← IO.FS.createTempDir
-  match ← Build.runGlobal (← toolchain) s "main" dir with
+  match ← Build.runGlobal (← toolchain) s "main" dir llvm (timeout := some 120) with
   | .ok v => checkEq expected v
   | .error e =>
-    if (e.splitOn "gmp.h").length > 1 then skip "no toolchain" else throw (IO.userError e)
+    if ["gmp.h", "llc:", "No such file"].any fun m => (e.splitOn m).length > 1 then skip "no toolchain"
+    else throw (IO.userError e)
 
 /-- Build and run `main` with the whole library (`IO` …), through C or LLVM. -/
 def cRunIO (src : String) (expected : String) (llvm : Bool := false) : IO Unit := do

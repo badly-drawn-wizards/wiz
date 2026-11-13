@@ -31,8 +31,9 @@ def dataGroup : Group where
     { name := "unknown tag", run := fun _ =>
         fails (dataPrelude ++ "def bad : Nat := con ('three, (), ())") "not one of the tags" },
     { name := "an erased field drops a linear variable", run := fun _ =>
-        fails ("def BoxD : Desc Unit := Desc.arg 0 Unit (fun _ => Desc.ret ())\n" ++
-               "def box (1 u : Unit) : μ BoxD () := con (u, (), ())") "quantity" },
+        -- (a token, not `Unit`: an unused `Unit` is fine, K2a)
+        fails ("axiom Tok : Type\ndef BoxD : Desc Unit := Desc.arg 0 Tok (fun _ => Desc.ret ())\n" ++
+               "def box (1 u : Tok) : μ BoxD () := con (u, (), ())") "quantity" },
     { name := "a linear field keeps it", run := fun _ =>
         ok ("def BoxD : Desc Unit := Desc.arg 1 Unit (fun _ => Desc.ret ())\n" ++
             "def box (1 u : Unit) : μ BoxD () := con (u, (), ())") },
