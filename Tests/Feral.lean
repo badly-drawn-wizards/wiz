@@ -160,9 +160,20 @@ def group : Group where
         checkEq "[.ok 5, .ok 8]" (toString (infosOf s))
         let l ← frontend (src.replace "\nferal\n" "\n#lower feral\n")
         check ((infosOf l).any (has · "Result1 Unit (Uniq1 ρa U64)")) s!"{infosOf l}"
-        -- a method call keeps the block on ω handles
-        let w ← frontend (pre ++ "#lower feral\n  fn f () : U64 := {\n    let mut v := Vec.new;\n    let r := &mut v;\n    r.push 2;\n    0\n  }\nend\n")
+        -- a method outside the fragment (`len`) keeps the block on ω handles
+        let w ← frontend (pre ++ "#lower feral\n  fn f () : U64 := {\n    let mut v := Vec.new;\n    let r := &mut v;\n    r.push 2;\n    v.len\n  }\nend\n")
         check ((infosOf w).all (fun i => !has i "Uniq1")) s!"{infosOf w}" },
+    { name := "linear mode (M4b-2): for and while loops take and hand back their handles; a method on a &mut (push)", run := fun _ => do
+        let a := pre ++ "feral\n  fn bump_n {'a} (x : &'a mut U64) (n : U64) : Unit := {\n    for i in 0 .. n do {\n      *x := *x + 1\n    }\n  }\n  fn halve {'a} (x : &'a mut U64) : Unit := {\n    while 1 < *x do {\n      *x := *x - 1\n    }\n  }\n  fn go (n : U64) : U64 × U64 := {\n    let mut a := 0;\n    let mut b := 9;\n    bump_n (&mut a) n;\n    halve (&mut b);\n    (a, b)\n  }\nend\n#eval Result.map (fun (p : U64 × U64) => (p.1.val, p.2.val)) (go (U64.lit 4))\n"
+        let s ← frontend a
+        checkEq "[]" (toString (errorsOf s a))
+        checkEq "[.ok (4, 1)]" (toString (infosOf s))
+        let b := pre ++ "feral\n  fn fill {'a} (v : &'a mut Vec U64) (n : U64) : Unit := {\n    for i in 0 .. n do {\n      v.push i\n    }\n  }\n  fn make (n : U64) : Vec U64 := {\n    let mut v := Vec.new;\n    fill (&mut v) n;\n    v\n  }\nend\n#eval Result.map (fun (v : Vec U64) => List.length v.items) (make (U64.lit 5))\n"
+        let t ← frontend b
+        checkEq "[]" (toString (errorsOf t b))
+        checkEq "[.ok 5]" (toString (infosOf t))
+        let l ← frontend (b.replace "\nferal\n" "\n#lower feral\n")
+        check ((infosOf l).any (has · "Vec.push1 v i")) s!"{infosOf l}" },
     { name := "examples/resources.wiz: Feral's swap on heap cells, verified with the x-tactics through lib/HeapBorrow.wiz", run := fun _ => do
         let src ← IO.FS.readFile "examples/resources.wiz"
         let s ← frontend src

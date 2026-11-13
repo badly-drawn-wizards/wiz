@@ -940,6 +940,8 @@ def Fe.addReq (dup : Bool) (kind : Nat) (x : String) (acc : List Fe.Req) : List 
     | .false => acc)
   | .false => List.append acc (.cons (Fe.Req.mk kind x "" .nil) .nil)
 -- the signature a call's head names: a function, or a method of the library
+def Fe.isLibSig (n : String) : Bool := Fe.any (fun (s : Fe.Sig) => Fe.seq s.name n) Fe.libSigs
+def Fe.sigUsesMut (s : Fe.Sig) : Bool := Fe.any (fun (q : String × Fe.Ty) => Fe.isRefMut q.2) s.params
 def Fe.sigFor (cx : Fe.Cx) (env : Fe.Env) (f : String) : Option (Fe.Sig × Bool) :=
   let sp := Fe.split f;
   match Bool.and (Fe.has sp.1 env) (Fe.hasDot f) with
@@ -1476,7 +1478,11 @@ def Fe.call (cx : Fe.Cx) (env : Fe.Env) (p hp : List Nat) (sig : Fe.Sig) (args :
   | .true => Fe.args cx env sig m 0 args .nil .nil (fun texts hs e => do
     ev ← Fe.evs cx p m sig.bounds;
     let rt := Fe.inst m sig.ret;
-    let callO := Fe.Out.at hp (Fe.Out.s sig.name) ⊕ ev ⊕ Fe.cat texts;
+    -- linear mode: a library function on a `&mut` has a `Uniq1` twin, `f1` (FeralCore)
+    let fname := Fe.the String (match Bool.and cx.lin (Bool.and (Fe.isLibSig sig.name) (Fe.sigUsesMut sig)) with
+      | .true => sig.name +++ "1"
+      | .false => sig.name);
+    let callO := Fe.Out.at hp (Fe.Out.s fname) ⊕ ev ⊕ Fe.cat texts;
     let lenders := Fe.pick sig.lenders hs;
     let handed := Fe.pick sig.handed hs;
     let e1 := Fe.goneAll lenders e;
@@ -1850,10 +1856,15 @@ def Fe.loop (cx : Fe.Cx) (env : Fe.Env) (p : List Nat) (s : Syntax) (kind : Nat)
   vs0 ← Fe.zonkEnv (Fe.distinct env .nil);
   let ment := (fun (x : String) => Fe.ment x s);
   let vars := Fe.filter (Fe.visible ment) vs0;
-  let outs := Fe.filter (Fe.exportable ment) vars;
-  let ps := List.append (Fe.filter (fun (w : Fe.Var) => Bool.not (Fe.exportable ment w)) vars) outs;
+  -- linear mode (M4b-2): every handle the loop mentions goes in and comes back
+  let expo := Fe.the (Fe.Var → Bool) (fun (w : Fe.Var) => Bool.or (Fe.exportable ment w) (Bool.and cx.lin (Fe.isHandleTy w.ty)));
+  let outsA := Fe.filter expo vars;
+  let hsL := Fe.linHs cx outsA;
+  let outs := Fe.linVs cx outsA;
+  let ps := List.append (Fe.filter (fun (w : Fe.Var) => Bool.not (expo w)) vars) outsA;
   let early := Fe.early s;
   let ons := Fe.names outs;
+  let hns := Fe.names hsL;
   n ← Fe.fresh;
   let name := cx.fname +++ ".loop" +++ Syntax.decimal n;
   let callHead := name +++ Fe.loopFixed cx;
@@ -1862,10 +1873,11 @@ def Fe.loop (cx : Fe.Cx) (env : Fe.Env) (p : List Nat) (s : Syntax) (kind : Nat)
     Fe.pure (fl.1 ⊕ Fe.o (callHead +++ Fe.unwords (Fe.names ps))));
   let exit := Fe.the (Fe.Env → Fe.M Fe.Out) (fun (e : Fe.Env) =>
     let fl := Fe.flush ps "" e;
-    (match early with
-    | .false => Fe.pure (fl.1 ⊕ Fe.Out.s "Result.ok " ⊕ Fe.packV (Fe.o "()") ons)
-    | .true => Fe.pure (fl.1 ⊕ Fe.Out.s "Result.ok (Flow.brk " ⊕ Fe.packV (Fe.o "()") ons ⊕ Fe.Out.s ")")));
-  let cxL := Fe.Cx.setRet (Fe.Cx.setTail cx .false) (fun v t e =>
+    (match early, hns with
+    | .false, .nil => Fe.pure (fl.1 ⊕ Fe.Out.s "Result.ok " ⊕ Fe.packV (Fe.o "()") ons)
+    | .false, _ => Fe.pure (fl.1 ⊕ Fe.Out.s "Result1.ok " ⊕ Fe.packV (Fe.o "()") ons ⊕ Fe.Out.s (" " +++ Fe.packH hns))
+    | .true, _ => Fe.pure (fl.1 ⊕ Fe.Out.s "Result.ok (Flow.brk " ⊕ Fe.packV (Fe.o "()") ons ⊕ Fe.Out.s ")")));
+  let cxL := Fe.Cx.setRet (Fe.Cx.setTail (Fe.linErr cx hns) .false) (fun v t e =>
     let fl := Fe.flush ps "" e;
     Fe.pure (fl.1 ⊕ Fe.Out.s "Result.ok (Flow.ret " ⊕ Fe.packV v ons ⊕ Fe.Out.s ")"));
   body ← Fe.asOut (match kind with
@@ -1886,8 +1898,10 @@ def Fe.loop (cx : Fe.Cx) (env : Fe.Env) (p : List Nat) (s : Syntax) (kind : Nat)
     | .false => Fe.packT Fe.tUnit outs
     | .true => Fe.tFlow (Fe.packT Fe.tUnit outs) (Fe.packT cx.retTy outs));
   Fe.addAux (Fe.Out.s ("partial def " +++ name +++ " ") ⊕ Fe.loopBinders cx ps early
-    ⊕ Fe.paramsO ps ⊕ Fe.Out.s ": Result " ⊕ Fe.Out.t rt ⊕ Fe.Out.s " :=" ⊕ Fe.Out.ind (Fe.Out.nl ⊕ body));
-  Fe.loopCall cx env (Fe.o (callHead +++ Fe.unwords (Fe.names ps))) ons early k
+    ⊕ (match cx.lin with
+      | .true => Fe.paramsL ps
+      | .false => Fe.paramsO ps) ⊕ Fe.resultO rt hsL ⊕ Fe.Out.s " :=" ⊕ Fe.Out.ind (Fe.Out.nl ⊕ body));
+  Fe.loopCallL cx env (Fe.o (callHead +++ Fe.unwords (Fe.names ps))) ons hns early k
 
 -- the explicit erased arguments of a loop function: the innermost region and the evidence in scope
 def Fe.loopFixed (cx : Fe.Cx) : String :=
@@ -1913,6 +1927,33 @@ def Fe.paramsL (ps : List Fe.Var) : Fe.Out := match ps with
 def Fe.paramsO (ps : List Fe.Var) : Fe.Out := match ps with
   | .nil => Fe.o ""
   | .cons w rest => Fe.Out.s ("(" +++ w.name +++ " : ") ⊕ Fe.Out.t w.ty ⊕ Fe.Out.s ") " ⊕ Fe.paramsO rest
+-- linear mode (M4b-2): a loop's handles (they leave through `Result1`'s handle field) and
+-- its other variables; outside linear mode there are no handles of the first kind
+def Fe.linHs (cx : Fe.Cx) (vs : List Fe.Var) : List Fe.Var := match cx.lin with
+  | .true => Fe.filter (fun (w : Fe.Var) => Fe.isHandleTy w.ty) vs
+  | .false => List.nil
+def Fe.linVs (cx : Fe.Cx) (vs : List Fe.Var) : List Fe.Var := match cx.lin with
+  | .true => Fe.filter (fun (w : Fe.Var) => Bool.not (Fe.isHandleTy w.ty)) vs
+  | .false => vs
+def Fe.linErr (cx : Fe.Cx) (hns : List String) : Fe.Cx := match hns with
+  | .nil => cx
+  | _ => Fe.Cx.setErr cx (Fe.packH hns)
+-- `: Result T` or, with handles, `: Result1 T H`
+def Fe.resultO (rt : Fe.Ty) (hs : List Fe.Var) : Fe.Out := match hs with
+  | .nil => Fe.Out.s ": Result " ⊕ Fe.Out.t rt
+  | _ => Fe.Out.s ": Result1 " ⊕ Fe.Out.t rt ⊕ Fe.Out.s " " ⊕ Fe.packHT (Fe.map (fun (w : Fe.Var) => w.ty) hs)
+def Fe.resultArrow (rt : Fe.Ty) (hs : List Fe.Var) : Fe.Out := match hs with
+  | .nil => Fe.Out.s "Result " ⊕ Fe.Out.t rt
+  | _ => Fe.Out.s "Result1 " ⊕ Fe.Out.t rt ⊕ Fe.Out.s " " ⊕ Fe.packHT (Fe.map (fun (w : Fe.Var) => w.ty) hs)
+def Fe.loopCallL (cx : Fe.Cx) (env : Fe.Env) (callO : Fe.Out) (ons hns : List String) (early : Bool) (k : Fe.K) : Fe.M Fe.Out :=
+  match hns, early with
+  | .nil, _ => Fe.loopCall cx env callO ons early k
+  | _, .false => do
+    r ← Fe.freshName "r";
+    v ← Fe.freshName "u";
+    rest ← k (Fe.o "()") Fe.tUnit env;
+    Fe.pure (Fe.okMatch1 cx callO r (r +++ "h") hns (Fe.unpack r v ons 0 ⊕ rest))
+  | _, .true => Fe.fail .nil "internal: an early exit from a loop in linear mode"
 def Fe.loopCall (cx : Fe.Cx) (env : Fe.Env) (callO : Fe.Out) (ons : List String) (early : Bool) (k : Fe.K) : Fe.M Fe.Out := do
   r ← Fe.freshName "r";
   v ← Fe.freshName "u";
@@ -1937,39 +1978,47 @@ def Fe.forE (cx : Fe.Cx) (env : Fe.Env) (p : List Nat) (s : Syntax) (k : Fe.K) :
     vs0 ← Fe.zonkEnv (Fe.distinct env1 .nil);
     let ment := (fun (x : String) => Bool.and (Bool.not (Fe.seq x i)) (Fe.ment x body));
     let vars := Fe.filter (Fe.visible ment) vs0;
-    let outs := Fe.filter (Fe.exportable ment) vars;
-    let invs := Fe.filter (fun (w : Fe.Var) => Bool.not (Fe.exportable ment w)) vars;
+    let expo := Fe.the (Fe.Var → Bool) (fun (w : Fe.Var) => Bool.or (Fe.exportable ment w) (Bool.and cx.lin (Fe.isHandleTy w.ty)));
+    let outsA := Fe.filter expo vars;
+    let hsL := Fe.linHs cx outsA;
+    let outs := Fe.linVs cx outsA;
+    let invs := Fe.filter (fun (w : Fe.Var) => Bool.not (expo w)) vars;
     let early := Fe.early body;
     let ons := Fe.names outs;
+    let hns := Fe.names hsL;
+    let allOns := Fe.names outsA;
     n ← Fe.fresh;
     let name := cx.fname +++ ".loop" +++ Syntax.decimal n;
     let callHead := name +++ Fe.loopFixed cx +++ Fe.unwords (Fe.names invs);
-    let envL := (Fe.mkVar i Fe.tU64 .false) ▸ List.append invs outs;
+    let envL := (Fe.mkVar i Fe.tU64 .false) ▸ List.append invs outsA;
     let exit := Fe.the (Fe.Env → Fe.M Fe.Out) (fun (e : Fe.Env) =>
       let fl := Fe.flush envL "" e;
-      (match early with
-      | .false => Fe.pure (fl.1 ⊕ Fe.Out.s "Result.ok " ⊕ Fe.packV (Fe.o "()") ons)
-      | .true => Fe.pure (fl.1 ⊕ Fe.Out.s "Result.ok (Flow.brk " ⊕ Fe.packV (Fe.o "()") ons ⊕ Fe.Out.s ")")));
-    let cxL := Fe.Cx.setRet (Fe.Cx.setTail cx .false) (fun v t e =>
+      (match early, hns with
+      | .false, .nil => Fe.pure (fl.1 ⊕ Fe.Out.s "Result.ok " ⊕ Fe.packV (Fe.o "()") ons)
+      | .false, _ => Fe.pure (fl.1 ⊕ Fe.Out.s "Result1.ok " ⊕ Fe.packV (Fe.o "()") ons ⊕ Fe.Out.s (" " +++ Fe.packH hns))
+      | .true, _ => Fe.pure (fl.1 ⊕ Fe.Out.s "Result.ok (Flow.brk " ⊕ Fe.packV (Fe.o "()") ons ⊕ Fe.Out.s ")")));
+    let cxL := Fe.Cx.setRet (Fe.Cx.setTail (Fe.linErr cx hns) .false) (fun v t e =>
       let fl := Fe.flush envL "" e;
       Fe.pure (fl.1 ⊕ Fe.Out.s "Result.ok (Flow.ret " ⊕ Fe.packV v ons ⊕ Fe.Out.s ")"));
     b ← Fe.body cxL envL (Fe.sub p 7) body Fe.tUnit .true (fun _ _ e2 =>
       let fl := Fe.flush envL "" e2;
-      Fe.pure (fl.1 ⊕ Fe.o (callHead +++ " fuel_ (U64.mk (Nat.succ " +++ i +++ ".val))" +++ Fe.unwords ons)));
+      Fe.pure (fl.1 ⊕ Fe.o (callHead +++ " fuel_ (U64.mk (Nat.succ " +++ i +++ ".val))" +++ Fe.unwords allOns)));
     x ← exit envL;
     let rt := Fe.the Fe.Ty (match early with
       | .false => Fe.packT Fe.tUnit outs
       | .true => Fe.tFlow (Fe.packT Fe.tUnit outs) (Fe.packT cx.retTy outs));
-    let pats := Fe.tupleO (Fe.map Fe.o (List.cons i ons));
-    Fe.addAux (Fe.Out.s ("def " +++ name +++ " ") ⊕ Fe.loopBinders cx (List.append invs outs) early ⊕ Fe.paramsO invs
-      ⊕ Fe.Out.s ": Nat → U64 → " ⊕ Fe.arrowsO outs ⊕ Fe.Out.s "Result " ⊕ Fe.Out.t rt
+    let pats := Fe.tupleO (Fe.map Fe.o (List.cons i allOns));
+    Fe.addAux (Fe.Out.s ("def " +++ name +++ " ") ⊕ Fe.loopBinders cx (List.append invs outsA) early ⊕ Fe.paramsO invs
+      ⊕ Fe.Out.s ": Nat → U64 → " ⊕ Fe.arrowsO cx.lin outsA ⊕ Fe.resultArrow rt hsL
       ⊕ Fe.Out.ind (Fe.Out.nl ⊕ Fe.Out.s "| .zero, " ⊕ pats ⊕ Fe.Out.s " =>" ⊕ Fe.Out.ind (Fe.Out.nl ⊕ x)
         ⊕ Fe.Out.nl ⊕ Fe.Out.s "| .succ fuel_, " ⊕ pats ⊕ Fe.Out.s " =>" ⊕ Fe.Out.ind (Fe.Out.nl ⊕ b)));
-    call ← Fe.loopCall cx env1 (Fe.o (callHead +++ " (Nat.sub " +++ hi +++ ".val " +++ lo +++ ".val) " +++ lo +++ Fe.unwords ons)) ons early k;
+    call ← Fe.loopCallL cx env1 (Fe.o (callHead +++ " (Nat.sub " +++ hi +++ ".val " +++ lo +++ ".val) " +++ lo +++ Fe.unwords allOns)) ons hns early k;
     Fe.pure (Fe.letO lo (Fe.tupleO (Fe.take 1 ab)) ⊕ Fe.letO hi (Fe.tupleO (Fe.drop 1 ab)) ⊕ call))
-def Fe.arrowsO (ps : List Fe.Var) : Fe.Out := match ps with
+def Fe.arrowsO (lin : Bool) (ps : List Fe.Var) : Fe.Out := match ps with
   | .nil => Fe.o ""
-  | .cons w rest => Fe.Out.t w.ty ⊕ Fe.Out.s " → " ⊕ Fe.arrowsO rest
+  | .cons w rest => (match Bool.and lin (Fe.isHandleTy w.ty) with
+    | .true => Fe.Out.s "(1 _ : " ⊕ Fe.Out.t w.ty ⊕ Fe.Out.s ") → "
+    | .false => Fe.Out.t w.ty ⊕ Fe.Out.s " → ") ⊕ Fe.arrowsO lin rest
 
 -- L5, L6, L20: the statements of a block. A statement that borrows opens scopes; they stay
 -- open while a later statement mentions something tied to their regions (`stop`), and `k`
@@ -2744,19 +2793,18 @@ def Fe.otherBorrowL : SyntaxF .false → Bool
   | .cons x xs => Bool.or (Fe.otherBorrow x) (Fe.otherBorrowL xs)
 end
 def Fe.linKinds : List String :=
-  ["feral_expr.whileE", "feral_expr.whileLet", "feral_expr.forE", "feral_expr.ret", "feral_expr.try",
+  ["feral_expr.whileLet", "feral_expr.ret", "feral_expr.try",
    "feral_expr.matchE", "feral_expr.ifLet", "feral_expr.dot", "feral_expr.index"]
 def Fe.sigLinOK (s : Fe.Sig) : Bool :=
   Bool.and (Fe.isNil s.lenders) (Bool.not (Fe.any (fun (q : String × Fe.Ty) => (match q.2 with
     | .ref .false _ _ => .true
     | _ => .false)) s.params))
-def Fe.sigUsesMut (s : Fe.Sig) : Bool := Fe.any (fun (q : String × Fe.Ty) => Fe.isRefMut q.2) s.params
 mutual
 -- a call of a method (`v.push x`, a dotted name on a lowercase prefix) other than `mem.…`
 def Fe.hasMethod : Syntax → Bool
   | .ident x => (match Fe.hasDot x, Fe.chars x with
     | .true, .cons c _ => Bool.and (Bool.and (Nat.le 97 (Char.code c)) (Nat.le (Char.code c) 122))
-        (Bool.not (Fe.seq (Fe.split x).1 "mem"))
+        (Bool.not (Bool.or (Fe.seq (Fe.split x).1 "mem") (Fe.seq (Fe.split x).2 "push")))
     | _, _ => .false)
   | .node _ args => Fe.hasMethodL args
   | _ => .false
