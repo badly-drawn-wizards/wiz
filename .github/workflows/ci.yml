@@ -80,6 +80,22 @@ jobs:
           fi
           cat "$GITHUB_OUTPUT"
 
+  # (seconds, no build) Documentation style: no authoring-environment paths, no
+  # agent roles and no status checkmarks (scripts/check-docs-style.py). Runs on
+  # every pull request too, including docs-only ones, which build and test skip.
+  docs_style:
+    name: docs style
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - name: Check the docs, and the checker's fixtures
+        shell: bash
+        run: |
+          python3 scripts/check-docs-style.py --self-test
+          python3 scripts/check-docs-style.py
+
   build:
     name: build
     needs: changes
@@ -314,7 +330,7 @@ jobs:
   # One check for branch protection, and the whole suite's summary.
   result:
     name: CI result
-    needs: [changes, build, test, package]
+    needs: [changes, docs_style, build, test, package]
     if: always() && github.event_name != 'schedule'
     runs-on: ubuntu-latest
     permissions:
@@ -398,6 +414,7 @@ jobs:
         shell: bash
         run: |
           echo "changes: ${{ needs.changes.result }} (code: ${{ needs.changes.outputs.code }}, shards: ${{ needs.changes.outputs.shards }})"
+          echo "docs style: ${{ needs.docs_style.result }}"
           echo "build: ${{ needs.build.result }}, test: ${{ needs.test.result }}, package: ${{ needs.package.result }}"
           # the path filter must have run; a job it skipped is not a failure, but outside
           # pull requests (and whenever the filter wants them) every job must succeed
@@ -408,6 +425,7 @@ jobs:
             if [ "$3" = true ]; then [ "$2" = success ] || { echo "$1: $2 (needed)"; exit 1; }
             else [ "$2" = success ] || [ "$2" = skipped ] || { echo "$1: $2"; exit 1; }; fi
           }
+          check "docs style" "${{ needs.docs_style.result }}" true
           check build "${{ needs.build.result }}" "$code"
           check test "${{ needs.test.result }}" "$want_tests"
           check package "${{ needs.package.result }}" "$code"
