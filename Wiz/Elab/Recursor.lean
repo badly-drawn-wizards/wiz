@@ -333,7 +333,7 @@ def mkRecursor (g : Globals R) (T : Name) (ctors : List Name) (withIH : Bool) (s
                 let fs : List (B R) := rawFs.zipIdx.map fun (f, k) => fun d => (lifts[k]?.getD .none).unwrap (f d)
                 let σ := Δv ++ fs.toArray
                 let idxB := idx.map (ofTele · σ)
-                let ctorApp := app (closed (.const (T ++ "." ++ c) us)) (Δv.toList ++ fs)
+                let ctorApp := app (closed (.const (ctorConst T c) us)) (Δv.toList ++ fs)
                 let A := norm g (motApp mot (idxB ++ [ctorApp]))
                 let inner := app (ms[ci]!) fs
                 if nΞ == 0 || nondep then inner else
