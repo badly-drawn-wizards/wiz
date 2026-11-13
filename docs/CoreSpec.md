@@ -301,7 +301,9 @@ The judgments output usage vectors with these operations [std: Atkey18; McBride1
 * **variables** use themselves once: `𝟙ₓ`;
 * **application** to a `q`-binder scales the argument's usage by `q`: `U₁ + q·U₂`;
 * **leaving a binder** declared `q` pops its usage `u` and requires `u ≤ q`
-  (**subusaging**, `popUsage`, `Check.lean:231`);
+  (**subusaging**, `popUsage`, `Check.lean:231`); a linear
+  `Unit` is not exempt (K2a was withdrawn, §10.2a); it is consumed by the unit
+  eliminator `let () := u; b`, whose usage is `U_u + U_b`;
 * **types, quantities and proofs use nothing** (their usage is discarded). For proofs this
   is a rule of `check` and `infer` (both kernels): a term whose type is a proposition (its
   sort computed and `0`) is checked in an erased position and its usage is `0`, at every
@@ -315,6 +317,9 @@ The judgments output usage vectors with these operations [std: Atkey18; McBride1
   there is no join the case is rejected [wiz: Atkey's QTT has no case analysis on
   enumerations of this form; booleans in Atkey18 require both branches to use the same
   context, which is the `1 ⊔ 1 = 1` instance];
+* **a case at a quantity** `scase_q` (K1, §10.2) uses its method once and its scrutinee
+  `q` times, `U_m + q·U_x`, and binds the payload at `q` [std: Linear Haskell's
+  `case_π`, Idris 2; wiz: on descriptions];
 * **eliminators that run a method once per node** (`ind`, `Desc.elim`, `sfix`, `scofix`,
   `coit`) scale the method's usage by the rig's unrestricted quantity `QRig.many?` (ω);
   a rig without one (exact counting, `Nat`) rejects methods that use local variables
@@ -450,8 +455,9 @@ The `lam` rule is `Kernel.wiz:2116`. Quantities are the three literals only.
     quantity other than ω has no usable field access, and it has no destructuring form
     either (`match` does not split a Σ linearly, and a nested `let 1 (x, y)` leaves the
     marker tail, a linear variable of type `(0 fields✝ : …) → Unit`, with nothing to
-    consume it). The kernel's error says so. Linear data is a tuple, taken apart with
-    `let 1 (x, y) := …`. (Linear matching: wishful `linear-case`.)
+    consume it). The elaborator's error says so. Linear data is a tuple, taken apart with
+    `let 1 (x, y) := …`, or a one-constructor `inductive` with fields at 1, taken apart by
+    `match` (`T.casesOn1`, §10.2). (Exempting the marker tail is unsound: §10.2a.)
   * **η for Σ** (§11.2) is part of conversion: it compares `vFst`/`vSnd` of *values* and
     never builds projection *terms* for the checker, so no usage is computed for an
     η-expansion. Types are checked in `Γ⁰` and their usage is discarded, so a type may
@@ -484,9 +490,9 @@ The `lam` rule is `Kernel.wiz:2116`. Quantities are the three literals only.
   `ω·(U_m + U_x)`, and `U_m + ω·U_x` for `scase`, whose method runs once. This is the
   same statement as the projection rule: an eliminator that binds at ω needs an
   unrestricted value. `match` was never affected (the generated `casesOn`/`rec` take the
-  scrutinee as an ω argument). Until there is a case at a quantity (the linear-case
-  design), a value of an inductive type held at 1 can be passed along but not taken
-  apart.
+  scrutinee as an ω argument). A value of an inductive type held at 1 is taken apart by
+  the case at quantity 1 (`scase_1`, K1, §10.2), which `match` reaches through the
+  generated `T.casesOn1`.
 * **Usability, and the follow-up.** After R1, linear data is a Σ tuple taken apart with
   `let 1 (x, y) := …`. What stopped working: reading the single field of a one-field
   structure held at 1 (`structure Coin where value : Nat`, `c.value`: it dropped only
@@ -494,7 +500,7 @@ The `lam` rule is `Kernel.wiz:2116`. Quantities are the three literals only.
   `def Coin : Type := Nat`), besides the unsound reads of one field among several.
   Follow-up (not in the kernel): a destructuring `let 1 (.mk a b) := s` for structures,
   compiled to nested splits, and tuple patterns in `match` compiled to `split`; both in
-  `/workspace/wiz-notes/linear-case-design.md`. The accepted follow-up is the linear-case plan (`/workspace/wiz-notes/linear-case-design.md`): K2a (an unused variable may leave its binder when its type is `Unit`, so a linear `Unit` needs no consumer), re-encoding B of structures (the marker in a 0-quantity first component, so a nested `let 1` leaves no marker tail to consume), and a quantity on `scase` (`scase_π`: the scrutinee is used π times and its fields are bound at π·q), which gives structures a destructuring form and linear inductive values an eliminator.
+  `/workspace/wiz-notes/linear-case-design.md`. The accepted follow-up is the linear-case plan (`/workspace/wiz-notes/linear-case-design.md`): K2a (an unused variable may leave its binder when its type is `Unit`, so a linear `Unit` needs no consumer), re-encoding B of structures (the marker in a 0-quantity first component, so a nested `let 1` leaves no marker tail to consume), and a quantity on `scase` (`scase_π`: the scrutinee is used π times and its fields are bound at π·q), which gives structures a destructuring form and linear inductive values an eliminator. Landed (stage 4h): the quantity on `scase` (K1) and the unit eliminator `let () := u; b`; K2a was withdrawn (§10.2a), and re-encoding B is not done, so structures still have no linear destructuring form.
 
 *Kernel.wiz* has no `split` (no `let (x, y)` in its term syntax). Its `fst`/`snd` rules
 are the ones above (usage scaled by ω outside erased positions; no check at the
@@ -1619,13 +1625,13 @@ a < ∞                       ⇔ a = ↑ᵏ x for a variable x : Size< u       
 
      sfix P f s i (con xs)  ⟶  f ∞ (λj i y. sfix P f j i y) i (con xs)                     vSfix, Eval.lean:436–449
 
-     Γ⁰ ⊢ s ⇐ Size
-     Γ ⊢ m ⇐ (0 j : Size< s) → (0 i : I) → (ω xs : ⟦D⟧ (λj'. μ^j D j') i) → P i (con xs)   ⊣ U_m
-     Γ ⊢ i ⇐ I    Γ ⊢ x ⇐ μ^s D i ⊣ U_x
-     ───────────────────────────────────── scase                    Check.lean:579–592, scaseMethodTy Conv.lean:172
-     Γ ⊢ scase P m s i x ⇒ P i x ⊣ U_m + ω·U_x
+     Γ ⊢ q qty ↦ π     Γ⁰ ⊢ s ⇐ Size
+     Γ ⊢ m ⇐ (0 j : Size< s) → (0 i : I) → (q xs : ⟦D⟧ (λj'. μ^j D j') i) → P i (con xs)   ⊣ U_m
+     Γ ⊢ i ⇐ I    Γ^{π} ⊢ x ⇐ μ^s D i ⊣ U_x          (Γ^{π} = Γ⁰ when π is the constant 0)
+     ───────────────────────────────────── scase_q                  Check.lean (`.scase`), scaseMethodTy Conv.lean
+     Γ ⊢ scase_q P m s i x ⇒ P i x ⊣ U_m + π·U_x
 
-     scase P m s i (con xs)  ⟶  m ∞ i xs                                                   vScase, Eval.lean:453–462
+     scase_q P m s i (con xs)  ⟶  m ∞ i xs        (q plays no part)                       vScase, Eval.lean
 ```
 
 * `sfix` unfolds **only on a constructor** (as in MiniAgda / AVW17), so its unfolding can't
@@ -1634,6 +1640,143 @@ a < ∞                       ⇔ a = ↑ᵏ x for a variable x : Size< u       
   `f ∞` expects `rec : (j : Size< ∞) → …`; the reduct is typed by subtyping
   (`μ^s ≤ μ^∞`).
 * `scase`'s method runs once, so it is not scaled.
+* **The quantity (K1, linear-case stage 2).** `scase` carries a quantity term `q`
+  (`Term.scase l q …`), checked like `split`'s. `q = ω` is the ordinary case (and what
+  every eliminator generated before stage 2 uses); `q = 1` takes a value held at 1
+  apart; `q = 0` is a case on an erased scrutinee. Conversion compares `q`
+  (`convNe`, as `split`'s quantity); computation and erasure ignore it, except that a
+  case at 0 passes `◾` as the payload. The method then takes the payload apart with
+  the rules that exist: `split` at `q` gives the tag at `q·ω` and the rest at `q`,
+  `ecase` on the tag joins the branches, each further `split` gives a field declared `p`
+  at `q·p`, the index equation at `q·0 = 0`, and the final `Unit` at `q`, which the unit
+  eliminator `let () := u; b` consumes (§10.2a). The elaborator's `T.casesOn1` is exactly this chain
+  (`Recursor.lean`, `linear := true`); `match` uses it when the scrutinee mentions a
+  variable bound at 1, binding the scrutinee at 1.
+
+#### Why K1 does not let a 1-variable be used twice, or a 0-variable at run time
+
+The argument is the usual one for a graded case [std: Linear Haskell (Bernardy et al.
+2018) `case_π`; Abel, Danielsson, Eriksson 2023 for graded Σ eliminators in a dependent
+setting; neither covers Wiz's descriptions or its observational equality, so this is
+an argument, not a citation of a proof]:
+
+1. *Accounting.* Every variable of `Γ` is charged once for the method (it runs once:
+   the only reduct is `m ∞ i xs`, one application) and `π` times for the scrutinee. A
+   1-variable `t` can therefore occur in `m` or in `x`, not both, and in `x` only if
+   `π ≠ ω` (`π·1 ≤ 1` needs `π ∈ {0, 1}`; at `π = 0` the occurrence is erased).
+2. *Subject reduction of usage.* On a constructor, `scase_π P m s i (con xs)` is charged
+   `U_m + π·U_xs` (`con` charges its payload once), and the reduct `m ∞ i xs`, an
+   application to the `π`-binder `xs`, is charged `U_m + 0·∅ + 0·∅ + π·U_xs` (the size
+   and index binders are at 0): the same vector. So reduction neither copies nor drops
+   what `xs` uses; inside the method, `xs` itself is used `≤ π` times (the λ rule), and
+   from there on the trusted rules (`split`, `ecase`, `app`) carry the count.
+3. *Exactly once at 1.* With `π = 1`, `xs` must be used exactly once (`le u 1` iff
+   `u = 1` in `{0,1,ω}`): a method that ignores the payload or puts it in an ω position
+   (a projection, the first component of an ω pair) is rejected. A field declared `p`
+   comes out at `1·p = p`, the declared quantity, which is what the constructor charged
+   for it (`con` via `⟦arg p S D⟧ = (p s : S) × …`): what was put in once comes out once.
+4. *0-variables.* At `π = 0` the scrutinee is checked in `Γ⁰` and charged `0·U_x`, so it
+   is never computed (erasure passes `◾`); the method binds `xs` at 0, so `xs` occurs
+   only in erased positions. In particular the method cannot branch on the tag: `ecase`
+   charges its scrutinee once, and `1 ≤ 0` is false. So an erased value is never
+   inspected at run time (Idris 2's restriction of erased matches to types with at most
+   one constructor, obtained without a side condition). A quantity *variable* `q` that
+   could be 0 is checked under every assignment (`QPoly.le`), so a branching case at a
+   variable quantity is rejected for the same reason.
+5. *Neutral scrutinee.* `scase_π … x` on a neutral is stuck and computes nothing; it is
+   charged as above, so it uses no more than the reduct would. Comparing two stuck cases
+   compares `π` too, so no conversion identifies a case at 1 with one at ω.
+6. *What is not claimed.* Linearity is not uniqueness (an ω value can be passed to a 1
+   binder), so `scase_1` does not license in-place update; field quantities in
+   `Kernel.wiz` are all ω (§15), where `scase_1` still binds the payload at 1.
+
+Tests: `linearCaseRule` (both kernels, differential), the `linear-case` cases in the
+elaborator tests (the M4 probes of `wiz-notes/cohesion-resources.md` §7 and their
+negatives: a payload dropped in one branch, duplicated, the scrutinee used after the
+match, a 0 field used at run time).
+
+### 10.2a The unit eliminator; K2a withdrawn
+
+```
+     Γ ⊢ u ⇒ Unit_l ⊣ U₁     Γ ⊢ b ⇒ B ⊣ U₂        (u has the type `Unit` itself, after whnf)
+     ───────────────────────────────────── letUnit                 checkUnit, Check.lean
+     Γ ⊢ let () := u; b ⇒ B ⊣ U₁ + U₂             (and the ⇐ version)
+
+     let () := u; b  ⟶  b          (η: every u is ())                                  eval, Eval.lean
+     erasure:  let _ := u'; b'      (strict: u is evaluated first)                     Erase.lean
+```
+
+* **What it is.** Linear logic's 1-elimination (Atkey's `let () = u in b`). It is the
+  only way a `Unit` held at 1 is used up: a binder at 1 never goes unused, whatever its
+  type. `T.casesOn1` ends its chain of splits with it (the payload's final `Unit`); the
+  surface syntax is `let () := u; b`.
+* **Why it does not let a 1-variable be used twice, or a 0-variable at run time.** `u`
+  is charged once and `b` as itself (`U₁ + U₂`, the `let` rule at 1 without a binder),
+  in the same context: a 1-variable occurs in one of them, a 0-variable in neither
+  outside erased positions. Unlike K2a it never discharges an obligation: whatever `u`
+  uses is counted, and `u` is used up by being evaluated.
+* **Run time.** In the kernel's evaluator (types, conversion) it computes to `b` by η.
+  Erasure compiles it to `let _ := u'; b'`, a strict `let` that dead-code elimination
+  keeps when `u'` is a call (it drops only pure values). The linearity guarantee is about
+  counting, in the kernel; at run time it rests on a **trust assumption about foreign
+  code**:
+* **Trust assumption: effects live in `IO`.** A foreign function or implementation
+  outside `IO` (`extern f : Nat → Nat`, `attribute [implemented_by g] f`) must be pure:
+  no observable effect. Erasure and dead-code elimination may drop or duplicate such a
+  call (in an erased position, in an erased closure, a dead `let`), so an effect there can
+  be lost. linear-review's b4 is a pure `Nat → Nat` extern with an effect, applied inside
+  `(fun (0 k : Nat) => (fun (x : Nat) => ()) (cRel n)) 0`: its call is dropped. b5, a
+  polymorphic `{0 A : Type} → Nat → A` instantiated at `Unit`, is the same. Effects belong
+  in `IO`, whose `World` is linear. **What holds without trusting anything more**: an
+  `IO` effect can't sit in an erasable term, because running it needs a `World`, and a
+  `World` can't escape into a value with no runtime content (it must reach `main`'s
+  result).
+* **The checks that enforce what can be checked.** `extern` and `implemented_by` refuse a
+  result type with no runtime content: `Unit`, a proposition, a type, an erased function
+  into such, or a Σ of such, after `whnf` (a named `def Tk := Unit` counts); `implemented_by`
+  allows a proposition (the implementation is a proof, erased too). The decision
+  uses the predicate erasure itself uses (`contentless`/`resultContentless`, Erase.lean,
+  built on `erasable`), so the two can't drift. A foreign call is also kept where its
+  type is erasable (`externCall`: defence in depth for polymorphic natives). Tested with
+  a lock released in `IO` through a linear ticket (C and LLVM: a skipped release would
+  hang the second acquire, and a doubled one would show in the count).
+* **Tokens must not be named units.** `let () := t` consumes any `t` whose type reduces
+  to `Unit`, so a library must not use a named unit type (`def Tk : Type := Unit`, or anything
+  that reduces to `Unit`) as a linear token: anyone can discard one. Linear tokens are
+  axioms (`Pts`, `Owned`) or opaque types.
+* **Only `Unit` itself.** `checkUnit` requires the `whnf` of `u`'s type to be `Unit_l`,
+  never a type that is a singleton by η: a function into `Unit` may be a closure holding
+  a resource, and consuming it would mean applying it, to an argument nobody may have.
+* **Kernel.wiz** has the same rule (`Tm.letUnit`, `checkUnit`). `Backend.wiz` refuses it:
+  its `let`s are lazy and an unused one is dropped, so it can't promise to run `u`. The
+  self-hosted frontend never produces it.
+
+**K2a (withdrawn).** The design proposed that a binder whose type is unit-shaped (`Unit`,
+or `(0 x : D) → … → Unit`) may go unused at any quantity, justified by η. It was
+implemented on this branch and withdrawn after review (linear-review): **any rule that
+trusts a type to "hold nothing" fails as soon as the type has a closure inhabitant.**
+Counterexamples, all negative tests now (group `linear-case`, and `linearCaseRule` in both
+kernels):
+
+* `stash (1 t : T) : (0 e : T = Unit) → Unit := fun e => Eq.subst (fun X => X) e t`
+  hides any linear `t` in a closure of a unit-shaped type; `let 1 g := stash t; k`
+  dropped it. Compiled: a forgotten `Lock` guard, and the next `acquire` deadlocked.
+* The same closure in a λ binder, a `let`, the second component of a pair.
+* A unit-valued consumer `useU : (1 t : Tok) → Unit` whose result is dropped,
+  `(fun (1 u : Unit) => 0) (useU t)`: the reduct does not mention `t`, and erasure need
+  never evaluate it. Linear values are consumed explicitly, so even `Unit` is not exempt.
+* Restricting K2a to a structure's marker tail does not help: a structure value built as
+  a raw pair can put a closure of the tail's type in the tail slot, whose phantom domain
+  is a user-chosen parameter (`S (Tok = Unit)`, or `S (PL (Tok = Unit))` with a
+  propositional wrapper).
+* Restricting it to types written literally (not unfolding globals) does not help:
+  `stash`'s type is literal.
+
+So a linear structure still can't be taken apart (§7.1); linear data that must be taken
+apart is a one-constructor `inductive` with fields at 1 (`T.casesOn1`). Re-encoding
+structures with the marker in a 0-quantity first component (repr-shape B) would make the
+tail an erased position (a closure built there is charged `0·U`, so it can't capture a
+linear variable): a possible later stage.
 
 ### 10.3 ν, out, cocon, coit, scofix
 
@@ -1895,6 +2038,8 @@ Each item says what the code does; the code is what the kernel checks.
 |---|---|---|
 | quantities | any `QRig`, quantity variables, `Qty` | binder quantities are literals `0, 1, ω` only (`Q`, `Kernel.wiz:19`). Since 21w there is `Qty : U 0` with its literals (`qty`, `qlit`), for description fields; a `Qty` variable (a `Desc.elim` method's `q`) is a neutral, and a `Σ` at one (`sigmaQ`, the template `⟦D⟧` at such a field) stays stuck (`ssigq`) where the Lean kernel builds a Σ at a polynomial quantity; it has the rules of a Σ at an unknown quantity (projections erased only, except `snd` at ω; η; a pair's first part counted ω times), only at a bare variable (as `qtyPoly`: a quantity that is another stuck term is rejected). Unlike the Lean kernel's Σ at a polynomial, it is not canonical: `cast`, `eqTy` and `eq` at it stay stuck (incomplete, never unsound) |
 | description fields | carry a quantity | the same (21w): `darg q S D`, `drec q j D`, `dhrec q H j D` with `q : Qty` checked as `checkQty` does (a literal or a variable), the methods receive `q`, and `⟦D⟧` puts it on the field's Σ; `vEqDesc`, conversion, cast, `groundEqDesc` compare it as `sameQty`/`qtyApart` do (`qtySame`: two literals by value, the same variable equal, anything else unknown) |
+| `scase` at a quantity (K1) | `q` a quantity term | `q` a literal (`Tm.scase l q …`, `Spine.sscase`); the same rule, `U_m + q·U_x`, payload at `q` |
+| the unit eliminator `let () := u; b` | `Term.letUnit`, `checkUnit`; erasure evaluates `u` | `Tm.letUnit`, `checkUnit`, the same rule; `Backend.wiz` refuses it (lazy `let`s), the frontend never produces it |
 | `split` (`let (x, y)`) | yes | **no**. Projections need an unrestricted pair in both kernels (§7.1, R1), so a pair held at quantity 1 cannot be consumed in Kernel.wiz's fragment, nor at all in the self-hosted language (no `let (x, y)`; its `IO` and `Prod` are at ω): every term that projects one is rejected by both kernels, and terms with `split` are outside the fragment (the differential test's term type `MTm` has no `split`) |
 | numerals, `natOp` | yes | no |
 | levels of data | `Level` | closed numerals (`descr l`, `mu l`, `ulift l`) |
@@ -1932,6 +2077,7 @@ Commands: `#eval` is `#reduce` here, and `attribute [inline]` is checked and ign
 
 | program | Lean frontend | self-hosted frontend |
 |---|---|---|
+| a `match` on a linear scrutinee (`def m2 (1 x : Nat) : Nat := match x with \| .zero => 0 \| .succ k => k`) | accepts (4h): `T.casesOn1`, the case at 1; `k` is an ω field, so it comes out at `1·ω` | **rejects**: the match is the kernel's case at ω, which uses `x` ω times (the Kernel.wiz rule is the same; only the frontend does not emit `scase` at 1) |
 | `%t` quantity terms, quantity variables | yes | an error |
 
 **The self-hosted FFI** (stages 21l, 21o–21t) takes the Lean frontend's `extern`,
@@ -1950,7 +2096,7 @@ bits at the boundary (21p); `implemented_by mk get` (22d) is an error; under the
 * metavariables, unification, implicit arguments, type classes and instance resolution,
   level metavariables and defaulting (unconstrained size metavariables default to `∞`);
 * `inductive`/`structure`/`coinductive` (they elaborate to descriptions, `μ`/`ν` and
-  constructors), Lean-style `T.rec`, `T.casesOn`, `T.scasesOn` (built on `ind`, `ecase`,
+  constructors), Lean-style `T.rec`, `T.casesOn`, `T.scasesOn`, the additive `T.casesOnA` and the linear `T.casesOn1` (built on `ind`, `ecase`, `split`,
   `cast`, `scase`);
 * `match`, equations, structural and sized recursion (compiled to `ind`, `sfix`,
   `scase`), copatterns (compiled to `coit`, `cocon`), coconstructors `T.mk`, the

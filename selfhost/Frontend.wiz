@@ -432,6 +432,7 @@ def shiftTm (k : Nat) : Nat → Tm → Tm
   | c, .snd t => .snd (shiftTm k c t)
   | c, .con t => .con (shiftTm k c t)
   | c, .exfalso m t => .exfalso (shiftTm k c m) (shiftTm k c t)
+  | c, .letUnit u b => .letUnit (shiftTm k c u) (shiftTm k c b)
   | _, t => t
 inductive TmsR where
   | ok (ts : Tms)
@@ -1405,9 +1406,9 @@ def zonk (es : ES) (d : Nat) (t : Tm) : Option Tm := match metaHead t 0 with
         | .tcons I' (.tcons D' (.tcons P' (.tcons m' (.tcons i' (.tcons x' _))))) => .some (.ind l I' D' v P' m' i' x')
         | _ => .none
       | .none => .none
-    | .scase l I D v P m sz i x => match zonkTms es d (.tcons sz (tms6 I D P m i x)) with
+    | .scase l q I D v P m sz i x => match zonkTms es d (.tcons sz (tms6 I D P m i x)) with
       | .some ts => match ts with
-        | .tcons sz' (.tcons I' (.tcons D' (.tcons P' (.tcons m' (.tcons i' (.tcons x' _)))))) => .some (.scase l I' D' v P' m' sz' i' x')
+        | .tcons sz' (.tcons I' (.tcons D' (.tcons P' (.tcons m' (.tcons i' (.tcons x' _)))))) => .some (.scase l q I' D' v P' m' sz' i' x')
         | _ => .none
       | .none => .none
     | t' => match zonkSub es d t' with
@@ -1426,6 +1427,7 @@ def zonkSub (es : ES) (d : Nat) (t : Tm) : Option Tm := match t with
   | .eqTy A B => zonk2 es d A B (fun A' B' => .eqTy A' B')
   | .eqRefl A a => zonk2 es d A a (fun A' a' => .eqRefl A' a')
   | .exfalso m x => zonk2 es d m x (fun m' x' => .exfalso m' x')
+  | .letUnit u b => zonk2 es d u b (fun u' b' => .letUnit u' b')
   | .eq A a b => match zonkTms es d (.tcons A (.tcons a (.tcons b .tnil))) with
     | .some (.tcons A' (.tcons a' (.tcons b' _))) => .some (.eq A' a' b')
     | _ => .none
@@ -3116,7 +3118,7 @@ def splitCtors (gs : Globals) (mc : MatchCtx) (es : ES) (cx : Cx) (expected : Va
             let convoy : Tm := .app (.app (.ecase MT (.fst (.var 1)) bs) (.snd (.var 1))) (.var 0);
             let indT : Tm := match top with
               | .true => .ind 0 (IAt d) (DAt d) v (PAt d) (.lam (.lam (.lam convoy))) (shiftTm (d - L) 0 idx) (.var (d - 1 - L))
-              | .false => .scase 0 (IAt d) (DAt d) v (PAt d) (.lam (.lam (.lam (.letE (.unit 0) .star convoy)))) .szInf
+              | .false => .scase 0 .qw (IAt d) (DAt d) v (PAt d) (.lam (.lam (.lam (.letE (.unit 0) .star convoy)))) .szInf
                   (shiftTm (d - L) 0 idx) (.var (d - 1 - L));
             let withE : Tm := match modeB with
               | .true => .app indT (.eqRefl (IAt d) (shiftTm (d - L) 0 idx))
@@ -3292,7 +3294,7 @@ def inlineTm (gs : Globals) : Tm → Tm
   | .con t => .con (inlineTm gs t)
   | .ecase m sc bs => .ecase m (inlineTm gs sc) (inlineTms gs bs)
   | .ind l I D v P m i x => .ind l I D v P (inlineTm gs m) i (inlineTm gs x)
-  | .scase l I D v P m sz i x => .scase l I D v P (inlineTm gs m) sz i (inlineTm gs x)
+  | .scase l q I D v P m sz i x => .scase l q I D v P (inlineTm gs m) sz i (inlineTm gs x)
   | .prf l t => .prf l (inlineTm gs t)
   | t => t
 def inlineTms (gs : Globals) : Tms → Tms
