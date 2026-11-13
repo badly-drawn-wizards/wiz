@@ -16,7 +16,7 @@ in what is trusted (design and survey: `wiz-notes/smt.md`):
 The trusted mode (an SMT solver's `unsat` as an axiom per use, behind a flag) is designed
 in `wiz-notes/smt.md` §3 and comes in its own PR, after review (`wiz-notes/smt-review.md`).
 
-## 28b: `sat_decide`: certified, with LRAT ✅
+## 28b: `sat_decide`: certified, with LRAT
 
     import SatTactic
     def demorgan (a b : Bool) : Bool.not (Bool.and a b) = Bool.or (Bool.not a) (Bool.not b) := by sat_decide
@@ -63,4 +63,4 @@ each. A stuck `a && b` is a `match`, not `Bool.and`, so it is an atom (write `Bo
 
 **Not yet**: bit vectors. Bit-blasting `UIntN w` operations into circuits is easy; the
 correctness proof needs lemmas such as `testBit (land a b) i = testBit a i && testBit b i`
-and the range invariant of `UIntN` (agent/seal-range), which the library does not have yet.
+and the range invariant of `UIntN`, which the library does not have yet.

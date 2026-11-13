@@ -1,6 +1,6 @@
 # Stage 11: tooling
 
-## 11a–b: queries and a language server ✅
+## 11a–b: queries and a language server
 
 * **Queries** (`Wiz/Query.lean`): elaboration is a pure function of the text, so each
   command's result is memoised under a **content hash chained through every command
@@ -12,7 +12,7 @@
   diagnostics as you type, hover types, go to definition (also into `lib/`), and
   completion of global names. Each open document has its own query engine.
 
-## 11c: a shared, content-addressed cache ✅
+## 11c: a shared, content-addressed cache
 
 `wiz check`/`build`/`run` keep each command's **effect** (declarations, messages,
 registrations, info trees) in the cache directory (`--cache DIR`, default `~/.cache/wiz`;
@@ -25,7 +25,7 @@ literal syntax). Every example gives the same output from the cache as without i
 Next: finer dependencies (re-elaborate only what an edit affects, not everything
 after it).
 
-## 11d: the info tree, the infoview and code actions ✅
+## 11d: the info tree, the infoview and code actions
 
 * **The info tree** (`Elab/Basic.lean`, `Elab/Info.lean`): while elaborating, the
   elaborator records identifiers, the expected type of every checked term (and of every
@@ -54,7 +54,7 @@ def k : Nat → Bool → Nat := by
 def four : Nat := doubel 2    -- unknown identifier 'doubel'   [Did you mean 'double'?]
 ```
 
-## 11l: the infoview socket ✅
+## 11l: the infoview socket
 
 `wiz lsp --infoview SOCK` also listens on the Unix socket `SOCK`, for infoviews that run
 beside the editor (the terminal infoview connects there). The editor never says where
@@ -71,7 +71,7 @@ thread per connection feeds one channel, and one loop answers in order. Protocol
 `wiz-notes/infoview-protocol.md`; tested in-process (the `lsp-server` group: the editor
 on a socket pair, an infoview on the socket).
 
-## 11m–n: the infoview, in a terminal and in a browser ✅
+## 11m–n: the infoview, in a terminal and in a browser
 
 ```
 wiz lsp --infoview /tmp/wiz.sock          # the editor's server (11l)
@@ -123,7 +123,7 @@ the real `wiz lsp --infoview`, with `infoview/editor_stub.py` as the editor.
 Node (against the stub), then the page in headless Chromium over the DevTools protocol,
 against the real `wiz lsp --ws`.
 
-### 11o: the infoview over a WebSocket ✅
+### 11o: the infoview over a WebSocket
 
 A browser can't open a Unix socket, so `wiz lsp --ws PORT` also listens on a WebSocket
 (RFC 6455), on `127.0.0.1` only unless an address is given (`--ws ADDR:PORT`; with
@@ -140,7 +140,7 @@ listen/accept/connect, with connections again as plain Lean handles; the server 
 tested in-process (the `lsp-server` group: frames of each length class, the handshake's
 RFC example, foreign origins refused, an editor on a socket pair and two pages).
 
-## 11p: a Neovim plugin ✅
+## 11p: a Neovim plugin
 
 `editors/nvim/` is **wiz.nvim**, a Lua plugin for Neovim ≥ 0.10 modelled on lean.nvim
 (installation, options, keymaps and the full abbreviation list are in its README):
@@ -154,7 +154,7 @@ RFC example, foreign origins refused, an editor on a socket pair and two pages).
   Lean's own table (vscode-lean4's `abbreviations.json`, Apache-2.0, vendored) plus Wiz's
   additions: the nine letters Lean leaves free become Greek (`\f` φ, `\h` η, `\j` ξ, `\k`
   κ, `\q` θ, `\s` σ, `\w` ω, `\y` υ, `\z` ζ; Lean's `\l` ←, `\r` →, `\x` × stay), and the
-  symbols the repository uses that Lean has no abbreviation for (`\++` ⧺, `\done` ✅,
+  symbols the repository uses that Lean has no abbreviation for (`\++` ⧺, `\done`,
   `\cross` ✗). An abbreviation is an extmark from the leader to the cursor (so it
   survives edits around it); it is replaced as soon as the next character could not
   continue any abbreviation, when it is complete and nothing longer starts with it, on
@@ -180,7 +180,7 @@ against the real `wiz lsp` on `tests/fixture/Goals.wiz`: the goal after `intro n
 argument's expected type, constants highlighted, `K` on `Bool` giving `Bool : Type`,
 the view following an edit. It is skipped without `nvim`.
 
-## 11q: go to definition and the infoview for syntax, binders, imports and instances ✅
+## 11q: go to definition and the infoview for syntax, binders, imports and instances
 
 Hovers, go to definition and the infoview used to know only about terms. Now (as in
 Lean) they also know about syntax:
@@ -236,7 +236,7 @@ a procedural macro's output (it has no ranges of the user's), the arguments of
 `attribute`, and docstrings (Wiz has none). Design notes: `wiz-notes/info-syntax.md`.
 Tested in the `lsp-server` group and by wiz.nvim's tests (`nvim`).
 
-## 11r: printing notation (unexpanders) ✅
+## 11r: printing notation (unexpanders)
 
 Terms print as the notation they were written with: `#check`, `#reduce`, `#eval`,
 messages (`type mismatch`, kernel errors), hovers and the infoview's goals.
@@ -298,7 +298,7 @@ to tactics as text and `trace_state` print without notation. The self-hosted too
 has its own printer (selfhost/Frontend.wiz) and prints no notation. Design notes:
 `wiz-notes/pp-unexpand.md`. Tested in the `language` group.
 
-## 11s: scroll, the documentation generator (`wiz doc`) ✅
+## 11s: scroll, the documentation generator (`wiz doc`)
 
 Like Lean's doc-gen4: a static site from a set of modules. Design notes:
 `wiz-notes/scroll.md`.
@@ -365,7 +365,7 @@ package's `lib` targets with its module roots (dependencies included), into
   search index; the pages without JS; `grail doc`; and the page model of the Wasm module
   run natively on a page's JSON (hover, click, keys).
 
-## 11w: hovers in tactic arguments, the other infoviews, `local instance`, the browser infoview ✅
+## 11w: hovers in tactic arguments, the other infoviews, `local instance`, the browser infoview
 
 * **Ranges through reflected syntax.** A tactic or procedural macro gets the user's
   syntax as a Wiz `Syntax` value, which has no ranges, and its output used to get the
