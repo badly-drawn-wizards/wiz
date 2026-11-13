@@ -171,9 +171,11 @@ def Derive.explicitVars (base : String) : Nat → List FieldView → List Syntax
   | i, .cons f fs => match FieldView.kind f with
     | .default => .cons (Derive.var base i) (Derive.explicitVars base (i + 1) fs)
     | _ => Derive.explicitVars base (i + 1) fs
-/-- The full name of a constructor: `T.c`. -/
-def Derive.ctorName (v : IndView) (c : CtorView) : String :=
-  String.append (IndView.name v) (String.append "." (CtorView.name c))
+/-- The full name of a constructor: `T.c` (a `mutual` block's constructor is named by
+its member, `Ev.s`, which its tag already is). -/
+def Derive.ctorName (v : IndView) (c : CtorView) : String := match String.splitOn (CtorView.name c) "." with
+  | .cons _ (.cons _ _) => CtorView.name c
+  | _ => String.append (IndView.name v) (String.append "." (CtorView.name c))
 /-- (13b) A private type of a module has the kernel name `_private.M._0.T`; this is the
 part shown, `T`, from the name split at `._0.`. -/
 def Derive.afterPrivate : List String → String → String

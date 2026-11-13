@@ -150,8 +150,24 @@ instance : Mul Float64 := Mul.mk Float64.mul
 /-- `/` on `Float64`. -/
 instance : Div Float64 := Div.mk Float64.div
 
-/-- A number in decimal: `Nat.toString 42 = "42"` (natively; the kernel can't run it). -/
-extern "wiz_nat_show" Nat.toString : Nat → String
+-- (the foreign function takes a C integer: below 2^64)
+/-- A number in decimal, below `2^64` (natively; the kernel can't run it). -/
+extern "wiz_nat_show" Nat.toStringSmall : Nat → String
+/-- `k` zeros. -/
+def Nat.zeros : Nat → List Char
+  | .zero => .nil
+  | .succ k => .cons (Char.mk 48) (Nat.zeros k)
+-- `s` with zeros in front, to 18 digits
+/-- `s` with zeros in front, to 18 digits. -/
+def Nat.pad18 (s : String) : String := match s with
+  | .mk cs => .mk (List.append (Nat.zeros (Nat.sub 18 (List.length cs))) cs)
+-- `n` in decimal, of any size: 18 digits at a time by the foreign function
+/-- A number in decimal, of any size: `Nat.toString 42 = "42"` (18 digits at a time by the
+foreign function; natively, the kernel can't run it). -/
+partial def Nat.toString (n : Nat) : String := match Nat.lt n 1000000000000000000 with
+  | .true => Nat.toStringSmall n
+  | .false => String.append (Nat.toString (Nat.div n 1000000000000000000))
+      (Nat.pad18 (Nat.toStringSmall (Nat.mod n 1000000000000000000)))
 
 /-- Print a line (the text and a newline) on standard output. -/
 extern "wiz_io_println" IO.println : String → IO Unit

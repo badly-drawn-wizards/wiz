@@ -156,7 +156,7 @@ def constructors (g : Globals R) (T : Name) : List (Name × List Name) :=
       | t => t) v
     match body.bind Term.descTag? with
     | some (ls, _, _) => ls.map fun c =>
-      let fields := match g.find? (T ++ "." ++ c) with
+      let fields := match g.find? (ctorConst T c) with
         | some cd => (Elab.piInfos cd.type).filterMap fun (x, bi, _) =>
           if bi == .default then some (if x == "_" || x.contains '✝' then "x" else x) else none
         | none => []
@@ -387,7 +387,7 @@ def actionsAt (s : CommandState R) (text : String) (start stop : Nat) (modules :
         let indent := "".pushn ' ' (column text mi.firstAlt.start)
         let extra := String.join (List.replicate (mi.columns - 1) ", _")
         let alts := missing.map fun (c, fs) =>
-          s!"\n{indent}| .{c}{String.join (fs.map (" " ++ ·))}{extra} => ?{c}"
+          s!"\n{indent}| .{ctorShort c}{String.join (fs.map (" " ++ ·))}{extra} => ?{ctorShort c}"
         out := out.push { title := "Add missing cases", kind := "quickfix", fixes := some k,
                           edits := #[{ start := mi.lastAlt.stop, stop := mi.lastAlt.stop, text := String.join alts }] }
     | _ => pure ()

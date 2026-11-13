@@ -500,7 +500,7 @@ The `lam` rule is `Kernel.wiz:2116`. Quantities are the three literals only.
   `def Coin : Type := Nat`), besides the unsound reads of one field among several.
   Follow-up (not in the kernel): a destructuring `let 1 (.mk a b) := s` for structures,
   compiled to nested splits, and tuple patterns in `match` compiled to `split`; both in
-  `/workspace/wiz-notes/linear-case-design.md`. The accepted follow-up is the linear-case plan (`/workspace/wiz-notes/linear-case-design.md`): K2a (an unused variable may leave its binder when its type is `Unit`, so a linear `Unit` needs no consumer), re-encoding B of structures (the marker in a 0-quantity first component, so a nested `let 1` leaves no marker tail to consume), and a quantity on `scase` (`scase_π`: the scrutinee is used π times and its fields are bound at π·q), which gives structures a destructuring form and linear inductive values an eliminator. Landed (stage 4h): the quantity on `scase` (K1) and the unit eliminator `let () := u; b`; K2a was withdrawn (§10.2a), and re-encoding B is not done, so structures still have no linear destructuring form.
+  `wiz-notes/linear-case-design.md`. The accepted follow-up is the linear-case plan (`wiz-notes/linear-case-design.md`): K2a (an unused variable may leave its binder when its type is `Unit`, so a linear `Unit` needs no consumer), re-encoding B of structures (the marker in a 0-quantity first component, so a nested `let 1` leaves no marker tail to consume), and a quantity on `scase` (`scase_π`: the scrutinee is used π times and its fields are bound at π·q), which gives structures a destructuring form and linear inductive values an eliminator. Landed (stage 4h): the quantity on `scase` (K1) and the unit eliminator `let () := u; b`; K2a was withdrawn (§10.2a), and re-encoding B is not done, so structures still have no linear destructuring form.
 
 *Kernel.wiz* has no `split` (no `let (x, y)` in its term syntax). Its `fst`/`snd` rules
 are the ones above (usage scaled by ω outside erased positions; no check at the
@@ -844,7 +844,7 @@ made both kernels loop (Status.md, D1). Regularity is now off in both kernels
   algorithm that never reduces proofs and for a fragment without general inductive types
   (CICobs [PLT25]; see "Related work" below).
 
-  **A more careful argument** (`/workspace/wiz-notes/inert-regularity.md`) corrects the
+  **A more careful argument** (`wiz-notes/inert-regularity.md`) corrects the
   one above in three places:
   1. The first bullet is too strong. Removing a stuck cast can make two types syntactically
      equal, and that *does* enable rules with syntactic side conditions (`sameFamily?`,
@@ -878,7 +878,7 @@ made both kernels loop (Status.md, D1). Regularity is now off in both kernels
   All three are **relative to the same property of the system without regularity**, which
   is itself unproved for Wiz. No counterexample was found. The note lists what one would
   need.
-* **Related work: cast on reflexivity in CICobs** (`/workspace/wiz-notes/plt-vs-inert.md`).
+* **Related work: cast on reflexivity in CICobs** (`wiz-notes/plt-vs-inert.md`).
   Pujet, Leray and Tabareau's CICobs [PLT25] has the conversion rule *Cast-Refl*:
   `cast A B e t ≡ t` whenever `Γ ⊢ A ≡ B`, for any proof `e` and **any** type `A`, next to
   an impredicative proof-irrelevant sort. So regularity at inert types, read with a
@@ -913,7 +913,7 @@ made both kernels loop (Status.md, D1). Regularity is now off in both kernels
     argument proofs, §8.6).
 * **Cost.** Casting a constructor of a non-inert type walks the whole value (each field
   is cast). At inert types the cast is the identity.
-* **The rule is InReg_conv** (decision P1; `/workspace/wiz-notes/conv-regularity.md`,
+* **The rule is InReg_conv** (decision P1; `wiz-notes/conv-regularity.md`,
   `p1-stable.md`, `plt-vs-inert.md`):
 
   ```
@@ -1291,7 +1291,7 @@ conv at a proposition       true, before either side is unfolded
   Π, ℕ, ⊥, the impredicative `Ω`, a proof-irrelevant ∃, the observational equality and
   `cast`, with two universe levels and no general inductive types. Wiz's descriptions,
   `μ`/`ν`, sizes, quantities, `ULift` and its computing equality type are outside that
-  theorem (§8.4, "Related work"; `/workspace/wiz-notes/plt-vs-inert.md`).
+  theorem (§8.4, "Related work"; `wiz-notes/plt-vs-inert.md`).
 
 ### 8.6a The proof marker
 
@@ -1554,7 +1554,7 @@ never type-checks them, and their Σ types carry hand-written sort annotations
   judgment did not have the property "the type of a well-typed term is a type". No proof of
   `False` came out of it (the ill-levelled type could not be written as a term, so no
   equation, cast, annotation or binder could mention it; see
-  `/workspace/wiz-notes/elim-levels.md`), but "index level ≤ family level" is the side
+  `wiz-notes/elim-levels.md`), but "index level ≤ family level" is the side
   condition under which the type formers may be injective [PLT25 §2.3] (§8.3), so every
   rule that produces a `μ`/`ν` type enforces it. `con`, `cocon` and `out` need no premise:
   they take the type from the context (checked against it, or inferred), and `Desc.elim`
@@ -2020,7 +2020,7 @@ Each item says what the code does; the code is what the kernel checks.
    part.)
 9. **Sort annotations.** Stage 4c ([stages/04-data.md](stages/04-data.md)) says a Π/Σ "carries its sort (the elaborator writes
    it)". At `9717950`, several Π/Σ the elaborator builds carry none
-   (the stage docs themselves list them only on the unmerged `agent/elab-sorts` branch, commit
+   (the stage docs themselves list them only on an unmerged branch, commit
    `31395a2`). After that branch merges, the remaining unannotated cases are "a Π/Σ under
    a `fun` whose variable's type isn't written down, or one that still mentions a
    metavariable".
@@ -2161,7 +2161,7 @@ Checked for this document (title, authors, venue):
   TOPLAS 47(2), Article 6, 2025. doi:10.1145/3719342. (CICobs: CCobs with the conversion
   rule Cast-Refl, `cast A B e t ≡ t` when `A ≡ B`, and Coq's inductive types by Fordism;
   decidability of conversion for a fragment, Theorem 5.6. Read in full; the comparison
-  with Wiz is `/workspace/wiz-notes/plt-vs-inert.md`. An earlier version appeared at
+  with Wiz is `wiz-notes/plt-vs-inert.md`. An earlier version appeared at
   ESOP 2024, which we did not obtain.)
 * **Agda issue #3026**, "Well-founded induction on Size is inconsistent"
   (github.com/agda/agda/issues/3026).

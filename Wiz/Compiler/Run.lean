@@ -654,6 +654,8 @@ def compileReachableE (g : Globals R) (builtins : List (Name × Name)) (roots : 
           | none => triv.get? f) 8
         (fun f => if f == n then none else os.get? f)
     else e
+    -- known tags, and the closures of an unfolded linear `match` (`simpKnown`)
+    let e := e.simpKnown
     -- calls of case-shaped definitions (`Bool.and`, …) become `case`s (15h)
     let e ← if caseShapes then do
         for f in e.globals do

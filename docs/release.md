@@ -54,8 +54,7 @@ On a branch off the commit to tag, open one PR that:
 * puts the release's install line in the README (`tower default vX.Y.Z`).
 
 Merge the PR. Then wait until CI is green on the merge commit and `nightly` has moved
-to it. Tag that commit and push only the tag (this is the user's step; agents never
-push tags):
+to it. Tag that commit and push only the tag (a maintainer does this; CI does not push tags):
 
 ```sh
 git tag -a vX.Y.Z -m "Wiz vX.Y.Z" <commit>
