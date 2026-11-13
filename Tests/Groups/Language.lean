@@ -397,6 +397,28 @@ def languageGroup : Group where
           "  | .lam b => Nat.succ (size b)\n  | .app f args => Nat.add (size f) (sizes args)\ndef sizes : Tms → Nat\n" ++
           "  | .nil => 0\n  | .cons t ts => Nat.add (size t) (sizes ts)\nend\n" ++
           "#eval size (.app (.lam (.var 0)) (.cons (.var 1) (.cons (.var 2) .nil)))") ["4"] },
+    { name := "the constructors of mutual types are named per type: Ev.s and Od.s", run := fun _ => do
+        okLib ("import Prelude\nmutual\ninductive Ev where\n  | z\n  | s (o : Od)\ninductive Od where\n  | s (e : Ev)\nend\n#check Ev.z\n#check Od.s\n" ++
+          "def two : Ev := .s (.s .z)\ndef three : Od := Od.s (Ev.s (.s Ev.z))\n" ++
+          "mutual\ndef evN : Ev → Nat\n  | .z => 0\n  | Ev.s o => Nat.succ (odN o)\ndef odN : Od → Nat\n  | .s e => Nat.succ (evN e)\nend\n" ++
+          "#eval evN two\n#eval odN three\n#eval two")
+          ["Ev.z : Ev_Od .Ev", "Od.s : Ev_Od .Ev → Ev_Od .Od", "2", "3", ".s (.s .z)"]
+        failsLib ("import Prelude\nmutual\ninductive Ev where\n  | z\n  | s (o : Od)\ninductive Od where\n  | s (e : Ev)\nend\ndef bad : Od := .z") "Ev_Od .Od has no constructor z"
+        failsLib ("import Prelude\nmutual\ninductive Ev where\n  | z\n  | s (o : Od)\ninductive Od where\n  | s (e : Ev)\nend\ndef f : Ev → Nat\n  | .s _ => 1") "missing case for constructor Ev.z"
+        failsLib "inductive T where\n  | a.b" "a constructor's name is a single identifier, not a.b"
+        -- the hover on `.s` is the member's constructor
+        let prelude ← IO.FS.readFile "lib/Prelude.wiz"
+        let init : CommandState ZeroOneMany := { trustedModule := Tests.libModule, loader := fun m => if m == "Prelude" then some prelude else none }
+        let src := "import Prelude\nmutual\ninductive Ev where\n  | z\n  | s (o : Od)\ninductive Od where\n  | s (e : Ev)\nend\ndef one : Od := .s .z\n"
+        let (s, _) := Query.elaborate {} src { init with termInfo := true }
+        checkEq "(some (Od.s, Ev_Od .Ev → Ev_Od .Od))" (toString (Query.hoverAt s ((src.splitOn ".s .z")[0]!.length + 1))) },
+    { name := "mutual types sharing a constructor name, compiled (C and LLVM)", run := fun _ => do
+        let src := "import IO\nimport Deriving\nmutual\ninductive Ev where\n  | z\n  | s (o : Od)\n  deriving Repr\ninductive Od where\n  | s (e : Ev)\nend\n" ++
+          "mutual\ndef evN : Ev → Nat\n  | .z => 0\n  | .s o => Nat.succ (odN o)\ndef odN : Od → Nat\n  | Od.s e => Nat.succ (evN e)\nend\n" ++
+          "def mk : Nat → Ev\n  | .zero => .z\n  | .succ n => .s (.s (mk n))\n" ++
+          "def main : IO Unit := do\n  IO.println (Nat.toString (evN (mk 5)));\n  IO.println (Repr.repr (mk 1));\n  IO.println (Repr.repr (Od.s Ev.z))\n"
+        ioRun src "10\nEv.s (Od.s Ev.z)\nOd.s Ev.z\n"
+        ioRun src "10\nEv.s (Od.s Ev.z)\nOd.s Ev.z\n" (llvm := true) },
     { name := "tactic keywords are not reserved", run := fun _ =>
         okLib "import Prelude\ndef f (first exact : Nat) : Nat := Nat.add first exact\n#eval f 1 2\ndef t : Nat := by exact 3" ["3"] },
     { name := "a catch-all of a recursive definition is the value at hand", run := fun _ =>
@@ -515,6 +537,12 @@ def languageGroup : Group where
     { name := "... and not its own identifiers", run := fun _ =>
         failsLib (calcDsl " (keywords := calc_kw)" ++ "#eval run_calc [no] yes done")
           "identifier ('yes' is a keyword here)" },
+    { name := "13o: a word reserved by a notation is an error that names the notation", run := fun _ =>
+        failsLib "import Prelude\nsyntax:lead (name := shout) \"shout\" term : term\ndef shout : Nat := 1"
+          "'shout' is a keyword: the notation `shout …` of this file" },
+    { name := "13o: `if` on a value that is not a Bool says so", run := fun _ =>
+        failsLib "import Prelude\ndef a (n : Nat) : Nat := if n then 1 else 2"
+          "the value matched has type Nat, which has no constructor .true (its constructors: .zero, .succ); the condition of `if`" },
     { name := "... without the scope the DSL's `when` is an application", run := fun _ => do
         let prelude ← IO.FS.readFile "lib/Prelude.wiz"
         let input := calcDsl "" ++ "#eval run_calc when [isZero] [0] yes [no] [yes] no [no (no yes)] done"

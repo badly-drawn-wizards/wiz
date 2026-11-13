@@ -420,10 +420,11 @@ def ioRunWith (src : String) (k : String → IO Unit) (args : Array String := #[
   let functorLib ← IO.FS.readFile "lib/Functor.wiz"
   let sysLib ← IO.FS.readFile "lib/Sys.wiz"
   let textLib ← IO.FS.readFile "lib/Text.wiz"
+  let derivingLib ← IO.FS.readFile "lib/Deriving.wiz"
   let loader : Name → Option String := fun m =>
     if m == "Prelude" then some prelude else if m == "IO" then some ioLib else if m == "Eff" then some effLib
     else if m == "Std" then some stdLib else if m == "Sys" then some sysLib else if m == "Functor" then some functorLib
-    else if m == "Text" then some textLib else none
+    else if m == "Text" then some textLib else if m == "Deriving" then some derivingLib else none
   let headers ← Build.preprocessHeaders (← toolchain) src
   let s := runFrontend (R := ZeroOneMany) src { loader, trustedModule := Tests.libModule, cHeaders := (headers[·]?) }
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
@@ -750,10 +751,17 @@ def globalDefs : List (String × List String × Option MTm × MTm) :=
    ("idP", ["u"], some (lam (lam (var 0))), pi (sortParam "u") (pi (var 0) (var 1))),
    ("constP", ["u", "v"], some (lam (lam (lam (lam (var 1))))),
      pi (sortParam "u") (pi (sortParam "v") (pi (var 1) (pi (var 1) (var 3))))),
+   -- a proposition whose value depends on its level and whose type does not: `polyK.{0}`
+   -- is `Prop → True`, `polyK.{1}` is `Type → True` (two instances of one constant must
+   -- not be identified by their name: the property harness compares them, `Tests/Prop.lean`)
+   ("polyK", ["u"], some (sorted 0 (pi (sortParam "u") ptrue)), prop),
    -- (W1, `wiz-notes/kernel-lint.md`) a proposition that is a theorem at level 0 and false
    -- at level 1, and a case that is stuck on its scrutinee with `A` in its environment
-   ("dLv", ["u"], some (pi (sortParam "u") (pi (var 0) (pi (var 1) (pi (pi (var 2) prop)
-     (pi (app (var 0) (var 2)) (app (var 1) (var 2))))))), prop),
+   -- (its propositional Π's carry their sort, `0`: unannotated, a cast between two of
+   -- them computes where their equation is stuck, the known U5 class of the property
+   -- harness, `Tests/Prop.lean`; `A → Prop` has a sort that depends on `u` and stays bare)
+   ("dLv", ["u"], some (sorted 0 (pi (sortParam "u") (sorted 0 (pi (var 0) (sorted 0 (pi (var 1)
+     (sorted 0 (pi (pi (var 2) prop) (sorted 0 (pi (app (var 0) (var 2)) (app (var 1) (var 2)))))))))))), prop),
    ("caseF", [], some (lam (lam (ecase prop (var 0) [var 1]))), pi prop (pi (enum 1) prop))]
 
 /-- (W1) `fun x p => p : (x : Enum 1) → caseF dLv.{l} x → caseF dLv.{l'} x`: the two types
@@ -1746,6 +1754,14 @@ def leanVerdict (t : MTm) (mark : Bool := true) : String :=
     | none => "?"
   | .error _ => "error"
 
+/-- The Wiz kernel's verdict on a closed term, as a Wiz definition: the term gets its proof
+markers from the Wiz marking pass first (`rawVerdict`: the term as it is). -/
+def wizVerdict : String :=
+  "def rawVerdict (t : Tm) : String := match infer empty t with\n  | .ok ty _ => show .nil 0 (quote 0 ty)\n  | .err _ => \"error\"\n" ++
+  "def markedVerdict (t : Tm) : String := rawVerdict (MR.tm (markInfer empty t))\n" ++
+  -- (a random term is marked only if it is well typed: the pass checks nothing)
+  "def verdict (t : Tm) : String := match infer (TCtx.noMarkers empty) t with\n  | .err _ => \"error\"\n  | .ok _ _ => markedVerdict t\n"
+
 /-- What the Lean kernel says about a declaration: `ok` or `error`. -/
 def leanDeclVerdict (d : List String × Option MTm × MTm) : String :=
   let (ps, v, ty) := d
@@ -1840,6 +1856,21 @@ def selfhostCheckFile (file expected : String) : IO Unit := do
     let out ← IO.Process.output { cmd := "timeout", args := #["120", exe.toString], cwd := dir }
     unless out.exitCode == 0 do throw (IO.userError s!"the checker failed ({out.exitCode}): {out.stderr}")
     checkEq expected out.stdout
+
+-- the self-hosted checker's output for a file
+def selfhostOutput (file : String) : IO (Option String) := do
+  match ← selfhostChecker with
+  | .error e =>
+    if (e.splitOn "gmp.h").length > 1 then
+      skip "no toolchain"
+      pure none
+    else throw (IO.userError e)
+  | .ok exe =>
+    let dir ← IO.FS.createTempDir
+    IO.FS.writeFile (dir / "input.wiz") file
+    let out ← IO.Process.output { cmd := "timeout", args := #["900", exe.toString], cwd := dir }
+    unless out.exitCode == 0 do throw (IO.userError s!"the checker failed ({out.exitCode}): {out.stderr}")
+    pure (some out.stdout)
 
 /-- (D1) The compiled program `main` of `src` doesn't finish within `secs` seconds
 (memory capped: a loop in the kernel allocates). -/

@@ -105,6 +105,9 @@ def derivingGroup : Group where
         okDeriving ("import Deriving\ninductive Vec (A : Type) : Nat → Type where\n  | nil : Vec A 0\n" ++
           "  | cons {n : Nat} (x : A) (xs : Vec A n) : Vec A (.succ n)\n  deriving Repr\n" ++
           "#eval Repr.repr (Vec.cons 1 (Vec.cons 2 Vec.nil))") ["\"Vec.cons 1 (Vec.cons 2 Vec.nil)\""] },
+    { name := "Repr for mutual types: the constructors per type (Ev.s, Od.s), derived for the family", run := fun _ =>
+        okDeriving ("import Deriving\nmutual\ninductive Ev where\n  | z\n  | s (o : Od)\n  deriving Repr\ninductive Od where\n  | s (e : Ev)\nend\n" ++
+          "#eval Repr.repr (Ev.s (Od.s Ev.z))\n#eval Repr.repr (Od.s (.s (.s .z)))") ["\"Ev.s (Od.s Ev.z)\"", "\"Od.s (Ev.s (Od.s Ev.z))\""] },
     { name := "deriving BEq for an indexed family is an error", run := fun _ =>
         failsDeriving ("import Deriving\ninductive Vec (A : Type) : Nat → Type where\n  | nil : Vec A 0\n" ++
           "  | cons {n : Nat} (x : A) (xs : Vec A n) : Vec A (.succ n)\n  deriving BEq") "indexed families are not supported" },

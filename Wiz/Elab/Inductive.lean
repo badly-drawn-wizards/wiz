@@ -401,7 +401,7 @@ def elabInductive (cmd : Syntax) (levelParams : List Name) : ElabM R (List (Decl
     let payload := Term.pair tag
       (fieldVals.foldr .pair (.pair (.refl (I.lift n) (tupleWith (tailV.lift n) js')) .tt))
     let d : Decl R :=
-      { name := T ++ "." ++ cname, levelParams := levelParams,
+      { name := ctorConst T cname, levelParams := levelParams,
         type := pisTm implicitΔ (pisTm fsTy resTy),
         value := some (lamsTm ΔNames (lamsTm (fs.map (·.1)) (.con payload))), inline := true }
     ctorDecls := ctorDecls ++ [d]

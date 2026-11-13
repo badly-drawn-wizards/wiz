@@ -2,7 +2,9 @@
   {"name": "selfhost", "split": 4, "heavy": true,
    "inputs": ["selfhost/*", "lib/Prelude.wiz", "lib/IO.wiz", "lib/Std.wiz"],
    "select": [
-    "=selfhost"
+    "=prop-kernels",
+    "=selfhost",
+    "=audit-kernels"
   ]},
   {"name": "hdl-verified", "heavy": true, "select": [
     "=hdl-verified"
@@ -70,6 +72,7 @@
    "inputs": ["selfhost/Kernel.wiz", "examples/*", "lib/Prelude.wiz", "lib/IO.wiz", "lib/Std.wiz",
               "lib/Eff.wiz", "lib/BitVec.wiz", "lib/Logic.wiz", "lib/Hdl/*"],
    "select": [
+    "=audit",
     "check",
     "conv",
     "copatterns",
@@ -85,6 +88,7 @@
     "=meta",
     "observational",
     "parser",
+    "=prop",
     "quantity",
     "rig",
     "scaling",

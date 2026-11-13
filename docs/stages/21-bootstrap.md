@@ -1,6 +1,6 @@
 # Stage 21: bootstrap
 
-## 21a–c: a self-hosted backend ✅
+## 21a–c: a self-hosted backend
 
 `selfhost/Backend.wiz` compiles what the self-hosted frontend checked to C, and
 `selfhost/rt.c` is its runtime. A minimal first version:
@@ -31,7 +31,7 @@ compiled by the Lean toolchain, compiles itself to C (about 90 000 lines); that 
 and runs a program with the self-hosted compiler (when `$WIZ_GC_CFLAGS`/`$WIZ_GC_LDFLAGS`
 point at the garbage collector).
 
-## 21d: faster self-compilation ✅
+## 21d: faster self-compilation
 
 Measured, not guessed (`perf`, per-global timestamps from a streaming driver):
 
@@ -156,7 +156,7 @@ freeing every object by the end.
 
 Next: reference counting by default.
 
-## 21i: phantom parameters in the self-hosted frontend ✅
+## 21i: phantom parameters in the self-hosted frontend
 
 Parity with 22e. `inductiveCmd` (`Frontend.wiz`) finds the parameters that no
 constructor (nor the index type) mentions (`occurs` on the elaborated descriptions) and
@@ -171,7 +171,7 @@ indexed family with such a parameter (the Lean frontend pairs the index with the
 rejected with an error, rather than accepted with the parameter forgotten. Tests:
 `selfhostAgrees` runs the same declarations through both frontends.
 
-## 21j: constructor parameters from the expected type, self-hosted ✅
+## 21j: constructor parameters from the expected type, self-hosted
 
 Parity with the Lean elaborator's `checkApp`: a constructor with implicit parameters
 applied in check mode (`appExpected`) first makes the implicit arguments'
@@ -181,7 +181,7 @@ types that mention the solved parameters (`Tagged.mk 3 : Tagged .true` where the
 is `Code b`); the placeholders are dropped. If that unification fails the arguments come
 first, as before.
 
-## 21k: command-line arguments; `--rc` ✅
+## 21k: command-line arguments; `--rc`
 
 `IO.argCount : IO Nat` and `IO.arg : Nat → IO String` (externs `wiz_io_arg_count`,
 `wiz_io_arg`; the C and LLVM `main`s save `argc`/`argv` with `wiz_set_args`), and
@@ -478,7 +478,7 @@ branches' usage (CoreSpec §5.3, `1 ⊔ 1 = 1`). The Lean elaborator compiled th
 two uses added up to ω.
 
 Every inductive type now also gets `T.casesOnA` (E1 of
-/workspace/wiz-notes/linear-case-design.md; `mkRecursor … (additive := true)`): the
+`wiz-notes/linear-case-design.md`; `mkRecursor … (additive := true)`): the
 methods are bundled into one argument at quantity 1, a function from the tag,
 
     T.casesOnA : {Δ} → (motive : …) → (1 m : (t : Enum ls) → ecase t [ULift M_c, …]) →

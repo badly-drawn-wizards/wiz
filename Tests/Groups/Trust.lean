@@ -44,6 +44,12 @@ def badAdd : String :=
   ownNat ++
   "def h (n : N) : K n 3 = n := refl n\ndef bad : False := absurd (h 2)\n#print axioms bad\n"
 
+/-- Replace every call `f a` by `f (wrap a)` (t1-review's probes, `trustGroup`). -/
+partial def wrapCalls (f : Name) (wrap : Term ZeroOneMany → Term ZeroOneMany) (t : Term ZeroOneMany) : Term ZeroOneMany :=
+  match t with
+  | .app (.const c us) a => if c == f then .app (.const c us) (wrap (wrapCalls f wrap a)) else .app (.const c us) (wrapCalls f wrap a)
+  | t => Id.run (t.mapChildrenM pure fun _ c => pure (wrapCalls f wrap c))
+
 /-- The trusted base: partial definitions need a kernel-checked witness (O2), and
 `builtin` registrations outside the library are tracked axioms (O3). -/
 def trustGroup : Group where
@@ -93,8 +99,9 @@ def trustGroup : Group where
           | .error e => ((toString e).splitOn fragment).length > 1
           | .ok _ => false
         check ((addDecl {} (f .tt)) matches .ok _) "a good implementation was rejected"
-        -- it may call the definition (a recursive definition's does): checked with `f` declared
-        check ((addDecl {} (f (.const "f" []))) matches .ok _) "an implementation calling its definition was rejected"
+        -- one that calls the definition must be its value with the calls on fields (derived):
+        -- `f` itself is not (compiled code would loop: t1-review M1), though `f ≡ tt`
+        check ((addDecl {} (f (.const "f" []))) matches .error _) "an implementation that is the definition itself was accepted"
         check (rejected (f (.const "g" [])) "implementation of f") "an implementation with an unknown constant was accepted"
         -- ill-typed, and well-typed at another type
         check (rejected (f (.app .tt .tt)) "implementation of f") "an ill-typed implementation was accepted"
@@ -207,6 +214,40 @@ def trustGroup : Group where
         match addDecl g0 { f with impl := g.impl } with
         | .ok _ => throw (IO.userError "f was accepted with g's compiled equations")
         | .error e => check (((toString e).splitOn "do not agree").length > 1) s!"unexpected error: {e}" },
+    { name := "recursive definitions: the agreement check on a mutual family (index unification), and its shortcuts", run := fun _ => do
+        let src := "inductive N where\n  | z\n  | s (n : N)\n" ++
+          "mutual\ninductive A where\n  | a0\n  | a1 (b : B)\ninductive B where\n  | b0\n" ++
+          "  | b1 (k : N) (r : B)\n  | b2 (a : A)\nend\n" ++
+          "def shB : B → B\n  | .b0 => .b0\n  | .b1 k r => .b1 (.s k) (shB r)\n  | .b2 a => .b2 a\n" ++
+          "def idB : B → B\n  | .b0 => .b0\n  | .b1 k r => .b1 k (idB r)\n  | .b2 a => .b2 a\n" ++
+          "def sh : N → N\n  | .z => .z\n  | .s n => .s (sh n)\n"
+        let s := runFrontend (R := ZeroOneMany) src {}
+        let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
+        unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
+        let (some shB, some idB, some sh) := (s.globals.find? "shB", s.globals.find? "idB", s.globals.find? "sh")
+          | throw (IO.userError "a definition is missing")
+        -- another definition's equations are rejected (the calls are compared as calls)
+        let g0 : Globals ZeroOneMany := { s.globals with decls := s.globals.decls.erase "shB" }
+        check ((addDecl g0 shB) matches .ok _) "shB is rejected when added again"
+        let idImpl := replaceConstTo "idB" "shB" idB.impl.get!
+        check ((addDecl g0 { shB with impl := some idImpl }) matches .error _) "shB was accepted with idB's equations"
+        -- the bridge by shape: the value as derived, and two values that only look like it
+        let v := sh.value.get!
+        check (bridgeByShape s.globals v 1 0 [] [] true 0) "the derived value has the shape"
+        let .lam x body := v | throw (IO.userError "sh's value is not a λ")
+        check (!bridgeByShape s.globals (.lam x (.letE "z" (.qlit 1) (.unit 1) .tt (body.lift 1 0))) 1 0 [] [] true 0)
+          "a value under a let has the shape"
+        let (h, args) := body.spine
+        let motiveWithColumn := args.set 0 (.var 0)  -- (N has no parameters: the motive is first)
+        check (!bridgeByShape s.globals (.lam x (motiveWithColumn.foldl .app h)) 1 0 [] [] true 0)
+          "a motive that mentions the column passes as the shape" },
+    { name := "groundEqDesc: one closed description at two levels is not identified", run := fun _ => do
+        let s := runFrontend (R := ZeroOneMany) "inductive Box.{u} : Type (u+1) where\n  | mk (T : Type u)\n" {}
+        let g := s.globals
+        let atL (u : Level) : Val ZeroOneMany := eval g [] (.const "Box.desc" [u])
+        let I : Val ZeroOneMany := .unit (.succ .zero)
+        check (groundEqDesc g 0 I (atL .zero) (atL .zero)) "Box.desc.{0} is not itself"
+        check (!groundEqDesc g 0 I (atL .zero) (atL (.succ .zero))) "Box.desc.{0} and Box.desc.{1} were identified" },
     { name := "recursive definitions: a local variable named like the definition doesn't capture its calls in compiled code", run := fun _ =>
         -- (#82's regression test.) `f n` is a recursive call (the kernel's definition
         -- recurses, so `f 2 = 0`); the compiled equations called the local `f`, and `#eval f 2`
@@ -235,6 +276,46 @@ def trustGroup : Group where
             "def w3 : W 3 := .cons 1 (.cons 2 (.cons 3 .nil))\n" ++
             "def thmW : h w3 = 9 := refl 9\n#eval h w3\n#run h w3\n")
           ["9", "9", "9", "9"] },
+    { name := "recursive definitions: compiled equations whose calls are not on fields are rejected (t1-review M1)", run := fun _ => do
+        -- probes t1-191-kernel / t1-191-unit: each of these agrees with the value where the
+        -- kernel looks (or at a type where every two values are equal) but compiled code
+        -- would loop; each derived one is accepted
+        let src := "inductive N where\n  | z\n  | s (n : N)\n" ++
+          "def f : N → N\n  | .z => .z\n  | .s n => f n\n" ++
+          "inductive W where\n  | sup (g : N → W)\n  | z\n" ++
+          "def wd : W → N\n  | .z => .z\n  | .sup g => wd (g .z)\n" ++
+          "inductive W2 where\n  | node (l : W2) (g : N → W2)\n  | z\n" ++
+          "def w2 : W2 → N\n  | .z => .z\n  | .node l g => w2 l\n" ++
+          "def u : N → Unit\n  | .z => ()\n  | .s n => u n\n"
+        let s := runFrontend (R := ZeroOneMany) src {}
+        let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
+        unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
+        let verdict (nm : Name) (impl : Term ZeroOneMany → Term ZeroOneMany) : IO Bool := do
+          let some d := s.globals.find? nm | throw (IO.userError s!"no {nm}")
+          let g0 : Globals ZeroOneMany := { s.globals with decls := s.globals.decls.erase nm }
+          pure ((addDecl g0 { d with impl := some (impl d.impl.get!) }) matches .ok _)
+        for nm in ["f", "wd", "w2", "u"] do
+          check (← verdict nm id) s!"{nm}'s derived equations were rejected"
+        check (!(← verdict "f" (wrapCalls "f" (fun a => .app (.const "N.s" []) a)))) "f with f (.s n) was accepted"
+        check (!(← verdict "f" (wrapCalls "f" (fun a => .app (.const "f" []) a)))) "f with f (f n) was accepted"
+        check (!(← verdict "f" fun _ => .lam "x" (.app (.const "f" []) (.var 0)))) "f with λ x. f x was accepted"
+        check (!(← verdict "f" fun _ => .const "f" [])) "f with f itself was accepted"
+        check (!(← verdict "wd" (wrapCalls "wd" (fun a => .app (.const "W.sup" []) (.lam "_" (a.lift 1)))))) "wd with wd (sup (λ _. g z)) was accepted"
+        check (!(← verdict "w2" (wrapCalls "w2" (fun a => .app (.app (.const "W2.node" []) a) (.lam "_" (a.lift 1)))))) "w2 with w2 (node l (λ _. l)) was accepted"
+        check (!(← verdict "u" (wrapCalls "u" (fun a => .app (.const "N.s" []) a)))) "u with u (.s n) was accepted (a call at Unit)"
+        -- t1-192-scrutinee / t1-192-run (M1c): a top split of `N.s x` instead of `x`, whose
+        -- "field" is then `x` itself, with the real split inside
+        let splitOfSucc (nm : Name) (impl : Term ZeroOneMany) : Term ZeroOneMany :=
+          match impl with
+          | .lam xn body =>
+            match body.spine with
+            | (h, [mot, mz, _, _]) =>
+              let inner := [mot.lift 1, mz.lift 1, .lam "m" (.app (.const nm []) (.var 1)), .var 1].foldl .app h
+              .lam xn ([mot, mz, .lam "n" inner, .app (.const "N.s" []) (.var 0)].foldl .app h)
+            | _ => impl
+          | _ => impl
+        check (!(← verdict "u" (splitOfSucc "u"))) "u with a split of (.s x) was accepted"
+        check (!(← verdict "f" (splitOfSucc "f"))) "f with a split of (.s x) was accepted" },
     { name := "O3: an unchecked registration is an axiom", run := fun _ => do
         let msgs ← messagesLib badAdd
         let expect := ["warning: builtin nat := N is not checked: it is an axiom of every declaration that depends on N (see `#print axioms`)",

@@ -1,6 +1,6 @@
 # Stage 23: grail, a build tool
 
-## 23b: modules by path ✅
+## 23b: modules by path
 
 `import A.B` reads `A/B.wiz` under the first **module root** that has it; `lib/` is a
 root, so `import Prelude` is `lib/Prelude.wiz` as before. The frontend stays pure: the
@@ -30,7 +30,7 @@ fields, recursors, description and instances' names are all under it, and in the
 `Repr` shows `T.c`. The kernel's `addDecl` refuses a name that is already declared, behind all
 of this.
 
-## 23c: a key per module, atomic writes ✅
+## 23c: a key per module, atomic writes
 
 A module's key is computed from text alone, before anything is elaborated:
 
@@ -48,7 +48,7 @@ still the initial one and the isolated result serves as it is. So the editor rej
 what `wiz check` rejects. Cache files are
 written to a temporary name and renamed, so concurrent runs never see half a file.
 
-## 23d: grail v0 ✅
+## 23d: grail v0
 
 A package is a directory with a `grail.wiz`, written in Wiz against `lib/Grail.wiz`:
 
@@ -87,7 +87,7 @@ def settings : Settings := Settings.empty
   |> Settings.set "ldflags" "-L/nix/store/…-gmp-…/lib -Wl,-rpath,/nix/store/…-gmp-…/lib"
 ```
 
-## 23a: the toolchain as flags ✅
+## 23a: the toolchain as flags
 
 `wiz` reads no environment variables: the toolchain record (`Wiz/Toolchain.lean`: C
 compiler and flags, `llc`, the collector's flags, the cache, module roots) comes from
@@ -95,7 +95,7 @@ compiler and flags, `llc`, the collector's flags, the cache, module roots) comes
 `-I DIR` (which replaces `$WIZ_PATH`), and is passed explicitly to everything that
 compiles. Its compiler fields are its `id`, which enters grail's keys.
 
-## 23e: the self-hosted toolchain as targets ✅
+## 23e: the self-hosted toolchain as targets
 
 `Package.selfhost NAME ROLE` builds the self-hosted programs from `selfhost/*.wiz`
 (`Wiz/Selfhost.lean` generates their sources, parser tables included, for grail and the
@@ -105,7 +105,7 @@ tests alike): `checker`, `compiler`, and `bootstrap`, the fixpoint check of
 nothing unless a source, `rt.c`, the toolchain or grail changed. `grail build` alone
 leaves it out.
 
-## 23f: a test runner ✅
+## 23f: a test runner
 
 `Package.tests NAME DIR` makes every `.wiz` file under `DIR` a test, with its expected
 output beside it in `.expected`. The first line gives the kind: `-- test: check` (the
@@ -116,7 +116,7 @@ nothing; `grail test FILTER` runs the tests whose path contains it, and
 `grail test --update` writes the actual output. Every example is a test
 (`examples/*.expected`). The Lean tests stay in `lake test`.
 
-## 23g: parallel jobs ✅
+## 23g: parallel jobs
 
 The jobs form an explicit graph (`Grail/Graph.lean`): `ir F` depends on `check F`, …,
 `link E` on `obj F`, a check on the checks of the package modules it imports, a `run` test
@@ -131,7 +131,7 @@ on it are skipped; the others still run. Each job's output is buffered and print
 graph's order, so `-j 1` and `-j 8` print the same report, and a second build still runs
 no jobs.
 
-## 23h: git dependencies and a lock file ✅
+## 23h: git dependencies and a lock file
 
 `Package.dep NAME URL REV` depends on the package at a git URL (a path, `file://`,
 `https://`) and revision (tag, branch or commit). `grail update` resolves each
@@ -151,7 +151,7 @@ targets become module roots, so `import Greet.Hello` finds
 `.grail/packages/greet/src/Greet/Hello.wiz`; module keys already hash module texts.
 Two different commits of one dependency name are refused (no version resolution yet).
 
-## 23i: command targets ✅
+## 23i: command targets
 
 A **command** runs a program with declared inputs and outputs, as a job of the build
 graph like any other: it waits for what makes its inputs, runs under `-j N` and the time
@@ -238,7 +238,7 @@ with `Command.needs` or `Command.uses`). Environment variables other than those 
 `Command.env` are inherited and not in the key. This is make's and ninja's contract, not
 Nix's; what grail adds is that what *is* declared is handled exactly.
 
-## 23j: `grail run` ✅
+## 23j: `grail run`
 
 `grail run TARGET [-- ARGS…]` builds what TARGET needs and runs it with ARGS appended,
 in the package directory, with grail's own stdin, stdout and stderr, and exits with its
@@ -252,7 +252,7 @@ grail's process group, so Ctrl-C reaches it.
 grail run icestick -- test /dev/ttyUSB1 3000
 ```
 
-## 23k: job processes don't outlive grail ✅
+## 23k: job processes don't outlive grail
 
 Each job's process (a `--grail-job`, the C compiler, a command) runs under a
 **supervisor**, `grail --grail-exec MS [--cwd DIR] [--env K=V]… -- CMD ARGS…`
@@ -271,7 +271,7 @@ its memory cap) used to be reported with an empty message; now it is `killed by 
 printed. Tests: groups `grail-commands` and `grail-hygiene` (grail itself, as
 `tests --grail …`, killed with `SIGKILL` and `SIGTERM` while a job's grandchild sleeps).
 
-## 23l: `grail lsp` ✅
+## 23l: `grail lsp`
 
 `wiz lsp` finds modules under the toolchain's library, `./lib` and its `-I` directories,
 so in a grail package (`Package.lib "lib" "src"`) an editor reported `import

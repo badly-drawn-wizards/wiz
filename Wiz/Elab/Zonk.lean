@@ -113,6 +113,18 @@ where
   go (t : Term R) : StateM Bool Unit :=
     t.forChildren (fun l => modify (· || l.hasMVar)) (fun _ c => go c)
 
+/-- The level metavariables occurring in a term (after `zonk`, the unsolved ones). -/
+partial def Term.levelMVars (t : Term R) : Array Nat :=
+  (go t |>.run #[]).2
+where
+  goL : Level → StateM (Array Nat) Unit
+    | .mvar m => modify (·.push m)
+    | .succ l => goL l
+    | .max a b | .imax a b => do goL a; goL b
+    | _ => pure ()
+  go (t : Term R) : StateM (Array Nat) Unit :=
+    t.forChildren goL (fun _ c => go c)
+
 /-- Fail if `t` still contains unsolved metas, pointing at the first one's hole. -/
 def ensureNoMVars (t : Term R) (info : SourceInfo := {}) : ElabM R Unit := do
   if let some m := t.mvars[0]? then
@@ -127,6 +139,16 @@ def ensureNoMVars (t : Term R) (info : SourceInfo := {}) : ElabM R Unit := do
       else ""
     throwAt e.info s!"could not infer {e.desc}{hint}" ErrorCode.unsolvedHole
   if t.hasLevelMVar then
+    -- point at the constant whose universe parameter it is, if known
+    let ls := (← get).levelMetas
+    let infos := (← get).levelMetaInfo
+    let mut first : Option Nat := none
+    for m in t.levelMVars do
+      if (ls[m]?.join).isNone then first := some m; break
+    if let some m := first then
+      if let some (i, desc) := infos[m]? then
+        if desc != "" && i.stop != 0 then
+          throwAt i s!"could not infer {desc}; add a universe parameter or annotation" ErrorCode.unsolvedLevel
     throwAt info "could not infer a universe level; add a universe parameter or annotation" ErrorCode.unsolvedLevel
 
 end Wiz
