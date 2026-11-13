@@ -234,15 +234,18 @@ def group : Group where
     { name := "spec items: a function's specification as a Wiz proposition (result, old, final)", run := fun _ => do
         let fn := "  fn swap {'a 'b} (x : &'a mut U64) (y : &'b mut U64) : Unit := {\n    let t := *x;\n    *x := *y;\n    *y := t\n  }\n"
         let s ← frontend (pre ++ "#lower feral\n" ++ fn ++ "  spec swap ensures (final x = old y) ensures (final y = old x)\nend\n")
-        check ((infosOf s).any (has · ("def swap.Spec {ρa ρb : Region} (x : (Uniq ρa U64)) (y : (Uniq ρb U64)) : Prop :=\n" ++
-          "  Result.Holds (fun (r : (Unit × ((Uniq ρa U64) × (Uniq ρb U64)))) => ((r.2.1.val) = (y.val)) × ((r.2.2.val) = (x.val))) ( swap x y)")))
+        check ((infosOf s).any (has · ("def swap.Spec (x : U64) (y : U64) : Prop :=\n" ++
+          "  Result.Holds (fun (r : ((Unit × U64) × U64)) => (r.2 = y) × (r.1.2 = x)) (\n" ++
+          "    Uniq.borrow Region.static x (fun ρ1 h1 l1 x =>\n" ++
+          "      Uniq.borrowIn ρ1 y x (fun ρ2 h2 l2 x y =>  swap x y)))")))
           s!"{infosOf s}"
-        -- a true specification is proved, a false one is not
+        -- a true specification is proved, a false one is not (linear handles: the spec is
+        -- stated on the arguments' values)
         let ok := pre ++ "feral\n" ++ fn ++ "  spec swap ensures (final x = old y) ensures (final y = old x)\nend\n" ++
-          "def swap_ok {ρa ρb : Region} (x : Uniq ρa U64) (y : Uniq ρb U64) : swap.Spec x y := (rfl, rfl)\n"
+          "def swap_ok (a b : U64) : swap.Spec a b := (rfl, rfl)\n"
         checkEq "[]" (toString (errorsOf (← frontend ok) ok))
         let e ← firstError (pre ++ "feral\n" ++ fn ++ "  spec swap ensures (final x = old x)\nend\n" ++
-          "def swap_bad {ρa ρb : Region} (x : Uniq ρa U64) (y : Uniq ρb U64) : swap.Spec x y := rfl\n")
+          "def swap_bad (a b : U64) : swap.Spec a b := (rfl, rfl)\n")
         check (has e "rfl") e
         -- requires, result
         let r := pre ++ "feral\n  fn add1 (a : U64) : U64 := a + 1\n  spec add1 requires (Nat.lt a.val 10 = .true) ensures (result.val = Nat.succ a.val)\nend\n" ++
@@ -318,7 +321,8 @@ def group : Group where
         checkEq "double (v.len) : U64" (at_ "double (v.len)" 7)
         checkEq "+ : U64 → U64 → Result U64" (at_ "n + n" 2)
         checkEq "double (v.len) + a : U64" (at_ ") + a" 1)
-        -- a `&mut` argument (its handle) and a named borrow
+        -- a `&mut` argument (its handle) and a named borrow (this block is linear now:
+        -- its `&mut`s, a `push` and `len` are inside the linear fragment)
         starts "(&mut a) : Uniq ρ" (at_ "&mut a" 1)
         starts "r : Uniq ρ" (at_ "let r" 4)
         -- (a method call on a variable is one identifier: the receiver's handle shows)
