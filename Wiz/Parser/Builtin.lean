@@ -195,7 +195,7 @@ def termLeading : List LeadingParser := [
     p := withPosition <| seqs ["let", optional quantity, "(", ident, ",", ident, ",", sepBy1 ident ",", ")",
       ":=", term, optional ";", term] },
   { kind := "term.absurd", prec := leadPrec, p := seqs ["absurd", term maxPrec] },
-  { kind := "term.refl", prec := leadPrec, p := seqs ["refl", term maxPrec] },
+  { kind := "term.refl", prec := leadPrec, p := seqs [nonReserved "refl", term maxPrec] },
   { kind := "term.rfl", prec := maxPrec, p := "rfl" },
   -- (27a) only as the whole body of a definition (`Command.lean`), with `--trust-native`
   { kind := "term.nativeRefl", prec := maxPrec, p := "native_refl" },

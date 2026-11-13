@@ -4587,7 +4587,9 @@ def selfHostGroup : Group where
         let lexSrc ← IO.FS.readFile "selfhost/Lex.wiz"
         let input := "def f (x : Nat) : Nat := x + 1 -- a comment\n/- a /- nested -/ block -/ #eval f 41\n" ++
           "inductive T where | a | b (t : T)\ndef s : String := \"hi\\n\" -- strings\ndef α₁ : List.cons → Nat.add := λ x => x.1\n" ++
-          "0x3F 0b1010 0XfF 0B1 0x 0b2 0xg 007 0x7FFFFFFFFFFFFFFF 0x8000000000000000"
+          "0x3F 0b1010 0XfF 0B1 0x 0b2 0xg 007 0x7FFFFFFFFFFFFFFF 0x8000000000000000 " ++
+          -- every escape, then a bad one (both lexers stop there with the same message)
+          "def e := \"a\\r\\t\\\\\\\"\\'\\x41\\u{3bb}\\u{1F600}z\" \"bad \\q\""
         let toks := Builtin.tables.tokens
         let expected := leanTokens toks input
         let table := toks.toList.foldr (fun t acc => s!"(.cons {wizLit t} {acc})") ".nil"
@@ -5501,6 +5503,14 @@ def languageGroup : Group where
   name := "language"
   exercise := "Stage 13"
   cases := [
+    { name := "string escapes: \\r, \\t, \\0, \\\\, \\\", \\', \\xHH, \\u{H}; a bad one is reported where it is", run := fun _ => do
+        okLib "import Prelude\n#eval \"a\\rb\\t\\0\\'\\x41\\u{3bb}\\\\\\\"\"" ["\"a\\x0db\\t\\x00'Aλ\\\\\\\"\""]
+        failsLib "import Prelude\ndef s : String := \"ab\\qc\"" "2:22: error: unknown escape sequence \\q"
+        failsLib "import Prelude\ndef s : String := \"ab\\x4\"" "2:22: error: the escape \\x needs two hexadecimal digits"
+        failsLib "import Prelude\ndef s : String := \"\\u{110000}\"" "2:20: error: the escape \\u{H} is not a Unicode scalar value"
+        failsLib "import Prelude\ndef s : String := \"\\u{}\"" "2:20: error: the escape \\u is written \\u{H}"
+        failsLib "import Prelude\ndef s : String := \"\\u{1234567}\"" "2:20: error: the escape \\u is written \\u{H}"
+        failsLib "import Prelude\ndef s : String := \"abc" "2:19: error: unterminated string literal" },
     -- (CoreSpec §6: proofs use nothing) a term at a proposition is checked erased, so a
     -- variable at 0 may appear in a proof (wiz-cats G2/B2, wiz-reals B2)
     { name := "a proof uses nothing: a 0-variable may appear in a proof, a linear one still must be used (both kernels)", run := fun _ => do
@@ -6089,16 +6099,129 @@ def failsLibs (input : String) (fragment : String) : IO Unit := do
   unless (errs[0]!.splitOn fragment).length > 1 do
     throw (IO.userError s!"error does not mention '{fragment}':\n{errs[0]!}")
 
-/-- Build `main` with the C backend, with every library importable. -/
-def cRunLibs (src : String) (expected : String) : IO Unit := do
+/-- Build `main` with the C backend (or LLVM), with every library importable. -/
+def cRunLibs (src : String) (expected : String) (llvm : Bool := false) : IO Unit := do
   let s := runFrontend (R := ZeroOneMany) src { trustedModule := Tests.libModule, loader := ← libLoader }
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
   unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
   let dir ← IO.FS.createTempDir
-  match ← Build.runGlobal (← toolchain) s "main" dir with
+  match ← Build.runGlobal (← toolchain) s "main" dir llvm (timeout := some 120) with
   | .ok v => checkEq expected v
   | .error e =>
-    if (e.splitOn "gmp.h").length > 1 then skip "no toolchain" else throw (IO.userError e)
+    if ["gmp.h", "llc:", "No such file"].any fun m => (e.splitOn m).length > 1 then skip "no toolchain"
+    else throw (IO.userError e)
+
+/-- (S0) A differential test of a native structure: `examples/NAME.wiz`'s `main` gives the
+same value under `#eval` and `#run` (the model) and compiled, C and LLVM (the natives). -/
+def nativesSame (name expected : String) : IO Unit := do
+  let src ← IO.FS.readFile s!"examples/{name}.wiz"
+  okLibs (src ++ "\n#eval main\n#run main\n") [expected, expected]
+  cRunLibs src expected
+  cRunLibs src expected (llvm := true)
+
+/-- C code reading a `U32Array` and making a `U64Array` (`wiz_warray_*`, runtime/wiz.c). -/
+def warrayHelper : String := "#include <stdint.h>
+#include <stdlib.h>
+typedef uintptr_t wiz_val;
+void *wiz_warray_data(wiz_val v);
+size_t wiz_warray_len(wiz_val v);
+wiz_val wiz_warray_of_c(uint32_t width, const void *p, size_t n);
+void wiz_release(void *v);
+uint64_t weighted_sum(wiz_val a) {
+  const uint32_t *p = (const uint32_t *)wiz_warray_data(a);
+  uint64_t s = 0;
+  for (size_t i = 0; i < wiz_warray_len(a); i++) s += (uint64_t)p[i] * (i + 1);
+  wiz_release((void *)a);
+  return s;
+}
+wiz_val squares(uint64_t n) {
+  uint64_t *p = (uint64_t *)malloc((n ? n : 1) * sizeof(uint64_t));
+  for (uint64_t i = 0; i < n; i++) p[i] = i * i;
+  wiz_val r = wiz_warray_of_c(8, p, n);
+  free(p);
+  return r;
+}
+"
+
+/-- Two threads share a word array and a word map (25a: marked shared when the closure
+crosses), each updates its own copy. -/
+def nativesThreads : String := "import IO
+import Session
+import MVar
+import WordArray
+import WordMap
+def fill : Nat → U32Array → U32Array
+  | .zero, a => a
+  | .succ n, a => U32Array.push (fill n a) (U32.ofNat n)
+def mfill : Nat → U64Map Nat → U64Map Nat
+  | .zero, m => m
+  | .succ n, m => mfill n (U64Map.insert m (U64.ofNat n) n)
+def total (a : U32Array) (m : U64Map Nat) : Nat :=
+  U32Array.foldl (fun s x => s + x.toNat) 0 a + U64Map.foldl (fun s k v => s + v) 0 m
+def main : IO Unit := IO.bind (MVar.new (A := Nat)) (fun r =>
+  let a := fill 1000 U32Array.empty;
+  let m := mfill 500 U64Map.empty;
+  Chan.fork Proto.done (fun c => Chan.close c (MVar.put r (total (U32Array.set a 0 (U32.ofNat 100000)) (U64Map.erase m (U64.ofNat 1)))))
+    (fun c => Chan.close c (IO.bind (MVar.take r) (fun x =>
+      IO.println (Nat.toString (x + 1000000 * total (U32Array.push a (U32.ofNat 1)) (U64Map.insert m (U64.ofNat 1) 0)))))))
+"
+
+def nativesGroup : Group where
+  name := "natives"
+  exercise := "S0: lib/WordArray.wiz, lib/WordMap.wiz, lib/Intern.wiz (docs/stages/29-natives.md)"
+  cases := [
+    { name := "word arrays: the model (#eval, #run) and the natives (C, LLVM) agree", run := fun _ =>
+        nativesSame "wordarray" "24057236113" },
+    { name := "word maps: the model and the natives agree (growing, erasing, keys above 2^63)", run := fun _ =>
+        nativesSame "wordmap" "6735556925" },
+    { name := "intern tables: the model and the natives agree", run := fun _ =>
+        nativesSame "intern" "3120451233" },
+    { name := "compiled code calls the natives: no list in the IR", run := fun _ => do
+        let src := "import WordArray\nimport WordMap\nimport Intern\n" ++
+          "def f (a : U32Array) (i : Nat) : U32Array := U32Array.push (U32Array.set a i (U32Array.get a 0)) (U32.ofNat 3)\n" ++
+          "def g (m : U64Map Nat) (k : U64) : Nat := U64Map.findD (U64Map.insert (U64Map.erase m k) k 1) k 0\n" ++
+          "def h (t : InternTable) (s : String) : U32 := (InternTable.intern t s).2\n#ir f\n#ir g\n#ir h"
+        let s := runFrontend (R := ZeroOneMany) src { trustedModule := Tests.libModule, loader := ← libLoader }
+        let out := String.intercalate "\n" (s.messages.toList.map (·.text))
+        for n in ["wiz_warray_push", "wiz_warray_set", "wiz_warray_get", "wiz_wmap_find_d", "wiz_wmap_insert",
+            "wiz_wmap_erase", "wiz_itab_intern"] do
+          check ((out.splitOn n).length > 1) s!"no call of {n} in:\n{out}"
+        check ((out.splitOn "to_list").length == 1 && (out.splitOn "ctor").length == 1) s!"a list in:\n{out}" },
+    { name := "the laws are proved on the model; #print axioms lists the natives", run := fun _ => do
+        okLibs "import WordArray\nimport WordMap\n#check U32Array.getD_set\n#check U64Map.find_insert"
+          ["U32Array.getD_set : (a : U32Array) → (i : Nat) → (x : U32) → (d : U32) → Nat.lt i (U32Array.size a) = .true → U32Array.getD (U32Array.set a i x) i d = x",
+           "U64Map.find_insert : {V : Type} → (m : U64Map V) → (k : U64) → (v : V) → U64Map.find V (U64Map.insert V m k v) k = .some v"]
+        let src := "import WordArray\ndef len (a : U8Array) : Nat := U8Array.size (U8Array.push a (U8.ofNat 1))\n#print axioms len"
+        let s := runFrontend (R := ZeroOneMany) src { trustedModule := Tests.libModule, loader := ← libLoader }
+        let out := String.intercalate "\n" (s.messages.toList.map (·.text))
+        for a in ["native U8Array.size := U8Array.sizeNative", "native U8Array.push := U8Array.pushNative",
+            "native U8Array := U8Array.ofListNative/U8Array.toListNative", "U8Array.seal✝"] do
+          check ((out.splitOn a).length > 1) s!"{a} not listed:\n{out}" },
+    { name := "a unique array or map is updated in place (200k updates each, linear)", run := fun _ =>
+        cRunLibs ("import WordArray\nimport WordMap\ndef fill : Nat → U32Array → U32Array\n  | .zero, a => a\n" ++
+          "  | .succ n, a => fill n (U32Array.set (U32Array.push a (U32.ofNat n)) 0 (U32.ofNat n))\n" ++
+          "def mfill : Nat → U64Map Nat → U64Map Nat\n  | .zero, m => m\n  | .succ n, m => mfill n (U64Map.insert m (U64.ofNat (Nat.mod n 1000)) n)\n" ++
+          "def main : Nat := U32Array.size (fill 200000 U32Array.empty) + U64Map.size (mfill 200000 U64Map.empty)") "201000" },
+    { name := "C code reads a word array and makes one (wiz_warray_data/len/of_c), C and LLVM", run := fun _ => do
+        let src := "import WordArray\nextern \"weighted_sum\" weightedSum : U32Array → Nat\nextern \"squares\" squares : Nat → U64Array\n" ++
+          "def main : Nat := weightedSum (U32Array.ofList [U32.ofNat 3, U32.ofNat 4, U32.ofNat 4294967295]) + " ++
+          "1000000000000000 * U64Array.foldl (fun s x => s + x.toNat) 0 (squares 10)"
+        let s := runFrontend (R := ZeroOneMany) src { trustedModule := Tests.libModule, loader := ← libLoader }
+        let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
+        unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
+        for llvm in [false, true] do
+          let dir ← IO.FS.createTempDir
+          IO.FS.writeFile (dir / "helper.c") warrayHelper
+          let tc ← toolchain
+          match ← Build.runGlobal { tc with libs := tc.libs ++ [(dir / "helper.c").toString] } s "main" dir llvm (timeout := some 120) with
+          | .ok v => checkEq "285000012884901896" v
+          | .error e =>
+            if ["gmp.h", "llc:", "No such file"].any fun m => (e.splitOn m).length > 1 then skip "no toolchain"
+            else throw (IO.userError s!"{if llvm then "(llvm) " else ""}{e}") },
+    { name := "shared between threads: each thread's update copies, nothing leaks (C, LLVM)", run := fun _ => do
+        cRunLibs nativesThreads "624250724249\n"
+        cRunLibs nativesThreads "624250724249\n" (llvm := true) }
+  ]
 
 def stdGroup : Group where
   name := "std"
@@ -8195,6 +8318,92 @@ def hdlMemTools : IO Unit := do
           unless (st.splitOn "SB_RAM40_4K").length > 1 do throw (IO.userError s!"no block RAM inferred for {f}:\n{st}")
 
 
+/-- examples/hdl-arty.wiz through the front end: its eight `#eval` texts (four about the
+board's pin constraints, then four Verilog modules). -/
+def hdlArtyTexts : IO (List String) := do
+    let src ← IO.FS.readFile "examples/hdl-arty.wiz"
+    let s := runFrontend (R := ZeroOneMany) src { trustedModule := Tests.libModule, loader := ← libLoader }
+    let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
+    unless errs.isEmpty do throw (IO.userError s!"unexpected errors: {errs}")
+    pure (s.messages.toList.map (·.text))
+
+/-- The pin constraints of examples/hdl-arty.wiz: the "\"set_property -dict { PACKAGE_PIN E3 IOSTANDARD LVCMOS33 } [get_ports { clk }]\\ncreate_clock -period 10.000 -name clk [get_ports { clk }]\\nset_property -dict { PACKAGE_PIN D9 IOSTANDARD LVCMOS33 } [get_ports { btn[0] }]\\nset_property -dict { PACKAGE_PIN C9 IOSTANDARD LVCMOS33 } [get_ports { btn[1] }]\\nset_property -dict { PACKAGE_PIN B9 IOSTANDARD LVCMOS33 } [get_ports { btn[2] }]\\nset_property -dict { PACKAGE_PIN B8 IOSTANDARD LVCMOS33 } [get_ports { btn[3] }]\\nset_property -dict { PACKAGE_PIN A9 IOSTANDARD LVCMOS33 } [get_ports { uart_rx }]\\nset_property -dict { PACKAGE_PIN H5 IOSTANDARD LVCMOS33 } [get_ports { led[0] }]\\nset_property -dict { PACKAGE_PIN J5 IOSTANDARD LVCMOS33 } [get_ports { led[1] }]\\nset_property -dict { PACKAGE_PIN T9 IOSTANDARD LVCMOS33 } [get_ports { led[2] }]\\nset_property -dict { PACKAGE_PIN T10 IOSTANDARD LVCMOS33 } [get_ports { led[3] }]\\nset_property -dict { PACKAGE_PIN D10 IOSTANDARD LVCMOS33 } [get_ports { uart_tx }]\\n\"" of a design on the Arty A7, the
+problems of a board that does not fit it, the two devices. -/
+def hdlArtyXdc : IO Unit := do
+    let texts ← hdlArtyTexts
+    checkEq (repr (["\"set_property -dict { PACKAGE_PIN E3 IOSTANDARD LVCMOS33 } [get_ports {clk}]\\ncreate_clock -period 10.000 [get_ports {clk}]\\nset_property -dict { PACKAGE_PIN D9 IOSTANDARD LVCMOS33 } [get_ports {btn[0]}]\\nset_property -dict { PACKAGE_PIN C9 IOSTANDARD LVCMOS33 } [get_ports {btn[1]}]\\nset_property -dict { PACKAGE_PIN B9 IOSTANDARD LVCMOS33 } [get_ports {btn[2]}]\\nset_property -dict { PACKAGE_PIN B8 IOSTANDARD LVCMOS33 } [get_ports {btn[3]}]\\nset_property -dict { PACKAGE_PIN A9 IOSTANDARD LVCMOS33 } [get_ports {uart_rx}]\\nset_property -dict { PACKAGE_PIN H5 IOSTANDARD LVCMOS33 } [get_ports {led[0]}]\\nset_property -dict { PACKAGE_PIN J5 IOSTANDARD LVCMOS33 } [get_ports {led[1]}]\\nset_property -dict { PACKAGE_PIN T9 IOSTANDARD LVCMOS33 } [get_ports {led[2]}]\\nset_property -dict { PACKAGE_PIN T10 IOSTANDARD LVCMOS33 } [get_ports {led[3]}]\\nset_property -dict { PACKAGE_PIN D10 IOSTANDARD LVCMOS33 } [get_ports {uart_tx}]\\n\"",
+      ".nil",
+      ".cons \"no pin for port btn\" (.cons \"no pin for port uart_rx\" (.cons \"port led has 4 bits, the board's led 2\" (.cons \"no pin for port uart_tx\" .nil)))",
+      ".cons (\"xc7a35ticsg324-1L\", \"xc7a35tcsg324-1\") (.cons (\"xc7a100tcsg324-1\", \"xc7a100tcsg324-1\") .nil)"] : List String)).pretty
+      (repr (texts.take 4)).pretty
+
+/-- yosys's synth_xilinx on the Verilog of examples/hdl-arty.wiz: the RAMs become a
+RAMB18E1 and a RAMB36E1, the ROM a RAMB18E1, the multiply a DSP48E1 (when yosys is on
+PATH). -/
+def hdlArtyTools : IO Unit := do
+    let ys ← (do let o ← IO.Process.output { cmd := "yosys", args := #["-V"] }; pure (o.exitCode == 0)) <|> pure false
+    unless ys do skip "no yosys"; return
+    let texts := (← hdlArtyTexts).drop 4
+    let unq (t : String) : String := ((t.drop 1).dropRight 1).replace "\\n" "\n" |>.replace "\\\"" "\""
+    IO.FS.withTempDir fun dir => do
+      let cases := [("ram18", "RAMB18E1"), ("ram36", "RAMB36E1"), ("rom", "RAMB18E1"), ("mul", "DSP48E1")]
+      for t in texts, (top, cell) in cases do
+        IO.FS.writeFile (dir / s!"{top}.v") (unq t)
+        let o ← IO.Process.output { cmd := "yosys", args := #["-q", "-p", s!"read_verilog {top}.v; synth_xilinx -family xc7 -top {top}; tee -q -o {top}.stat stat"], cwd := dir }
+        unless o.exitCode == 0 do throw (IO.userError s!"yosys fails on {top}.v:\n{o.stderr}")
+        let st ← IO.FS.readFile (dir / s!"{top}.stat")
+        unless (st.splitOn cell).length > 1 do throw (IO.userError s!"no {cell} for {top}:\n{st}")
+
+
+/-- examples/hdl-prim.wiz through the front end: its seven `#eval` texts. -/
+def hdlPrimTexts : IO (List String) := do
+    let src ← IO.FS.readFile "examples/hdl-prim.wiz"
+    let s := runFrontend (R := ZeroOneMany) src { trustedModule := Tests.libModule, loader := ← libLoader }
+    let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
+    unless errs.isEmpty do throw (IO.userError s!"unexpected errors: {errs}")
+    pure (s.messages.toList.map (·.text))
+
+def hdlUnq (t : String) : String := ((t.drop 1).dropRight 1).replace "\\n" "\n" |>.replace "\\\"" "\""
+
+/-- Primitive instances (H14 P1): the Verilog of a PLL-wrapped OSERDESE2/IOBUF/ODDR/OBUF
+design, the refusal to simulate cells without a model, a buffer simulated by its model,
+and the kind errors. -/
+def hdlPrimCheck : IO Unit := do
+    let texts ← hdlPrimTexts
+    unless texts.length == 7 do throw (IO.userError s!"expected 7 texts, got {texts.length}: {texts}")
+    let v := hdlUnq texts[0]!
+    for frag in ["module serial_core(input clk, input [0:0] sys4x, input [7:0] d, output [0:0] ck, output [0:0] q, inout [0:0] dq, output [0:0] back);",
+        "OSERDESE2 #(.DATA_RATE_OQ(\"DDR\"), .DATA_RATE_TQ(\"BUF\"), .DATA_WIDTH(8), .TRISTATE_WIDTH(1), .SERDES_MODE(\"MASTER\"))",
+        ".CLK(sys4x), .CLKDIV(clk), .D1(", ".OCE(1'd1), .RST(1'd0), .T1(r), .TCE(1'd1), .OQ(", "IOBUF u", ".IO(dq));", "ODDR #(.DDR_CLK_EDGE(\"SAME_EDGE\"), .INIT(1'b0), .SRTYPE(\"SYNC\"))", ".O(ck));",
+        "module serial(input clk, input [7:0] d, output [0:0] ck, output [0:0] q, inout [0:0] dq, output [0:0] back);",
+        "PLLE2_BASE #(.CLKIN1_PERIOD(10.0), .CLKFBOUT_MULT(8), .DIVCLK_DIVIDE(1), .CLKOUT0_DIVIDE(8), .CLKOUT0_PHASE(0.0), .CLKOUT1_DIVIDE(2), .CLKOUT1_PHASE(0.0)) clocking (.CLKIN1(clk), .RST(1'b0), .PWRDWN(1'b0), .CLKFBOUT(ck_CLKFBOUT), .CLKFBIN(ck_CLKFBOUT), .CLKOUT0(ck_CLKOUT0), .CLKOUT1(ck_CLKOUT1));",
+        "BUFG bufg_CLKOUT0 (.I(ck_CLKOUT0), .O(ck_CLKOUT0_g));",
+        "serial_core core (.clk(ck_CLKOUT0_g), .sys4x(ck_CLKOUT1_g), .d(d), .ck(ck), .q(q), .dq(dq), .back(back));"] do
+      unless (v.splitOn frag).length > 1 do throw (IO.userError s!"missing from the Verilog: {frag}\n{v}")
+    if (v.splitOn "assign dq").length > 1 then throw (IO.userError s!"a pad is assigned:\n{v}")
+    checkEq (repr ([".cons \"OSERDESE2 (node 14) has no behavioural model\" (.cons \"ODDR (node 21) has no behavioural model\" .nil)",
+      ".error \"simulation refused: OSERDESE2 (node 14) has no behavioural model; ODDR (node 21) has no behavioural model\"",
+      ".nil",
+      "\"module blink(input clk, input [0:0] x, output [0:0] led, inout [0:0] pin, output [0:0] seen);\\n  reg [0:0] r; initial r = 1'd0;\\n  wire [0:0] n2 = ~x;\\n  wire [0:0] n4;\\n  wire [0:0] n6 = ~r;\\n  IOBUF u3 (.I(r), .T(n2), .O(n4), .IO(pin));\\n  OBUF u7 (.I(r), .O(led));\\n  always @(posedge clk) r <= n6;\\n  assign seen = n4;\\nendmodule\\n\"",
+      ".ok (.cons (.mk 0 (), .mk 0 (), .mk 0 ()) (.cons (.mk 1 (), .mk 1 (), .mk 0 ()) (.cons (.mk 0 (), .mk 0 (), .mk 0 ()) (.cons (.mk 1 (), .mk 1 (), .mk 1 ()) .nil))))",
+      ".cons \"ODDR port C wants a clock, not a data signal (node 2)\" (.cons \"a clock (input sys4x) is used as data by register r\" (.cons \"output y_1 is a data signal but gets a pad (OBUF.O)\" .nil))"] : List String)).pretty
+      (repr (texts.drop 1)).pretty
+
+/-- yosys's synth_xilinx keeps the primitives of examples/hdl-prim.wiz as cells:
+PLLE2_BASE, BUFG, OSERDESE2, IOBUF, ODDR, OBUF (when yosys is on PATH). -/
+def hdlPrimTools : IO Unit := do
+    let ys ← (do let o ← IO.Process.output { cmd := "yosys", args := #["-V"] }; pure (o.exitCode == 0)) <|> pure false
+    unless ys do skip "no yosys"; return
+    let v := hdlUnq (← hdlPrimTexts)[0]!
+    IO.FS.withTempDir fun dir => do
+      IO.FS.writeFile (dir / "serial.v") v
+      let o ← IO.Process.output { cmd := "yosys", args := #["-q", "-p", "read_verilog serial.v; synth_xilinx -family xc7 -top serial; tee -q -o serial.stat stat"], cwd := dir }
+      unless o.exitCode == 0 do throw (IO.userError s!"yosys fails on serial.v:\n{o.stderr}")
+      let st ← IO.FS.readFile (dir / "serial.stat")
+      for cell in ["PLLE2_BASE", "BUFG", "OSERDESE2", "IOBUF", "ODDR", "OBUF"] do
+        unless (st.splitOn cell).length > 1 do throw (IO.userError s!"no {cell} in serial:\n{st}")
+      if (o.stderr.splitOn "has no driver").length > 1 then throw (IO.userError s!"undriven wire:\n{o.stderr}")
+
 def hdlGroup : Group where
   name := "hdl"
   exercise := "HDL stage S0 (hdl-plan H14)"
@@ -8262,6 +8471,10 @@ def hdlGroup : Group where
           "def pre (n : Nat) (ys : Trace (BitVec 1)) : Circuit.run ctr (Trace.take n ys) = Trace.take n (Circuit.trace ctr ys) := Circuit.run_take ctr n ys\n" ++
           "#eval Hdl.map BitVec.toNat (Trace.take 8 (Circuit.trace ctr xs))\n")
           [".cons 250 (.cons 251 (.cons 252 (.cons 253 (.cons 254 (.cons 255 (.cons 0 (.cons 1 .nil)))))))"] },
+    { name := "Arty A7 (lib/Hdl/Arty.wiz): pin constraints (XDC) from the board's table, what does not fit, the two devices", run := fun _ => hdlArtyXdc },
+    { name := "H14 P1: primitive instances: Verilog of an OSERDESE2/IOBUF/ODDR/OBUF design under a PLL wrapper, refusal without models, buffer models, kind errors", run := fun _ => hdlPrimCheck },
+    { name := "H14 P1: yosys synth_xilinx keeps PLLE2_BASE, BUFG, OSERDESE2, IOBUF, ODDR, OBUF (skipped without yosys)", run := fun _ => hdlPrimTools },
+    { name := "Xilinx 7-series: yosys synth_xilinx maps two RAMs, a 1024-byte ROM and a multiply to RAMB18E1, RAMB36E1 and DSP48E1 (skipped without yosys)", run := fun _ => hdlArtyTools },
     { name := "optics: deriving Lens on structures and bundles (laws, independence by rfl); a step zoomed into a field, the frame rule", run := fun _ => do
         okLibs (← IO.FS.readFile "examples/hdl-optic.wiz")
           ["(.cons 1 (.cons 0 (.cons 0 (.cons 0 (.cons 0 (.cons 0 (.cons 0 (.cons 0 (.cons 0 (.cons 0 (.cons 1 (.cons 0 .nil))))))))))), .true)"]
@@ -9258,6 +9471,7 @@ def groups : List Group :=
   serialGroup ::
   sizedGroup ::
   stdGroup ::
+  nativesGroup ::
   structGroup ::
   sysGroup ::
   tacticGroup ::
