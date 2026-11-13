@@ -191,10 +191,25 @@ instance : ToString TypeError where
     | .notAFunction t ty => s!"not a function: {t}\n  has type: {ty}"
     | .notAType t ty => s!"not a type: {t}\n  has type: {ty}"
     | .cannotInfer t => s!"cannot infer a type for {t}; add an annotation"
-    | .quantityMismatch x d u => s!"variable {x} declared with quantity {d} but used {u}"
-    | .duplicateDecl n => s!"duplicate declaration: {n}"
+    | .quantityMismatch x d u => s!"variable {x} declared with quantity {d} but used {u}" ++
+        match d, u with
+        | "0", _ => s!"\n  ({x} is erased: only types, proofs and other erased arguments may use it, not the computation)"
+        | "1", "ω" => s!"\n  (a linear variable, of quantity 1, must be used exactly once, and {x} is used more than once)"
+        | "1", "0" => s!"\n  (a linear variable, of quantity 1, must be used exactly once, and {x} is not used)"
+        | _, _ => ""
+    | .duplicateDecl n => s!"'{n}' has already been declared"
     | .unmarkedProof t ty l => s!"unmarked proof: {t}\n  has type {ty}, in Sort {l}; the kernel does not evaluate proofs, so it must be marked (prf)"
     | .other m => m
+
+/-- The message for a declaration `name` the kernel rejected with `e`. The elaborator
+leaves quantities (usage) to the kernel, so a quantity error is the user's, reported as
+it is, like a clash of names; anything else says that the kernel rejected it. -/
+def kernelRejected (name : Name) (e : TypeError) : String :=
+  match e with
+  | .quantityMismatch .. => toString e
+  | .duplicateDecl n => s!"'{n}' has already been declared"
+  | .other m => if (m.splitOn "quantity").length > 1 then m else s!"kernel rejected {name}: {m}"
+  | e => s!"kernel rejected {name}: {e}"
 
 abbrev TCM := Except TypeError
 
@@ -1169,7 +1184,7 @@ unchecked. -/
 def addDecl (g : Globals R) (d : Decl R) : TCM (Globals R) := do
   -- constants are identified by name: a second declaration of one would change what
   -- everything checked against the first means
-  if g.contains d.name then throw (.other s!"{d.name} is already declared")
+  if g.contains d.name then throw (.duplicateDecl d.name)
   if d.witness.isSome then throw (.other s!"{d.name}: only a partial definition has a witness")
   checkHeader g d
   let ctx : Ctx R := { globals := g }
@@ -1188,7 +1203,7 @@ def addDecl (g : Globals R) (d : Decl R) : TCM (Globals R) := do
 (`attribute [implemented_by g] f` sets the constant `g`), checked like a definition's own
 (`checkImpl`): at `name`'s type. The kernel's view of `name` does not change. -/
 def setImpl (g : Globals R) (name : Name) (impl : Term R) : TCM (Globals R) := do
-  let some d := g.find? name | throw (.other s!"unknown declaration {name}")
+  let some d := g.find? name | throw (.other s!"unknown declaration '{name}'")
   checkImpl g d impl
   pure (g.insert { d with impl := some impl })
 
@@ -1200,7 +1215,7 @@ never run, so it may ignore a linear argument. -/
 def addPartialDecl (g : Globals R) (d : Decl R) : TCM (Globals R) := do
   -- constants are identified by name: a second declaration of one would change what
   -- everything checked against the first means
-  if g.contains d.name then throw (.other s!"{d.name} is already declared")
+  if g.contains d.name then throw (.duplicateDecl d.name)
   let some w := d.witness
     | throw (.other s!"partial definition {d.name} needs a witness, a term of its type")
   if d.value.isSome then throw (.other s!"partial definition {d.name} can't have a value")
@@ -1213,7 +1228,7 @@ def addPartialDecl (g : Globals R) (d : Decl R) : TCM (Globals R) := do
 of its group: checked against the type and kept for the compiler. Only a partial
 definition (one with a checked witness) takes one. -/
 def addPartialImpl (g : Globals R) (name : Name) (impl : Term R) : TCM (Globals R) := do
-  let some d := g.find? name | throw (.other s!"unknown declaration {name}")
+  let some d := g.find? name | throw (.other s!"unknown declaration '{name}'")
   unless d.witness.isSome && d.value.isNone do
     throw (.other s!"{name} is not a partial definition")
   let ctx : Ctx R := { globals := g }
@@ -1231,40 +1246,66 @@ Also listed, marked `native`: the **native implementations** the declaration's c
 code runs, wherever they are registered (the library's too). `native f := g` is
 `attribute [implemented_by g] f`, and `native T := mk/get` a native representation of the
 type `T` (`attribute [implemented_by mk get] T.mk`, a `repr:` registration). The kernel
-never runs them, so they prove nothing: they are trusted to agree with the definitions. A structurally recursive definition's compiled equations are not listed: the kernel
-checks that they agree with its value (`checkImplAgrees`). -/
+never runs them, so they prove nothing: they are trusted to agree with the definitions.
+An implementation that is a Wiz definition is walked like a dependency (compiled code runs
+it): a chain `f → g → h` lists `native f := g` and `native g := h`, and `h`'s own axioms. A structurally recursive definition's compiled equations are not listed: the kernel
+checks that they agree with its value (`checkImplAgrees`).
+
+What compiled code runs is followed through every trusted step (t1-review L2): an
+implementation that is a **partial definition** runs its body, so from there on the
+bodies of partial definitions are walked too (only on that path: a partial definition
+reached through types and values alone still lists nothing for its body). An
+implementation that is a foreign function has nothing further to walk. A `native_refl`
+proof's value names the implementations its run reached (its `X.native✝` axiom is listed
+like any axiom), so they are walked as code that runs. -/
 partial def Globals.axiomsOf (g : Globals R) (n : Name) : List String := Id.run do
   let mut seen : Std.HashSet Name := {}
-  let mut todo := [n]
+  -- the declarations reached as code that runs (an implementation, or what one runs):
+  -- their partial bodies are walked too
+  let mut ran : Std.HashSet Name := {}
+  let mut todo : List (Name × Bool) := [(n, false)]
   let mut out : Array String := #[]
   let mut reprs : List Name := []
   let numeral := ["nat", "nat.zero", "nat.succ"].filterMap (List.lookup · g.builtins)
   while true do
     match todo with
     | [] => break
-    | c :: rest =>
+    | (c, run) :: rest =>
       todo := rest
-      if seen.contains c then continue
+      let first := !seen.contains c
+      unless first || (run && !ran.contains c) do continue
       seen := seen.insert c
+      if run then ran := ran.insert c
       let some d := g.find? c | continue
-      if d.value.isNone && d.witness.isNone then out := out.push c
-      for (k, m) in g.assumed.reverse do
-        if m == c then out := out.push s!"builtin {k} := {c}"
-      if let some i := d.nativeImpl? then out := out.push s!"native {c} := {i}"
-      -- (a `repr:T:mk:get:…` registration is on `T`'s constructor: it concerns whatever
-      -- mentions the type or the constructor)
-      for (k, m) in g.builtins.reverse do
-        if let "repr" :: T :: mkImpl :: getImpl :: _ := k.splitOn ":" then
-          if (c == m || c == T) && !reprs.contains T then
-            reprs := T :: reprs
-            out := out.push s!"native {T} := {mkImpl}/{getImpl}"
-      let (cs, lit) := ([d.type] ++ d.value.toList ++ d.witness.toList).foldl
+      if first then
+        if d.value.isNone && d.witness.isNone then out := out.push c
+        for (k, m) in g.assumed.reverse do
+          if m == c then out := out.push s!"builtin {k} := {c}"
+        if let some i := d.nativeImpl? then out := out.push s!"native {c} := {i}"
+        -- (a `repr:T:mk:get:…` registration is on `T`'s constructor: it concerns whatever
+        -- mentions the type or the constructor)
+        for (k, m) in g.builtins.reverse do
+          if let "repr" :: T :: mkImpl :: getImpl :: _ := k.splitOn ":" then
+            if (c == m || c == T) && !reprs.contains T then
+              reprs := T :: reprs
+              out := out.push s!"native {T} := {mkImpl}/{getImpl}"
+      -- a partial definition that runs runs its body
+      let body := if run && d.witness.isSome then d.impl.toList else []
+      let (cs, lit) := ([d.type] ++ d.value.toList ++ d.witness.toList ++ body).foldl
         (fun (acc : List Name × Bool) t => (consts t acc.1, acc.2 || hasNatLit t)) ([], false)
       -- a registered operation or constructor makes numerals without a literal in the
       -- term (`Nat.zero` is `0`, `Nat.pow 0 0` is `1`), and numerals unfold through the
       -- registered `nat.zero` and `nat.succ`: it depends on them like a literal does
       let lit := lit || g.builtins.any fun (k, m) => m == c && k.startsWith "nat."
-      todo := cs ++ (if lit then numeral else []) ++ todo
+      -- (an implementation is walked too, as code that runs: the rest of an
+      -- `implemented_by` chain, what it depends on, and a partial one's body; a foreign
+      -- function, which has no value, is already named by `native f := g`)
+      let impls := match d.nativeImpl? with
+        | some i => if (g.find? i).any fun di => di.value.isSome || di.witness.isSome then [(i, true)] else []
+        | none => []
+      -- (a `native_refl` proof's value: the implementations its run reached, which run)
+      let run := run || (d.value.isSome && (g.find? (c ++ ".native✝")).isSome)
+      todo := (cs ++ (if lit then numeral else [])).map (·, run) ++ impls ++ todo
   return out.toList
 where
   consts (t : Term R) (acc : List Name) : List Name :=

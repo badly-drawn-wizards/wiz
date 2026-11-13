@@ -104,7 +104,7 @@ def candidates (ctx : LocalCtx R) (cls : Name) : ElabM R (Array (Term R × VTy R
     if let some (info, _, _) ← classOf? ctx.types[j]! then
       if info.name == cls then out := out.push (.var j, ctx.types[j]!)
   let s ← get
-  let insts := (s.instances.toList.zipIdx.filter (·.1.cls == cls)).toArray
+  let insts := (s.instances.toList.zipIdx.filter fun (i, _) => i.cls == cls && !i.isDefault).toArray
   let sorted := insts.qsort fun (a, i) (b, j) => a.priority > b.priority || (a.priority == b.priority && i > j)
   for (inst, _) in sorted do
     if let some d := s.globals.find? inst.name then
@@ -224,52 +224,156 @@ where
         let gen ← mkGenerator ctx key h hty
         return { ss with table := ss.table.insert key { waiters := #[.consumer c] }, gens := ss.gens.push gen }
 
+/-- The unsolved holes an instance problem waits for: those in its non-output class
+arguments (all of its type's, if it isn't a class application yet). It can be attempted
+when there are none. -/
+def instBlockers (ctx : LocalCtx R) (ty : VTy R) : ElabM R (Array Nat) := do
+  let g ← getGlobals
+  let some (info, _, args) ← classOf? ty | return (← zonk ctx.lvl (quote g ctx.lvl ty)).mvars
+  let mut bs := #[]
+  for (a, out) in args.toList.zip (info.outParams ++ List.replicate args.size false) do
+    unless out do bs := bs ++ (← zonk ctx.lvl (quote g ctx.lvl a)).mvars
+  return bs
+
 /-- Can the problem be attempted? Its non-output arguments must have no unsolved holes. -/
 def instReady (ctx : LocalCtx R) (ty : VTy R) : ElabM R Bool := do
-  let some (info, _, args) ← classOf? ty | return false
-  let g ← getGlobals
-  for a in args, out in info.outParams ++ List.replicate args.size false do
-    unless out do
-      let t ← zonk ctx.lvl (quote g ctx.lvl a)
-      unless t.mvars.isEmpty do return false
-  return true
+  let some _ ← classOf? ty | return false
+  return (← instBlockers ctx ty).isEmpty
 
-/-- Try the pending instance problems; `force` also tries those that aren't ready.
-Returns whether any was solved. Fails if a problem has no instance. -/
-def synthPending (force : Bool := false) : ElabM R Bool := do
-  let pending := (← get).pendingInsts
-  modify fun s => { s with pendingInsts := #[] }
+/-- (7f) Park problem `id`: it waits for the holes `bs` (`instWaiters`); solving one puts it
+back on the worklist (`solveMeta`). -/
+def parkInst (id : Nat) (p : PendingInst R) (bs : Array Nat) : ElabM R Unit :=
+  modify fun s =>
+    let w := bs.foldl (fun (w : Std.HashMap Nat (Array Nat)) b => w.insert b ((w.getD b #[]).push id)) s.instWaiters
+    { s with pendingInsts := s.pendingInsts.insert id { p with blockers := bs }, instWaiters := w }
+
+/-- Try one pending problem (`force`: even if it isn't ready). Returns whether it was
+solved; fails if it is ready and has no instance. -/
+def trySynthOne (force : Bool) (id : Nat) (p : PendingInst R) : ElabM R Bool := do
+  let ctx := p.ctx
+  if (← zonk ctx.lvl p.hole).mvars.isEmpty then
+    modify fun s => { s with pendingInsts := s.pendingInsts.erase id }
+    return true
+  let bs ← instBlockers ctx p.ty
+  let ready := bs.isEmpty && (← classOf? p.ty).isSome
+  if !ready && !force then parkInst id p bs; return false
+  match ← synthInstance ctx p.ty with
+  | some t =>
+    modify fun s => { s with pendingInsts := s.pendingInsts.erase id }
+    unify ctx.lvl (← evalIn ctx p.hole) (← evalIn ctx t)
+    -- (11q) which instance, for the infoview (at the application that needed it)
+    if ctx.info.stop > 0 then pushInfo (.inst ctx.info ctx p.ty t)
+    return true
+  | none =>
+    if ready then
+      throwAt ctx.info s!"failed to synthesize an instance of {← showType ctx p.ty}{← whyNot ctx p}"
+    parkInst id p bs
+    return false
+where
+  /-- (7f) Why a problem has no instance, when its default instance applies but one of the
+  instance arguments it needs has none (`"a" + 1`: `HAdd String String ?C` through
+  `instHAdd`, which needs `Add String`). -/
+  whyNot (ctx : LocalCtx R) (p : PendingInst R) : ElabM R String := do
+    let s ← get
+    let some (info, _, _) ← classOf? p.ty | return ""
+    let mut msg := ""
+    for d in s.instances do
+      unless d.isDefault && d.cls == info.name do continue
+      let some decl := s.globals.find? d.name | continue
+      let us ← decl.levelParams.mapM fun _ => freshLevelMeta
+      let ety := eval s.globals [] (decl.type.instLevels decl.levelParams us)
+      if let some subgoals ← (try some <$> applyInstance ctx p.hole p.ty (.const d.name us) ety catch _ => pure none) then
+        for (_, hty) in subgoals do
+          if (← instReady ctx hty) && (← synthInstance ctx hty).isNone then
+            msg := s!" (it needs an instance of {← showType ctx hty}, through {d.name})"
+            break
+      set s
+      unless msg.isEmpty do break
+    return msg
+
+/-- Try the pending instance problems that may have become solvable: the new ones, and
+those one of whose holes was solved since they were last tried (the worklist, 7f: a
+problem that waits is not looked at again until then). `force` tries every pending
+problem, also those that aren't ready. Returns whether any was solved. Fails if a
+problem has no instance. -/
+partial def synthPending (force : Bool := false) : ElabM R Bool := do
   let mut progress := false
-  let mut left := #[]
-  for (ctx, m, ty) in pending do
-    if (← zonk ctx.lvl m).mvars.isEmpty then progress := true; continue
-    if !(← instReady ctx ty) && !force then left := left.push (ctx, m, ty); continue
-    match ← synthInstance ctx ty with
-    | some t =>
-      unify ctx.lvl (← evalIn ctx m) (← evalIn ctx t)
-      -- (11q) which instance, for the infoview (at the application that needed it)
-      if ctx.info.stop > 0 then pushInfo (.inst ctx.info ctx ty t)
-      progress := true
-    | none =>
-      if ← instReady ctx ty then
-        throwAt ctx.info s!"failed to synthesize an instance of {← showType ctx ty}"
-      left := left.push (ctx, m, ty)
-  modify fun s => { s with pendingInsts := left ++ s.pendingInsts }
+  if force then
+    modify fun s => { s with instReadyQ := #[] }
+    for (id, p) in (← get).pendingInsts.toArray do
+      -- (an earlier one's solution may have solved this one too)
+      unless (← get).pendingInsts.contains id do continue
+      if ← trySynthOne true id p then progress := true
+  repeat
+    let q := (← get).instReadyQ
+    if q.isEmpty then break
+    modify fun s => { s with instReadyQ := #[] }
+    let mut seen : Std.HashSet Nat := {}
+    for id in q.qsort (· < ·) do
+      if seen.contains id then continue
+      seen := seen.insert id
+      let some p := (← get).pendingInsts[id]? | continue
+      if ← trySynthOne false id p then progress := true
   pure progress
 
-/-- Record an instance problem, and try it right away. -/
-def addInstProblem (ctx : LocalCtx R) (m : Term R) (ty : VTy R) : ElabM R Unit := do
-  modify fun s => { s with pendingInsts := s.pendingInsts.push (ctx, m, ty) }
+/-- Record an instance problem; `now`: try it right away. -/
+def addInstProblem (ctx : LocalCtx R) (m : Term R) (ty : VTy R) (now : Bool := true) : ElabM R Unit := do
+  modify fun s => { s with pendingInsts := s.pendingInsts.insert s.nextInst { ctx, hole := m, ty },
+                           instReadyQ := s.instReadyQ.push s.nextInst, nextInst := s.nextInst + 1 }
   if let .mvar k := m.spine.1 then
     modify fun s => { s with metas := s.metas.modify k ({ · with isInst := true }) }
-  let _ ← synthPending
+  if now then let _ ← synthPending
 
-/-- At the end of a command: solve what can be solved, then report what is stuck. -/
+/-- (7f) **Default instances.** When no pending problem can make progress, the default
+instances (`attribute [default_instance p] i`) of the stuck ones are tried, highest
+priority first, then the problems in the order they were made (`from`: only those numbered
+from it on): the first default instance that applies to a stuck problem is committed to,
+its instance arguments become new problems, and `true` is returned. That is the only place
+a default applies (as in Lean: `instHAdd : HAdd A A A` makes `x + 1` homogeneous, `OfNat
+Nat n` makes an unconstrained numeral a `Nat`), so there is no backtracking. -/
+def applyDefaultInstance («from» : Nat := 0) : ElabM R Bool := do
+  let s ← get
+  let defaults := (s.instances.toList.zipIdx.filter (·.1.isDefault)).toArray.qsort
+    fun (a, i) (b, j) => a.priority > b.priority || (a.priority == b.priority && i > j)
+  if defaults.isEmpty then return false
+  let stuck := s.pendingInsts.toArray.filter (·.1 ≥ «from»)
+  if stuck.isEmpty then return false
+  -- the class of each stuck problem
+  let mut classes : Array (Nat × PendingInst R × Name) := #[]
+  for (id, p) in stuck do
+    if let some (info, _, _) ← classOf? p.ty then classes := classes.push (id, p, info.name)
+  for (d, _) in defaults do
+    let some decl := s.globals.find? d.name | continue
+    for (id, p, cls) in classes do
+      unless cls == d.cls do continue
+      let saved ← get
+      let us ← decl.levelParams.mapM fun _ => freshLevelMeta
+      let ety := eval s.globals [] (decl.type.instLevels decl.levelParams us)
+      match ← (try some <$> applyInstance p.ctx p.hole p.ty (.const d.name us) ety catch _ => pure none) with
+      | some subgoals =>
+        modify fun s => { s with pendingInsts := s.pendingInsts.erase id }
+        for (h, hty) in subgoals do addInstProblem p.ctx h hty (now := false)
+        if p.ctx.info.stop > 0 then
+          pushInfo (.inst p.ctx.info p.ctx p.ty (← zonk p.ctx.lvl p.hole))
+        return true
+      | none => set saved
+  return false
+
+/-- (7f) Solve what can be solved, using default instances when stuck, for the problems
+numbered from `from` on (`withDefaults`: those made while elaborating a type). -/
+partial def synthDefaults («from» : Nat := 0) : ElabM R Unit := do
+  let _ ← synthPending
+  let mut n := 0
+  while n < 1000 && (← applyDefaultInstance «from») do
+    n := n + 1
+    let _ ← synthPending
+
+/-- At the end of a command: solve what can be solved (with default instances when
+stuck), then report what is stuck. -/
 partial def finishInstances : ElabM R Unit := do
-  while ← synthPending do pure ()
-  let _ ← synthPending (force := true)
-  while ← synthPending do pure ()
-  if let some (ctx, _, ty) := (← get).pendingInsts[0]? then
-    throwAt ctx.info s!"type class problem is stuck (holes in its arguments): {← showType ctx ty}"
+  synthDefaults
+  while ← synthPending (force := true) do synthDefaults
+  if let some (_, p) := (← get).pendingInsts.toArray[0]? then
+    throwAt p.ctx.info s!"type class problem is stuck (holes in its arguments): {← showType p.ctx p.ty}"
 
 end Wiz.Elab

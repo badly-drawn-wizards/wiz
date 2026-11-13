@@ -1,0 +1,35 @@
+-- The tour's rejected programs (docs/tour.md): each definition below is an error, and
+-- the test checks that `wiz check` reports exactly these errors.
+import IO
+
+-- section 2: a match must cover every case
+def isTrue (b : Bool) : Nat := match b with
+  | .true => 1
+
+-- section 5: `head` of an empty vector
+inductive Vec (A : Type) : Nat → Type where
+  | nil : Vec A .zero
+  | cons {0 n : Nat} (x : A) (xs : Vec A n) : Vec A (.succ n)
+def Vec.head {A : Type} {0 n : Nat} : Vec A (.succ n) → A
+  | .cons x _ => x
+def bad : Nat := Vec.head (Vec.nil : Vec Nat 0)
+
+-- section 7: a linear variable used twice, or not at all
+def dup {0 A : Type} (1 x : A) : A × A := (x, x)
+axiom Ticket : Type
+axiom Ticket.ride : (1 t : Ticket) → IO Unit
+def twice (1 t : Ticket) : IO Unit := do1
+  Ticket.ride t;
+  Ticket.ride t
+def lose (1 t : Ticket) : IO Unit := IO.pure ()
+def plain (1 t : Ticket) : IO Unit := do
+  IO.println "boarding";
+  Ticket.ride t
+
+-- section 8: an observation that is not a guarded corecursive call
+coinductive Stream (A : Type) where
+  head : A
+  tail : Stream A
+def stuck (n : Nat) : Stream Nat
+  | .head => n
+  | .tail => (stuck n).tail
