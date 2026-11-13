@@ -60,8 +60,14 @@ def elimsChecked (m : Nat) (sol : Val R) (sp : Array (Elim R)) : ElabM R (Val R)
   let g ← getGlobals
   let mut v := sol
   for e in sp do
+    -- (a glued value fits as what it unfolds to: `S T.El`, a structure type, applied to
+    -- something is ill-typed, and the evaluator would panic on it)
+    let shape ← match v, e with
+      | .unfold .., .app _ | .unfold .., .fst | .unfold .., .snd
+      | .lazyInd .., .app _ | .lazyInd .., .fst | .lazyInd .., .snd => pure (whnf v)
+      | _, _ => pure v
     -- (on a constructor, `ind` is lazy for speed alone: what it computes must fit)
-    let fits : Bool := match unlazyCon v, e with
+    let fits : Bool := match unlazyCon shape, e with
       | .neutral .., _ | .unfold .., _ | .lazyInd .., _ => true
       | .lam .., .app _ => true
       | .pair .., .fst | .pair .., .snd => true
