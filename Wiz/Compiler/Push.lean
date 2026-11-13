@@ -157,12 +157,12 @@ partial def pushHere (g : Globals R) (fn : Name) (t : Term R) : Option (Term R) 
   let ctors := ((piInfos kd.type).drop (nΔ + 1)).take nc |>.map fun (mn, _, _) => String.ofList (mn.toList.drop 2)
   let mut methods' : List (Term R) := []
   for c in ctors, mt in (args.drop (nΔ + 1)).take nc do
-    let some cd := g.find? (T' ++ "." ++ c) | pbail fn "ctor"
+    let some cd := g.find? (ctorConst T' c) | pbail fn "ctor"
     let F := (piInfos cd.type).length - nΔ
     let (fns, mb1) ← peel (F + nE) mt
     let mb := mb1
     let ctorTm : Term R := ((Δargs.map fun (a : Term R) => a.lift F) ++ (List.range F).reverse.map Term.var).foldl .app
-      (.const (T' ++ "." ++ c) us)
+      (.const (ctorConst T' c) us)
     -- the call for pushed argument `p`, right after the kept binders, with `nDeps` binders
     -- (the solution rule's re-bound fields) between the equation and them
     let callAt (nDeps p : Nat) : Term R :=
@@ -226,13 +226,13 @@ partial def reuseScrutinee (g : Globals R) (depth : Nat) (t : Term R) : Term R :
       let us := us'.dropLast
       let ctors := ((piInfos kd.type).drop (nΔ + 1)).take nc |>.map fun (mn, _, _) => String.ofList (mn.toList.drop 2)
       let methods := ctors.zip ((args.drop (nΔ + 1)).take nc) |>.map fun (c, mt) =>
-        match g.find? (T' ++ "." ++ c) with
+        match g.find? (ctorConst T' c) with
         | some cd =>
           let F := (piInfos cd.type).length - nΔ
           match peel F mt with
           | some (fns, b) =>
             let ctorTm : Term R := ((Δargs.map fun (a : Term R) => a.lift F) ++ (List.range F).reverse.map Term.var).foldl .app
-              (.const (T' ++ "." ++ c) us)
+              (.const (ctorConst T' c) us)
             -- (as the value has it: constructors unfold, `con (tag, fields…)`)
             let D := depth + F
             let env : Env R := (List.range D).reverse.map Val.var

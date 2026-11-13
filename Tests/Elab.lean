@@ -1845,10 +1845,11 @@ def ioRunWith (src : String) (k : String → IO Unit) (args : Array String := #[
   let functorLib ← IO.FS.readFile "lib/Functor.wiz"
   let sysLib ← IO.FS.readFile "lib/Sys.wiz"
   let textLib ← IO.FS.readFile "lib/Text.wiz"
+  let derivingLib ← IO.FS.readFile "lib/Deriving.wiz"
   let loader : Name → Option String := fun m =>
     if m == "Prelude" then some prelude else if m == "IO" then some ioLib else if m == "Eff" then some effLib
     else if m == "Std" then some stdLib else if m == "Sys" then some sysLib else if m == "Functor" then some functorLib
-    else if m == "Text" then some textLib else none
+    else if m == "Text" then some textLib else if m == "Deriving" then some derivingLib else none
   let headers ← Build.preprocessHeaders (← toolchain) src
   let s := runFrontend (R := ZeroOneMany) src { loader, trustedModule := Tests.libModule, cHeaders := (headers[·]?) }
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
@@ -4758,6 +4759,9 @@ def selfHostGroup : Group where
     { name := "parameterised mutual inductive types, checked in Wiz", run := fun _ =>
         selfhostCheckFile "inductive Nat where\n  | zero\n  | succ (n : Nat)\nmutual\ninductive Tree (A : Type) where\n  | leaf (a : A)\n  | node (kids : Forest A)\ninductive Forest (A : Type) where\n  | nil\n  | cons (t : Tree A) (rest : Forest A)\nend\n#check Tree.node\ndef t : Tree Nat := .node (.cons (.leaf .zero) (.cons (.leaf (.succ .zero)) .nil))\ndef size {A : Type} : Forest A → Nat\n  | .nil => .zero\n  | .cons _ r => .succ (size r)\ndef kids {A : Type} (d : Forest A) : Tree A → Forest A\n  | .node k => k\n  | _ => d\n#reduce size (kids .nil t)\n"
           "Nat : U0\nTree : (x0 : U0) → U0\nForest : (x0 : U0) → U0\n(x0 :0 U0) → (x1 : (Forest x0)) → (Tree x0)\nt : (Tree Nat)\nsize : (x0 :0 U0) → (x1 : (Forest x0)) → Nat\nkids : (x0 :0 U0) → (x1 : (Forest x0)) → (x2 : (Tree x0)) → (Forest x0)\ncon((#1, (con((#1, (con((#0, (tt, tt))), (tt, tt)))), (tt, tt))))\n" },
+    { name := "mutual types sharing a constructor name (Ev.s, Od.s), checked in Wiz", run := fun _ =>
+        selfhostCheckFile "inductive Nat where\n  | zero\n  | succ (n : Nat)\nmutual\ninductive Ev where\n  | z\n  | s (o : Od)\ninductive Od where\n  | s (e : Ev)\nend\n#check Ev.s\n#check Od.s\ndef two : Ev := .s (.s .z)\ndef isZ : Ev → Nat\n  | .z => .zero\n  | Ev.s _ => .succ .zero\ndef unOd : Od → Ev\n  | .s e => e\n#reduce isZ (unOd (.s two))\n#reduce isZ (unOd (Od.s Ev.z))\n"
+          "Nat : U0\nEv : U0\nOd : U0\n(x0 : Od) → Ev\n(x0 : Ev) → Od\ntwo : Ev\nisZ : (x0 : Ev) → Nat\nunOd : (x0 : Od) → Ev\ncon((#1, (con((#0, (tt, tt))), (tt, tt))))\ncon((#0, (tt, tt)))\n" },
     { name := "structures and projections, checked in Wiz", run := fun _ =>
         selfhostCheckFile "inductive Nat where\n  | zero\n  | succ (n : Nat)\nstructure Pair (A B : Type) where\n  fst : A\n  snd : B\n#check Pair.mk\ndef p : Pair Nat (Pair Nat Nat) := .mk .zero (.mk (.succ .zero) .zero)\n#reduce Pair.fst (Pair.snd p)\ndef swap {A B : Type} (q : Pair A B) : Pair B A := .mk (Pair.snd q) (Pair.fst q)\n#reduce Pair.fst (swap p)\n#reduce p.snd.fst\ndef swap2 {A B : Type} (q : Pair A B) : Pair B A := .mk q.snd q.fst\n#reduce (swap2 p).fst\n"
           "Nat : U0\nPair : (x0 : U0) → (x1 : U0) → U0\nPair.fst : (x0 :0 U0) → (x1 :0 U0) → (x2 : ((Pair x0) x1)) → x0\nPair.snd : (x0 :0 U0) → (x1 :0 U0) → (x2 : ((Pair x0) x1)) → x1\n(x0 :0 U0) → (x1 :0 U0) → (x2 : x0) → (x3 : x1) → ((Pair x0) x1)\np : ((Pair Nat) ((Pair Nat) Nat))\ncon((#1, (con((#0, (tt, tt))), (tt, tt))))\nswap : (x0 :0 U0) → (x1 :0 U0) → (x2 : ((Pair x0) x1)) → ((Pair x1) x0)\ncon((#0, (con((#1, (con((#0, (tt, tt))), (tt, tt)))), (con((#0, (tt, tt))), (tt, tt)))))\ncon((#1, (con((#0, (tt, tt))), (tt, tt))))\nswap2 : (x0 :0 U0) → (x1 :0 U0) → (x2 : ((Pair x0) x1)) → ((Pair x1) x0)\ncon((#0, (con((#1, (con((#0, (tt, tt))), (tt, tt)))), (con((#0, (tt, tt))), (tt, tt)))))\n" },
@@ -5836,6 +5840,28 @@ def languageGroup : Group where
           "  | .lam b => Nat.succ (size b)\n  | .app f args => Nat.add (size f) (sizes args)\ndef sizes : Tms → Nat\n" ++
           "  | .nil => 0\n  | .cons t ts => Nat.add (size t) (sizes ts)\nend\n" ++
           "#eval size (.app (.lam (.var 0)) (.cons (.var 1) (.cons (.var 2) .nil)))") ["4"] },
+    { name := "the constructors of mutual types are named per type: Ev.s and Od.s", run := fun _ => do
+        okLib ("import Prelude\nmutual\ninductive Ev where\n  | z\n  | s (o : Od)\ninductive Od where\n  | s (e : Ev)\nend\n#check Ev.z\n#check Od.s\n" ++
+          "def two : Ev := .s (.s .z)\ndef three : Od := Od.s (Ev.s (.s Ev.z))\n" ++
+          "mutual\ndef evN : Ev → Nat\n  | .z => 0\n  | Ev.s o => Nat.succ (odN o)\ndef odN : Od → Nat\n  | .s e => Nat.succ (evN e)\nend\n" ++
+          "#eval evN two\n#eval odN three\n#eval two")
+          ["Ev.z : Ev_Od .Ev", "Od.s : Ev_Od .Ev → Ev_Od .Od", "2", "3", ".s (.s .z)"]
+        failsLib ("import Prelude\nmutual\ninductive Ev where\n  | z\n  | s (o : Od)\ninductive Od where\n  | s (e : Ev)\nend\ndef bad : Od := .z") "Ev_Od .Od has no constructor z"
+        failsLib ("import Prelude\nmutual\ninductive Ev where\n  | z\n  | s (o : Od)\ninductive Od where\n  | s (e : Ev)\nend\ndef f : Ev → Nat\n  | .s _ => 1") "missing case for constructor Ev.z"
+        failsLib "inductive T where\n  | a.b" "a constructor's name is a single identifier, not a.b"
+        -- the hover on `.s` is the member's constructor
+        let prelude ← IO.FS.readFile "lib/Prelude.wiz"
+        let init : CommandState ZeroOneMany := { trustedModule := Tests.libModule, loader := fun m => if m == "Prelude" then some prelude else none }
+        let src := "import Prelude\nmutual\ninductive Ev where\n  | z\n  | s (o : Od)\ninductive Od where\n  | s (e : Ev)\nend\ndef one : Od := .s .z\n"
+        let (s, _) := Query.elaborate {} src { init with termInfo := true }
+        checkEq "(some (Od.s, Ev_Od .Ev → Ev_Od .Od))" (toString (Query.hoverAt s ((src.splitOn ".s .z")[0]!.length + 1))) },
+    { name := "mutual types sharing a constructor name, compiled (C and LLVM)", run := fun _ => do
+        let src := "import IO\nimport Deriving\nmutual\ninductive Ev where\n  | z\n  | s (o : Od)\n  deriving Repr\ninductive Od where\n  | s (e : Ev)\nend\n" ++
+          "mutual\ndef evN : Ev → Nat\n  | .z => 0\n  | .s o => Nat.succ (odN o)\ndef odN : Od → Nat\n  | Od.s e => Nat.succ (evN e)\nend\n" ++
+          "def mk : Nat → Ev\n  | .zero => .z\n  | .succ n => .s (.s (mk n))\n" ++
+          "def main : IO Unit := do\n  IO.println (Nat.toString (evN (mk 5)));\n  IO.println (Repr.repr (mk 1));\n  IO.println (Repr.repr (Od.s Ev.z))\n"
+        ioRun src "10\nEv.s (Od.s Ev.z)\nOd.s Ev.z\n"
+        ioRun src "10\nEv.s (Od.s Ev.z)\nOd.s Ev.z\n" (llvm := true) },
     { name := "tactic keywords are not reserved", run := fun _ =>
         okLib "import Prelude\ndef f (first exact : Nat) : Nat := Nat.add first exact\n#eval f 1 2\ndef t : Nat := by exact 3" ["3"] },
     { name := "a catch-all of a recursive definition is the value at hand", run := fun _ =>
@@ -6896,6 +6922,9 @@ def derivingGroup : Group where
         okDeriving ("import Deriving\ninductive Vec (A : Type) : Nat → Type where\n  | nil : Vec A 0\n" ++
           "  | cons {n : Nat} (x : A) (xs : Vec A n) : Vec A (.succ n)\n  deriving Repr\n" ++
           "#eval Repr.repr (Vec.cons 1 (Vec.cons 2 Vec.nil))") ["\"Vec.cons 1 (Vec.cons 2 Vec.nil)\""] },
+    { name := "Repr for mutual types: the constructors per type (Ev.s, Od.s), derived for the family", run := fun _ =>
+        okDeriving ("import Deriving\nmutual\ninductive Ev where\n  | z\n  | s (o : Od)\n  deriving Repr\ninductive Od where\n  | s (e : Ev)\nend\n" ++
+          "#eval Repr.repr (Ev.s (Od.s Ev.z))\n#eval Repr.repr (Od.s (.s (.s .z)))") ["\"Ev.s (Od.s Ev.z)\"", "\"Od.s (Ev.s (Od.s Ev.z))\""] },
     { name := "deriving BEq for an indexed family is an error", run := fun _ =>
         failsDeriving ("import Deriving\ninductive Vec (A : Type) : Nat → Type where\n  | nil : Vec A 0\n" ++
           "  | cons {n : Nat} (x : A) (xs : Vec A n) : Vec A (.succ n)\n  deriving BEq") "indexed families are not supported" },

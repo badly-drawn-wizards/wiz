@@ -512,7 +512,8 @@ partial def printNode (env : Option (Globals R)) (names : List Name) (tys : List
     -- `.c f₁ … fₙ`: the payload ends with the index equation and `()`
     let fields := (tuple rest #[]).toList
     let fields := fields.take (fields.length - 2)
-    let c := txt s!".{ls[i]?.getD s!"#{i}"}"
+    -- (a `mutual` block's tag `A.c` is written `.c`, `ctorShort`)
+    let c := txt s!".{ctorShort (ls[i]?.getD s!"#{i}")}"
     if fields.isEmpty then pure c else app c fields
   | .con x => app (txt "con") [x]
   | .ind _ _ _ _ P m i x => app (txt "ind") [P, m, i, x]
