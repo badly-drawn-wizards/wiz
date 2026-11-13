@@ -3225,7 +3225,7 @@ structure Fe.Outp where
   errs : List Syntax
   notes : List Syntax
   srcs : List Syntax
-/-- The first element of a list, if any, as a list (only the first borrow error is reported). -/
+/-- The first element of a list, if any, as a list. -/
 def Fe.first {A : Type} : List A → List A
   | .nil => .nil
   | .cons a _ => .cons a .nil
