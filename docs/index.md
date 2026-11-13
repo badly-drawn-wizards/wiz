@@ -14,6 +14,7 @@
 * [CoreSpec.md](CoreSpec.md)
 * [Status.md](Status.md)
 * [dsls.md](dsls.md): the embedded languages (DSLs) in Wiz, and the conventions they follow
+* [error-codes.md](error-codes.md): the error codes and their quick fixes
 * [resources.md](resources.md): resources in Wiz: quantities, regions, optics, Feral and separation logic, with one running example
 * [ROADMAP.md](../ROADMAP.md)
 
@@ -65,6 +66,7 @@ topic below, so the numbers are not in order.
 ### Numbers and libraries
 
 * [Stage 22: numbers for hardware and systems code](stages/22-numbers.md)
+* [Stage 29: native data structures](stages/29-natives.md): word arrays, word maps, interned strings
 * [Libraries](libraries.md)
 
 ### Verification

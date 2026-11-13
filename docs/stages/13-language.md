@@ -545,10 +545,11 @@ The embedded languages follow one set of conventions (entering, scoping, symbols
 printing, errors, docs, tests), collected in [docs/dsls.md](../dsls.md) with a table of
 the DSLs. This section's changes bring the libraries in line:
 
-* **Helper notation is local** (13m). `∷` (HoareTactics), `+++`, `⊕`, `▸` (Feral) and
-  `<+>` (Hdl.Core) are used only inside their modules; they were global, so every
-  importer lost those symbols and (with 11r) printed `List.cons`/`String.append` with
-  them.
+* **Helper notation is local** (13m). `∷` (HoareTactics) and `+++`, `⊕`, `▸` (Feral)
+  are used only inside their modules; they were global, so every importer lost those
+  symbols and (with 11r) printed `List.cons`/`String.append` with them. (Hdl.Core's
+  `<+>` is the HDL libraries' shared operator — `Hdl.Prim`, `Hdl.Xdc`, `Hdl.Xilinx7`,
+  `Hdl.Sim` and the examples use it — so it stays public.)
 * **A reserved word says where it comes from.** An identifier position holding a keyword
   of a `term` or `command` rule says so, with the notation (its atoms, `…` between them)
   and the module that declared it: `def exists := 1` after `import Logic` is
@@ -690,3 +691,16 @@ Tests: `selfhost` ("the self-hosted frontend: literal patterns …", "… struct
 `#reduce Nat.beq` in the other) and the same verdict for each declaration; the lexer
 agreement case has hex and binary numerals. The self-hosted sources use none of these,
 so the bootstrap is unaffected.
+
+## 13r: string escapes ✅
+
+A string literal reads the escapes `\n`, `\t`, `\r`, `\0`, `\\`, `\"`, `\'`, `\xHH` (two
+hexadecimal digits) and `\u{H}` (one to six hexadecimal digits, a Unicode scalar value:
+at most `10FFFF` and not a surrogate), in both lexers (`readEscape` in
+`Wiz/Parser/Token.lean`, `readEscape` in `selfhost/Lex.wiz`, with the same messages).
+A bad escape is reported at its backslash ("2:22: error: unknown escape sequence \q"),
+not at the start of the literal, and an unterminated literal at its opening quote. A
+token that can't be read is the parse error's message by itself (`ParseError.lexical`),
+not "expected unknown escape sequence …". Strings print with Lean's escapes (`\x0d` for
+a carriage return). Tests: `language` ("string escapes …"); `selfhost` ("the lexer in
+Wiz agrees with the Lean lexer", whose input now has every escape and a bad one).

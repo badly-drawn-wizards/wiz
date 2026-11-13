@@ -521,6 +521,15 @@ def group : Group where
           "def t {i o : HwTy} (f : Comb i o) : (s : Nat) → (xs : List (HwTy.El i)) → Hdl.map (Comb.el f) xs = Hdl.map (Comb.el f) xs\n" ++
           "  | _, .nil => refl (@List.nil (HwTy.El o))\n" ++
           "  | s, .cons x xs => Hdl.consEq (f x) (t f s xs)\n") },
+    { name := "dotted names: the longest prefix that names something, then fields by the type's name (cohesion-hardware)", run := fun _ =>
+        -- `Q.origin.x` was the fields `origin.x` of `Q`; and `p.sum` for a structure `P`
+        -- found no field `sum` (generalised field notation only knew inductive types)
+        okLib ("import Prelude\nstructure P where\n  x : Nat\n  y : Nat\n" ++
+          "def P.sum (p : P) : Nat := Nat.add p.x p.y\ndef Q.origin : P := P.mk 1 2\n" ++
+          "def a : Nat := Q.origin.x\ndef b : Nat := Q.origin.sum\ndef c (p : P) : Nat := p.sum\n" ++
+          "#eval a\n#eval b\n#eval c (P.mk 3 4)") ["1", "3", "7"] },
+    { name := "dotted names through a derived definition: `Cnt.bundle.toEl` (cohesion-hardware)", run := fun _ =>
+        okLibs "import Hdl.Core\ndef B4 : HwTy := HwTy.bits 4\ndef Bit : HwTy := HwTy.bit\nstructure Cnt (r : HwTy → Type) where\n  count : r B4\n  up : r Bit\n  deriving Bundle\ndef z : Cnt HwTy.El := Cnt.mk (BitVec.ofNat 4 3) (BitVec.ofNat 1 1)\ndef e1 : HwTy.El Cnt.bundle.code := Bundle.toEl Cnt.bundle z\ndef e2 : HwTy.El Cnt.bundle.code := Cnt.bundle.toEl z\n" },
     { name := "an equation at a product type: η for projected holes, stale casts (cohesion-hardware)", run := fun _ =>
         -- `Eq.congrArg f e`/`fstEq e` with `e : f y = (y, y)`: the expected `?p = ?q` computes
         -- to `(?p.1 = ?q.1) × …` and `?q.1 =?= y` is solved by η (`?q := (?a, ?b)`); a cast
@@ -698,6 +707,21 @@ def group : Group where
           "#eval s0mt (S0.mk 3 4)\n") ["4"]
         -- used at runtime it is an error (not a projection at ω behind the user's back)
         failsLib (hdr ++ "def bad (s : S0) : Nat := match s with\n  | .mk n m => n\n") "n" },
+    { name := "#266: an unknown qualified name is an unknown identifier, not a field access", run := fun _ => do
+        failsLibW "import Prelude\ndef x : Option Nat := Option.bind (.some 1) (fun n => .some n)\n" "unknown identifier 'Option.bind'"
+        failsLibW "import Prelude\ndef x : Nat := Nat.nope 3\n" "unknown identifier 'Nat.nope'"
+        -- a field of a value is still a field
+        failsLibW "import Prelude\nstructure P where\n  a : Nat\ndef p : P := P.mk 1\ndef x : Nat := p.b\n" "no field 'b'" },
+    { name := "#261: refl is a contextual keyword: a constructor may be called refl", run := fun _ =>
+        okLib ("import Prelude\ninductive R : Nat → Type where\n  | refl (n : Nat) : R n\n" ++
+          "def r : R 3 := R.refl 3\ndef r2 : R 4 := .refl 4\n" ++
+          "def f : R 3 → Nat\n  | .refl n => n\n" ++
+          "def e : f r = 3 := refl 3\ndef refl2 (n : Nat) : n = n := refl n\n#eval f r") ["3"] },
+    { name := "#258: absurd sees through a computed constructor equation", run := fun _ => do
+        okLib ("import Prelude\ndef f (h : Bool.false = Bool.true) : False := absurd h\n" ++
+          "def g (n : Nat) (h : Nat.succ n = 0) : Nat := absurd h\n" ++
+          "def k (h : @Option.some Nat 1 = .none) : Bool := absurd h\n")
+        failsLibW "import Prelude\ndef f (n : Nat) (h : n = n) : False := absurd h\n" "absurd expects a proof of False or Empty" },
     { name := "#249: recursion over a family refines later arguments at non-variable indices", run := fun _ =>
         okLib ("import Prelude\ninductive R : Nat → Nat → Type where\n  | done (s : Nat) : R s s\n" ++
           "  | step (s t u : Nat) (r : R t u) : R s u\n" ++

@@ -53,8 +53,9 @@ as a name is an error that says which syntax reserved it:
 `expected identifier ('exists' is a keyword: the notation `exists …, …` of module Logic)`.
 
 Notation a library uses only in its own implementation is `local` (13m), so importers
-neither see it nor print with it (List.cons as `∷` in HoareTactics, String.append as
-`<+>` in Hdl.Core, Feral's `+++`, `⊕`, `▸`).
+neither see it nor print with it (List.cons as `∷` in HoareTactics, Feral's `+++`, `⊕`,
+`▸`). A library's public operator stays public: `Hdl.Core`'s `<+>` (`String.append`) is
+used by `Hdl.Prim`, `Hdl.Xdc`, `Hdl.Xilinx7`, `Hdl.Sim` and the HDL examples.
 
 ## Printing
 

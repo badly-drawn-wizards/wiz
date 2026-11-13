@@ -1,0 +1,326 @@
+import Sat
+import Word
+-- Bits of numbers and words, for bit-blasting (`import BitBlast`; stage 28d).
+--
+-- `Bits.bit n i` is bit `i` of `n` (structural: by halving), and each word operation's
+-- bits are given by a lemma (`Bits.land_bit`, …) that the `bv_decide` tactic uses as the
+-- proof of a circuit node (lib/SatTactic.wiz, 28c: a node's proof is anything that shows
+-- `σ v = op (σ a) (σ b)`).
+
+-- ## Halves and parities
+
+def Bits.odd : Nat → Bool
+  | .zero => .false
+  | .succ n => Bool.not (Bits.odd n)
+-- `h + 1` when `b`, else `h`
+def Bits.bump (b : Bool) (h : Nat) : Nat := match b with
+  | .true => .succ h
+  | .false => h
+def Bits.half : Nat → Nat
+  | .zero => .zero
+  | .succ n => Bits.bump (Bits.odd n) (Bits.half n)
+-- `2 r + c`, in the shape `Nat.bitwise` builds
+def Bits.cons (c : Bool) (r : Nat) : Nat := match c with
+  | .true => .succ (Nat.mul 2 r)
+  | .false => Nat.mul 2 r
+
+def Bits.congr {A B : Type} (f : A → B) {a b : A} (e : a = b) : f a = f b := Eq.congrArg f e
+def Bits.add_succ : (m n : Nat) → Nat.add m (Nat.succ n) = Nat.succ (Nat.add m n)
+  | .zero, _ => rfl
+  | .succ m, n => Bits.congr Nat.succ (Bits.add_succ m n)
+def Bits.add_zero : (n : Nat) → Nat.add n 0 = n
+  | .zero => rfl
+  | .succ n => Bits.congr Nat.succ (Bits.add_zero n)
+-- `2 (q + 1) = 2 q + 2`
+def Bits.mul2_succ (q : Nat) : Nat.mul 2 (Nat.succ q) = Nat.succ (Nat.succ (Nat.mul 2 q)) :=
+  Bits.congr Nat.succ (Bits.add_succ q (Nat.add q 0))
+def Bits.not_not : (b : Bool) → Bool.not (Bool.not b) = b
+  | .true => rfl
+  | .false => rfl
+def Bits.bump_step : (b : Bool) → (h : Nat) → Bits.cons (Bool.not b) (Bits.bump b h) = Nat.succ (Bits.cons b h)
+  | .false, _ => rfl
+  | .true, h => Bits.mul2_succ h
+def Bits.bump_twice : (b : Bool) → (h : Nat) → Bits.bump (Bool.not b) (Bits.bump b h) = Nat.succ h
+  | .false, _ => rfl
+  | .true, _ => rfl
+
+-- every number is `2 (half n) + odd n`
+def Bits.decomp : (n : Nat) → Bits.cons (Bits.odd n) (Bits.half n) = n
+  | .zero => rfl
+  | .succ n => Eq.trans (Bits.bump_step (Bits.odd n) (Bits.half n)) (Bits.congr Nat.succ (Bits.decomp n))
+-- `cons c (r + 1)` is `cons c r + 2`
+def Bits.cons_ss : (c : Bool) → (r : Nat) → Bits.cons c (Nat.succ r) = Nat.succ (Nat.succ (Bits.cons c r))
+  | .true, r => Bits.congr Nat.succ (Bits.mul2_succ r)
+  | .false, r => Bits.mul2_succ r
+-- parity and half two steps on
+def Bits.odd_ss (n : Nat) : Bits.odd (Nat.succ (Nat.succ n)) = Bits.odd n := Bits.not_not (Bits.odd n)
+def Bits.half_ss (n : Nat) : Bits.half (Nat.succ (Nat.succ n)) = Nat.succ (Bits.half n) :=
+  Bits.bump_twice (Bits.odd n) (Bits.half n)
+-- and those are the half and parity of `cons c r`
+def Bits.odd_cons (c : Bool) : (r : Nat) → Bits.odd (Bits.cons c r) = c
+  | .zero => match c with
+    | .true => rfl
+    | .false => rfl
+  | .succ r =>
+    Eq.trans (Bits.congr Bits.odd (Bits.cons_ss c r)) (Eq.trans (Bits.odd_ss (Bits.cons c r)) (Bits.odd_cons c r))
+def Bits.half_cons (c : Bool) : (r : Nat) → Bits.half (Bits.cons c r) = r
+  | .zero => match c with
+    | .true => rfl
+    | .false => rfl
+  | .succ r =>
+    Eq.trans (Bits.congr Bits.half (Bits.cons_ss c r)) (Eq.trans (Bits.half_ss (Bits.cons c r)) (Bits.congr Nat.succ (Bits.half_cons c r)))
+
+-- ## `Nat.div n 2` and `Nat.isOdd n` are `half` and `odd`
+--
+-- (`Nat.div` is `Nat.divGo` with fuel; the step lemma restates its `match` on `lt n 2`.)
+def Bits.dsel (t : Bool) (y : Nat) : Nat := match t with
+  | .true => .zero
+  | .false => .succ y
+def Bits.divStep (f n : Nat) (h : Nat.lt n 2 = .false) :
+    Nat.divGo (Nat.succ f) n 2 = Nat.succ (Nat.divGo f (Nat.sub n 2) 2) :=
+  transp (fun t _ => Bits.dsel t (Nat.divGo f (Nat.sub n 2) 2) = Nat.succ (Nat.divGo f (Nat.sub n 2) 2))
+    (refl (Nat.succ (Nat.divGo f (Nat.sub n 2) 2))) (Eq.symm h)
+def Bits.ltz : (n : Nat) → Nat.lt n 0 = .false
+  | .zero => rfl
+  | .succ _ => rfl
+def Bits.le_succ : (a b : Nat) → Nat.le a b = .true → Nat.le a (Nat.succ b) = .true
+  | .zero, _, _ => rfl
+  | .succ a, .zero, h => absurd (Sat.contra (Nat.lt a 0) h (Bits.ltz a))
+  | .succ a, .succ b, h => Bits.le_succ a b h
+def Bits.le_add : (r k : Nat) → Nat.le r (Nat.add r k) = .true
+  | .zero, _ => rfl
+  | .succ r, k => Bits.le_add r k
+def Bits.le_cons (r : Nat) : (c : Bool) → Nat.le r (Bits.cons c r) = .true
+  | .true => Bits.le_succ r (Nat.mul 2 r) (Bits.le_add r (Nat.add r 0))
+  | .false => Bits.le_add r (Nat.add r 0)
+-- `divGo f (2 r + c) 2 = r` with enough fuel
+def Bits.divGo2 : (r : Nat) → (c : Bool) → (f : Nat) → Nat.le r f = .true → Nat.divGo f (Bits.cons c r) 2 = r
+  | .zero, .true, .zero, _ => rfl
+  | .zero, .false, .zero, _ => rfl
+  | .zero, .true, .succ _, _ => rfl
+  | .zero, .false, .succ _, _ => rfl
+  | .succ r, _, .zero, h => absurd (Sat.contra (Nat.lt r 0) h (Bits.ltz r))
+  | .succ r, c, .succ f, h =>
+    let X := Bits.cons c r;
+    let step : Nat.divGo (Nat.succ f) (Nat.succ (Nat.succ X)) 2 = Nat.succ r :=
+      Eq.trans (Bits.divStep f (Nat.succ (Nat.succ X)) (Bits.ltz X)) (Bits.congr Nat.succ (Bits.divGo2 r c f h));
+    transp (fun t _ => Nat.divGo (Nat.succ f) t 2 = Nat.succ r) step (Eq.symm (Bits.cons_ss c r))
+def Bits.div_cons (c : Bool) (r : Nat) : Nat.div (Bits.cons c r) 2 = r :=
+  Bits.divGo2 r c (Bits.cons c r) (Bits.le_cons r c)
+
+def Bits.pred_subFrom_succ : (a b : Nat) → Nat.pred (Nat.subFrom a (Nat.succ b)) = Nat.subFrom a b
+  | .zero, _ => rfl
+  | .succ a, b => Bits.congr Nat.pred (Bits.pred_subFrom_succ a b)
+def Bits.sub_self : (n : Nat) → Nat.subFrom n n = 0
+  | .zero => rfl
+  | .succ n => Eq.trans (Bits.pred_subFrom_succ n n) (Bits.sub_self n)
+def Bits.succ_sub_self : (n : Nat) → Nat.subFrom n (Nat.succ n) = 1
+  | .zero => rfl
+  | .succ n => Eq.trans (Bits.pred_subFrom_succ n (Nat.succ n)) (Bits.succ_sub_self n)
+def Bits.isOdd_at : (c : Bool) → (h : Nat) → Nat.beq (Nat.sub (Bits.cons c h) (Nat.mul 2 h)) 1 = c
+  | .false, h => transp (fun t _ => Nat.beq t 1 = .false) rfl (Eq.symm (Bits.sub_self (Nat.mul 2 h)))
+  | .true, h => transp (fun t _ => Nat.beq t 1 = .true) rfl (Eq.symm (Bits.succ_sub_self (Nat.mul 2 h)))
+def Bits.isOdd_cons (c : Bool) (h : Nat) : Nat.isOdd (Bits.cons c h) = c :=
+  transp (fun t _ => Nat.beq (Nat.sub (Bits.cons c h) (Nat.mul 2 t)) 1 = c) (Bits.isOdd_at c h) (Eq.symm (Bits.div_cons c h))
+-- for every number
+def Bits.div2 (n : Nat) : Nat.div n 2 = Bits.half n :=
+  transp (fun t _ => Nat.div t 2 = Bits.half n) (Bits.div_cons (Bits.odd n) (Bits.half n)) (Bits.decomp n)
+def Bits.isOdd (n : Nat) : Nat.isOdd n = Bits.odd n :=
+  transp (fun t _ => Nat.isOdd t = Bits.odd n) (Bits.isOdd_cons (Bits.odd n) (Bits.half n)) (Bits.decomp n)
+
+-- ## Bits
+
+-- bit `i` of `n`
+-- (with the natively computed `Nat.isOdd` and `Nat.div`, so that the bits of a numeral
+-- compute fast; `odd`/`half` are what proofs reason with, `Bits.isOdd`/`Bits.div2` relate them)
+def Bits.bitAt : Nat → Nat → Bool
+  | .zero, n => Nat.isOdd n
+  | .succ i, n => Bits.bitAt i (Nat.div n 2)
+def Bits.bit (n i : Nat) : Bool := Bits.bitAt i n
+
+def Bits.bit_cons0 (c : Bool) (r : Nat) : Bits.bit (Bits.cons c r) 0 = c := Bits.isOdd_cons c r
+def Bits.bit_consS (c : Bool) (r i : Nat) : Bits.bit (Bits.cons c r) (Nat.succ i) = Bits.bit r i :=
+  Bits.congr (Bits.bitAt i) (Bits.div_cons c r)
+def Bits.bit_zero : (i : Nat) → Bits.bit 0 i = .false
+  | .zero => rfl
+  | .succ i => Bits.bit_zero i
+
+-- a number no bigger than `i` has bit `i` clear (it is below `2^i`)
+def Bits.le_succ_r (k m : Nat) (h : Nat.le k m = .true) : Nat.le k (Nat.succ m) = .true := Word.lt_succ k (Nat.succ m) h
+def Bits.halfP (n : Nat) : Prop := (m : Nat) → Nat.le n (Nat.succ m) = .true → Nat.le (Bits.half n) m = .true
+def Bits.halfP0 : Bits.halfP 0 := fun m _ => rfl
+def Bits.halfP1 : Bits.halfP 1 := fun m _ => rfl
+def Bits.halfPss' (k : Nat) (hk : Bits.halfP k) : (m : Nat) → Nat.le (Nat.succ (Nat.succ k)) (Nat.succ m) = .true →
+    Nat.le (Bits.half (Nat.succ (Nat.succ k))) m = .true
+  | .zero, h => absurd (Sat.contra (Nat.lt k 0) h (Bits.ltz k))
+  | .succ m, h =>
+    transp (fun t _ => Nat.le t (Nat.succ m) = .true) (hk m (Bits.le_succ_r k m h))
+      (Eq.symm (Bits.half_ss k))
+def Bits.halfPss (k : Nat) (hk : Bits.halfP k) : Bits.halfP (Nat.succ (Nat.succ k)) := fun m h =>
+  Bits.halfPss' k hk m h
+def Bits.halfQ : (n : Nat) → And (Bits.halfP n) (Bits.halfP (Nat.succ n))
+  | .zero => (Bits.halfP0, Bits.halfP1)
+  | .succ n => ((Bits.halfQ n).2, Bits.halfPss n (Bits.halfQ n).1)
+def Bits.bit_small : (i n : Nat) → Nat.le n i = .true → Bits.bit n i = .false
+  | .zero, .zero, _ => rfl
+  | .zero, .succ n, h => absurd (Sat.contra (Nat.lt n 0) h (Bits.ltz n))
+  | .succ i, n, h =>
+    transp (fun t _ => Bits.bit t i = .false) (Bits.bit_small i (Bits.half n) ((Bits.halfQ n).1 i h)) (Eq.symm (Bits.div2 n))
+
+-- ## The bits of `Nat.bitwise` (and so of `land`, `lor`, `xor`)
+
+def Bits.congr2 {A B C : Type} (f : A → B → C) {a a' : A} {b b' : B} (e : a = a') (e' : b = b') : f a b = f a' b' :=
+  Eq.trans (Eq.congrArg (fun x => f x b) e) (Eq.congrArg (f a') e')
+def Bits.le_refl : (n : Nat) → Nat.le n n = .true
+  | .zero => rfl
+  | .succ n => Bits.le_refl n
+def Bits.le_trans : (a b c : Nat) → Nat.le a b = .true → Nat.le b c = .true → Nat.le a c = .true
+  | .zero, _, _, _, _ => rfl
+  | .succ a, .zero, _, h, _ => absurd (Sat.contra (Nat.lt a 0) h (Bits.ltz a))
+  | .succ _, .succ b, .zero, _, h => absurd (Sat.contra (Nat.lt b 0) h (Bits.ltz b))
+  | .succ a, .succ b, .succ c, h1, h2 => Bits.le_trans a b c h1 h2
+def Bits.le_add_l : (a b : Nat) → Nat.le b (Nat.add a b) = .true
+  | .zero, b => Bits.le_refl b
+  | .succ a, b => Bits.le_succ_r b (Nat.add a b) (Bits.le_add_l a b)
+def Bits.ltCases : (i F : Nat) → Or (Nat.lt i F = .true) (Nat.le F i = .true)
+  | .zero, .zero => Or.inr rfl
+  | .zero, .succ _ => Or.inl rfl
+  | .succ _, .zero => Or.inr rfl
+  | .succ i, .succ F => Bits.ltCases i F
+
+def Bits.bw_lt (f : Bool → Bool → Bool) : (F i a b : Nat) → Nat.lt i F = .true →
+    Bits.bit (Nat.bitwise f F a b) i = f (Bits.bit a i) (Bits.bit b i)
+  | .zero, i, _, _, h => absurd (Sat.contra (Nat.lt i 0) h (Bits.ltz i))
+  | .succ F, .zero, a, b, _ =>
+    Bits.bit_cons0 (f (Nat.isOdd a) (Nat.isOdd b)) (Nat.bitwise f F (Nat.div a 2) (Nat.div b 2))
+  | .succ F, .succ i, a, b, h =>
+    Eq.trans (Bits.bit_consS (f (Nat.isOdd a) (Nat.isOdd b)) (Nat.bitwise f F (Nat.div a 2) (Nat.div b 2)) i)
+      (Bits.bw_lt f F i (Nat.div a 2) (Nat.div b 2) h)
+def Bits.bw_ge (f : Bool → Bool → Bool) : (F i a b : Nat) → Nat.le F i = .true → Bits.bit (Nat.bitwise f F a b) i = .false
+  | .zero, i, _, _, _ => Bits.bit_zero i
+  | .succ F, .zero, _, _, h => absurd (Sat.contra (Nat.lt F 0) h (Bits.ltz F))
+  | .succ F, .succ i, a, b, h =>
+    Eq.trans (Bits.bit_consS (f (Nat.isOdd a) (Nat.isOdd b)) (Nat.bitwise f F (Nat.div a 2) (Nat.div b 2)) i)
+      (Bits.bw_ge f F i (Nat.div a 2) (Nat.div b 2) h)
+-- with the fuel `Nat.land` & co. give it, `a + b`, for any `f` with `f false false = false`
+def Bits.bitwise_bit (f : Bool → Bool → Bool) (hf : f .false .false = .false) (a b i : Nat) :
+    Bits.bit (Nat.bitwise f (Nat.add a b) a b) i = f (Bits.bit a i) (Bits.bit b i) :=
+  Or.elim (Bits.ltCases i (Nat.add a b))
+    (fun h => Bits.bw_lt f (Nat.add a b) i a b h)
+    (fun h => Eq.trans (Bits.bw_ge f (Nat.add a b) i a b h)
+      (Eq.symm (Eq.trans (Bits.congr2 f
+        (Bits.bit_small i a (Bits.le_trans a (Nat.add a b) i (Bits.le_add a b) h))
+        (Bits.bit_small i b (Bits.le_trans b (Nat.add a b) i (Bits.le_add_l a b) h))) hf)))
+def Bits.land_bit (a b i : Nat) : Bits.bit (Nat.land a b) i = Bool.and (Bits.bit a i) (Bits.bit b i) :=
+  Bits.bitwise_bit Bool.and rfl a b i
+def Bits.lor_bit (a b i : Nat) : Bits.bit (Nat.lor a b) i = Bool.or (Bits.bit a i) (Bits.bit b i) :=
+  Bits.bitwise_bit Bool.or rfl a b i
+def Bits.xor_bit (a b i : Nat) : Bits.bit (Nat.xor a b) i = Bool.xor (Bits.bit a i) (Bits.bit b i) :=
+  Bits.bitwise_bit Bool.xor rfl a b i
+
+-- ## `land a b ≤ a` (Word's `land` keeps the smaller of the two: it is `land a b`)
+
+def Bits.le_congr {a a' b b' : Nat} (ea : a = a') (eb : b = b') (h : Nat.le a b = .true) : Nat.le a' b' = .true :=
+  transp (fun t _ => Nat.le t b' = .true) (transp (fun t _ => Nat.le a t = .true) h eb) ea
+def Bits.le2 : (R A : Nat) → Nat.le R A = .true → Nat.le (Nat.mul 2 R) (Nat.mul 2 A) = .true
+  | .zero, _, _ => rfl
+  | .succ R, .zero, h => absurd (Sat.contra (Nat.lt R 0) h (Bits.ltz R))
+  | .succ R, .succ A, h =>
+    -- (`2 (R + 1) = (R + 1) + (R + 1)`: one `succ` off each side, then `add_succ`)
+    Bits.le_congr (Eq.symm (Bits.add_succ R (Nat.add R 0))) (Eq.symm (Bits.add_succ A (Nat.add A 0))) (Bits.le2 R A h)
+def Bits.cons_le : (c c' : Bool) → (R A : Nat) → Nat.le R A = .true → (c = .true → c' = .true) →
+    Nat.le (Bits.cons c R) (Bits.cons c' A) = .true
+  | .false, .false, R, A, h, _ => Bits.le2 R A h
+  | .false, .true, R, A, h, _ => Bits.le_succ_r (Nat.mul 2 R) (Nat.mul 2 A) (Bits.le2 R A h)
+  | .true, .true, R, A, h, _ => Bits.le2 R A h
+  | .true, .false, _, _, _, i => absurd (i rfl).1
+def Bits.land_le : (F a b : Nat) → Nat.le (Nat.bitwise Bool.and F a b) a = .true
+  | .zero, _, _ => rfl
+  | .succ F, a, b =>
+    let R := Nat.bitwise Bool.and F (Nat.div a 2) (Nat.div b 2);
+    let ih : Nat.le R (Bits.half a) = .true :=
+      transp (fun t _ => Nat.le R t = .true) (Bits.land_le F (Nat.div a 2) (Nat.div b 2)) (Bits.div2 a);
+    let imp : Bool.and (Nat.isOdd a) (Nat.isOdd b) = .true → Bits.odd a = .true :=
+      fun e => Eq.trans (Eq.symm (Bits.isOdd a)) (Sat.and_left (Nat.isOdd a) (Nat.isOdd b) e);
+    let step : Nat.le (Bits.cons (Bool.and (Nat.isOdd a) (Nat.isOdd b)) R) (Bits.cons (Bits.odd a) (Bits.half a)) = .true :=
+      Bits.cons_le (Bool.and (Nat.isOdd a) (Nat.isOdd b)) (Bits.odd a) R (Bits.half a) ih imp;
+    transp (fun t _ => Nat.le (Bits.cons (Bool.and (Nat.isOdd a) (Nat.isOdd b)) R) t = .true) step (Bits.decomp a)
+
+-- ## Words: equality by bits, and the bitwise operations
+
+-- `min L a = L` when `L ≤ a` (Word's `below`)
+def Bits.pick_succ : (b : Bool) → (x y : Nat) → Word.pick b (Nat.succ x) (Nat.succ y) = Nat.succ (Word.pick b x y)
+  | .true, _, _ => rfl
+  | .false, _, _ => rfl
+def Bits.min_of_le : (L a : Nat) → Nat.le L a = .true → Word.min L a = L
+  | .zero, .zero, _ => rfl
+  | .zero, .succ _, _ => rfl
+  | .succ L, .zero, h => absurd (Sat.contra (Nat.lt L 0) h (Bits.ltz L))
+  | .succ L, .succ a, h => Eq.trans (Bits.pick_succ (Nat.lt L a) L a) (Bits.congr Nat.succ (Bits.min_of_le L a h))
+
+-- the bits of the bitwise operations on words
+def Bits.wland_bit {w : Nat} (x y : UIntN w) (i : Nat) :
+    Bits.bit (UIntN.toNat (UIntN.land x y)) i = Bool.and (Bits.bit (UIntN.toNat x) i) (Bits.bit (UIntN.toNat y) i) :=
+  Eq.trans
+    (Bits.congr (fun t => Bits.bit t i)
+      (Bits.min_of_le (Nat.land (UIntN.toNat x) (UIntN.toNat y)) (UIntN.toNat x)
+        (Bits.land_le (Nat.add (UIntN.toNat x) (UIntN.toNat y)) (UIntN.toNat x) (UIntN.toNat y))))
+    (Bits.land_bit (UIntN.toNat x) (UIntN.toNat y) i)
+def Bits.wlor_bit {w : Nat} (x y : UIntN w) (i : Nat) :
+    Bits.bit (UIntN.toNat (UIntN.lor x y)) i = Bool.or (Bits.bit (UIntN.toNat x) i) (Bits.bit (UIntN.toNat y) i) :=
+  Bits.lor_bit (UIntN.toNat x) (UIntN.toNat y) i
+def Bits.wxor_bit {w : Nat} (x y : UIntN w) (i : Nat) :
+    Bits.bit (UIntN.toNat (UIntN.xor x y)) i = Bool.xor (Bits.bit (UIntN.toNat x) i) (Bits.bit (UIntN.toNat y) i) :=
+  Bits.xor_bit (UIntN.toNat x) (UIntN.toNat y) i
+
+-- bits `0 … k-1` of `a` and `b` agree (the top one first)
+def Bits.eqUpTo (a b : Nat) : Nat → Bool
+  | .zero => .true
+  | .succ k => Bool.and (Sat.boolEq (Bits.bit a k) (Bits.bit b k)) (Bits.eqUpTo a b k)
+def Bits.lt_succ_cases : (i k : Nat) → Nat.lt i (Nat.succ k) = .true → Or (Nat.lt i k = .true) (i = k)
+  | .zero, .zero, _ => Or.inr rfl
+  | .zero, .succ _, _ => Or.inl rfl
+  | .succ i, .zero, h => absurd (Sat.contra (Nat.lt i 0) h (Bits.ltz i))
+  | .succ i, .succ k, h => Or.imp (fun e => e) (fun e => Bits.congr Nat.succ e) (Bits.lt_succ_cases i k h)
+def Bits.eqUpTo_bits (a b : Nat) : (k : Nat) → Bits.eqUpTo a b k = .true → (i : Nat) → Nat.lt i k = .true → Bits.bit a i = Bits.bit b i
+  | .zero, _, i, hi => absurd (Sat.contra (Nat.lt i 0) hi (Bits.ltz i))
+  | .succ k, h, i, hi =>
+    Or.elim (Bits.lt_succ_cases i k hi)
+      (fun lt => Bits.eqUpTo_bits a b k (Sat.and_right (Sat.boolEq (Bits.bit a k) (Bits.bit b k)) (Bits.eqUpTo a b k) h) i lt)
+      (fun e => transp (fun t _ => Bits.bit a t = Bits.bit b t)
+        (Sat.boolEq_sound (Bits.bit a k) (Bits.bit b k) (Sat.and_left (Sat.boolEq (Bits.bit a k) (Bits.bit b k)) (Bits.eqUpTo a b k) h))
+        (Eq.symm e))
+
+-- two numbers below `2^w` with the same bits below `w` are equal
+def Bits.lt_congr {a a' b b' : Nat} (ea : a = a') (eb : b = b') (h : Nat.lt a b = .true) : Nat.lt a' b' = .true :=
+  transp (fun t _ => Nat.lt t b' = .true) (transp (fun t _ => Nat.lt a t = .true) h eb) ea
+def Bits.lt2 : (h P : Nat) → Nat.lt (Nat.mul 2 h) (Nat.mul 2 P) = .true → Nat.lt h P = .true
+  | _, .zero, e => absurd (Sat.contra (Nat.lt (Nat.mul 2 _) 0) e (Bits.ltz (Nat.mul 2 _)))
+  | .zero, .succ _, _ => rfl
+  | .succ h, .succ P, e =>
+    Bits.lt2 h P (Bits.lt_congr (Bits.add_succ h (Nat.add h 0)) (Bits.add_succ P (Nat.add P 0)) e)
+def Bits.le_mul2_cons : (c : Bool) → (h : Nat) → Nat.le (Nat.mul 2 h) (Bits.cons c h) = .true
+  | .true, h => Bits.le_succ_r (Nat.mul 2 h) (Nat.mul 2 h) (Bits.le_refl (Nat.mul 2 h))
+  | .false, h => Bits.le_refl (Nat.mul 2 h)
+def Bits.half_lt (a P : Nat) (e : Nat.lt a (Nat.mul 2 P) = .true) : Nat.lt (Bits.half a) P = .true :=
+  Bits.lt2 (Bits.half a) P
+    (Word.lt_of_le_lt (Nat.mul 2 (Bits.half a)) a (Nat.mul 2 P)
+      (transp (fun t _ => Nat.le (Nat.mul 2 (Bits.half a)) t = .true) (Bits.le_mul2_cons (Bits.odd a) (Bits.half a)) (Bits.decomp a))
+      e)
+def Bits.lt_one : (a : Nat) → Nat.lt a 1 = .true → a = 0
+  | .zero, _ => rfl
+  | .succ a, h => absurd (Sat.contra (Nat.lt a 0) h (Bits.ltz a))
+def Bits.nat_ext : (w a b : Nat) → Nat.lt a (Nat.pow 2 w) = .true → Nat.lt b (Nat.pow 2 w) = .true →
+    ((i : Nat) → Nat.lt i w = .true → Bits.bit a i = Bits.bit b i) → a = b
+  | .zero, a, b, ha, hb, _ => Eq.trans (Bits.lt_one a ha) (Eq.symm (Bits.lt_one b hb))
+  | .succ w, a, b, ha, hb, h =>
+    let eh : Bits.half a = Bits.half b :=
+      Bits.nat_ext w (Bits.half a) (Bits.half b) (Bits.half_lt a (Nat.pow 2 w) ha) (Bits.half_lt b (Nat.pow 2 w) hb)
+        (fun i hi => Eq.trans (Bits.congr (fun t => Bits.bit t i) (Eq.symm (Bits.div2 a)))
+          (Eq.trans (h (Nat.succ i) hi) (Bits.congr (fun t => Bits.bit t i) (Bits.div2 b))));
+    let eo : Bits.odd a = Bits.odd b := Eq.trans (Eq.symm (Bits.isOdd a)) (Eq.trans (h 0 rfl) (Bits.isOdd b));
+    Eq.trans (Eq.symm (Bits.decomp a)) (Eq.trans (Bits.congr2 Bits.cons eo eh) (Bits.decomp b))
+-- **words are equal when their bits are** (what `bv_decide` proves, by SAT)
+def Bits.word_ext {ω w : Nat} (x y : UIntN w) (h : Bits.eqUpTo (UIntN.toNat x) (UIntN.toNat y) w = .true) : x = y :=
+  UIntN.ext x y (Bits.nat_ext w (UIntN.toNat x) (UIntN.toNat y) (UIntN.toNat_lt x) (UIntN.toNat_lt y)
+    (Bits.eqUpTo_bits (UIntN.toNat x) (UIntN.toNat y) w h))
