@@ -986,6 +986,9 @@ structure Acc where
   /-- the pair under test is a type against itself at other levels: always asked -/
   wizLv : Bool := false
   wizLvN : Nat := 0
+  /-- the queries of the targeted generator (`levelPairs`, W1): always asked, apart from
+  the caps (the generator is bounded) -/
+  wizTargeted : Bool := false
   samples : Nat := 0
 
 abbrev M := StateM Acc
@@ -1015,7 +1018,8 @@ def convJd (ctx : Array Tm) (T a b : Tm) : Tm :=
 def wq (w : World) (role : String) (closed : Tm) (nf : Bool := false) (pair : Bool := false) : M Unit := do
   let a ← get
   -- (a cap for each class: level pairs 300, other pairs half of `wizCap`, the rest half)
-  let room := if pair && a.wizLv then a.wizLvN < 300
+  let room := if a.wizTargeted then true
+    else if pair && a.wizLv then a.wizLvN < 300
     else if pair then a.wizPairs * 2 < a.wizCap && a.samples % 3 == 0 else a.wizOn && (a.wiz.size - a.wizPairs) * 2 < a.wizCap
   if w.wiz && room && (!nf || a.wizNf * 8 < a.wizCap) then
     if let some m := toM closed then
@@ -1023,8 +1027,8 @@ def wq (w : World) (role : String) (closed : Tm) (nf : Bool := false) (pair : Bo
       unless a.wizSeen.contains h do
         set { a with wiz := a.wiz.push (m, role, nf), wizNf := a.wizNf + (if nf then 1 else 0),
                      wizSeen := a.wizSeen.insert h,
-                     wizPairs := a.wizPairs + (if pair && !a.wizLv then 1 else 0),
-                     wizLvN := a.wizLvN + (if pair && a.wizLv then 1 else 0) }
+                     wizPairs := a.wizPairs + (if pair && !a.wizLv && !a.wizTargeted then 1 else 0),
+                     wizLvN := a.wizLvN + (if pair && a.wizLv && !a.wizTargeted then 1 else 0) }
 
 def V (w : World) (role : String) (j : Jd) : M Bool := do
   let c := close j.ctx j.t j.T
@@ -1312,7 +1316,7 @@ def lawsOn (w : World) (what : String) (j : Jd) (extra : List Tm) (subs : List (
 
 /-- A type equation `A = B` in `ctx`: the rule reached (coverage), `False` against
 conversion, and `False`/`True` under every instance (P4). -/
-def tyPair (w : World) (ctx : Array Tm) (A B : Tm) (subs : List (Nat × Tm)) : M Unit := do
+def tyPair (w : World) (ctx : Array Tm) (A B : Tm) (subs : List (Nat × Tm)) (tag : String := "") : M Unit := do
   let g := w.g
   let cx := mkCx w ctx
   let k := cx.k
@@ -1338,9 +1342,9 @@ def tyPair (w : World) (ctx : Array Tm) (A B : Tm) (subs : List (Nat × Tm)) : M
   modify fun a => { a with wizLv := B == bumpLevels A && A != B }
   -- (not a pair that differs in a quantity only: at a proposition that is K1, pinned)
   if A != B && flipQ A != some B then
-    if let some l := cx.lvlOf A then wq w "P2: A ≡ B (two types)" (convJd ctx (.sort l) A B) (pair := true)
-    wq w "P4: does (A = B) compute to False?" (close ctx (.lam "e" (.var 0)) (piW (.eqTy A B) (.empty 0))) (pair := true)
-    wq w "P4: does (A = B) compute to True?" (close ctx .tt (.eqTy A B)) (pair := true)
+    if let some l := cx.lvlOf A then wq w (tag ++ "P2: A ≡ B (two types)") (convJd ctx (.sort l) A B) (pair := true)
+    wq w (tag ++ "P4: does (A = B) compute to False?") (close ctx (.lam "e" (.var 0)) (piW (.eqTy A B) (.empty 0))) (pair := true)
+    wq w (tag ++ "P4: does (A = B) compute to True?") (close ctx .tt (.eqTy A B)) (pair := true)
   for (kk, a) in subs do
     let ctx' := instCtx ctx kk a
     let A' := instTm n kk a A
@@ -1362,6 +1366,77 @@ def tyPair (w : World) (ctx : Array Tm) (A B : Tm) (subs : List (Nat × Tm)) : M
     if kind == "True" && kind' != "True" then
       bad "P4 an equation computes to True, and an instance of it does not" inst
     if c && !c' then bad "P2 conversion of types is not stable under substitution" inst
+
+/-! ### A targeted generator: one constant at two levels (W1)
+
+W1 (`wiz-notes/kernel-lint.md`, fixed by #76): `Kernel.wiz`'s `headSame` compared two
+constants by name, so `d.{0}` and `d.{1}` in the spines of two glued values were "the
+same", and two stuck cases whose environments differed only in a level instance were
+convertible. The general generator does not build that shape (`prop-harness.md` §6a): it
+needs a level-polymorphic constant as an argument of a glued global or of a variable, the
+whole stuck, compared against itself at another level. This generator builds exactly that:
+a proposition-valued polymorphic constant `c` (a gadget of the world whose type does not
+depend on its level), at two levels, under up to two wrappers from
+
+* `caseF · x` (a glued global, a case on its argument, stuck on a variable `x : Enum 1`),
+* `P ·` (a variable `P : Prop → Prop`: a neutral spine),
+
+in the fixed context `x0 : Enum 1, P : Prop → Prop, x2 : Enum 1`. Every choice sequence is
+enumerated (`levelPairSeqs`); each pair goes to `tyPair` (the laws in the Lean kernel, and
+its three queries for `Kernel.wiz`, always asked). -/
+
+/-- the context of the targeted pairs -/
+def lvCtx : Array Tm := #[.enum (MTm.labels 1), piW (.sort 0) (.sort 0), .enum (MTm.labels 1)]
+/-- the two levels (a pair at one level is the same type twice, which `tyPair` does not
+send: the controls are the general generator's) -/
+def lvPairs : Array (Nat × Nat) := #[(0, 1), (1, 2), (2, 0)]
+
+/-- the polymorphic propositions of a world: gadgets `c.{l}` of type `Prop` -/
+def lvConsts (w : World) : Array Name :=
+  (w.gadgets.filterMap fun (c, T) => match c, T with
+    | .const n [_], .sort l => if levelIs l 0 then some n else none
+    | _, _ => none).toArray
+
+def genLvPair (w : World) : Gen (Option (Tm × Tm)) := do
+  let cs := lvConsts w
+  if cs.isEmpty then return none
+  let n := cs[← choose cs.size]!
+  let (l, l') := lvPairs[← choose lvPairs.size]!
+  -- (in `lvCtx`: x0 = var 2, P = var 1, x2 = var 0)
+  let wrappers : Array (Tm → Tm) :=
+    #[fun e => .app (.app (.const "caseF" []) e) (.var 2),
+      fun e => .app (.app (.const "caseF" []) e) (.var 0),
+      fun e => .app (.var 1) e]
+  let depth ← choose 3
+  let mut ws : Array (Tm → Tm) := #[]
+  for _ in [0:depth] do
+    ws := ws.push wrappers[← choose wrappers.size]!
+  let mkAt (u : Nat) : Tm := ws.foldl (fun e f => f e) (.const n [Level.ofNat u])
+  return some (mkAt l, mkAt l')
+
+/-- every choice sequence of `genLvPair` (a full enumeration: the tree is small) -/
+partial def levelPairSeqs (w : World) (pre : Array Nat := #[]) : Array (Array Nat) :=
+  let log := (runGen pre none (genLvPair w)).2.log
+  if h : pre.size < log.size then
+    let k := log[pre.size].2
+    (List.range k).foldl (fun acc c => acc ++ levelPairSeqs w (pre.push c)) #[]
+  else #[pre]
+
+/-- The targeted pairs of a world, into the accumulator. -/
+def levelPairs (w : World) (iseed : Nat) : M Unit := do
+  unless w.wiz && (w.heads.contains (.const "caseF" [])) do return
+  modify fun a => { a with wizTargeted := true }
+  let subs := subsFor w lvCtx iseed
+  let cx := mkCx w lvCtx
+  for pre in levelPairSeqs w do
+    let (some (A, B), _) := runGen pre none (genLvPair w) | continue
+    -- (both sides must be types: every wrapper keeps `Prop`)
+    unless (cx.lvlOf A).isSome && (cx.lvlOf B).isSome do
+      bad "W1 generator: a generated side is ill typed" fun _ => s!"{A.pretty (names 3)}  /  {B.pretty (names 3)}"
+      continue
+    hit "W1 generator: a constant at two levels, in a stuck spine"
+    tyPair w lvCtx A B subs (tag := "W1 pair: ")
+  modify fun a => { a with wizTargeted := false, wizLv := false }
 
 def castKind (g : Gl) (lvl : Nat) (x C : Val Q) : String :=
   match whnf C with
@@ -1590,6 +1665,8 @@ def runOne (p : Plan) (pre : Array Nat) (iseed : Nat) (acc : Acc) (seen : List S
 def runWorld (w : World) (b : Budget) (acc : Acc) (seen : List String) : IO (Acc × List String) := do
   let mut acc := acc
   let mut seen := seen
+  -- the targeted pairs (W1), before the caps of the general queries fill up
+  acc := ((levelPairs w b.seed).run acc).2
   -- enumeration
   for ctx in w.fixed do
     for types in [true, false] do
@@ -1625,7 +1702,8 @@ def requiredRules : List String :=
   ["feature Π at a quantity variable", "feature Σ at a quantity variable", "feature level variable",
    "feature native: operation partially applied (Nat.add x)", "feature global: glued definition",
    "feature cast along a built proof (suspended)", "feature transp (suspended proofs)",
-   "feature cast along a hypothesis", "feature let at quantity ω", "feature data at a size"]
+   "feature cast along a hypothesis", "feature let at quantity ω", "feature data at a size",
+   "W1 generator: a constant at two levels, in a stuck spine"]
 
 
 def padRight (s : String) (n : Nat) : String := s ++ "".pushn ' ' (n - s.length)
