@@ -49,7 +49,7 @@ def load (tc : Toolchain) (roots : List System.FilePath) (salt : UInt64) (src : 
   let init : CommandState ZeroOneMany :=
     { loader, cHeaders := (headers[·]?), cSources := some (Module.cSourceResolver sources),
       trustedModule := own.contains, trustNative := tc.trustNative,
-      nativeFuel := tc.nativeFuel.getD NativeRun.defaultFuel, smt := tc.smt }
+      nativeFuel := tc.nativeFuel.getD NativeRun.defaultFuel, smt := ← tc.smt.resolve }
   let key := Cache.moduleKey (fun n => if n == mainName then some src else loader n) (headers[·]?) salt mainName
     own.contains
   -- a `link_c` file that appears or disappears changes the check (its contents enter
