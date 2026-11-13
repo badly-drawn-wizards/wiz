@@ -1,0 +1,2 @@
+examples/tour/08-codata.wiz:25:1: info: .cons 0 (.cons 1 (.cons 4 (.cons 9 (.cons 16 (.cons 25 .nil)))))
+examples/tour/08-codata.wiz:26:1: info: 9
