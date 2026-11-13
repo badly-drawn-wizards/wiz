@@ -20,8 +20,14 @@ def main : IO Unit := do
   function. Marshalling follows `T`: `Nat` and `UInt64` ↔ `uint64_t`, `Float64` ↔
   `double`, `String` ↔ UTF-8 `char*`, `Bool` ↔ `int`, `Unit` ↔ `void`; a result in `IO`
   takes and returns the world. The backends emit a C wrapper per foreign function.
-  A foreign function returning `Unit` must be in `IO` (`… → IO Unit`): a pure call whose
-  result is `Unit` carries nothing, so compiled code may drop it, effect and all (4h).
+  A foreign function outside `IO` must be pure (no observable effect): compiled code may
+  drop or duplicate such a call. Its result must have runtime content: `Unit`, a
+  proposition, a type, or an erased function into those (after unfolding) is refused.
+  An effect belongs in `IO` (`… → IO Unit`). (4h; CoreSpec §10.2a.)
+  A foreign function outside `IO` must be pure (no observable effect): compiled code may
+  drop or duplicate such a call. Its result must have runtime content: `Unit`, a
+  proposition, a type or an erased function into those (after unfolding) is refused;
+  an effect belongs in `IO` (`… → IO Unit`). (4h; CoreSpec §10.2a.)
   Without a header, a prototype is generated from the Wiz type.
 * `UInt64` and `Float64` are axioms whose operations are runtime functions, bound
   with `extern` (boxed raw words at runtime). The kernel doesn't compute with them.
@@ -227,7 +233,8 @@ extern "on_tick" onTick : Callback (Nat → IO Unit) → IO Unit
 
 Known limits: a project built by grail doesn't get its export wrappers yet (only
 `wiz build` and `wiz run` emit them); a callback's or an export's signature can't
-contain a `c_struct` (9i) or another callback; the self-hosted compiler has no `export`.
+contain a `c_struct` (9i) or another callback. The self-hosted compiler has exports,
+callbacks, libraries and the handle functions too (stages 21o, 21q, 21s).
 
 Tests: `callbacks` (qsort with Wiz comparators, a closure kept by C and called later
 in `IO`, the leak when it isn't released, C calling an export from a program, a C

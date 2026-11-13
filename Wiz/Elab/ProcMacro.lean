@@ -36,13 +36,21 @@ def mkCon (tag : Nat) (fields : List RVal) : RVal := .obj tag fields.toArray
 def encodeString (s : String) : RVal :=
   mkCon 0 [s.toList.foldr (fun c t => mkCon 1 [mkCon 0 [.nat c.toNat], t]) (mkCon 0 [])]
 
+/-- (11w) The range of syntax the user wrote, as two hidden trailing fields of its
+constructor value (`start`, `stop`). Wiz code never reads them (its `SyntaxF` has no such
+fields), so they survive exactly as long as a macro or tactic hands back the very value
+it was given (`exact $t` passes the user's `t` through), and are gone from anything it
+builds. `relocate` reads them back. -/
+def rangeFields (i : SourceInfo) : List RVal :=
+  if i.stop == 0 || i.synthetic then [] else [.nat i.start, .nat i.stop]
+
 /-- A host syntax tree as a runtime `Syntax` value. -/
 partial def encodeSyntax : Syntax → RVal
   | .missing => mkCon 0 []
-  | .atom _ v => mkCon 1 [encodeString v]
-  | .ident _ n => mkCon 2 [encodeString n]
-  | .node _ k args =>
-    mkCon 3 [encodeString k, args.foldr (fun a t => mkCon 5 [encodeSyntax a, t]) (mkCon 4 [])]
+  | .atom i v => mkCon 1 ([encodeString v] ++ rangeFields i)
+  | .ident i n => mkCon 2 ([encodeString n] ++ rangeFields i)
+  | .node i k args =>
+    mkCon 3 ([encodeString k, args.foldr (fun a t => mkCon 5 [encodeSyntax a, t]) (mkCon 4 [])] ++ rangeFields i)
 
 /-- The `i`th field of a constructor value. -/
 def _root_.Wiz.RVal.conField (v : RVal) (i : Nat) : RVal := v.field i
@@ -68,6 +76,33 @@ where
   --| sorry
   --sol>
 
+/-- (11w) Give a decoded syntax tree the ranges its value carries (`rangeFields`): the
+user's syntax that a macro or tactic passed through gets its own ranges back, and
+everything else gets `fallback` (the call's range, synthetic). `s` is `decodeSyntax`'s
+result for `v`, so the two have the same shape. -/
+partial def relocate (fallback : SourceInfo) (v : RVal) (s : Syntax) : Syntax :=
+  let info : SourceInfo := match v with
+    | .obj t fs =>
+      let k := if t == 3 then 2 else 1
+      match (fs[k]? : Option RVal), (fs[k + 1]? : Option RVal) with
+      | some (.nat a), some (.nat b) => { start := a, stop := b }
+      | _, _ => fallback
+    | _ => fallback
+  match s with
+  | .atom _ x => .atom info x
+  | .ident _ n => .ident info n
+  | .node _ k as => .node info k (go (v.conField 1) as.toList).toArray
+  | s => s
+where
+  go (l : RVal) : List Syntax → List Syntax
+    | [] => []
+    | a :: as => relocate fallback (l.conField 0) a :: go (l.conField 1) as
+
+/-- Decode a macro's or tactic's syntax, with the ranges of what it passed through. -/
+def decodeLocated (info : SourceInfo) (v : RVal) : Option Syntax :=
+  let fallback := { info with synthetic := true }
+  (decodeSyntax fallback v).map (relocate fallback v)
+
 /-- Give the identifiers a quotation introduced (`x✝`) the scope `scope`. -/
 partial def scopeQuoted (scope : Nat) : Syntax → Syntax
   | .ident i n => if n.endsWith "✝" then .ident i s!"{n}{scope}" else .ident i n
@@ -92,8 +127,8 @@ partial def runMacroTac (code : Code) (env : MacroEnv) (what : String) (info : S
   let str (r : RVal) := (r.toString?).getD ""
   match v.tag? with
   | some 1 => -- result
-    -- (11q) the output is the macro's, not the user's: synthetic, at the call's range
-    match decodeSyntax { info with synthetic := true } (v.conField 0) with
+    -- (11q, 11w) the macro's output: synthetic at the call's range, except what it passed through
+    match decodeLocated info (v.conField 0) with
     | some out => (traces, pure (scopeQuoted scope out, next))
     | none => (traces, throw s!"{what} returned a malformed syntax tree")
   | some 2 => (traces, throw (((v.conField 0).toString?).getD "macro failed")) -- fail
@@ -165,6 +200,84 @@ partial def setInfoAll (info : SourceInfo) : Syntax → Syntax
   | .atom _ v => .atom info v
   | .ident _ n => .ident info n
   | .node _ k as => .node info k (as.map (setInfoAll info))
+
+/-! ### Positions inside generated source
+
+A command macro can mark which parts of its generated source come from which node of its
+input: the text between U+E000 *path* U+E001 and the matching U+E002 (marks nest; *path*
+is decimal child indices separated by `.`) comes from the input node at *path*. Feral
+marks every expression's value, the names of functions, parameters and `let`s, and the
+function a call names (lib/Feral.wiz, `Fe.Out.at`). -/
+
+/-- A marked part of generated source: its range in the text without marks, and the
+path of the input node it comes from (a `null` node of decimal atoms, as `pathNode`). -/
+structure MarkSpan where
+  start : Nat
+  stop : Nat
+  path : Syntax
+  deriving Inhabited
+
+/-- The generated text without its marks, and the marked spans. -/
+def stripMarks (text : String) : String × Array MarkSpan := Id.run do
+  let mut out : Array Char := #[]
+  let mut spans : Array MarkSpan := #[]
+  let mut open_ : List (Nat × Syntax) := []
+  let mut inPath := false
+  let mut path : String := ""
+  for c in text.toList do
+    if inPath then
+      if c == '' then
+        inPath := false
+        let atoms := (path.splitOn ".").filter (· ≠ "") |>.map (Syntax.atom {} ·)
+        open_ := (out.size, Syntax.mkNull atoms.toArray) :: open_
+      else path := path.push c
+    else if c == '' then
+      inPath := true
+      path := ""
+    else if c == '' then
+      match open_ with
+      | (a, p) :: rest =>
+        spans := spans.push { start := a, stop := out.size, path := p }
+        open_ := rest
+      | [] => pure ()
+    else out := out.push c
+  (String.mk out.toList, spans)
+
+/-- The innermost span containing `[a, b)`: the shortest; among equal ones, the one
+closed first (the innermost mark). -/
+def innermostSpan (spans : Array MarkSpan) (a b : Nat) : Option MarkSpan :=
+  spans.foldl (fun acc sp =>
+    if sp.start ≤ a && b ≤ sp.stop then
+      match acc with
+      | some q => if sp.stop - sp.start < q.stop - q.start then some sp else acc
+      | none => some sp
+    else acc) none
+
+/-- Position syntax parsed from a macro's generated source (ranges in the text without
+marks) in the user's file. Syntax whose range is exactly a marked span gets the range of
+the input node the span comes from, so that its type shows there and errors about it are
+reported there; syntax strictly inside a span gets that range too, but synthetic (nothing
+is recorded for hovers: the span's own syntax is the precise one); the rest is the
+macro's own (synthetic, at `item`), except the command itself, which is at `item`.
+Without spans, every node is at `item` (`setInfoAll`). -/
+partial def locateMarked (input : Syntax) (item : SourceInfo) (spans : Array MarkSpan) (stx : Syntax) : Syntax :=
+  if spans.isEmpty then setInfoAll item stx else
+  match stx with
+  | .node _ k as => .node item k (as.map go)
+  | s => go s
+where
+  infoFor (i : SourceInfo) : SourceInfo :=
+    if i.stop == 0 then { item with synthetic := true } else
+    match innermostSpan spans i.start i.stop with
+    | some sp =>
+      let u := pathInfo input sp.path
+      if sp.start == i.start && sp.stop == i.stop then u else { u with synthetic := true }
+    | none => { item with synthetic := true }
+  go : Syntax → Syntax
+    | .missing => .missing
+    | .atom i v => .atom (infoFor i) v
+    | .ident i n => .ident (infoFor i) n
+    | .node i k as => .node (infoFor i) k (as.map go)
 
 def atomText : Syntax → String
   | .atom _ v => v

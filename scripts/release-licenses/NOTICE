@@ -25,7 +25,7 @@ Linked into the binaries wiz, grail and tower (built with Lean 4):
   LICENSES/lean4-third-party (the LGPL v3) and LICENSE (the GPL v3, which the LGPL
   v3 adds to). Its source: https://gmplib.org/. Because wiz, grail and tower are
   themselves under the GPL, with their complete source at
-  https://github.com/badly-drawn-wizards/wiz, you can relink them with a modified
+  https://github.com/wiz-pl/wiz, you can relink them with a modified
   GMP by rebuilding them.
 * glibc, dynamically (libc, libm, libpthread, libdl, librt): GNU LGPL v2.1 or later.
 
@@ -34,7 +34,8 @@ ld.lld and compiler-rt (Apache 2.0 with LLVM Exceptions; their libraries: libc++
 libunwind, zlib, libgcc_s and libatomic under the GCC Runtime Library Exception),
 glibc 2.27 headers and link libraries (LGPL v2.1+), Linux UAPI headers (GPL v2 with
 the Linux syscall note), GMP 6.3.0 (LGPL v3+ / GPL v2+) and the Boehm GC 8.2.8
-(MIT-style). See cc/LICENSES/ and cc/VERSIONS.
+(MIT-style), and CaDiCaL (MIT; the SAT solver, from the Lean toolchain; its licence
+is in cc/LICENSES/lean4-LICENSES). See cc/LICENSES/ and cc/VERSIONS.
 
 Programs you build with this toolchain
 ======================================

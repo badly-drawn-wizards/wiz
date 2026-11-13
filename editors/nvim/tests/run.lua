@@ -289,6 +289,50 @@ else
     end, 'the new goal')
   end)
 
+  test('the browser infoview: <LocalLeader>b and :WizInfoviewBrowser ask the server to listen', function()
+    local m = vim.fn.maparg('<LocalLeader>b', 'n', false, true)
+    eq('wiz.nvim: open the infoview in a browser', m.desc, 'the mapping and its desc')
+    eq(2, vim.fn.exists ':WizInfoviewBrowser', 'the command')
+    local opened = {}
+    local real_open = vim.ui.open
+    vim.ui.open = function(url)
+      table.insert(opened, url)
+    end
+    iv.state.browser = nil
+    vim.cmd 'WizInfoviewBrowser'
+    wait(20000, function()
+      return iv.state.browser ~= nil
+    end, 'wiz/browserInfoview')
+    vim.ui.open = real_open
+    local b = iv.state.browser
+    eq(true, type(b.port) == 'number' and b.port > 0, 'a port: ' .. vim.inspect(b))
+    if b.url ~= vim.NIL and b.url ~= nil then
+      eq({ b.url }, opened, 'the page opened')
+      eq(true, b.url:find('^http://127%.0%.0%.1:' .. b.port .. '/infoview%.html%?port=' .. b.port .. '&follow=1$') ~= nil, 'url ' .. b.url)
+    else
+      eq({}, opened, 'nothing opened without a built page')
+    end
+    -- the port answers a WebSocket handshake (a page would connect there)
+    local got = nil
+    local tcp = vim.uv.new_tcp()
+    tcp:connect('127.0.0.1', b.port, function(e)
+      if e then
+        got = 'connect: ' .. e
+        return
+      end
+      tcp:read_start(function(_, data)
+        got = got or data
+        tcp:close()
+      end)
+      tcp:write('GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n'
+        .. 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n')
+    end)
+    wait(10000, function()
+      return got ~= nil
+    end, 'the handshake')
+    eq(true, got:find('101 Switching Protocols', 1, true) ~= nil, 'answer: ' .. got)
+  end)
+
   test('toggle closes and reopens the window', function()
     vim.cmd 'WizInfoviewToggle'
     eq(false, iv.is_open(), 'closed')

@@ -21,13 +21,53 @@ namespace Wiz
 
 structure ParseError where
   pos : Nat := 0
+  /-- everything that was expected at `pos`, as the alternatives failed there (the
+  self-hosted parser, selfhost/Parse.wiz, reports the same list) -/
   expected : Array String := #[]
+  /-- the same, for the message: a syntax category whose alternatives all failed at its
+  first token is one entry ("term"), and what would only have continued a complete
+  phrase is marked `secondary` -/
+  shown : Array String := #[]
   deriving Repr, Inhabited
+
+/-- The mark of an expectation that is shown only if there is no other one: what would
+have continued a complete phrase (an infix operator, an application's argument). -/
+def ParseError.secondary : String := "\x01"
+
+/-- An expectation that says more than any summary of it: a keyword where an identifier
+was expected, a character no token starts with. -/
+def ParseError.telling (x : String) : Bool :=
+  (x.splitOn "is a keyword").length > 1 || x.startsWith "unexpected character"
+
+/-- `a`, `a or b`, `a, b or c`. -/
+def orList : List String → String
+  | [] => ""
+  | [a] => a
+  | [a, b] => s!"{a} or {b}"
+  | a :: rest => s!"{a}, {orList rest}"
+
+/-- What the input has at `pos`, for "unexpected …": the token (roughly: up to the next
+space or bracket), or the end of the input. -/
+def foundAt (input : String) (pos : Nat) : String :=
+  let rest := (input.toList.drop pos).dropWhile (·.isWhitespace)
+  match rest with
+  | [] => "end of input"
+  | c :: _ =>
+    let stop (c : Char) := c.isWhitespace || "()[]{}⟨⟩,;".contains c
+    let tok := if stop c then [c] else (rest.takeWhile (!stop ·)).take 20
+    s!"'{String.ofList tok}'"
 
 def ParseError.render (input : String) (e : ParseError) : String :=
   let (l, c) := lineCol input e.pos
-  let exp := if e.expected.isEmpty then "parse error" else
-    "expected " ++ ", ".intercalate e.expected.toList
+  -- (the tokenizer's own complaint, `unexpected character '←'`, says what was found)
+  let (unexp, exp) := e.shown.toList.partition (·.startsWith "unexpected ")
+  let (second, first) := exp.partition (·.startsWith ParseError.secondary)
+  let exp := if first.isEmpty then second.map (·.drop 1 |>.toString) else first
+  let exp := exp.eraseDups
+  let found := unexp.head?.getD s!"unexpected {foundAt input e.pos}"
+  let exp := if e.shown.isEmpty then "parse error"
+    else if exp.isEmpty then found
+    else s!"{found}; expected {orList exp}"
   s!"{l + 1}:{c + 1}: {exp}"
 
 structure MemoKey where
@@ -77,11 +117,35 @@ def withCtx (f : PCtx → PCtx) (p : P α) : P α := fun c s => p (f c) s
 /-- Fail at `pos`, recording what was expected there if it is the farthest failure. -/
 def failAt (pos : Nat) (expected : String) : P α := fun _ s =>
   let err :=
-    if pos > s.err.pos then { pos, expected := #[expected] }
-    else if pos == s.err.pos && !s.err.expected.contains expected then
-      { s.err with expected := s.err.expected.push expected }
+    if pos > s.err.pos then { pos, expected := #[expected], shown := #[expected] }
+    else if pos == s.err.pos then
+      if s.err.expected.contains expected && s.err.shown.contains expected then s.err else
+      { s.err with expected := if s.err.expected.contains expected then s.err.expected else s.err.expected.push expected,
+                   shown := if s.err.shown.contains expected then s.err.shown else s.err.shown.push expected }
     else s.err
   .error { s with err }
+
+/-- Replace what the farthest error expects at `pos` by `expected`, keeping what `before`
+(the farthest error before some alternatives ran) expected there: the alternatives of a
+syntax category that all failed at its first token are reported as the category
+("expected term", not every token a term can start with). -/
+def collapseErrAt (pos : Nat) (before : ParseError) (expected : String) : P Unit := fun _ s =>
+  if s.err.pos != pos then .ok () s else
+  let kept := if before.pos == pos then before.shown else #[]
+  -- (but "'match' is a keyword here" and the tokenizer's "unexpected character" say
+  -- more than "term")
+  let kept := kept ++ s.err.shown.filter fun x => ParseError.telling x && !kept.contains x
+  .ok () { s with err := { s.err with shown := if kept.contains expected then kept else kept.push expected } }
+
+/-- Mark what was expected at `pos` since `before` (if the farthest error is there) as
+secondary (`ParseError.secondary`): shown only when nothing else was expected there. -/
+def markSecondaryAt (pos : Nat) (before : ParseError) : P Unit := fun _ s =>
+  if s.err.pos != pos || before.pos > pos then .ok () s else
+  let old := if before.pos == pos then before.shown else #[]
+  let shown := s.err.shown.map fun x =>
+    if old.contains x || x.startsWith ParseError.secondary || ParseError.telling x then x
+    else ParseError.secondary ++ x
+  .ok () { s with err := { s.err with shown } }
 
 /-- Ordered choice with backtracking. (Only the position is kept for backtracking:
 keeping `s` itself while `p` runs would share its memo table with `p`'s state, so that
