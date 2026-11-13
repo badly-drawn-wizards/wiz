@@ -1143,6 +1143,68 @@ def checkImpl (g : Globals R) (d : Decl R) (impl : Term R) : TCM Unit := do
   | .error e@(.unmarkedProof ..) => throw e
   | .error e => throw (.other s!"the implementation of {d.name} (the term compiled code runs) does not check: {e}")
 
+/-- Does the term mention the constant `c`? -/
+partial def mentionsConst (c : Name) (t : Term R) : Bool := match t with
+  | .const n _ => n == c
+  | t => (t.forChildren (m := StateM Bool) (fun _ => pure ()) (fun _ x => modify (· || mentionsConst c x)) |>.run false).2
+
+/-- The constant `c` renamed to `c'` (for tests). -/
+partial def replaceConstTo (c c' : Name) (t : Term R) : Term R := match t with
+  | .const n us => if n == c then .const c' us else t
+  | t => Id.run <| t.mapChildrenM pure (fun _ x => pure (replaceConstTo c c' x))
+
+/-- The constant `c` replaced by a variable bound outside the term (`var 0` at the top). -/
+partial def replaceConst (c : Name) (t : Term R) (depth : Nat := 0) : Term R := match t with
+  | .const n _ => if n == c then .var depth else t
+  | t => Id.run <| t.mapChildrenM pure (fun k x => pure (replaceConst c x (depth + k)))
+
+/-- **The bridge by shape** (`checkImplAgrees`). The value is
+`λ a₀ … a_{k-1}. r Δ motive methods ξ x [e] rs` for a recursor `r` (`T.rec`/`T.recN`),
+literally (no `let`, the body is this application), where
+
+* `x` and `rs` are variables, the split's columns (levels `x`, `rs`, in this order after
+  `ξ`, with one argument between them in mode B: the index equation's proof);
+* in mode A, `ξ` is the variables `ixL`; in mode B, `ξ` mentions no column;
+* `Δ`, `motive` and `methods` mention no column, nor (mode A) an index variable.
+
+Then for every `j` and `y`, applying the value to the arguments of `hypCall f j y`
+(the columns replaced by `y` and the new `rs`, the index variables by `j`'s components,
+every other argument the same variable) evaluates `r` on the *same* `Δ`, motive and
+methods (they do not mention what changed), at index `j` (mode A) or the split's own
+index (mode B) and scrutinee `y`; `r` unfolds to `ind P M j y rs` with the `P` and `M` of
+the value's own split. So `hypCall f j y ≡ ind P M j y`: the conversion `checkImplAgrees`
+would otherwise do (once) holds by evaluation. A value of another shape returns `false`
+and the conversion is done. -/
+def bridgeByShape (g : Globals R) (value : Term R) (k x : Nat) (rs ixL : List Nat) (modeA : Bool)
+    (nΞ : Nat) : Bool := Id.run do
+  let rec peel : Nat → Term R → Option (Term R)
+    | 0, t => some t
+    | n + 1, .lam _ b => peel n b
+    | _, _ => none
+  let some body := peel k value | return false
+  let (.const r _, targs) := body.spine | return false
+  let some rd := g.find? r | return false
+  unless r.endsWith ".rec" || r.endsWith ".recN" do return false
+  let rec pis : Term R → Nat
+    | .pi _ _ _ _ b _ => pis b + 1
+    | _ => 0
+  let nPre := pis rd.type - nΞ - 1
+  -- (level ℓ of the value's λs is de Bruijn index k-1-ℓ in its body)
+  let ix (ℓ : Nat) : Nat := k - 1 - ℓ
+  let cols := x :: rs
+  let forbidden := cols ++ (if modeA then ixL else [])
+  let clean (t : Term R) : Bool := forbidden.all fun ℓ => !t.hasVar (ix ℓ)
+  unless targs.length ≥ nPre + nΞ + 1 do return false
+  unless (targs.take nPre).all clean do return false
+  let ξs := (targs.drop nPre).take nΞ
+  let okξ := if modeA then ξs == ixL.map fun ℓ => (.var (ix ℓ) : Term R) else ξs.all clean
+  unless okξ do return false
+  let after := targs.drop (nPre + nΞ)
+  let after ← if modeA then pure after else match after with
+    | x0 :: _ :: rest => pure (x0 :: rest)
+    | _ => return false
+  return after == (cols.map fun ℓ => (.var (ix ℓ) : Term R))
+
 /-- **The compiled equations agree with the definition** (docs/Status.md T1): for a
 structurally recursive definition whose `impl` is derived from its value, one conversion
 per constructor. `g` has the definition (with its value). Applied to fresh variables for
@@ -1161,37 +1223,72 @@ method ignores the hypotheses and calls the definition directly):
 By induction on the scrutinee this gives `value ≡ impl` on every closed argument, with
 the implementation's own recursive calls standing for the value (the induction
 hypothesis): what compiled code computes is what the kernel computes. An implementation
-convertible to the value passes at once. -/
+convertible to the value passes at once; a proposition-valued definition is a proof, whose
+value is suspended (P2) and any two of which are convertible (proof irrelevance), so a
+well-typed implementation agrees with it. -/
 partial def checkImplAgrees (g : Globals R) (d : Decl R) (value impl : Term R) : TCM Unit := do
   let fail {α : Type} (why : String) : TCM α :=
     throw (.other s!"the compiled equations of {d.name} do not agree with its definition: {why}")
-  -- (an implementation convertible to the value agrees with it, trivially)
-  if conv g #[] (eval g [] d.type) (eval g [] value) (eval g [] impl) then return
-  -- (P2: through the markers too: a level-generic value is `prf.{l} (fun …)`, with `l`
-  -- symbolic, which evaluates to its body's value)
+  -- A proposition-valued definition is a proof: the evaluator suspends its value (P2), so
+  -- there is no split to compare, and conversion takes any two proofs as equal (proofs
+  -- are erased and nothing runs them). A well-typed implementation agrees with it.
+  let ty0 := eval g [] d.type
+  if ((Ctx.sortOf? ({ globals := g } : Ctx R)) ty0).any (·.isZero) then
+    if conv g #[] ty0 (eval g [] value) (eval g [] impl) then return
+    fail "its value is a proposition, and its implementation is not convertible to it"
+  -- An implementation that does not call the definition (a hand-written one, say) agrees
+  -- with the value if it is convertible to it. One that calls it is checked below; the
+  -- whole-term comparison would compare the two eliminators structurally first, and fail.
+  if !mentionsConst d.name impl then
+    if conv g #[] ty0 (eval g [] value) (eval g [] impl) then return
+    fail "it is not convertible to the value and does not call the definition"
+  -- (P2: the conversion goes through the markers too: a level-generic value is
+  -- `prf.{l} (fun …)`, with `l` symbolic, which evaluates to its body's value)
   let rec lams : Term R → Nat
     | .lam _ b => lams b + 1
     | .prf _ b => lams b
     | _ => 0
   let k := lams value
   let mut tys : Array (VTy R) := #[]
-  let mut ty := eval g [] d.type
+  let mut ty := ty0
   for i in [0:k] do
     match whnf ty with
     | .pi _ _ _ A B _ => tys := tys.push A; ty := Closure.inst g B (Val.var i)
     | _ => fail "its value has more binders than its type"
+  -- The definition, in the implementation, as a variable `F` (level `k`, of its type): its
+  -- calls stay calls, compared by their arguments (see the hypotheses below)
+  let fL := k
+  let fV : Val R := Val.var fL
+  tys := tys.push ty0
   let args := (List.range k).map Val.var
   let a := whnf (args.foldl (vApp g) (eval g [] value))
-  let b := whnf (args.foldl (vApp g) (eval g [] impl))
+  -- (the implementation with `F` for the definition: everything it says but the calls is
+  -- compared with `F` free, which is the more general statement)
+  let b := whnf (args.foldl (vApp g) (eval g [fV] (replaceConst d.name impl)))
   let (.neutral (.local x) sp, .neutral (.local x') sp') := (a, b)
     | fail "the value or the implementation is not stuck on an argument"
-  let (some (Elim.ind l I D v P M i), some (Elim.ind l' I' D' v' P' M' i')) := ((sp[0]? : Option (Elim R)), (sp'[0]? : Option (Elim R)))
+  let (some (Elim.ind l I D v P M i), some (Elim.ind l' I' D' v' P' MF i')) := ((sp[0]? : Option (Elim R)), (sp'[0]? : Option (Elim R)))
     | fail "the value or the implementation is not an induction on an argument"
+  let MF? : Option (Val R) := some MF
+  -- the implementation's methods with the real definition (where the hypotheses stay the
+  -- kernel's), evaluated only if needed
+  let realM : Thunk (Val R) := Thunk.mk fun _ =>
+    match whnf (args.foldl (vApp g) (eval g [] impl)) with
+    | .neutral _ sp'' => match (sp''[0]? : Option (Elim R)) with
+      | some (.ind _ _ _ _ _ m _) => m
+      | _ => MF
+    | _ => MF
   unless x == x' && sp.size == sp'.size do fail "they split different arguments"
-  let b' : Val R := .neutral (.local x') (sp'.set! 0 (.ind l' I' D' v' P' M i'))
-  unless conv g tys ty a b' do fail "their motives, indices or other arguments differ"
+  -- (the methods are checked below; here both are a fresh variable of the method type, so
+  -- that comparing them costs nothing: comparing `M` with itself would go through every
+  -- branch of it)
+  let mV : Val R := Val.var tys.size
+  let tysM := tys.push (indMethodTy g l v I D P QuantitySyntax.explicitDefault)
+  let a' : Val R := .neutral (.local x) (sp.set! 0 (.ind l I D v P mV i))
+  let b' : Val R := .neutral (.local x') (sp'.set! 0 (.ind l' I' D' v' P' mV i'))
+  unless conv g tysM ty a' b' do fail "their motives, indices or other arguments differ"
   -- the methods, constructor by constructor
-  let .darg _ S F := whnf D | fail "the description does not start with a tag"
+  let .darg _ S Fd := whnf D | fail "the description does not start with a tag"
   let (ls, lifted) ← match whnf S with
     | .enum ls => pure (ls, false)
     | .ulift _ A => match whnf A with
@@ -1202,13 +1299,123 @@ partial def checkImplAgrees (g : Globals R) (d : Decl R) (value impl : Term R) :
   let jv : Val R := Val.var jL
   let X := muFamily l I D
   -- y0 j1 m2 P3 D4 I5 (as in `vIndStep`)
-  let f : Val R := .lam "j" (.mk [M, P, D, I] (.lam "y" (.ind l (.var 5) (.var 4) v (.var 3) (.var 2) (.var 1) (.var 0))))
+  let fInd : Val R := .lam "j" (.mk [M, P, D, I] (.lam "y" (.ind l (.var 5) (.var 4) v (.var 3) (.var 2) (.var 1) (.var 0))))
+  /- **The hypotheses as calls.** The kernel's hypothesis for a field `y` at index `j` is
+  `ind P M j y`; a direct call `F … y …` unfolds to an `ind` too, but only after the whole
+  definition (and its recursor) is evaluated again, and comparing the two `ind`s compares
+  every method: once per call, quadratic in the size of a big family. So, where it
+  applies, the hypothesis is replaced by the call it is equal to, `hypCall F j y`: the
+  arguments of the value's own split (`a`: `ind … x rs`) with `x := y`, the index
+  variables (if the split's index is made of variables) `:= j`, and the other columns
+  `rs` abstracted. It is checked once that `hypCall f j y ≡ ind P M j y` for the real
+  definition `f` (at a fresh `j`, or at the split's own index when that is not made of
+  variables, and then only where `j` is that index). The per-constructor check below
+  holds with `F` free, so also for `F := f`; with the bridge it holds for the kernel's
+  hypotheses. -/
+  let rec comps : Nat → Val R → List (Val R)
+    | 0, _ => []
+    | n + 1, t => match whnf t with
+      | .pair c r => c :: comps n r
+      | _ => []
+  let iComps := comps 64 i
+  let ixL0? : Option (List Nat) := iComps.mapM fun c => match whnf c with
+    | .neutral (.local l) #[] => some l
+    | _ => none
+  -- (an index that is not made of distinct variables: mode B, the split's next argument
+  -- is the proof of its index equation, not a column)
+  let ixL0? := ixL0?.bind fun ls => if ls.eraseDups.length == ls.length && !ls.contains x then some ls else none
+  let rsArgs := (sp.extract 1 sp.size).toList
+  let rsArgs := if ixL0?.isSome then rsArgs else rsArgs.drop 1
+  let rsL? : Option (List Nat) := rsArgs.mapM fun e => match e with
+    | .app (.neutral (.local l) #[]) => some l
+    | _ => none
+  -- (an index variable that is also a column: no substitution of the index)
+  let ixL? := ixL0?.bind fun ls => if (rsL?.getD []).all (!ls.contains ·) then some ls else none
+  let modeA := ixL?.isSome
+  let ixL := ixL?.getD []
+  let hypCall (head j y : Val R) (rs : List Nat) (eqArg : Bool) : Val R :=
+    let m := rs.length
+    let nE := if eqArg then 1 else 0
+    let nq := ixL.length
+    let unpack (q : Nat) : Val R := vFst ((List.range q).foldl (fun t _ => vSnd t) j)
+    -- environment: head, y, the index components, then the levels 0 … k-1
+    let env : List (Val R) := [head, y] ++ (List.range nq).map unpack ++ (List.range k).map Val.var
+    let ref (e : Nat) : Term R := .var (m + nE + e)
+    let argTm (ℓ : Nat) : Term R :=
+      if ℓ == x then ref 1
+      else match rs.idxOf? ℓ with
+        | some p => .var (m - 1 - p)
+        | none => match ixL.idxOf? ℓ with
+          | some q => ref (2 + q)
+          | none => ref (2 + nq + ℓ)
+    let call : Term R := ((List.range k).map argTm).foldl .app (ref 0)
+    let body := (List.range (m + nE)).foldr (fun _ t => Term.lam "r" t) call
+    eval g env body
+  let fReal : Val R := eval g [] (.const d.name (d.levelParams.map Level.param))
+  let replace? : Option (Array (VTy R) → Val R → Bool) := do
+    let rs ← rsL?
+    -- (mode B needs an index equation; an index of variables that is not mode A: none)
+    unless modeA || ixL0?.isNone do none
+    let _ ← MF?
+    -- mode B: the hypothesis takes the index equation first
+    let eqArg := !modeA
+    let yTy (j : Val R) : VTy R := .mu l I D j .szInf none
+    let bridge (j : Val R) (tys' : Array (VTy R)) : Bool :=
+      let yv := Val.var tys'.size
+      let tys'' := tys'.push (yTy j)
+      conv g tys'' (vApp g (vApp g P j) yv) (hypCall fReal j yv rs eqArg) (vApp g (vApp g fInd j) yv)
+    -- The bridge holds by the shape of the value, when it is `λ…. r Δ motive methods ξ x
+    -- [e] rs` for the recursor `r` with `x`, `rs` the split's columns, `ξ` (mode A) its
+    -- index variables, and `Δ`, the motive and the methods mentioning neither: then the
+    -- call evaluates `r` on the same `Δ`, motive and methods, at `(y, rs)` and index `j`,
+    -- and `r` unfolds to `ind P M j y rs` with the same `P` and `M`. Otherwise it is
+    -- checked by conversion (once, at a fresh field).
+    let byShape := bridgeByShape g value k x rs ixL modeA iComps.length
+    if modeA then
+      if byShape || bridge jv (tys.push I) then some fun _ _ => true else none
+    else
+      if byShape || bridge i tys then some fun tys' j => conv g tys' I j i else none
+  let rs := rsL?.getD []
+  -- the tuple of hypotheses, with each `ind P M j y` (at an index where `ok`) replaced
+  -- (`none` when a hypothesis is not of that form, an infinitary field's say: then the
+  -- constructor is checked with the kernel's hypotheses and the real definition)
+  let rec swap (tys' : Array (VTy R)) (ok : Array (VTy R) → Val R → Bool) : Nat → Val R → Option (Val R)
+    | 0, _ => none
+    | n + 1, h => match whnf h with
+      | .pair c r => do
+        let c' ← match whnf c with
+          | .neutral hd sp => match sp.back? with
+            | some (.ind _ _ _ _ _ _ j) =>
+              some (if ok tys' j then hypCall fV j (.neutral hd sp.pop) rs (!modeA) else c)
+            | _ => none
+          | _ => none
+        pure (.pair c' (← swap tys' ok n r))
+      | h => some h
+  -- (at the split's own index `i`, which is general enough: the implementation runs on a
+  -- scrutinee at that index, its recursive calls go through the hypotheses. A
+  -- constructor whose payload is empty there, one of another sort of a mutual family,
+  -- has nothing to check)
+  let rec emptyPayload (tys' : Array (VTy R)) : Nat → VTy R → Bool
+    | 0, _ => false
+    | n + 1, ty => match whnf ty with
+      | .empty _ => true
+      | .sigma _ _ A B _ =>
+        emptyPayload tys' n A || emptyPayload (tys'.push A) n (Closure.inst g B (Val.var tys'.size))
+      | _ => false
   for c in [0:ls.length] do
     let t : Val R := if lifted then .up (.tag ls c) else .tag ls c
-    let restTy := vInterp g l I (vApp g F t) X jv
-    let tys' := (tys.push I).push restTy
-    let xs : Val R := .pair t (Val.var (jL + 1))
-    let hyps := [I, D, X, P, f, jv, xs].foldl (vApp g) (eval g [] (Templates.hypsTm l v))
+    let jv := i
+    let tysJ := tys
+    let restTy := vInterp g l I (vApp g Fd t) X jv
+    if emptyPayload tysJ 64 restTy then continue
+    let tys' := tysJ.push restTy
+    let xs : Val R := .pair t (Val.var tysJ.size)
+    let hyps := [I, D, X, P, fInd, jv, xs].foldl (vApp g) (eval g [] (Templates.hypsTm l v))
+    let (hyps, M') := match replace?, MF? with
+      | some ok, some mF => match swap tys' ok 1000 hyps with
+        | some h' => (h', mF)
+        | none => (hyps, realM.get)
+      | _, _ => (hyps, realM.get)
     let goal := vApp g (vApp g P jv) (.con xs)
     unless conv g tys' goal ([jv, xs, hyps].foldl (vApp g) M) ([jv, xs, hyps].foldl (vApp g) M') do
       fail s!"they differ for constructor {ls[c]!}"

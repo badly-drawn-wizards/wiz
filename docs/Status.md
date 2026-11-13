@@ -495,12 +495,22 @@ set the status (open PRs in *italics*). Sections: §3 fixed, §4 open, §5 stuck
   is read from the source twice. The kernel checks, besides the type (`checkImpl`), that
   it **agrees with the value** (`checkImplAgrees`, `Core/Check.lean`): applied to fresh
   variables both are stuck on the same argument as `ind P M i x …` and `ind P M' i x …`;
-  they must be convertible with `M'` replaced by `M`, and for every constructor tag `t`,
-  at a fresh index and payload `xs = (t, rest)`, `M j xs H ≡ M' j xs H` with `H` the
-  hypotheses `ind` computes (each direct call unfolds once to the stuck `ind` on a field).
-  What these conversions prove is `impl[f := value] ≡ value`: the value is a fixpoint of
-  the compiled equations. So **if compiled code terminates, its result is the value's**
-  (induction on the run). They do not prove that it terminates (t1-review M1, below). A
+  they must be convertible with both methods replaced by one fresh variable, and for
+  every constructor tag `t` (at the split's index `i`, payload `xs = (t, rest)`; a tag
+  whose payload is empty there is skipped), `M i xs H ≡ M' i xs H`. In this comparison
+  the definition is a free variable `F` in the implementation, and each hypothesis
+  `ind P M j y` is replaced by the call it equals, `F … y …`, so a call is compared with a
+  call by its arguments: unfolding the definition at every call would evaluate it, and its
+  recursor, again each time (quadratic in the size of a big mutual family; it made the
+  self-hosted sources 4× slower to check). That a call equals the hypothesis is checked
+  once by conversion, or follows from the value's shape (`bridgeByShape`: the value is
+  the recursor applied to arguments that do not mention the columns or index
+  variables). What these conversions prove is `impl[f := value] ≡ value`: the value is a
+  fixpoint of the compiled equations. So **if compiled code terminates, its result is the
+  value's** (induction on the run). They do not prove that it terminates (t1-review M1,
+  below). A proposition-valued definition is a proof: its value is suspended (P2), there
+  is no split to compare, and any two proofs are convertible (proof irrelevance), so a
+  well-typed implementation agrees with it. A
   definition whose index variable escapes into a method gets no `impl` (compiled from its
   value). `#print axioms` lists nothing for compiled equations (it did, as `compiled f`,
   between the two steps).
