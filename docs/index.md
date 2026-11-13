@@ -13,6 +13,7 @@
 * [hardware.md](hardware.md): hardware in Wiz, from a circuit to a proved temporal property
 * [CoreSpec.md](CoreSpec.md)
 * [Status.md](Status.md)
+* [error-codes.md](error-codes.md): the error codes and their quick fixes
 * [resources.md](resources.md): resources in Wiz: quantities, regions, optics, Feral and separation logic, with one running example
 * [ROADMAP.md](../ROADMAP.md)
 
@@ -71,6 +72,7 @@ line below.
 ### Numbers and libraries
 
 * [Stage 22: numbers for hardware and systems code](stages/22-numbers.md)
+* [Stage 29: native data structures](stages/29-natives.md): word arrays, word maps, interned strings
 * [Libraries](libraries.md)
 
 ### Verification

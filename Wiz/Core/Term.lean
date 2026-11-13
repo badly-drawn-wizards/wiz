@@ -75,6 +75,11 @@ inductive Term (R : Type) where
   | empty (level : Level)
   /-- `absurd t : motive`, given `t : empty l` -/
   | absurd (motive t : Term R)
+  /-- `let () := u; b`: the unit eliminator (linear logic's 1-elimination, linear-case
+  stage 2). `u : Unit_l` is consumed (its usage counts), then `b`. It computes to `b` by
+  η (every `u` is `()`), but compiled code evaluates `u` first: a consumer stashed in a
+  unit runs. The only way a linear `Unit` is used up. -/
+  | letUnit (u b : Term R)
   -- Stage 4c: observational equality.
   /-- `a = b` at type `A : Type u`. A proposition that *computes* by `A`. -/
   | eq (A a b : Term R)
@@ -136,10 +141,12 @@ inductive Term (R : Type) where
   `f : (s : Size) → ((j : Size< s) → (i : I) → (y : μ^j D i) → P i y) → (i : I) → (x : μ^s D i) → P i x`.
   It unfolds only on a constructor. -/
   | sfix (l : Level) (I D : Term R) (v : Level) (P f s i x : Term R)
-  /-- sized case analysis: `scase P m s i x : P i x` for `x : μ^s D i`, where
-  `m : (j : Size< s) → (i : I) → (xs : ⟦D⟧ (μ^j D) i) → P i (con xs)`: the fields have
-  some size below `s` -/
-  | scase (l : Level) (I D : Term R) (v : Level) (P m s i x : Term R)
+  /-- sized case analysis at a quantity: `scase_q P m s i x : P i x` for `x : μ^s D i`, where
+  `m : (j : Size< s) → (i : I) → (q xs : ⟦D⟧ (μ^j D) i) → P i (con xs)`: the fields have
+  some size below `s`, and the payload is handed over at `q` (K1 of the linear-case
+  design: `q = ω` is the ordinary case, `q = 1` takes a linear value apart). `q` is a
+  quantity term, as `split`'s. -/
+  | scase (l : Level) (q : Term R) (I D : Term R) (v : Level) (P m s i x : Term R)
   /-- a ν constructor: `cocon xs : ν^{↑s} D i` for `xs : ⟦D⟧ (ν^s D) i` -/
   | cocon (x : Term R)
   /-- sized corecursion: `scofix A f s i a : ν^s D i`, where
@@ -242,6 +249,7 @@ don't need a case per constructor. -/
   | .unit l => return .unit (← fl l)
   | .empty l => return .empty (← fl l)
   | .absurd a b => return .absurd (← f 0 a) (← f 0 b)
+  | .letUnit u b => return .letUnit (← f 0 u) (← f 0 b)
   | .eq A a b => return .eq (← f 0 A) (← f 0 a) (← f 0 b)
   | .eqTy A B => return .eqTy (← f 0 A) (← f 0 B)
   | .refl A a => return .refl (← f 0 A) (← f 0 a)
@@ -266,8 +274,8 @@ don't need a case per constructor. -/
   | .sfix l I D v P g s i x =>
     return .sfix (← fl l) (← f 0 I) (← f 0 D) (← fl v) (← f 0 P) (← f 0 g) (← f 0 s) (← f 0 i) (← f 0 x)
   | .cocon x => return .cocon (← f 0 x)
-  | .scase l I D v P m s i x =>
-    return .scase (← fl l) (← f 0 I) (← f 0 D) (← fl v) (← f 0 P) (← f 0 m) (← f 0 s) (← f 0 i) (← f 0 x)
+  | .scase l q I D v P m s i x =>
+    return .scase (← fl l) (← f 0 q) (← f 0 I) (← f 0 D) (← fl v) (← f 0 P) (← f 0 m) (← f 0 s) (← f 0 i) (← f 0 x)
   | .scofix l I D A g s i a =>
     return .scofix (← fl l) (← f 0 I) (← f 0 D) (← f 0 A) (← f 0 g) (← f 0 s) (← f 0 i) (← f 0 a)
   | .coit l I D S st i s =>
