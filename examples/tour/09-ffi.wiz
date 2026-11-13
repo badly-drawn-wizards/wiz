@@ -1,0 +1,14 @@
+-- test: run
+-- The tour, section 9: the C FFI (docs/tour.md). Foreign functions run in compiled code:
+-- `wiz run examples/tour/09-ffi.wiz`.
+import IO
+
+-- one C function, with its type in Wiz (`String` is a `char*`, `Nat` a `uint64_t`)
+extern "strlen" (header := "string.h") strlen : String → Nat
+
+-- C written inline, in a checked subset of C
+glue sumBelow (n : Nat) : Nat := "uint64_t s = 0; for (uint64_t i = 0; i < n; i++) s += i; return s;"
+
+def main : IO Unit := do
+  IO.println (Nat.toString (strlen "hello, C"));
+  IO.println (Nat.toString (sumBelow 10))

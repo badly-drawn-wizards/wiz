@@ -21,6 +21,9 @@ M.defaults = {
     root_markers = { 'grail.wiz', 'wiz-toolchain', 'lakefile.toml', '.git' },
     on_attach = nil, -- function(client, bufnr)
     capabilities = nil, -- merged into the client's capabilities
+    -- Neovim's own completion from the server (0.11+, `vim.lsp.completion`), popping up
+    -- as you type: true, false, or 'auto' (on unless nvim-cmp or blink.cmp is loaded).
+    completion = 'auto',
     -- Fold with the server's folding ranges (commands, `by` blocks, comments) in the
     -- windows showing a Wiz buffer (0.11+, `vim.lsp.foldexpr`; all folds start open).
     folding = false,
