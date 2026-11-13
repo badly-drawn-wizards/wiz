@@ -233,7 +233,8 @@ extern "on_tick" onTick : Callback (Nat → IO Unit) → IO Unit
 
 Known limits: a project built by grail doesn't get its export wrappers yet (only
 `wiz build` and `wiz run` emit them); a callback's or an export's signature can't
-contain a `c_struct` (9i) or another callback; the self-hosted compiler has no `export`.
+contain a `c_struct` (9i) or another callback. The self-hosted compiler has exports,
+callbacks, libraries and the handle functions too (stages 21o, 21q, 21s).
 
 Tests: `callbacks` (qsort with Wiz comparators, a closure kept by C and called later
 in `IO`, the leak when it isn't released, C calling an export from a program, a C

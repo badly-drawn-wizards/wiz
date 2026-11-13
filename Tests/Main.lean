@@ -12,6 +12,8 @@ import Tests.Allocs
 import Tests.Scaling
 import Tests.Feral
 import Tests.Tower
+import Tests.Native
+import Tests.Smt
 import Tests.Doc
 
 -- Closed terms are normally evaluated at program start-up; that would execute
@@ -33,6 +35,8 @@ def groups : List Group :=
   Lint.groups ++
   LSP.groups ++
   Meta.groups ++
+  Native.groups ++
+  Smt.groups ++
   Parser.groups ++
   Rig.groups ++
   Scaling.groups ++
