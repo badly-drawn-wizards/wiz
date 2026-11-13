@@ -207,7 +207,7 @@ def elimsAt (l k : Nat) : List (String × Term Q) :=
   let S := lams ["i"] (.unit (Level.ofNat (l + 1)))
   [("ind", .ind l' I uD 1 P (lams ["i", "xs", "ih"] .tt) .tt x),
    ("sfix", .sfix l' I uD 1 P (lams ["s", "rec", "i", "x"] .tt) .szInf .tt x),
-   ("scase", .scase l' I uD 1 P (lams ["j", "i", "xs"] .tt) .szInf .tt x),
+   ("scase", .scase l' (.qlit .many) I uD 1 P (lams ["j", "i", "xs"] .tt) .szInf .tt x),
    ("coit", .coit l' I sD S (lams ["i", "s"] (.pair .tt (.pair .tt .tt))) .tt .tt),
    ("scofix", .scofix l' I sD S
       (lams ["s", "rec", "i", "a"] (.cocon (.pair (.app (.app (.var 2) (.var 1)) (.var 0)) (.pair .tt .tt)))) .szInf .tt .tt)]

@@ -181,6 +181,11 @@ partial def inferCore (ctx : Ctx R) (t : Term R) : Term R × Option (VTy R) :=
     let v := check ctx v vT
     let (b, bty) := infer (ctx.define x [] vT (ctx.eval v)) b
     (.letE x q T v b, bty)
+  -- (linear-case stage 2) `let () := u; b`: the unit, then the body
+  | .letUnit u b =>
+    let (u, _) := infer ctx u
+    let (b, bty) := infer ctx b
+    (.letUnit u b, bty)
   | .ann tm T =>
     let (T, _) := type ctx T
     let vT := ctx.eval T
@@ -321,7 +326,7 @@ partial def inferCore (ctx : Ctx R) (t : Term R) : Term R × Option (VTy R) :=
     let vi := ctx.eval i
     let x := check ctx x (.mu l vI vD vi (ctx.eval s) none)
     (.sfix l I D v P f s i x, some (vApp g (vApp g vP vi) (ctx.eval x)))
-  | .scase l I D v P m s i x =>
+  | .scase l q I D v P m s i x =>
     let (I, _) := type ctx I
     let vI := ctx.eval I
     let D := check ctx D (.desc l vI)
@@ -329,11 +334,12 @@ partial def inferCore (ctx : Ctx R) (t : Term R) : Term R × Option (VTy R) :=
     let P := check ctx P (indMotiveTy g l v vI vD w)
     let vP := ctx.eval P
     let vs := ctx.eval s
-    let m := check ctx m (scaseMethodTy g l vI vD vP vs w)
+    -- (K1) the method's payload is at the case's quantity (quantities are not marked)
+    let m := check ctx m (scaseMethodTy g l vI vD vP vs (ctx.eval q))
     let i := check ctx i vI
     let vi := ctx.eval i
     let x := check ctx x (.mu l vI vD vi vs none)
-    (.scase l I D v P m s i x, some (vApp g (vApp g vP vi) (ctx.eval x)))
+    (.scase l q I D v P m s i x, some (vApp g (vApp g vP vi) (ctx.eval x)))
   | .scofix l I D A f s i a =>
     let (I, _) := type ctx I
     let vI := ctx.eval I

@@ -81,6 +81,10 @@ Two mutually recursive judgments, each also producing a **usage vector**:
 
     Γ ⊢ Unit_l ⇒ Sort l      Γ ⊢ () ⇐ Unit_l      Γ ⊢ Empty_l ⇒ Sort l
 
+    Γ ⊢ u ⇒ Unit_l ⊣ U₁     Γ ⊢ b ⇒ B ⊣ U₂
+    ──────────────────────────────── letUnit   (1-elimination; computes to b by η, but
+    Γ ⊢ let () := u; b ⇒ B ⊣ U₁ + U₂             compiled code evaluates u first)
+
     Γ ⊢ M type     Γ⁰ ⊢ t ⇒ Empty_l
     ──────────────────────────────── absurd    (`t` is never evaluated: an erased position)
     Γ ⊢ absurd M t ⇒ M ⊣ 0ₙ
@@ -132,7 +136,8 @@ Proofs carry no usage: they are erased, and conversion never looks at them.
     Γ⁰ ⊢ t ⇐ Size   t is below s (`sizeBelow`; ∞ is not below itself)  ⇒  Γ ⊢ t ⇐ Size< s ⊣ 0ₙ
     Γ ⊢ con x ⇐ μ^s D i  if  s = ↑s' and Γ ⊢ x ⇐ ⟦D⟧ (μ^s' D) i;  cocon x ⇐ ν^s D i likewise
     Γ ⊢ sfix P f s i x ⇒ P i x ⊣ ω·(U_f + Uₓ)      (`sfixFunTy`; x ⇐ μ^s D i)
-    Γ ⊢ scase P m s i x ⇒ P i x ⊣ Uₘ + ω·Uₓ        (`scaseMethodTy`: the method runs once)
+    Γ ⊢ scase_q P m s i x ⇒ P i x ⊣ Uₘ + q·Uₓ      (`scaseMethodTy`: the method runs once and
+                                                    binds the payload at q; K1)
     Γ ⊢ scofix A f s i a ⇒ ν^s D i ⊣ ω·(U_f + Uₐ)  (`scofixFunTy`)
 
 A `Π`/`Σ` may carry its sort; if it does, the sort must be the one the rule computes
@@ -362,7 +367,7 @@ def projUsage (ctx : Ctx R) (t : Term R) (ty : Val R) (field : String) (u : Usag
   let fail {α} (x : Name) (q : String) : TCM α := throw (.other <|
     s!"cannot project {match t with | .var _ => st | _ => s!"({st})"}{field}: a projection needs an unrestricted pair (it keeps one component and drops the other), but this one uses {x}, which has quantity {q}; " ++
     (if endsInStructTail ctx ty 0 then
-      s!"this is a field of a structure, and a structure can't be held at a quantity other than ω yet (it has no destructuring form); use a tuple `A × B` instead, taken apart with `let {q} (x, y) := …`"
+      s!"this is a field of a structure, and a structure can't be held at a quantity other than ω yet (it has no destructuring form); use a tuple `A × B` instead, taken apart with `let {q} (x, y) := …`, or a one-constructor `inductive` taken apart by `match`"
     else s!"take the pair apart with `let {q} (x, y) := {st}; …` instead"))
   match QRig.many? (R := R) with
   | some m =>
@@ -566,6 +571,9 @@ partial def checkCore (ctx : Ctx R) (t : Term R) (ty : VTy R) : TCM (Usage R) :=
     let ub ← check ctx b (ctx.instArgAt A B a)
     pure (q • ua + ub)
   | .tt, .unit _ => pure (Usage.zeros ctx.lvl)
+  | .letUnit u b, _ => do
+    let uu ← checkUnit ctx u
+    pure (uu + (← check ctx b ty))
   | t, .sizeLt s => do
     -- a size below `s` (`∞` is not below itself)
     let _ ← check { ctx with erased := true } t .size
@@ -795,6 +803,10 @@ partial def inferCore (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     match whnf ty with
     | .empty _ => pure (ctx.eval m, Usage.zeros ctx.lvl)
     | _ => throw (.typeMismatch "an empty type" (ctx.showVal ty))
+  | .letUnit u b => do
+    let uu ← checkUnit ctx u
+    let (bty, ub) ← infer ctx b
+    pure (bty, uu + ub)
   | .pair .. | .tt => throw (.cannotInfer (ctx.showTerm t))
   | .eq A a b => do
     let l ← checkType ctx A
@@ -947,7 +959,10 @@ partial def inferCore (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     let _ ← check ctx i vI
     let ua ← check ctx a (vApp ctx.globals vA (ctx.eval i))
     pure (.nu l vI vD (ctx.eval i) (ctx.eval s) none, ← methodUsage ctx (uf + ua))
-  | .scase l I D v P m s i x => do
+  | .scase l q I D v P m s i x => do
+    -- (K1) the case at quantity `q`: the method runs once (unscaled) and receives the
+    -- payload at `q`, so the scrutinee is used `q` times
+    let qp ← checkQty ctx q
     checkIndexLevel ctx l I
     let vI := ctx.eval I
     let _ ← check ctx D (.desc l vI)
@@ -957,10 +972,10 @@ partial def inferCore (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
     let vP := ctx.eval P
     let _ ← check { ctx with erased := true } s .size
     let vs := ctx.eval s
-    let um ← check ctx m (scaseMethodTy ctx.globals l vI vD vP vs w)
+    let um ← check ctx m (scaseMethodTy ctx.globals l vI vD vP vs (ctx.eval q))
     let _ ← check ctx i vI
-    let ux ← check ctx x (.mu l vI vD (ctx.eval i) vs none)
-    pure (vApp ctx.globals (vApp ctx.globals vP (ctx.eval i)) (ctx.eval x), um + (← methodUsage ctx ux))
+    let ux ← check (ctx.erasedAt qp) x (.mu l vI vD (ctx.eval i) vs none)
+    pure (vApp ctx.globals (vApp ctx.globals vP (ctx.eval i)) (ctx.eval x), um + qp • ux)
   | .cocon _ => throw (.cannotInfer (ctx.showTerm t))
   | .coit l I D S st i s => do
     checkIndexLevel ctx l I
@@ -1015,7 +1030,7 @@ partial def inferCore (ctx : Ctx R) (t : Term R) : TCM (VTy R × Usage R) :=
   --| -- Exercise 4.23: the sized rules
   --| | .sfix l I D v P f s i x => sorry
   --| | .scofix l I D A f s i a => sorry
-  --| | .scase l I D v P m s i x => sorry
+  --| | .scase l q I D v P m s i x => sorry
   --| | .cocon _ => throw (.cannotInfer (ctx.showTerm t))
   --| | .dret _ | .darg .. | .drec .. | .dhrec .. | .con _ => throw (.cannotInfer (ctx.showTerm t))
   --sol>
@@ -1050,6 +1065,19 @@ partial def checkIndexLevel (ctx : Ctx R) (l : Level) (I : Term R) : TCM Unit :=
   let lI ← checkType ctx I
   unless lI.equiv (.succ l) do
     throw (.other s!"an index type must be in the data type's universe: Sort {(Level.succ l).format}, not Sort {lI.format} (lift it with ULift)")
+
+/-- The scrutinee of `let () := u; b` (linear-case stage 2): `u` must have the type
+`Unit_l` itself (after `whnf`), never a type that is merely a singleton by η (a function
+into `Unit` may be a closure holding a resource: applying it would need its argument). Its
+usage is `u`'s own, counted once: the eliminator consumes it. -/
+partial def checkUnit (ctx : Ctx R) (u : Term R) : TCM (Usage R) := do
+  match u with
+  | .tt => pure (Usage.zeros ctx.lvl)
+  | _ =>
+    let (ty, uu) ← infer ctx u
+    match whnf ty with
+    | .unit _ => pure uu
+    | _ => throw (.typeMismatch "Unit (`let () := u` takes apart a value of the unit type only)" (ctx.showVal ty))
 
 /-- A binder's quantity annotation: a term of type `Qty` (its usage is discarded, as
 for types), returned as a polynomial. -/

@@ -433,6 +433,22 @@ package's `lib` targets with its module roots (dependencies included), into
 def foo (n : Nat) (pt : Point) : Nat := Nat.add n pt.‸   -- pt.px : Nat, pt.py : Nat, pt.norm
 def p : Point := _                                     -- [Fill with an anonymous constructor] ⟨?px, ?py⟩
 ```
+
+## 11u: signature help
+
+`textDocument/signatureHelp` (`Wiz/Signature.lean`; triggered by a space or `(`) shows
+the binders of the function being applied, `List.length {A : Type} (_ : List A) : Nat`,
+with the explicit argument being typed highlighted. The application is found in the
+text, since the document rarely elaborates mid-application: back from the cursor to the
+nearest unclosed bracket, or `:=`, `=>`, `,`, `|`, `;` at bracket depth 0, or the
+start of the command. Its first word is the function, and the complete arguments after
+it (named arguments `(x := e)` aside) say which explicit binder comes next. A global's
+binders come from its declaration; a local function's type from the info tree of the
+text cut after it, with its open brackets closed. In Neovim 0.11, `<C-s>` in insert mode.
+
+```
+def b (xs : List Nat) : Nat := List.length ‸    -- List.length {A : Type} [(_ : List A)] : Nat
+```
 ## 11v: the outline, workspace symbols and folding
 
 * **Document symbols** (`textDocument/documentSymbol`, `Wiz/Symbols.lean`): one symbol per
@@ -447,6 +463,23 @@ def p : Point := _                                     -- [Fill with an anonymou
   `by` blocks, `match`es, and block comments (kind `comment`).
 * wiz.nvim: `gO` (Neovim 0.11) lists the outline; `lsp.folding = true` folds with the
   server's ranges (`vim.lsp.foldexpr`).
+
+## 11x: inlay hints
+
+`textDocument/inlayHint` (`Wiz/Inlay.lean`) shows the type the elaborator gave a `fun`
+or `let` binder written without one, `fun x : Nat => …`, from the info tree's binders
+(`recordBinder`): a local identifier whose text is the binder's own name, with `fun`/`λ`
+(past the other binders of its group) or `let` before it and `=>`/`↦`/`:=` or another
+binder after it, not `:`. wiz.nvim: `lsp.inlay_hints = true` turns them on.
+## 11z: semantic tokens for the file's own keywords
+
+`textDocument/semanticTokens/full` (`Wiz/Semantic.lean`, one token type `keyword`)
+marks what a fixed syntax file can't know: the words of declared syntax (`syntax`,
+`notation`, the Prelude's tactics, a keyword-scoped DSL's `when … yes … no`) inside the
+nodes of that kind the info tree saw (`syntaxRef`), and the words that declared `term`
+and `command` rules reserve everywhere (`run_calc`, `done`). A DSL keyword used as a name
+outside the DSL (`def no (yes : Nat)`) stays a name. Comments and strings are skipped.
+Neovim shows them as `@lsp.type.keyword` (linked to `@keyword`) without configuration.
 
 ## 11y: references, highlights and rename
 

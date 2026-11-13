@@ -3,6 +3,9 @@ import Wiz.Query
 import Wiz.Rig.Instances
 import Wiz.Infoview
 import Wiz.Actions
+import Wiz.Signature
+import Wiz.Inlay
+import Wiz.Semantic
 import Wiz.Completion
 import Wiz.Refs
 import Wiz.Symbols
@@ -155,6 +158,10 @@ def capabilities : Json :=
     ("documentHighlightProvider", true),
     ("referencesProvider", true), ("renameProvider", Json.mkObj [("prepareProvider", true)]),
     ("completionProvider", Json.mkObj [("triggerCharacters", Json.arr #["."])]),
+    ("signatureHelpProvider", Json.mkObj [("triggerCharacters", Json.arr #[" ", "("]), ("retriggerCharacters", Json.arr #[" "])]),
+    ("inlayHintProvider", true),
+    ("semanticTokensProvider", Json.mkObj [("legend", Json.mkObj [("tokenTypes", Json.arr #["keyword"]), ("tokenModifiers", Json.arr #[])]),
+                                           ("full", true)]),
     ("documentSymbolProvider", true), ("workspaceSymbolProvider", true), ("foldingRangeProvider", true),
     ("codeActionProvider", Json.mkObj [("codeActionKinds", Json.arr #["quickfix", "refactor.rewrite"]),
                                        ("resolveProvider", true)]),
@@ -570,6 +577,16 @@ def handle (srv : Server) (msg : Json) : Server × Array Json := Id.run do
     ({ srv with docs := srv.docs.insert uri doc, sessions := session },
      #[diagnostics srv uri doc] ++ (if srv.elaboratedNotes then #[note] else #[]))
   | "textDocument/didClose" => ({ srv with docs := srv.docs.erase uri }, #[])
+  | "textDocument/inlayHint" =>
+    let some doc := srv.docs.get? uri | return (srv, #[reply (Json.arr #[])])
+    let pos (k : String) := ofPos doc.text (getNat msg ["params", "range", k, "line"]) (getNat msg ["params", "range", k, "character"])
+    let hs := (Inlay.hintsIn doc.state doc.text (pos "start") (pos "end")).map fun h =>
+      Json.mkObj [("position", toPos doc.text h.at_), ("label", Json.str h.label), ("kind", (1 : Nat))]
+    (srv, #[reply (Json.arr hs)])
+  | "textDocument/semanticTokens/full" =>
+    let some doc := srv.docs.get? uri | return (srv, #[reply Json.null])
+    let data := Semantic.encode doc.text (Semantic.keywords doc.state doc.text)
+    (srv, #[reply (Json.mkObj [("data", Json.arr (data.map fun (n : Nat) => (n : Json)))])])
   | "textDocument/references" | "textDocument/documentHighlight" | "textDocument/prepareRename" | "textDocument/rename" =>
     let some doc := srv.docs.get? uri | return (srv, #[reply Json.null])
     let off := ofPos doc.text (getNat msg ["params", "position", "line"]) (getNat msg ["params", "position", "character"])
@@ -645,6 +662,15 @@ def handle (srv : Server) (msg : Json) : Server × Array Json := Id.run do
     match infoview srv uri doc method msg with
     | .ok (doc, j) => ({ srv with docs := srv.docs.insert uri doc }, #[reply j])
     | .error (c, m) => (srv, #[replyError c m])
+  | "textDocument/signatureHelp" =>
+    let some doc := srv.docs.get? uri | return (srv, #[reply Json.null])
+    let off := ofPos doc.text (getNat msg ["params", "position", "line"]) (getNat msg ["params", "position", "character"])
+    match Signature.helpAt doc.state doc.text off (fun t => (elabText srv doc.engine t).1) with
+    | some h =>
+      let ps := h.params.map fun (a, b) => Json.mkObj [("label", Json.arr #[(a : Nat), (b : Nat)])]
+      (srv, #[reply (Json.mkObj [("signatures", Json.arr #[Json.mkObj [("label", Json.str h.label), ("parameters", Json.arr ps)]]),
+                                 ("activeSignature", (0 : Nat)), ("activeParameter", h.active)])])
+    | none => (srv, #[reply Json.null])
   | "textDocument/hover" | "textDocument/definition" | "textDocument/declaration" | "textDocument/completion" =>
     let some doc := srv.docs.get? uri | return (srv, #[reply Json.null])
     let off := ofPos doc.text (getNat msg ["params", "position", "line"]) (getNat msg ["params", "position", "character"])
