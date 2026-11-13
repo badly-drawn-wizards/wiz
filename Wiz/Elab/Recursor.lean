@@ -92,9 +92,19 @@ open B in
 `T.casesOnN`: the motive is a type `M : Sort v` instead of a family over the indices
 and the value. Their branches need no cast along the constructor's index equation (both
 sides are `M`), so they compute on a constructor without regularity; the match compiler
-uses them when its motive doesn't depend on the scrutinee. -/
+uses them when its motive doesn't depend on the scrutinee.
+
+With `additive`, `T.casesOnA` (stage 21v; E1 of the linear-case design,
+/workspace/wiz-notes/linear-case-design.md): `casesOn` with its methods bundled into one
+argument at quantity 1, a function from the tag,
+`(1 m : (t : Enum ls) → ecase t [ULift (M_c)…])`, where `M_c` is `casesOn`'s method type
+for `c` (lifted to one universe, `imax (l+1) v`). `match` passes
+`fun t => ecase t [up m_c…]`, whose branches are alternatives: a variable used once in
+each branch is used once (the join, CoreSpec §5.3), where `casesOn`'s separate ω method
+arguments add up. Its body is the sized case at `∞` (`scase` runs its method once and
+does not scale it); kernel-checked like the others, so no new rule. -/
 def mkRecursor (g : Globals R) (T : Name) (ctors : List Name) (withIH : Bool) (sized : Bool := false)
-    (nondep : Bool := false) : Except String (Decl R) := do
+    (nondep : Bool := false) (additive : Bool := false) : Except String (Decl R) := do
   let some Td := g.find? T | throw s!"unknown inductive {T}"
   let some descD := g.find? (T ++ ".desc") | throw s!"{T} has no description"
   let ps := Td.levelParams
@@ -141,8 +151,10 @@ def mkRecursor (g : Globals R) (T : Name) (ctors : List Name) (withIH : Bool) (s
     let (bs, res) := peelPis cd.type
     let fields := bs.drop nΔ
     cinfo := cinfo.push (c, fields, (Term.spine res).2.drop nΔ)
-  let recName := T ++ (if sized then ".scasesOn" else if withIH then ".rec" else ".casesOn") ++
+  let recName := T ++ (if additive then ".casesOnA" else if sized then ".scasesOn" else if withIH then ".rec" else ".casesOn") ++
     (if nondep then "N" else "")
+  -- (additive) the universe the method types are lifted to
+  let uA : Level := .imax (.succ l) v
   let motApp (mot : B R) (args : List (B R)) : B R := if nondep then mot else app mot args
   -- the shared signature, as a function of the bound variables
   let Tc : B R := closed (.const T us)
@@ -181,49 +193,58 @@ def mkRecursor (g : Globals R) (T : Name) (ctors : List Name) (withIH : Bool) (s
         B.pi "x" .default (qlit w) (app Tc (σ.toList)) fun _ => closed (.sort v)
     binder "motive" .default (qlit 0) motiveTy fun mot =>
     -- methods
+    let finish (ms : Array (B R)) : B R :=
+      bindTele binder Ξ Δv (some .implicit) (some (qlit 0)) fun σ =>
+        let xTy := match sv? with
+          | some sv => sizedT Δv (σ.extract nΔ σ.size).toList sv
+          | none => app Tc σ.toList
+        binder "x" .default (qlit w) xTy fun xv =>
+          body sv? Δv mot ms (σ.extract nΔ σ.size) xv
+    let methodTy (ci : Name × List (Name × BinderInfo × Term R × Term R) × List (Term R)) : B R :=
+      let (c, fields, idx) := ci
+      let fieldsTy (jv? : Option (B R)) : B R :=
+        bindTele (fun x bi q A k => B.pi x bi q A k) fields Δv none none (tyOf := fun A σ =>
+          match jv? with
+          | some jv => match recView A with
+            | some (none, js) => sizedT Δv (js.map (ofTele · σ)) jv
+            | some (some (h, H), js) =>
+              B.pi h .default (qlit w) (ofTele H σ) fun hv => sizedT Δv (js.map (ofTele · (σ.push hv))) jv
+            | none => ofTele A σ
+          | none => ofTele A σ) fun σ =>
+          let fs := σ.extract nΔ σ.size
+          let recs := (fields.zip fs.toList).zipIdx.filterMap fun (((_, _, _, A), f), k) =>
+            if isRec A then some (A, f, k) else none
+          let rec ihs (rs : List (Term R × B R × Nat)) (σ' : Array (B R)) : B R :=
+            match rs with
+            | [] => motApp mot ((idx.map (ofTele · σ)) ++ [app (closed (.const (ctorConst T c) us)) σ.toList])
+            | (A, f, k) :: rs' =>
+              -- `A` lives in the context of Δ and the fields before it
+              let σk := σ.extract 0 (nΔ + k)
+              let ihTy : B R := match recView A with
+                | some (some (h, H), js) =>
+                  -- infinitary: one hypothesis per `h`
+                  B.pi h .default (qlit w) (ofTele H σk) fun hv =>
+                    motApp mot ((js.map (ofTele · (σk.push hv))) ++ [app f [hv]])
+                | some (none, js) => motApp mot ((js.map (ofTele · σk)) ++ [f])
+                | none => motApp mot [f]
+              B.pi "ih" .default (qlit w) ihTy fun _ => ihs rs' σ'
+          if withIH then ihs recs σ else ihs [] σ
+      match sv? with
+      | some sv => B.pi "j" .default (qlit 0) (fun d => .sizeLt (sv d)) fun jv => fieldsTy (some jv)
+      | none => fieldsTy none
     let rec methods (cs : List (Name × List (Name × BinderInfo × Term R × Term R) × List (Term R)))
         (ms : Array (B R)) : B R :=
       match cs with
-      | [] =>
-        bindTele binder Ξ Δv (some .implicit) (some (qlit 0)) fun σ =>
-          let xTy := match sv? with
-            | some sv => sizedT Δv (σ.extract nΔ σ.size).toList sv
-            | none => app Tc σ.toList
-          binder "x" .default (qlit w) xTy fun xv =>
-            body sv? Δv mot ms (σ.extract nΔ σ.size) xv
-      | (c, fields, idx) :: rest =>
-        let fieldsTy (jv? : Option (B R)) : B R :=
-          bindTele (fun x bi q A k => B.pi x bi q A k) fields Δv none none (tyOf := fun A σ =>
-            match jv? with
-            | some jv => match recView A with
-              | some (none, js) => sizedT Δv (js.map (ofTele · σ)) jv
-              | some (some (h, H), js) =>
-                B.pi h .default (qlit w) (ofTele H σ) fun hv => sizedT Δv (js.map (ofTele · (σ.push hv))) jv
-              | none => ofTele A σ
-            | none => ofTele A σ) fun σ =>
-            let fs := σ.extract nΔ σ.size
-            let recs := (fields.zip fs.toList).zipIdx.filterMap fun (((_, _, _, A), f), k) =>
-              if isRec A then some (A, f, k) else none
-            let rec ihs (rs : List (Term R × B R × Nat)) (σ' : Array (B R)) : B R :=
-              match rs with
-              | [] => motApp mot ((idx.map (ofTele · σ)) ++ [app (closed (.const (ctorConst T c) us)) σ.toList])
-              | (A, f, k) :: rs' =>
-                -- `A` lives in the context of Δ and the fields before it
-                let σk := σ.extract 0 (nΔ + k)
-                let ihTy : B R := match recView A with
-                  | some (some (h, H), js) =>
-                    -- infinitary: one hypothesis per `h`
-                    B.pi h .default (qlit w) (ofTele H σk) fun hv =>
-                      motApp mot ((js.map (ofTele · (σk.push hv))) ++ [app f [hv]])
-                  | some (none, js) => motApp mot ((js.map (ofTele · σk)) ++ [f])
-                  | none => motApp mot [f]
-                B.pi "ih" .default (qlit w) ihTy fun _ => ihs rs' σ'
-            if withIH then ihs recs σ else ihs [] σ
-        let mTy : B R := match sv? with
-          | some sv => B.pi "j" .default (qlit 0) (fun d => .sizeLt (sv d)) fun jv => fieldsTy (some jv)
-          | none => fieldsTy none
-        binder ("m_" ++ c) .default (qlit w) mTy fun m => methods rest (ms.push m)
-    methods cinfo.toList #[]
+      | [] => finish ms
+      | ci :: rest => binder ("m_" ++ ci.1) .default (qlit w) (methodTy ci) fun m => methods rest (ms.push m)
+    if additive then
+      -- one method: `(1 m : (t : Enum ls) → ecase t [ULift (M_c)…])`; `M_c` is
+      -- `down (m 'c)`
+      let mA : B R := B.pi "t" .default (qlit w) (closed (.enum ls)) fun tv => fun d =>
+        .ecase "z" (.sort uA) (tv d) (cinfo.toList.map fun ci => .ulift uA (methodTy ci d))
+      binder "m" .default (qlit 1) mA fun m =>
+        finish ((List.range cinfo.size).toArray.map fun k => fun d => .down (.app (m d) (.tag ls k)))
+    else methods cinfo.toList #[]
   -- the type
   let ty := build (fun x bi q A k => B.pi x bi q A k) fun _ _ mot _ ξ xv => motApp mot (ξ.toList ++ [xv])
   -- the value
@@ -277,7 +298,7 @@ def mkRecursor (g : Globals R) (T : Name) (ctors : List Name) (withIH : Bool) (s
             .eqTy (A d) ((motApp mot (unpack j ++
               [conAt j (pair tag ((rawFs ++ [e']).foldr pair (closed .tt)))])) d)
           let prf : B R := fun d => .transp (Iv d) (tuple idxB d) (Q d) (.reflTy (A d)) (i d) (e d)
-          let inner := app (ms[ci]!) ((jv?.toList) ++ fs ++ (if withIH then ihs else []))
+          let inner := app (ms[ci]!) ((if additive then [] else jv?.toList) ++ fs ++ (if withIH then ihs else []))
           -- without indices the two motives agree (`con (tag, r)` is the constructor
           -- applied to `r`'s fields, by η), so no cast: then the recursor computes on a
           -- constructor even at a neutral motive, without regularity
@@ -289,7 +310,7 @@ def mkRecursor (g : Globals R) (T : Name) (ctors : List Name) (withIH : Bool) (s
         match ih? with
         | some ih => .app e (ih d)
         | none => e
-    match sv? with
+    match sv?.orElse fun _ => if additive then some (closed .szInf) else none with
     | some sv =>
       let M := B.lam "j" fun j => B.lam "i" fun i => B.lam "xs" fun xs => methodBody (some j) i xs none
       fun d => .scase l (Iv d) (Dv d) v (P d) (M d) (sv d) (tuple ξ.toList d) (xv d)

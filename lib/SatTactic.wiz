@@ -1,0 +1,229 @@
+import Sat
+-- `sat_decide` (stage 28b): decide a Boolean goal with a SAT solver, **without trusting
+-- it**. `import SatTactic`.
+--
+--     def demorgan (a b : Bool) : Bool.not (Bool.and a b) = Bool.or (Bool.not a) (Bool.not b) := by sat_decide
+--
+-- The goal (after introducing its `∀`s) is `e = .true` or `e₁ = e₂` at `Bool`, where `e`
+-- is built from `Bool.and/or/not/xor` and `.true/.false`; every other Bool subterm is an
+-- atom (a variable of the formula). The tactic
+-- 1. reflects `e` as a formula `f : Sat.BForm` and the atoms as `σ := Sat.envOf [t₀, …]`;
+-- 2. builds a circuit (one node per distinct subformula) and its CNF, with the output
+--    negated (`Sat.fullCnf`);
+-- 3. asks the SAT solver (CaDiCaL, `--sat-solver`) for an LRAT refutation
+--    (`TacticM.satSolve`; a model is shown as a counterexample);
+-- 4. closes the goal with `Sat.decide_sound f nodes out proof Sat.trivial σ`. The kernel
+--    checks `Sat.trivial : IsTrue (Sat.checkAll f nodes out proof)` by running the checker
+--    and `BForm.eval σ f = .true` against the goal by conversion.
+-- Neither the solver, nor this tactic, nor the host's DIMACS/LRAT plumbing is trusted.
+-- The kernel runs the checker (slow for big proofs; kernel evaluation, wiz-notes/smt.md).
+
+-- ## Reflection: Bool expressions as formulas, with their atoms
+
+-- the index of `e` among the atoms (added at the end if it is new)
+def SatT.atomIndex (e : Expr) : List Expr → Nat → Nat × List Expr
+  | .nil, i => (i, .cons e .nil)
+  | .cons a as, i => match Expr.beq a e with
+    | .true => (i, .cons a as)
+    | .false => match SatT.atomIndex e as (Nat.succ i) with
+      | (j, as') => (j, .cons a as')
+
+-- `e` as a formula, given the atoms so far
+def SatT.atom (e : Expr) (atoms : List Expr) : Sat.BForm × List Expr :=
+  match SatT.atomIndex e atoms 0 with
+  | (j, atoms1) => (.var j, atoms1)
+mutual
+def SatT.reflect (e : Expr) (atoms : List Expr) : Sat.BForm × List Expr :=
+  match Expr.view e with
+  | .const n args => SatT.reflectConst e n args atoms
+  | _ => SatT.atom e atoms
+def SatT.reflect2 (mk : Sat.BForm → Sat.BForm → Sat.BForm) (a b : Expr) (atoms : List Expr) : Sat.BForm × List Expr :=
+  match SatT.reflect a atoms with
+  | (fa, atoms1) => match SatT.reflect b atoms1 with
+    | (fb, atoms2) => (mk fa fb, atoms2)
+def SatT.reflectConst (e : Expr) (n : String) (args : List Expr) (atoms : List Expr) : Sat.BForm × List Expr :=
+  match args with
+  | .nil => match Expr.nameEq n "Bool.true" with
+    | .true => (.const .true, atoms)
+    | .false => match Expr.nameEq n "Bool.false" with
+      | .true => (.const .false, atoms)
+      | .false => SatT.atom e atoms
+  | .cons a .nil => match Expr.nameEq n "Bool.not" with
+    | .true => match SatT.reflect a atoms with
+      | (fa, atoms1) => (.not fa, atoms1)
+    | .false => SatT.atom e atoms
+  | .cons a (.cons b .nil) =>
+    match Expr.nameEq n "Bool.and" with
+    | .true => SatT.reflect2 Sat.BForm.and a b atoms
+    | .false => match Expr.nameEq n "Bool.or" with
+      | .true => SatT.reflect2 Sat.BForm.or a b atoms
+      | .false => match Expr.nameEq n "Bool.xor" with
+        | .true => SatT.reflect2 Sat.BForm.xor a b atoms
+        | .false => match Expr.nameEq n "Sat.boolEq" with
+          | .true => SatT.reflect2 Sat.BForm.iff a b atoms
+          | .false => SatT.atom e atoms
+  | _ => SatT.atom e atoms
+end
+
+-- ## The circuit: one node per distinct subformula
+
+def SatT.findNode (t : Sat.BForm) : List Sat.Node → Option Nat
+  | .nil => .none
+  | .cons (.mk i u _ _) ns => match Sat.BForm.beq u t with
+    | .true => .some i
+    | .false => SatT.findNode t ns
+
+def SatT.addNode (t : Sat.BForm) (a b : Nat) (st : List Sat.Node × Nat) : Nat × (List Sat.Node × Nat) :=
+  match SatT.findNode t st.1 with
+  | .some i => (i, st)
+  | .none => (st.2, (.cons (.mk st.2 t a b) st.1, Nat.succ st.2))
+
+-- the node of `t` (its operands' nodes first)
+def SatT.intern : Sat.BForm → List Sat.Node × Nat → Nat × (List Sat.Node × Nat)
+  | .var j, st => SatT.addNode (.var j) 0 0 st
+  | .const c, st => SatT.addNode (.const c) 0 0 st
+  | .not a, st => match SatT.intern a st with
+    | (ia, st1) => SatT.addNode (.not a) ia 0 st1
+  | .and a b, st => match SatT.intern a st with
+    | (ia, st1) => match SatT.intern b st1 with
+      | (ib, st2) => SatT.addNode (.and a b) ia ib st2
+  | .or a b, st => match SatT.intern a st with
+    | (ia, st1) => match SatT.intern b st1 with
+      | (ib, st2) => SatT.addNode (.or a b) ia ib st2
+  | .xor a b, st => match SatT.intern a st with
+    | (ia, st1) => match SatT.intern b st1 with
+      | (ib, st2) => SatT.addNode (.xor a b) ia ib st2
+  | .iff a b, st => match SatT.intern a st with
+    | (ia, st1) => match SatT.intern b st1 with
+      | (ib, st2) => SatT.addNode (.iff a b) ia ib st2
+
+-- ## Data as `Expr`s, for the proof term
+
+def SatT.boolE : Bool → Expr
+  | .true => .const "Bool.true"
+  | .false => .const "Bool.false"
+def SatT.listE (ty : Expr) (f : Nat → Expr) : List Nat → Expr
+  | .nil => .app (.const "List.nil") ty
+  | .cons x xs => Expr.mkApp (.const "List.cons") (.cons ty (.cons (f x) (.cons (SatT.listE ty f xs) .nil)))
+def SatT.exprsE (ty : Expr) : List Expr → Expr
+  | .nil => .app (.const "List.nil") ty
+  | .cons x xs => Expr.mkApp (.const "List.cons") (.cons ty (.cons x (.cons (SatT.exprsE ty xs) .nil)))
+-- a literal's code: `2 v` positive, `2 v + 1` negative
+def SatT.litCode : Sat.Lit → Nat
+  | .mk v .true => v + v
+  | .mk v .false => Nat.succ (v + v)
+def SatT.litE (code : Nat) : Expr :=
+  Expr.mkApp (.const "Sat.Lit.mk") (.cons (.lit (Nat.div code 2)) (.cons (SatT.boolE (Nat.beq (Nat.mod code 2) 0)) .nil))
+def SatT.formE : Sat.BForm → Expr
+  | .var j => Expr.mkApp (.const "Sat.BForm.var") (.cons (.lit j) .nil)
+  | .const c => Expr.mkApp (.const "Sat.BForm.const") (.cons (SatT.boolE c) .nil)
+  | .not a => Expr.mkApp (.const "Sat.BForm.not") (.cons (SatT.formE a) .nil)
+  | .and a b => Expr.mkApp (.const "Sat.BForm.and") (.cons (SatT.formE a) (.cons (SatT.formE b) .nil))
+  | .or a b => Expr.mkApp (.const "Sat.BForm.or") (.cons (SatT.formE a) (.cons (SatT.formE b) .nil))
+  | .xor a b => Expr.mkApp (.const "Sat.BForm.xor") (.cons (SatT.formE a) (.cons (SatT.formE b) .nil))
+  | .iff a b => Expr.mkApp (.const "Sat.BForm.iff") (.cons (SatT.formE a) (.cons (SatT.formE b) .nil))
+def SatT.nodesE : List Sat.Node → Expr
+  | .nil => .app (.const "List.nil") (.const "Sat.Node")
+  | .cons (.mk i t a b) ns => Expr.mkApp (.const "List.cons") (.cons (.const "Sat.Node")
+      (.cons (Expr.mkApp (.const "Sat.Node.mk") (.cons (.lit i) (.cons (SatT.formE t) (.cons (.lit a) (.cons (.lit b) .nil)))))
+      (.cons (SatT.nodesE ns) .nil)))
+def SatT.stepsE : List (Nat × List Nat × List Nat) → Expr
+  | .nil => .app (.const "List.nil") (.const "Sat.Step")
+  | .cons s ss => Expr.mkApp (.const "List.cons") (.cons (.const "Sat.Step")
+      (.cons (Expr.mkApp (.const "Sat.Step.add") (.cons (.lit s.1)
+        (.cons (SatT.listE (.const "Sat.Lit") SatT.litE s.2.1)
+        (.cons (SatT.listE (.const "Nat") (fun n => .lit n) s.2.2) .nil))))
+      (.cons (SatT.stepsE ss) .nil)))
+
+def SatT.clauseCodes : List Sat.Lit → List Nat
+  | .nil => .nil
+  | .cons l ls => .cons (SatT.litCode l) (SatT.clauseCodes ls)
+def SatT.cnfCodes : List (List Sat.Lit) → List (List Nat)
+  | .nil => .nil
+  | .cons c cs => .cons (SatT.clauseCodes c) (SatT.cnfCodes cs)
+
+-- ## Counterexamples
+
+-- the node of atom `j`
+def SatT.atomNode (j : Nat) : List Sat.Node → Option Nat
+  | .nil => .none
+  | .cons (.mk i (.var k) _ _) ns => match Nat.beq j k with
+    | .true => .some i
+    | .false => SatT.atomNode j ns
+  | .cons _ ns => SatT.atomNode j ns
+def SatT.memNat (n : Nat) : List Nat → Bool
+  | .nil => .false
+  | .cons m ms => Bool.or (Nat.beq n m) (SatT.memNat n ms)
+def SatT.atomValue (j : Nat) (nodes : List Sat.Node) (model : List Nat) : String :=
+  match SatT.atomNode j nodes with
+  | .some i => (match SatT.memNat (i + i) model with | .true => "true" | .false => "false")
+  | .none => "false"
+def SatT.showModel (g : Nat) (nodes : List Sat.Node) (model : List Nat) : List Expr → Nat → TacticM String
+  | .nil, _ => TacticM.pure ""
+  | .cons a as, j => do
+    s ← TacticM.ppExpr g a;
+    rest ← SatT.showModel g nodes model as (Nat.succ j);
+    TacticM.pure (String.append "\n  " (String.append s (String.append " := " (String.append (SatT.atomValue j nodes model) rest))))
+
+-- ## The tactic
+
+def SatT.introAll : Nat → Nat → TacticM Nat
+  | .zero, g => TacticM.pure g
+  | .succ fuel, g => do
+    ty ← TacticM.goalType g;
+    match ty with
+    | .pi _ _ _ _ _ => do
+      r ← TacticM.introFresh g "";
+      SatT.introAll fuel r.2
+    | _ => TacticM.pure g
+
+-- the proof of `f`'s goal, given the circuit and the refutation
+def SatT.proofOne (f : Sat.BForm) (σ : Expr) (nodes : List Sat.Node) (out : Nat) (proof : List (Nat × List Nat × List Nat)) : Expr :=
+  Expr.mkApp (.const "Sat.decide_sound") (.cons (SatT.formE f) (.cons (SatT.nodesE nodes) (.cons (.lit out)
+    (.cons (SatT.stepsE proof) (.cons (.const "Sat.trivial") (.cons σ .nil))))))
+def SatT.proofEq (a b : Sat.BForm) (σ : Expr) (nodes : List Sat.Node) (out : Nat) (proof : List (Nat × List Nat × List Nat)) : Expr :=
+  Expr.mkApp (.const "Sat.decide_eq") (.cons (SatT.formE a) (.cons (SatT.formE b) (.cons (SatT.nodesE nodes) (.cons (.lit out)
+    (.cons (SatT.stepsE proof) (.cons (.const "Sat.trivial") (.cons σ .nil)))))))
+def SatT.env (atoms : List Expr) : Expr := Expr.app (.const "Sat.envOf") (SatT.exprsE (.const "Bool") atoms)
+
+def SatT.solve (g : Nat) (atoms : List Expr) (nodes : List Sat.Node) (out : Nat) (nvars : Nat)
+    (close : List Sat.Node → Nat → List (Nat × List Nat × List Nat) → Expr) : TacticM Unit := do
+  ans ← TacticM.satSolve nvars (SatT.cnfCodes (Sat.fullCnf nodes out));
+  match ans with
+  | .error msg => TacticM.fail (String.append "sat_decide: " msg)
+  | .sat model => do
+    m ← SatT.showModel g nodes model atoms 0;
+    TacticM.fail (String.append "sat_decide: the goal is false; a counterexample:" m)
+  | .unsat proof => TacticM.assign g (close nodes out proof)
+
+def SatT.decide (g : Nat) (f : Sat.BForm) (atoms : List Expr)
+    (close : List Sat.Node → Nat → List (Nat × List Nat × List Nat) → Expr) : TacticM Unit :=
+  match SatT.intern f (.nil, 0) with
+  | (out, st) => SatT.solve g atoms st.1 out st.2 close
+
+def SatT.isConst (n : String) (e : Expr) : Bool := match Expr.view e with
+  | .const m .nil => Expr.nameEq m n
+  | _ => .false
+
+-- `lhs = rhs` at `Bool`
+def SatT.decideEq (g : Nat) (lhs rhs : Expr) : TacticM Unit :=
+  match SatT.reflect lhs .nil with
+  | (fa, atoms1) => match SatT.isConst "Bool.true" rhs with
+    | .true => SatT.decide g fa atoms1 (SatT.proofOne fa (SatT.env atoms1))
+    | .false => match SatT.reflect rhs atoms1 with
+      | (fb, atoms2) => SatT.decide g (.iff fa fb) atoms2 (SatT.proofEq fa fb (SatT.env atoms2))
+
+syntax (name := satDecide) "sat_decide" : tactic
+def Tactic.satDecide : Tactic := fun _ => do
+  g0 ← TacticM.mainGoal;
+  g ← SatT.introAll 1000 g0;
+  ty ← TacticM.goalType g;
+  eqn ← TacticM.eqView g ty;
+  match eqn with
+  | .none => TacticM.fail "sat_decide: the goal is not an equation of booleans"
+  | .some eq => match SatT.isConst "Bool" eq.1 with
+    | .true => do
+      SatT.decideEq g eq.2.1 eq.2.2;
+      TacticM.replaceMainGoal .nil
+    | .false => TacticM.fail "sat_decide: the goal is an equation, but not of booleans"
+attribute [tactic tactic.satDecide] Tactic.satDecide

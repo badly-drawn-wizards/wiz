@@ -1635,6 +1635,12 @@ def piSortedQ (q : Q) (es : ES) (a b : Tm) (la lb : Val) : Tm := match whnf (for
     | _ => piTm q a b
   | _ => piTm q a b
 def piSorted (es : ES) (a b : Tm) (la lb : Val) : Tm := piSortedQ .qw es a b la lb
+-- `(x : a) × b` with its sort, when both parts' sorts are known
+def sigmaSorted (q : Q) (es : ES) (a b : Tm) (la lb : Val) : Tm := match whnf (force es la) with
+  | .vsort l1 => match whnf (force es lb) with
+    | .vsort l2 => .sorted (.lmax l1 l2) (sigmaTm q a b)
+    | _ => sigmaTm q a b
+  | _ => sigmaTm q a b
 def tailBools : List Bool → List Bool
   | .nil => .nil
   | .cons _ rest => rest
@@ -2072,6 +2078,8 @@ def nonAtoms : List Syntax → List Syntax
   | .cons s rest => match s with
     | .atom _ => nonAtoms rest
     | _ => .cons s (nonAtoms rest)
+-- the components of a `term.tuple` `(a, b, …)`
+def tupleItems (s : Syntax) : List Syntax := .cons (kid s 1) (nonAtoms (kids (kid s 3)))
 def clausesOf : List Syntax → List Clause
   | .nil => .nil
   | .cons a rest => .cons (.mk (nonAtoms (kids (kid a 1))) .nil (kid a 3)) (clausesOf rest)
@@ -2501,7 +2509,7 @@ def inferT1 (gs : Globals) (es : ES) (cx : Cx) (s : Syntax) : TE :=
                   | .false => .err "cannot infer the type of a λ; add a type ascription"
                 | .false => match strEq k "term.structUpdate" with
                   | .true => structUpdT gs es cx s
-                  | .false => .err (String.append "unsupported syntax " k)
+                  | .false => inferT2 gs es cx s
 -- `{ s with … }` (13i, 13p): `let upd✝ := s; S.mk …` (`updArgs`), checked against the
 -- type of `s`
 def structUpdT (gs : Globals) (es : ES) (cx : Cx) (s : Syntax) : TE :=
@@ -2534,6 +2542,87 @@ def structUpdT (gs : Globals) (es : ES) (cx : Cx) (s : Syntax) : TE :=
           match checkT gs es1 cx' app sty with
           | .ok b _ es2 => .ok (.letE A t b) sty es2
           | e => e
+-- Σ types, pairs and `∀` (as the Lean frontend's `term.prod`, `term.depSigma`,
+-- `term.tuple`, `term.proj` and `term.forall`), and a hole as a type (stage 21u)
+def inferT2 (gs : Globals) (es : ES) (cx : Cx) (s : Syntax) : TE :=
+  let k := kindOf s;
+  match strEq k "term.prod" with
+  | .true => match inferType gs es cx (kid s 0) with
+    | .ok a la es1 => match inferType gs es1 (Cx.bind cx "_" (eval (TCtx.env (Cx.c cx)) a)) (kid s 2) with
+      | .ok b lb es2 => .ok (sigmaSorted .qw es2 a b la lb) (.vsort (.lmax (sortLvl es2 la) (sortLvl es2 lb))) es2
+      | e => e
+    | e => e
+  | .false => match strEq k "term.depSigma" with
+    | .true => match binderType (kid s 0) with
+      | .some aStx => match binderQ (kid s 0) with
+        | .some q => depSigmas gs es cx q (binderNames (kid s 0)) aStx (kid s 2)
+        | .none => .err qtyErr
+      | .none => .err "a Σ needs a binder type"
+    | .false => match strEq k "term.forall" with
+      | .true => forallPis gs es cx (kids (kid s 1)) (kid s 3)
+      | .false => match strEq k "term.proj" with
+        | .true => match inferT gs es cx (kid s 0) with
+          | .ok t ty es1 => match whnf (force es1 ty) with
+            | .vsigma _ A env B _ => match Nat.beq (numValue (kid s 2)) 1 with
+              | .true => .ok (.fst t) A es1
+              | .false => match Nat.beq (numValue (kid s 2)) 2 with
+                | .true => .ok (.snd t) (eval (.cons (vfst (eval (TCtx.env (Cx.c cx)) t)) env) B) es1
+                | .false => .err "a projection is .1 or .2"
+            | _ => .err (String.append "cannot project from a value of type " (show (scopeNames (Cx.sc cx)) (Cx.lvl cx) (quote (Cx.lvl cx) (force es1 ty))))
+          | e => e
+        | .false => match strEq k "term.tuple" with
+          | .true => inferTuple gs es cx (tupleItems s)
+          | .false => match strEq k "term.hole" with
+            | .true => match newMeta es cx (.vsort (.lnum 1)) with
+              | .mk mt es1 => .ok mt (.vsort (.lnum 1)) es1
+            | .false => .err (String.append "unsupported syntax " k)
+-- `(x y : A) × B`
+def depSigmas (gs : Globals) (es : ES) (cx : Cx) (q : Q) (xs : List String) (aStx body : Syntax) : TE := match xs with
+  | .nil => inferType gs es cx body
+  | .cons x rest => match inferType gs es cx aStx with
+    | .ok a la es1 => match depSigmas gs es1 (Cx.bind cx x (eval (TCtx.env (Cx.c cx)) a)) q rest aStx body with
+      | .ok b lb es2 => .ok (sigmaSorted q es2 a b la lb) (.vsort (.lmax (sortLvl es2 la) (sortLvl es2 lb))) es2
+      | e => e
+    | e => e
+-- `∀ x (y z : A) {w : B}, C`: one Π per name; a binder without a type gets a hole
+def forallPis (gs : Globals) (es : ES) (cx : Cx) (bs : List Syntax) (body : Syntax) : TE := match bs with
+  | .nil => inferType gs es cx body
+  | .cons b rest => match binderQ b with
+    | .none => .err qtyErr
+    | .some q => forallNames gs es cx q (binderNames b) (match binderType b with
+        | .some t => t
+        | .none => holeStx) rest body
+def forallNames (gs : Globals) (es : ES) (cx : Cx) (q : Q) (xs : List String) (aStx : Syntax) (bs : List Syntax) (body : Syntax) : TE := match xs with
+  | .nil => forallPis gs es cx bs body
+  | .cons x xs' => match inferType gs es cx aStx with
+    | .ok a la es1 => match forallNames gs es1 (Cx.bind cx x (eval (TCtx.env (Cx.c cx)) a)) q xs' aStx bs body with
+      | .ok b lb es2 => .ok (piSortedQ q es2 a b la lb) (.vsort (.limax (sortLvl es2 la) (sortLvl es2 lb))) es2
+      | e => e
+    | e => e
+-- `(a, b, c)` without an expected type: `A × (B × C)`
+def inferTuple (gs : Globals) (es : ES) (cx : Cx) (items : List Syntax) : TE := match items with
+  | .nil => .ok .star (.vunit 1) es
+  | .cons a .nil => inferT gs es cx a
+  | .cons a rest => match inferT gs es cx a with
+    | .ok ta A es1 => match inferTuple gs es1 cx rest with
+      | .ok tb B es2 =>
+        -- (annotated: the kernel can't infer the type of a pair)
+        let d := Cx.lvl cx;
+        let S : Tm := .sigma (quote d (force es2 A)) (shiftTm 1 0 (quote d (force es2 B)));
+        .ok (.ann (.pair ta tb) S) (eval (TCtx.env (Cx.c cx)) S) es2
+      | e => e
+    | e => e
+-- `(a, b, c)` against a Σ type
+def checkTuple (gs : Globals) (es : ES) (cx : Cx) (items : List Syntax) (ty : Val) : TE := match items with
+  | .nil => .err "an empty tuple"
+  | .cons a .nil => checkT gs es cx a ty
+  | .cons a rest => match whnf (force es ty) with
+    | .vsigma _ A env B _ => match checkT gs es cx a A with
+      | .ok ta _ es1 => match checkTuple gs es1 cx rest (eval (.cons (eval (TCtx.env (Cx.c cx)) ta) env) B) with
+        | .ok tb _ es2 => .ok (.pair ta tb) ty es2
+        | e => e
+      | e => e
+    | _ => .err (String.append "a tuple against a type that isn't a Σ type: " (show (scopeNames (Cx.sc cx)) (Cx.lvl cx) (quote (Cx.lvl cx) (force es ty))))
 -- `fun (x : A) … => b` with every binder typed: `(x : A) → B` (stage 20a)
 def inferLams (gs : Globals) (es : ES) (cx : Cx) (qs : List Q) : List Field → Syntax → TE
   | .nil, body => inferT gs es cx body
@@ -2699,6 +2788,8 @@ def checkT (gs : Globals) (es : ES) (cx : Cx) (s : Syntax) (ty : Val) : TE :=
     | .false => match strEq k "term.hole" with
     | .true => match newMeta es cx ty with
       | .mk mt es' => .ok mt ty es'
+    | .false => match strEq k "term.tuple" with
+    | .true => checkTuple gs es cx (tupleItems s) ty
     | .false => match strEq k "term.fun" with
       | .true => checkLams gs es cx (binders (kids (kid s 1))) (binderWs (kids (kid s 1))) (kid s 3) ty
       | .false => match strEq k "term.let" with
@@ -3348,7 +3439,7 @@ def command (gs : Globals) (stx : Syntax) : Step :=
         | .err m => errStep gs m
         | .ok ty _ => match strEq (kindOf stx) "command.check" with
           | .true => .mk (show .nil 0 (quote 0 ty)) gs
-          | .false => match strEq (kindOf stx) "command.reduce" with
+          | .false => match Bool.or (strEq (kindOf stx) "command.reduce") (strEq (kindOf stx) "command.eval") with
             | .true => .mk (show .nil 0 (quote 0 (eval .nil (inlineTm gs t)))) gs
             | .false => errStep gs (String.append "unsupported command " (kindOf stx))
   --|ex
@@ -4650,6 +4741,19 @@ def doCats (cats : List Cat) : List Cat :=
 def unwrapPrivate (s : Syntax) : Syntax := match strEq (kindOf s) "command.private" with
   | .true => kid s 1
   | .false => s
+-- (stage 21u) `attribute [inline] f`: a hint to the Lean compiler, checked as the Lean
+-- frontend does (`f` must have a definition); it changes nothing here
+def attrStep (gs : Globals) (stx : Syntax) : Option LinkR := match strEq (kindOf stx) "command.attrInline" with
+  | .true => .some (match kid stx 4 with
+    | .ident f => match Scope.lookup (Globals.scope gs) f with
+      | .none => LinkR.mk (.some (String.append "error: unknown declaration " f)) gs
+      | .some i => match globalTm .false gs i with
+        | .const _ _ _ v _ => match isAxiomTm v with
+          | .false => LinkR.mk .none gs
+          | .true => LinkR.mk (.some (String.append "error: " (String.append f " has no definition to inline"))) gs
+        | _ => LinkR.mk (.some (String.append "error: " (String.append f " has no definition to inline"))) gs
+    | _ => LinkR.mk (.some "error: attribute [inline] needs a name") gs)
+  | .false => .none
 -- `link_c`, `link_lib`, `export` (stage 21o) and `implemented_by` (21t): no output line
 -- unless an error
 def linkStep (gs : Globals) (stx : Syntax) : Option LinkR := match strEq (kindOf stx) "command.linkC" with
@@ -4660,10 +4764,11 @@ def linkStep (gs : Globals) (stx : Syntax) : Option LinkR := match strEq (kindOf
       | .true => .some (exportCmd gs stx)
       | .false => match strEq (kindOf stx) "command.attrImplementedBy" with
         | .true => .some (implementedByCmd gs stx)
-        | .false => .none
--- the commands `defStep` elaborates
+        | .false => attrStep gs stx
+-- the commands `defStep` elaborates (`#eval` is `#reduce` here, stage 21u)
 def knownCommand (k : String) : Bool := Bool.or (Bool.or (strEq k "command.def") (strEq k "command.defEqns"))
-  (Bool.or (strEq k "command.inductive") (Bool.or (strEq k "command.check") (strEq k "command.reduce")))
+  (Bool.or (strEq k "command.inductive") (Bool.or (strEq k "command.check")
+    (Bool.or (strEq k "command.reduce") (strEq k "command.eval"))))
 -- the output so far, the globals, and the parser's tables and notations
 inductive Run where
   | mk (out : List String) (gs : Globals) (cats : List Cat) (tokens : List String) (notes : List Note)

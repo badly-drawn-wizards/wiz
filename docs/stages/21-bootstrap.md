@@ -449,3 +449,58 @@ verdicts); a C program using a self-hosted library (`--lib` with the collector,
 `--no-main` with reference counting) and its header, with `wiz_retain`, `wiz_release`
 and `wiz_live_objects`, against the Lean `--lib` build; `implemented_by` on a definition
 and an axiom; a missing `link_c` file in both toolchains.
+## 21u: Σ types, `∀`, `#eval` and `attribute [inline]` in the self-hosted frontend
+
+`Frontend.wiz` elaborates the rest of the Lean frontend's Σ and Π syntax (`inferT2`,
+`checkTuple`): `A × B` (`term.prod`), `(x : A) × B` with a written quantity
+(`term.depSigma`, `depSigmas`), `(a, b, …)` (`term.tuple`: checked against a Σ type, or
+inferred as `A × (B × …)` and annotated, since the kernel can't infer a pair), `.1`/`.2`
+(`term.proj`), and `∀ x (y : A) {z : B}, C` (`term.forall`; a binder without a type gets a
+hole, a metavariable in `Type`). A hole `_` in a type position is now a metavariable too.
+There is still no `let (x, y) := …` (`Kernel.wiz` has no `split`, §7.1 of CoreSpec).
+
+`#eval t` is `#reduce t` (the value is printed as the kernel's normal form, not as the
+Lean toolchain prints it), and `attribute [inline] f` is checked as in the Lean frontend
+(`f` must be a declaration with a definition) and otherwise ignored: inlining is a hint
+to the Lean compiler. Not checked here: a second `attribute [inline]` of the same name
+(an error in the Lean frontend).
+
+**Tests** (group `selfhost`): 10 Σ/∀ declarations with the same verdicts in both
+frontends; `#eval` and `attribute [inline]` (5 verdicts and one output).
+
+## 21v: a linear variable in every branch of a `match` (`T.casesOnA`)
+
+Until now the Lean frontend rejected `def m1 (1 x : Nat) (b : Bool) : Nat := match b with
+| .true => x | .false => x` and the self-hosted one accepted it (21m). The self-hosted
+frontend was right: `x` is used once on every path, and the kernel's `ecase` joins its
+branches' usage (CoreSpec §5.3, `1 ⊔ 1 = 1`). The Lean elaborator compiled the match to
+`Bool.casesOn motive m_true m_false b`, whose methods are separate ω arguments, so the
+two uses added up to ω.
+
+Every inductive type now also gets `T.casesOnA` (E1 of
+/workspace/wiz-notes/linear-case-design.md; `mkRecursor … (additive := true)`): the
+methods are bundled into one argument at quantity 1, a function from the tag,
+
+    T.casesOnA : {Δ} → (motive : …) → (1 m : (t : Enum ls) → ecase t [ULift M_c, …]) →
+                 {ξ} → (x : T Δ ξ) → motive ξ x
+
+where `M_c` is `T.casesOn`'s method type for `c`, lifted to `Sort (imax (l+1) v)` so that
+all branches of the type-level `ecase` live in one universe (universes aren't cumulative).
+Its body is the sized case `scase` at `∞` (which runs its method once and doesn't scale it)
+calling `down (m 'c)` on the fields. A `match` with a variable bound at a literal
+quantity other than 0 and ω in scope (`LocalCtx.linearLvls`: `def`/`fun` binders, `let
+1`, equation parameters) passes `fun t => ecase t [up m_c, …]` instead of the separate
+methods; a reverted column that is linear is re-bound at 1. Everything else elaborates
+exactly as before, to `casesOn`. Structural recursion (`T.rec`) and sized matches are not
+additive: a linear variable used by a recursive call is used once per node.
+
+**No kernel change**: `T.casesOnA` and every term using it are checked by the kernel like
+all declarations (the usage checker is not on the path changed here; its rules for
+`ecase`, `scase`, `up`/`down` were already there). The compiler has no special case for
+`casesOnA` (Erase.lean unfolds `casesOn` calls by name), so such a match compiles through
+the generic path: correct, possibly slower; only matches with a linear variable in scope
+take it.
+
+**Tests** (group `selfhost`): 12 declarations, both frontends alike (Bool, Nat, Option,
+List, an indexed family, nested matches, `let 1`; dropping the variable in one branch, or
+using it twice or under an ω argument, rejected); a compiled program with additive matches.

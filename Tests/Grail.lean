@@ -893,6 +893,41 @@ def testRunnerGroup : Group where
           check (code == 2) s!"tests {" ".intercalate bad.toList}: exit code {code}, not 2:\n{out}" }
   ]
 
+/-- The language tour's examples (docs/tour.md): every file in `examples/tour/`, run as
+`grail test` runs it (its messages, or with `-- test: run` what `main` prints, against
+its `.expected`), in a package of its own so that only that file runs. -/
+def tourFiles : List String :=
+  ["00-hello", "01-basics", "02-data", "03-structures", "04-classes", "05-vec", "06-proofs",
+   "07-quantities", "08-codata", "09-ffi", "10-hdl", "11-mistakes"]
+
+def tourCase (f : String) : Case :=
+  { name := s!"examples/tour/{f}.wiz", run := fun _ => do
+      let p := s!"examples/tour/{f}"
+      let dir ← mkTree [
+        ("grail.wiz", "import Grail\ndef package : Package := Package.new \"tour\" |> Package.tests \"tour\" \"examples/tour\"\n"),
+        (p ++ ".wiz", ← IO.FS.readFile (p ++ ".wiz")),
+        (p ++ ".expected", ← IO.FS.readFile (p ++ ".expected"))]
+      let tc ← toolchain
+      let tc : Toolchain := { tc with cacheDir := some (← tc.cacheDir.getDM IO.FS.createTempDir) }
+      let (res, _) ← runTests dir tc
+      checkEq 1 res.size
+      for t in res do
+        if !t.ok && (t.message.splitOn "gmp.h").length > 1 then
+          skip "no toolchain"; return
+        check t.ok s!"{t.file}: {t.message}" }
+
+def tourGroup : Group where
+  name := "tour"
+  exercise := "docs/tour.md"
+  cases :=
+    { name := "examples/tour/ has exactly the files the group knows", run := fun _ => do
+        let mut names : Array String := #[]
+        for e in ← System.FilePath.readDir "examples/tour" do
+          names := names.push e.fileName
+        let want := tourFiles.flatMap fun f => [f ++ ".expected", f ++ ".wiz"]
+        checkEq (want.toArray.qsort (· < ·)).toList (names.qsort (· < ·)).toList } ::
+    tourFiles.map tourCase
+
 def grailSelfhostGroup : Group where
   name := "grail-selfhost"
   exercise := "Stage 23e"
@@ -1163,6 +1198,7 @@ def groups : List Group :=
   modulesGroup ::
   testRunnerGroup ::
   toolchainGroup ::
+  tourGroup ::
   []
 
 end Tests.Grail
