@@ -40,6 +40,12 @@ end
 
 -- `spec` generated `swap.Spec` and `swap_vals.Spec`; both hold by computation
 def swap_ok (a b : U64) : swap.Spec a b := (rfl, rfl)
+-- a caller that holds the handles (not their values) discharges the same spec by cases
+-- on them; `Uniq.elim2` consumes both handles exactly once
+def swap_ok_handles {ρa ρb : Region} (x : Uniq ρa U64) (y : Uniq ρb U64) :
+    swap.Spec (Uniq.get x) (Uniq.get y) :=
+  Uniq.elim2 (P := fun (x : Uniq ρa U64) (y : Uniq ρb U64) => swap.Spec (Uniq.get x) (Uniq.get y))
+    x y (fun a b => (rfl, rfl))
 def swap_vals_spec (a b : U64) : swap_vals.Spec a b := rfl
 
 #eval Result.map (fun (p : U64 × U64) => (p.1.val, p.2.val)) (swap_vals (U64.lit 1) (U64.lit 2))

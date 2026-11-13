@@ -58,20 +58,20 @@ in the lowered program, by the kernel ([22j](stages/22-numbers.md)).
 
 ### 2. Regions and the functional model
 
-`#lower` shows what `swap` is: a function of two linear borrow handles (`Uniq1`: used
+`#lower` shows what `swap` is: a function of two linear borrow handles (`Uniq`: used
 once, handed back on every path, `Result1`) that hands both back.
 
 ```
-def swap {ρa ρb : Region} (1 x : (Uniq1 ρa U64)) (1 y : (Uniq1 ρb U64)) : Result1 Unit ((1 _ : (Uniq1 ρa U64)) × (Uniq1 ρb U64)) :=
-  let 1 (d_2, x) := Uniq1.peek x;
+def swap {ρa ρb : Region} (1 x : (Uniq ρa U64)) (1 y : (Uniq ρb U64)) : Result1 Unit ((1 _ : (Uniq ρa U64)) × (Uniq ρb U64)) :=
+  let 1 (d_2, x) := Uniq.peek x;
   let t := d_2;
-  let 1 (d_5, y) := Uniq1.peek y;
-  let 1 x := Uniq1.write x d_5;
-  let 1 y := Uniq1.write y t;
+  let 1 (d_5, y) := Uniq.peek y;
+  let 1 x := Uniq.write x d_5;
+  let 1 y := Uniq.write y t;
   Result1.ok (()) (x, y)
 ```
 
-`swap_vals` opens a `Uniq1.borrow` scope for each local; the scope's region `ρ` is fresh,
+`swap_vals` opens a `Uniq.borrow` scope for each local; the scope's region `ρ` is fresh,
 so no handle outlives it. There is no heap here: a `&mut` is a value passed in and passed
 back (the Aeneas reading), so the specification is about values, and is proved by
 computation:
@@ -89,8 +89,9 @@ def swap_vals_spec (a b : U64) : swap_vals.Spec a b := rfl
 A `spec` item states a function's specification as a Wiz proposition, `f.Spec`, which
 is then proved in Wiz. In a clause an argument stands for its value, `result` for the
 returned value, and `old x`/`final x` for an `&mut` argument's value on entry and when
-the borrow ends. A linear handle can't be read in a proposition (its value is only
-reachable by consuming it with `Uniq1.peek`/`end`), so `Spec` takes the `&mut` arguments'
+the borrow ends. A linear handle can't be *used* in a proposition (its value is
+operationally reachable only by consuming it with `Uniq.peek`/`end`; `Uniq.get` reads it
+for reasoning), so `Spec` takes the `&mut` arguments'
 *values*, lends them to the call in the borrow scopes a caller would open, and states the
 clauses on the values the scopes hand back (`final x` is the lender's final value, so no
 prophecy is needed). `swap.Spec a b` is
@@ -98,12 +99,18 @@ prophecy is needed). `swap.Spec a b` is
 ```
 def swap.Spec (x : U64) (y : U64) : Prop :=
   Result.Holds (fun (r : ((Unit × U64) × U64)) => (r.2 = y) × (r.1.2 = x)) (
-    Uniq1.borrow Region.static x (fun ρ1 h1 l1 x =>
-      Uniq1.borrowIn ρ1 y x (fun ρ2 h2 l2 x y => swap x y)))
+    Uniq.borrow Region.static x (fun ρ1 h1 l1 x =>
+      Uniq.borrowIn ρ1 y x (fun ρ2 h2 l2 x y => swap x y)))
 ```
 
 `Result.Holds P r` is total correctness (the call doesn't panic and `P` holds of its
 value); `Result.All` is the partial reading.
+
+A caller that holds the handles rather than their values discharges the same `Spec` by
+cases on them: `Uniq.elim2` (lib/Region.wiz) consumes both handles exactly once, and at
+`Uniq.mk a` the spec computes, so `swap.Spec (Uniq.get x) (Uniq.get y)` follows by `rfl`.
+This is how a proof about lowered code can use `f.Spec` where `f`'s arguments are still
+borrowed (`Uniq.get` reads a handle's value at ω, for reasoning only).
 
 ### 3. Separation logic: the same function on heap cells
 

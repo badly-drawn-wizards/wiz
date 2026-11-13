@@ -242,7 +242,11 @@ def group : Group where
         -- a true specification is proved, a false one is not (linear handles: the spec is
         -- stated on the arguments' values)
         let ok := pre ++ "feral\n" ++ fn ++ "  spec swap ensures (final x = old y) ensures (final y = old x)\nend\n" ++
-          "def swap_ok (a b : U64) : swap.Spec a b := (rfl, rfl)\n"
+          "def swap_ok (a b : U64) : swap.Spec a b := (rfl, rfl)\n" ++
+          "def swap_ok_handles {ρa ρb : Region} (x : Uniq ρa U64) (y : Uniq ρb U64) :\n" ++
+          "    swap.Spec (Uniq.get x) (Uniq.get y) :=\n" ++
+          "  Uniq.elim2 (P := fun (x : Uniq ρa U64) (y : Uniq ρb U64) => swap.Spec (Uniq.get x) (Uniq.get y))\n" ++
+          "    x y (fun a b => (rfl, rfl))\n"
         checkEq "[]" (toString (errorsOf (← frontend ok) ok))
         let e ← firstError (pre ++ "feral\n" ++ fn ++ "  spec swap ensures (final x = old x)\nend\n" ++
           "def swap_bad (a b : U64) : swap.Spec a b := (rfl, rfl)\n")
