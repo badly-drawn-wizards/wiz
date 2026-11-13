@@ -367,7 +367,13 @@ package's `lib` targets with its module roots (dependencies included), into
   cache; Markdown; `wiz doc` on a small package with doc comments (kinds, docs, source
   links, instances, the index); every cross-link resolves; every declaration is in the
   search index; the pages without JS; `grail doc`; and the page model of the Wasm module
-  run natively on a page's JSON (hover, click, keys).
+  run natively on a page's JSON (hover, click, keys); and that the core library is
+  documented (every public declaration of `Prelude`, `Std`, `Vec` and `Word` has a doc
+  comment, and each has a module doc).
+* **The library's documentation.** Every module in `lib/` has a `/-! … -/` module doc
+  (what it is for, its main definitions, an example) and a `/-- … -/` doc comment on each
+  public declaration; `--` comments are left for implementation notes. `wiz doc --lib -o
+  OUT` builds the pages (CI's `wiz-docs` artifact).
 
 ## 11w: hovers in tactic arguments, the other infoviews, `local instance`, the browser infoview
 
