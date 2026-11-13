@@ -2,8 +2,9 @@
 -- against `Netlist.simulate` (hash-consed and naive netlists) and the value simulation
 -- `Circuit.run`, cycle for cycle, on random traces through every netlist operation,
 -- widths up to 70 bits (beyond a machine word), reset and enable, a table as a
--- multiplexer tree, and a netlist that is not well formed (where `simFast` is
--- `simulate`). Run by the `hdl` test group.
+-- multiplexer tree, memories (two write ports, read-during-write, a ROM, addresses out
+-- of range), and a netlist that is not well formed (where `simFast` is `simulate`). Run
+-- by the `hdl` test group.
 import Hdl.Core
 import Hdl.Sim
 import IO
@@ -66,6 +67,36 @@ def acc8 : Circuit B8 B8 := Circuit.mk B8 (BitVec.ofNat 8 0) (fun s x => Hw.pair
 def piped : Circuit AluIn.code B8 :=
   Circuit.seq (Circuit.mapOut (fun y => Hw.untag (Hw.fst y)) alu) (Circuit.seq (Circuit.delay B8 (BitVec.ofNat 8 7)) acc8)
 
+-- Memories: a 32 × 8 RAM in the state with two write ports (the second wins on the same
+-- address), a registered read and a combinational read of the written memory in the
+-- same cycle (it sees the write: the netlist's bypass), and a ROM (squares).
+def Ram : HwTy := HwTy.mem 5 8
+structure MemS (r : HwTy → Type) where
+  cells : r Ram
+  q : r B8
+  deriving Bundle
+structure MemIn (r : HwTy → Type) where
+  we : r B2
+  wa : r (HwTy.bits 5)
+  wd : r B8
+  ra : r (HwTy.bits 5)
+  deriving Bundle
+structure MemOut (r : HwTy → Type) where
+  q : r B8
+  now : r B8
+  rom : r B8
+  deriving Bundle
+def squares : HwTy.El (HwTy.mem 4 8) := fun (a : BitVec 4) => BitVec.ofNat 8 (Nat.mul a.toNat a.toNat)
+def memStep {r : HwTy → Type} [Hw r] (s : MemS r) (x : MemIn r) : r (HwTy.prod MemS.code MemOut.code) :=
+  let m1 := Hw.memWrite s.cells (Hw.slice 0 1 x.we) x.wa x.wd;
+  let m2 := Hw.memWrite m1 (Hw.slice 1 1 x.we) (Hw.add x.wa (Hw.lit 5 1)) (Hw.xor x.wd (Hw.lit 8 255));
+  let m3 := Hw.memWrite m2 (Hw.and (Hw.slice 0 1 x.we) (Hw.slice 1 1 x.we)) x.ra (Hw.add x.wd x.wd);
+  Hw.pair (MemS.pack (MemS.mk m3 (Hw.memRead s.cells x.ra)))
+    (MemOut.pack (MemOut.mk s.q (Hw.memRead m3 x.ra) (Hw.memRead (Hw.const (HwTy.mem 4 8) squares) (Hw.slice 0 4 x.ra))))
+def memInit : HwTy.El Ram := fun (a : BitVec 5) => BitVec.ofNat 8 (Nat.add (Nat.mul a.toNat 7) 3)
+def memC : Circuit MemIn.code MemOut.code :=
+  Circuit.mk MemS.code (Bundle.toEl MemS.bundle (MemS.mk memInit (BitVec.ofNat 8 0)))
+    (fun s x => memStep (MemS.unpack s) (MemIn.unpack x))
 -- (H14 S4) shifts by a signal and signed comparisons, at 70 and 8 bits (amounts past
 -- the width included)
 def shiftStep {r : HwTy → Type} [Hw r] (s : r B70) (x : r B8) : r (HwTy.prod B70 B8) :=
@@ -112,14 +143,24 @@ def badNet : Netlist :=
     (.cons (NetReg.mk "r" 4 5 1 .none .none) .nil)
     (.cons (NetPort.mk "x" 4 0) .nil)
     (.cons (NetPort.mk "y" 4 1) (.cons (NetPort.mk "z" 4 7) .nil))
-    .nil
+    .nil .nil .nil
 
 def badIns : List (List Nat) := Hdl.map (fun (k : Nat) => List.cons k List.nil) (Rng.trace 16 20 9)
+
+-- the RAM's netlist on raw port values beyond the ports' widths (addresses past the
+-- memory: `Netlist.simulate` keeps any address; so must `simFast`)
+def rawIns : Nat → Nat → List (List Nat)
+  | .zero, _ => .nil
+  | .succ k, s => .cons (.cons (Nat.mod (Nat.div s 256) 4) (.cons (Nat.mod (Nat.div s 1024) 80) (.cons (Nat.mod (Nat.div s 4096) 300)
+      (.cons (Nat.mod (Nat.div s 65536) 80) .nil)))) (rawIns k (Rng.next s))
 
 def main : IO Unit := do
   IO.println (report "alu" alu (Rng.trace 1024 3000 1));
   IO.println (report "alu with reset and enable" aluRE (Rng.trace 4096 3000 2));
   IO.println (report "piped" piped (Rng.trace 1024 3000 3));
+  IO.println (report "memories" memC (Rng.trace 4194304 3000 4));
+  IO.println ("memories, raw out-of-range values: simFast = simulate: " <+> yes (leavesEq (Netlist.simFast (Circuit.netlist "m" memC) (rawIns 3000 5))
+    (Netlist.simulate (Circuit.netlist "m" memC) (rawIns 3000 5))));
   IO.println (report "shifter" shifter (Rng.trace 256 3000 4));
   IO.println ("not well formed: " <+> yes (Bool.not (Netlist.wellFormed badNet)) <+> ", simFast = simulate: "
     <+> yes (leavesEq (Netlist.simFast badNet badIns) (Netlist.simulate badNet badIns)))
