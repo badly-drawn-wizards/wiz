@@ -1,0 +1,26 @@
+-- The tour, section 8: codata (docs/tour.md).
+import Prelude
+
+-- A coinductive type is defined by what you can observe of it. A stream has a head
+-- and a tail, forever.
+coinductive Stream (A : Type) where
+  head : A
+  tail : Stream A
+
+-- Copatterns: say what each observation gives. The definition is productive (every
+-- observation answers in finitely many steps), so it is accepted.
+def Stream.from (n : Nat) : Stream Nat
+  | .head => n
+  | .tail => Stream.from (n + 1)
+
+def Stream.map {A B : Type} (f : A → B) (s : Stream A) : Stream B
+  | .head => f s.head
+  | .tail => Stream.map f s.tail
+
+def Stream.take {A : Type} : Nat → Stream A → List A
+  | .zero, _ => .nil
+  | .succ n, s => .cons s.head (Stream.take n s.tail)
+
+def squares : Stream Nat := Stream.map (fun n => n * n) (Stream.from 0)
+#eval Stream.take 6 squares
+#eval squares.tail.tail.tail.head

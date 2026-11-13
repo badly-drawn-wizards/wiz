@@ -44,6 +44,15 @@ def eqSigma (A B a b : Tm) : Tm :=
   .sigma .zero (some 0) (.eq A (.fst a) (.fst b))
     (.eq Bb.shift (.cast Ba.shift Bb.shift (eqSigmaTransport A B a b) (Tm.snd a).shift) (Tm.snd b).shift)
 
+/-- `eqSigma` when `A` is a proposition (PR #123, CoreSpec §8.2): the proof that
+`B a.1 ≡ B b.1` is `reflTy (B a.1)` (`a.1 ≡ b.1` by proof irrelevance), not `transp` along
+the proposition `A`, which the kernels do not form. -/
+def eqSigmaProof (A B a b : Tm) : Tm :=
+  let Ba := B.inst (.fst a)
+  let Bb := B.inst (.fst b)
+  .sigma .zero (some 0) (.eq A (.fst a) (.fst b))
+    (.eq Bb.shift (.cast Ba.shift Bb.shift (.reflTy Ba.shift) (Tm.snd a).shift) (Tm.snd b).shift)
+
 /-- `((x : A₁) → B₁) ≡ ((x : A₂) → B₂)  ⟶  (0 e : A₂ ≡ A₁) × ((0 x : A₂) → B₁ (cast A₂ A₁ e x) ≡ B₂ x)`:
 the domain equation is backwards, as in CCobs. -/
 def eqTyPi (A₁ B₁ A₂ B₂ : Tm) : Tm :=

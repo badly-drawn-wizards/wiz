@@ -112,50 +112,74 @@ partial def descends (parent : Std.HashMap Var Var) (y x : Var) : Bool :=
   | some p => p == x || descends parent p x
   | none => false
 
+/-! A drop that can't be paired stays unpaired: `pairDrop` asks again only with fewer
+allocations left (the ones paired meanwhile became `reuse`s) and the same facts about the
+object (they come from the bindings before the drop), so the answer is the same. The
+drops tried in vain on the current path are remembered (`failed`), and each is tried once:
+asking again took the object's parts with it, so along a chain of projections
+`x₁ := proj 1 x₀; x₂ := proj 1 x₁; …` (a structure's fields, read without a constructor
+to put them back into, like a bundle's `pack`) every part was tried once per ancestor,
+in each of its ancestors' searches: exponential in the chain's length (16 fields 9 s,
+20 fields 115 s). -/
+
 mutual
 /-- Pair `drop x; rest` with an allocation across `case`s, if `x` is a known object:
 `let w := reset x; rest'` and `true`, or `rest` (its parts paired) and `false`.
 Its parts dropped later in the block are paired first: a structure is taken apart from
-the outside in and rebuilt from the inside out, so this puts each cell back in place. -/
+the outside in and rebuilt from the inside out, so this puts each cell back in place.
+`failed`: the drops on this path already tried in vain (see above), with `x` if it is
+one more. -/
 partial def pairDrop (size : Std.HashMap Var Nat) (parent : Std.HashMap Var Var) (x : Var)
-    (rest : Body) : Body × Bool :=
-  let rest := partsFirst size parent x rest
+    (rest : Body) (failed : Std.HashSet Var) : Body × Bool × Std.HashSet Var :=
+  let (rest, failed) := partsFirst size parent x rest failed
   let tok := insertReuse.tokenBase + x
   match size.get? x |>.bind (claimAcross tok · rest) with
-  | some rest' => (.vdecl tok (.reset x) rest', true)
-  | none => (rest, false)
+  | some rest' => (.vdecl tok (.reset x) rest', true, failed)
+  | none => (rest, false, failed.insert x)
 
 /-- Pair the drops of `x`'s parts in the straight-line prefix of `b`. -/
 partial def partsFirst (size : Std.HashMap Var Nat) (parent : Std.HashMap Var Var) (x : Var) :
-    Body → Body
-  | .vdecl y e rest =>
+    Body → Std.HashSet Var → Body × Std.HashSet Var
+  | .vdecl y e rest, failed =>
     let (size, parent) := noteBinding size parent y e
-    .vdecl y e (partsFirst size parent x rest)
-  | .dup y rest => .dup y (partsFirst size parent x rest)
-  | .drop y rest =>
-    if descends parent y x then
-      match pairDrop size parent y rest with
-      | (.vdecl tok e rest', true) => .vdecl tok e (partsFirst size parent x rest')
-      | (rest', _) => .drop y (partsFirst size parent x rest')
-    else .drop y (partsFirst size parent x rest)
-  | b => b
+    let (rest', failed) := partsFirst size parent x rest failed
+    (.vdecl y e rest', failed)
+  | .dup y rest, failed =>
+    let (rest', failed) := partsFirst size parent x rest failed
+    (.dup y rest', failed)
+  | .drop y rest, failed =>
+    if !failed.contains y && descends parent y x then
+      match pairDrop size parent y rest failed with
+      | (.vdecl tok e rest', true, failed) =>
+        let (rest'', failed) := partsFirst size parent x rest' failed
+        (.vdecl tok e rest'', failed)
+      | (rest', _, failed) =>
+        let (rest'', failed) := partsFirst size parent x rest' failed
+        (.drop y rest'', failed)
+    else
+      let (rest', failed) := partsFirst size parent x rest failed
+      (.drop y rest', failed)
+  | b, failed => (b, failed)
 end
 
 /-- Pair the drops of known objects with allocations across `case` (see the module
 docstring), outermost first (but parts before the whole). `size` maps the variables
-known to be objects to a lower bound on their number of fields. -/
-partial def reuseAcross (size : Std.HashMap Var Nat := {}) (parent : Std.HashMap Var Var := {}) :
-    Body → Body
+known to be objects to a lower bound on their number of fields; `failed`, the drops on
+this path already tried in vain. -/
+partial def reuseAcross (size : Std.HashMap Var Nat := {}) (parent : Std.HashMap Var Var := {})
+    (b : Body) (failed : Std.HashSet Var := {}) : Body :=
+  match b with
   | .vdecl x e rest =>
     let (size, parent) := noteBinding size parent x e
-    .vdecl x e (reuseAcross size parent rest)
+    .vdecl x e (reuseAcross size parent rest failed)
   | .drop x rest =>
-    match pairDrop size parent x rest with
-    | (.vdecl tok e rest', true) => .vdecl tok e (reuseAcross size parent rest')
-    | (rest', _) => .drop x (reuseAcross size parent rest')
-  | .dup x rest => .dup x (reuseAcross size parent rest)
-  | .case x alts => .case x (alts.map (reuseAcross size parent))
-  | .jdecl j ps body k => .jdecl j ps (reuseAcross {} {} body) (reuseAcross size parent k)
+    if failed.contains x then .drop x (reuseAcross size parent rest failed) else
+    match pairDrop size parent x rest failed with
+    | (.vdecl tok e rest', true, failed) => .vdecl tok e (reuseAcross size parent rest' failed)
+    | (rest', _, failed) => .drop x (reuseAcross size parent rest' failed)
+  | .dup x rest => .dup x (reuseAcross size parent rest failed)
+  | .case x alts => .case x (alts.map (reuseAcross size parent · failed))
+  | .jdecl j ps body k => .jdecl j ps (reuseAcross {} {} body) (reuseAcross size parent k failed)
   | b => b
 
 /-- Scalars (`◾`, small numbers, constructors without fields) have no reference count:

@@ -203,3 +203,82 @@ The self-hosted backend does the same for its own input (small case-shaped funct
 inlined with lazy arguments, branch `agent/selfhost-demand-d`); `&&` and `||` as macros
 that expand to matches (`agent/prelude-batch`) need neither.
 
+
+### 15i: closed definitions are computed once (CAFs) ✅
+
+A top-level definition without parameters after erasure, such as a table
+`def Fx.fontT : RomT := RomT.build 7 Fx.font`, compiled to a function that computed its
+body again at every use: in the value simulation of the OLED demo that rebuilt the font
+and program ROMs every simulated cycle. Now, as for GHC's and Lean's *constant applicative
+forms*, both native backends (C and LLVM) compute such a value **on its first use** and
+keep it for the rest of the run:
+
+* `IR.cafs` (`Wiz/Compiler/IR.lean`) picks the definitions without parameters whose body
+  does work (allocates or calls a function with parameters). Not cached: `wiz.entry`, the
+  closures of exported functions, the wrappers of foreign functions, and bodies that only
+  return a scalar or another constant (`def tab := table`). The hoisted literal constants
+  of 20f (`wiz.const.k`) are now just CAFs, cached by LLVM too.
+* The function reads a slot (one atomic load) and returns the value; while the slot is
+  empty it calls `wiz_caf_init` (`runtime/wiz.c`), which runs the body, makes the result
+  **immortal** (rc 0: never counted, never freed, not a leak) and publishes it with a
+  compare-and-swap. Threads may race to build it: the first wins, a loser's copy stays
+  immortal and unused.
+* Lazily, never at startup: a definition used only in a branch that is never taken is
+  never computed, even one that diverges or fails (an axiom). A definition that uses itself
+  while it is being built builds itself again, as before: it loops exactly when it looped
+  before.
+* An `IO A` is a function of the world: its value is a closure (or the definition has the
+  world as a parameter), so caching it doesn't run it; it runs at each use. Erased
+  definitions (proofs, types) are not compiled at all, and function values (a partial
+  application) are cached as closures.
+* `wiz_immortal` now walks every kind of object (closures, suspensions, arrays, maps,
+  numbers …), with an explicit stack (a constant may be a long list), instead of only
+  constructors. An immortal memoised suspension (inside a constant, so visible to every
+  thread) is forced under the suspension lock, like one shared between threads, and its
+  value made immortal.
+
+The cost is the GHC one: a constant that is large and used once stays in memory until the
+program ends, and an immortal value is never unique, so it is copied, not updated in place.
+
+Benchmark: `examples/closed-table-bench.wiz` (a 256-entry table and a ROM tree built from
+it, read in a loop; `/workspace/wiz-tools/bench/closed-table`). Informal, 100000 lookups:
+8.1 s with the table rebuilt at each use, 0.08 s cached.
+
+Tests: groups `backend` (which definitions are cached), `c` and `llvm` (a table in a
+loop, a diverging and a failing constant in an untaken branch, a memoised suspension, a
+big number, erased definitions, self-referential codata, no leaks; an `IO` constant run
+four times), `conc` (eight threads first using a table and a suspension in it at once).
+
+### 15j: shared projection prefixes ✅
+
+A structure (and a Σ) nests to the right, `(f₀, (f₁, (f₂, …)))`, so field `k` is `k`
+projections `.2` and a `.1`, whether it is written `s.f` or bound by a `match`. A
+function that reads every field of a wide structure did n²/2 projections: a bundle's
+`pack`, a step function over a wide state (wiz-rv's 20-field core state, the iCEstick IR
+blaster's 19 fields).
+
+* **Lean compiler.** The IR simplifier (`Simp.lean`, right after lowering) remembers
+  the projections bound on the path from the function's start, `(field, object) ↦
+  variable`, and renames a projection computed again to the first one. Each step of a
+  chain is its own binding, so `x.2.2.2.1` and `x.2.2.2.2.1` share `x.2`, `x.2.2` and
+  `x.2.2.2`, and reading every field is linear. Only what dominates is shared: a `case`
+  branch sees what was bound before the `case`, not what a sibling branch bound; a join
+  point's body starts afresh; a `lazySet` (an observed lazy cell is overwritten) forgets
+  everything. A projection still borrows from its object, so reference counting is
+  unchanged in kind: the field of an owned object is `dup`ed once instead of once per
+  read. No representation changes.
+* **Self-hosted backend.** It compiles terms, not ANF, so the prefixes are planned per
+  region (`csePlan`): at a function's body, a `case` branch and a `λ`'s body, each prefix
+  `x.2…` of a variable bound outside used twice, once on the region's straight-line path
+  (so it is evaluated there anyway), becomes a C local, `qx_1 = fld(x, 1)`, `qx_2 =
+  fld(qx_1, 1)`, … (a `let` does the same for its own variable), and every path from `x`
+  reads from the longest local. Only `.2`s are shared: `fld(·, 1)` is total and never
+  forces a hypothesis. Under reference counting the locals are borrowed from `x` (no
+  `inc`): every use of one is still a use of `x`, which therefore lives as long, and the
+  locals are declared only when `x` is still alive (used in the region, or borrowed).
+
+Tests: `scaling` (reading every field of 32- and 64-field structures takes one projection
+per field and per tail), `c` and `llvm` (a root consumed before the last read through its
+prefix, an in-place update of the root's cell while fields read through the prefix are
+live, a join point, codata between observations; the IR interpreter checks every
+reference), `selfhost` (the same in both modes; the C of a wide read has its locals).

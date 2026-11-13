@@ -13,7 +13,7 @@ holds one tree with the solutions in it; the exercise tree is generated from it 
   your own from a checkout:
 
   ```sh
-  git clone https://github.com/badly-drawn-wizards/wiz && cd wiz
+  git clone https://github.com/wiz-pl/wiz && cd wiz
   scripts/mkexercises.py . ../wiz-exercises   # a new or empty directory
   cd ../wiz-exercises && git init && git add -A && git commit -qm "Exercises"
   nix develop -c lake build                   # then work through `lake test`
@@ -56,6 +56,9 @@ of the exercise tree that no longer exist in the solution tree are deleted (when
 git worktree). `mkexercises.py` refuses to run on an exercise worktree with uncommitted
 changes, and on a directory that is neither empty nor a git worktree.
 
-When writing solutions, keep the exercise stubs runnable: the exercise tree must build
-(CI's `exercise tree` job generates it and builds it; see [building.md](building.md)),
-and its test driver should run to its summary line.
+When writing solutions, keep the exercise stubs runnable: the exercise tree must build,
+and its test driver should run to its summary line. CI checks this only for a release:
+the `exercise tree` job of `.github/workflows/release.yml` generates the tree and builds
+it for each `v*` tag, and the release is published only if that passes. Between releases
+the tree may stop building; fix it before tagging (generate it with `mkexercises.py` and
+`lake build wiz grail tests` there).

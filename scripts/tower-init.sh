@@ -1,15 +1,16 @@
 #!/bin/sh
 # Install tower and a default Wiz toolchain from a release tarball (stage 26d):
 #
-#   curl -sSfL https://raw.githubusercontent.com/badly-drawn-wizards/wiz/master/scripts/tower-init.sh | sh -s -- [CHANNEL]
+#   curl -sSfL https://raw.githubusercontent.com/wiz-pl/wiz/master/scripts/tower-init.sh | sh -s -- [CHANNEL]
 #
 # CHANNEL is nightly (the default) or a release tag. tower goes to ~/.tower/bin with the
 # shims; add that directory to PATH. Needs curl and tar (and git for nightly, as tower
-# does); `wiz build` needs cc and GMP.
+# does). The tarball brings its own C compiler and GMP (26f): `wiz build` needs nothing
+# else. docs/install.md has the details.
 set -eu
 channel=${1:-nightly}
 arch=$(uname -m)
-repo=https://github.com/badly-drawn-wizards/wiz
+repo=https://github.com/wiz-pl/wiz
 rel=$channel
 # nightly: the snapshot the tag nightly points at (26g), which is complete when the tag
 # moves; the release `nightly` itself is replaced in place and may be briefly missing

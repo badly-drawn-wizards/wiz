@@ -25,7 +25,7 @@ known gap of `regions`). The surface never mentions handles, scopes, tokens or
 handed-back tuples.
 
 Not in the fragment (each is an error "not supported yet", never a silent miscompile):
-spec clauses, `loop`/`break`/`continue`, `impl`/`trait`, closures, struct literals with
+inline spec clauses on `fn` (use a `spec f requires (P) ensures (Q)` item), loop invariants, `loop`/`break`/`continue`, `impl`/`trait`, closures, struct literals with
 fields, assignment to `x.f`/`v[i]`, `while let` directly through a `&mut` (use a cursor),
 more than two lenders, `From.from` in `?`, integer types other than `U64`.
 Differences from rustc: a `&mut` argument is never implicitly reborrowed at a shorter
@@ -38,7 +38,7 @@ after the block when the block is in tail position.
 
 | file | contents | evidence |
 |---|---|---|
-| `lib/Optic.wiz` | `Error`, `Result` (+ `bind`, `map`, `Monad`, `All`, `Holds`); `Store` (`comp`, `compP`, `underR`, `extract`, `put`); `Lens`, `PLens`, `ALens`; `Lens.comp`, `PLens.comp`, `Lens.toP`; `zoom`, `zoomP`; `Affine` (`comp`, `over`, `extract`); `TraverseMut` + `List` instance; laws `GetPut`/`PutGet`/`PutPut`/`Lawful` (total and partial), `Lens.Indep`, `Lens.pair` | `lake test -- optic` (4 cases) |
+| `lib/Result.wiz`, `lib/Optic.wiz` | `Error`, `Result` (+ `bind`, `map`, `Monad`, `All`, `Holds`; lib/Result.wiz); `Store` (`comp`, `compP`, `underR`, `extract`, `put`); `Lens`, `PLens`, `ALens`; `Lens.comp`, `PLens.comp`, `Lens.toP`; `zoom`, `zoomP`; `Affine` (`comp`, `over`, `extract`); `TraverseMut` + `List` instance; laws `GetPut`/`PutGet`/`PutPut`/`Lawful` (total and partial), `Lens.Indep`, `Lens.pair` | `lake test -- optic` (4 cases) |
 | | **proofs:** structure-field lenses lawful and independent (`rfl`); head of a list (`List.headL`) and **index of a list (`List.atL i`) lawful partial lenses** (all three laws, by induction on the index through generic `Store.underR_*` lemmas); **composition of lawful lenses is lawful** (`Lens.comp_lawful`); `Lens.pair_getPut`; `Store.final` (the `final(r)` desugaring equation) | kernel-checked; a negative test shows an unlawful lens's GetPut is rejected |
 | `lib/Region.wiz` | `Region`, `Outlives` (opaque; `refl`/`trans`/`static`); handles `Shr`, `Lent` (structures) and the linear `Uniq`, `Mut`, `MutOpt` (one-constructor inductives used at quantity 1; the region is part of the type and inferred; constructors private to the module, so handles can't be forged); `Result1`, `Borrowed` (the error alternative hands the handles back, D8); borrow scopes `Region.scope`, `Shr.borrow(In)`, `Uniq.borrow(In)`, `Uniq.reborrow(In)`, `Uniq.share(In)`, `Uniq.zoom(In)`, `Uniq.both`; `Uniq.peek`/`write`/`read`/`end`; `Shr.weaken`, `Mut.weaken`; `Mut.ofLens`/`ofPLens`/`ofUniq`/`whole`/`peek`/`set`/`close`/`release`/`comp`/`alongside`/`mapBack`/`finish`, `MutOpt.ofAffine`/`over`/`release`; spec readers `Uniq.get`, `Mut.store`, `Borrowed.All` | `lake test -- regions` (distinct regions, inference, scopes run, outlives, E0515 ×2, E0597, E0499/E0502, forging, swap, list traversal, pick with its bound, lengthening, linearity: E0499 by passing a handle twice and escapes rejected, E0502 under a renamed token pinned as a known gap) |
 | `drafts/feral/lib/FeralCore.wiz` | `Flow`; Nat-backed `U64` (checked `add`/`sub`/`mul`, `checkedAdd`, `midpoint`); List-backed `Vec` (`push` on a `Uniq`, `len` on a `Shr`, `index`, `indexMut` as a lawful `PLens` with proof, `getMut` as `MutOpt`) | `check.sh` |
@@ -65,7 +65,7 @@ after the block when the block is in tail position.
 | `let (u, ra, rb) := r` (L6) | `let` tuple patterns of more than two components (nested binary lets today) | `let-tuple-patterns` |
 | E0502 enforced by the type checker (today: by the lowering's shape, `Lent` rebinding; the lender is ω). E0499 and escapes are type errors since cohesion M4 | linear lenders, and a Copy notion to read `*x` out of one (K3) | `linear-case` |
 | structural recursion through a field reborrow (05 `insert`, 11 `incr_all` are `partial`) | the termination checker seeing a recursive call on a scope's handle of a pattern variable | `reborrow-recursion` |
-| `requires`/`ensures`/`invariant` | spec clauses → quantity-0 spec defs | `spec-clauses` |
+| `invariant`, `decreases`, `final result` | loop specs, returned-borrow specs (`requires`/`ensures` are `spec` items since M7) | `spec-clauses` |
 | `final(x)`, `old(x)` | desugaring over the backward function | `final-specs` |
 | `decreases` on loops | well-founded recursion; loops stay `partial def` (unverifiable) | `decreases-loops` |
 | numerals at integer types other than `U64` (the front end writes `U64.lit n`) | numerals at machine-int types | `machine-int-literals` |
@@ -73,7 +73,7 @@ after the block when the block is in tail position.
 | `Lens.pair_putPut` (`drafts/feral/Optic.wiz` §2; `pair_putGet` is in lib/Optic.wiz since `castRefl`) | the unifier comparing an equation with its computed form | `unify-computed-equations` |
 | native `Vec` with `takeAt`/`fillAt` (FeralCore uses a List model) | `implemented_by` | `implemented-by` |
 | backward functions that reuse cells without inlining (`drafts/feral/Optic.wiz` §7) | constructor contexts | `constructor-contexts` |
-| `transp` with a Prop motive using its variable | quantity-0 variables used in types count as ω | `erased-use-in-types` (worked around in `Optic.subst`) |
+| `transp` with a Prop motive using its variable | quantity-0 variables used in types count as ω | `erased-use-in-types` (worked around in `Eq.substProp`, lib/Logic.wiz) |
 | `match s with \| .mk h m` on a structure | constructor patterns on structures (tuple patterns work) | `structure-patterns` (low priority) |
 | `deriving instance Lenses for S` (`drafts/feral/Optic.wiz` §6) | command macros over reflected structures (agent/deriving has the base) | `command-proc-macros` |
 | `RStore` refined backward functions, `FunList` traversal spec (`drafts/feral/Optic.wiz` §4–5) | front-end proof obligations at borrow end; the `Vec` model | `spec-clauses`, `implemented-by` |

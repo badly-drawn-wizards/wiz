@@ -1,0 +1,35 @@
+-- The tour, section 4: type classes and numerals (docs/tour.md).
+import Int
+import Text
+import Word
+
+-- a class is a structure of operations; an instance is a value of it
+class Describe (A : Type) where
+  describe : A → String
+
+instance : Describe Bool where
+  describe := fun b => if b then "yes" else "no"
+instance : Describe Nat where
+  describe := fun n => Nat.repr n
+-- an instance that needs another instance
+instance {A : Type} [Describe A] : Describe (List A) where
+  describe := fun xs => match xs with
+    | .nil => "nothing"
+    | .cons x _ => "starts with " ++ Describe.describe x
+
+#eval Describe.describe [Bool.true, Bool.false]
+#eval Describe.describe [3, 4]
+
+-- `[Describe A]` asks for an instance where the function is used
+def shout {A : Type} [Describe A] (a : A) : String := Describe.describe a ++ "!"
+#eval shout (7 : Nat)
+
+-- `+` is `Add.add` and a numeral is `OfNat.ofNat`: the same syntax at every numeric type
+#eval (2 : Int) - 5
+#eval (-3 : Int) * 4 + 2
+#eval UIntN.toNat ((250 : U8) + 10)      -- words wrap around
+def sum {A : Type} [Add A] [OfNat A 0] : List A → A
+  | .nil => 0
+  | .cons x xs => x + sum xs
+#eval sum [1, 2, 3]
+#eval sum [(1 : Int), -2, -3]
