@@ -41,7 +41,8 @@ def headType (g : Globals R) (tys : Array (VTy R)) : Head R → Option (VTy R)
   | .refl A a => some (vEq g A a a)
   | .reflTy X => some (vEqType g X X)
   | .transp _ _ P _ b e => some (vApp g (vApp g P b) e)
-  | .prf ty _ _ _ => some ty.get
+  -- (a suspended proof carries no type: see `inferNe` and `convNe`)
+  | .prf .. => none
 
 /-! ### Types of the data eliminators' arguments (stage 4d)
 
@@ -181,9 +182,18 @@ partial def inferNe (g : Globals R) (tys : Array (VTy R)) : Val R → Option (VT
   | .unfold n us sp _ => inferNe g tys (.neutral (.global n us) sp)
   | .lazyInd _ _ _ _ _ _ _ _ _ v => inferNe g tys v.get
   | .neutral h sp => do
-    let mut ty ← headType g tys h
-    let mut acc : Val R := .neutral h #[]
-    for e in sp do
+    -- (P2) a suspended proof has no type of its own; what follows its last `absurd` is
+    -- typed by the motive (a neutral that is a *type* and starts at a proof has one)
+    let (start, ty₀) ← match headType g tys h with
+      | some ty => pure (0, ty)
+      | none => match lastAbsurd? sp with
+        | some k => match sp[k]? with
+          | some (.absurd m) => pure (k + 1, m)
+          | _ => none
+        | none => none
+    let mut ty := ty₀
+    let mut acc : Val R := .neutral h (sp.extract 0 start)
+    for e in sp.extract start sp.size do
       match e, whnf ty with
       | .app x, .pi _ _ _ _ cod _ => ty := Closure.inst g cod x; acc := vApp g acc x
       | .fst, .sigma _ _ A _ _ => ty := A; acc := vFst acc
@@ -227,6 +237,18 @@ def isProp (g : Globals R) (tys : Array (VTy R)) (ty : VTy R) : Bool :=
   | some l => l.equiv 0
   | none => false
 
+/-- (P2) Is the neutral `h · sp[0..k)` a proof of `False`? Either it starts at a proof
+head and has passed through no `absurd` (then it is a proof, and it is being given to an
+`absurd`), or its type is computed. -/
+def falsePrefix (g : Globals R) (tys : Array (VTy R)) (h : Head R) (sp : Array (Elim R)) (k : Nat) : Bool :=
+  let pre := sp.extract 0 k
+  (proofHead h && (lastAbsurd? pre).isNone) ||
+  match inferNe g tys (.neutral h pre) with
+  | some ty => match whnf ty with
+    | .empty l => l.isZero
+    | _ => false
+  | none => false
+
 mutual
 
 /-- **Exercise 1.4.** Definitional equality of `a` and `b` at type `ty`.
@@ -258,8 +280,9 @@ partial def conv (g : Globals R) (tys : Array (VTy R)) (ty : VTy R) (a b : Val R
   if let .ulift l A := ty then l.equiv 0 || conv g tys A (vDown a) (vDown b) else
   --<sol
   if isProp g tys ty then true else
-  let a := unCast a
-  let b := unCast b
+  -- regularity (InReg_conv): a stuck cast between convertible types is its argument
+  let a := unCast g tys a
+  let b := unCast g tys b
   match ty with
   | .pi _ _ _ dom cod _ =>
     let v := Val.var tys.size
@@ -310,20 +333,6 @@ partial def conv (g : Globals R) (tys : Array (VTy R)) (ty : VTy R) (a b : Val R
       conv full tys (vElims full (eval full [] (v.instLevels levelParams us)) sp) a b
     | _ => false
   | _ => (convNe g tys a b).isSome
-where
-  unCast (v : Val R) : Val R :=
-    match v with
-    | .neutral (.cast A B e t) sp =>
-      let ok := sp.isEmpty && match g.regularity with
-        | .full => true
-        | .nonProp => !isProp g tys A
-        | .refl => reflProof e
-        | .off => false
-      -- (P1, `inertReg = conv`) InReg decided by conversion: at an inert `A` with `A ≡ B`,
-      -- `cast A B e t` is `t`, also under eliminations (InReg_conv)
-      let inert := g.inertReg == .conv && inertTy g 0 A
-      if (ok || inert) && convTy g tys A B then unCast (whnf (vElims g t sp)) else v
-    | v => v
   --|ex
   --| sorry
   --sol>
@@ -343,6 +352,10 @@ partial def convTy (g : Globals R) (tys : Array (VTy R)) (a b : VTy R) : Bool :=
   if let some r := convGlued g tys a b then r || convTy g tys (whnf a) (whnf b) else
   let a := whnf a
   let b := whnf b
+  -- (given) regularity (InReg_conv), for a type that is stuck on a cast (`P (cast …)` by
+  -- an eliminator: the neutral is the cast, with the elimination in its spine)
+  let a := unCast g tys a
+  let b := unCast g tys b
   -- (given) Q4
   if let (.ulift l A, .ulift l' A') := (a, b) then l.equiv l' && convTy g tys A A' else
   --<sol
@@ -371,6 +384,34 @@ where
   --| sorry
   --sol>
 
+/-- **Regularity, decided by conversion** (InReg_conv; `wiz-notes/conv-regularity.md`).
+
+    A inert     A ≡ B
+    ───────────────────────
+    cast A B e t ≡ t
+
+[PLT25]'s Cast-Refl, restricted to inert types. It is a rule of conversion, not of
+evaluation: a cast on a canonical value takes a structural rule in `vCast`, and a cast
+that stays *stuck* is removed here, on either side of a comparison, when its two types
+are convertible. The neutral may carry eliminations (`ind … (cast …)`): they are applied
+to the argument. The evaluator's `groundEqTy` decides a fragment of the same rule
+without conversion.
+
+* "Inert" is asked of either endpoint: `inertTy` reads a `Σ`'s sort annotation, which is
+  optional, so of two convertible types one can be inert and the other not.
+* Termination: `convTy A B` is a comparison of two components of the neutral, as the
+  congruence rule for two casts already makes; each step removes one cast.
+* `--regularity full` (an experiment) is the rule at every type.
+
+The value comes back in weak head normal form. -/
+partial def unCast (g : Globals R) (tys : Array (VTy R)) (v : Val R) : Val R :=
+  match v with
+  | .neutral (.cast A B _ t) sp =>
+    let applies := g.regularity == .full ||
+      (g.inertReg == .conv && (inertTy g 0 A || inertTy g 0 B))
+    if applies && convTy g tys A B then unCast g tys (whnf (vElims g t sp)) else v
+  | v => v
+
 /-- Two glued values (`Val.unfold`) with the same global head: are their spines
 convertible? `none` unless both are glued with the same head. -/
 partial def convGlued (g : Globals R) (tys : Array (VTy R)) (a b : Val R) : Option Bool :=
@@ -380,7 +421,9 @@ partial def convGlued (g : Globals R) (tys : Array (VTy R)) (a b : Val R) : Opti
       some (convNe g tys (.neutral (.global n us) sp) (.neutral (.global n' us') sp')).isSome
     else none
   -- the same induction on a numeral: compare the folded forms
-  | a@(.lazyInd ..), b@(.lazyInd ..) =>
+  | a@(.lazyInd _ _ _ _ _ _ _ x _ _), b@(.lazyInd _ _ _ _ _ _ _ y _ _) =>
+    -- (on a constructor, `ind` is lazy for speed alone: compared by what it computes)
+    if (whnf x matches .con _) || (whnf y matches .con _) then none else
     -- (P2: the kernel's comparisons don't evaluate proofs)
     let g := { g with quoteErasesProofs := true }
     some (quote g tys.size a == quote g tys.size b)
@@ -410,19 +453,44 @@ partial def convNe (g : Globals R) (tys : Array (VTy R)) (a b : Val R) : Option 
   --<sol
   let .neutral h sp := a | none
   let .neutral h' sp' := b | none
-  unless sp.size == sp'.size do none
   let isProof : Head R → Bool
     | .refl .. | .reflTy _ | .transp .. | .prf .. => true
     | _ => false
-  let headsEq := match h, h' with
-    | .eq A x y, .eq A' x' y' => convTy g tys A A' && conv g tys A x x' && conv g tys A y y'
-    | .eqTy A B, .eqTy A' B' => convTy g tys A A' && convTy g tys B B'
-    | .cast A B _ t, .cast A' B' _ t' => convTy g tys A A' && convTy g tys B B' && conv g tys A t t'
-    | _, _ => (isProof h && isProof h') || h.equiv h'
-  unless headsEq do none
-  let mut ty ← headType g tys h
-  let mut acc : Val R := .neutral h #[]
-  for e in sp, e' in sp' do
+  -- (P2) **a proof under `absurd` is irrelevant**: the argument of `absurd` at `False` is a
+  -- proof, which is never compared (it may be a suspended proof on one side and a
+  -- hypothesis on the other). So if the two neutrals pass through an `absurd` on a proof
+  -- of `False` at the same distance from their ends, they are compared from there on:
+  -- the motives, then the eliminations that follow, typed by the motive.
+  let cut : Option (Nat × Nat × VTy R × VTy R) := (List.range (min sp.size sp'.size)).findSome? fun d =>
+    let i := sp.size - 1 - d
+    let j := sp'.size - 1 - d
+    match sp[i]?, sp'[j]? with
+    | some (.absurd m), some (.absurd m') =>
+      if falsePrefix g tys h sp i && falsePrefix g tys h' sp' j then some (i + 1, j + 1, m, m') else none
+    | _, _ => none
+  let (start, start', ty₀) ← match cut with
+    | some (i, j, m, m') => if convTy g tys m m' then pure (i, j, m) else none
+    | none =>
+      let headsEq := match h, h' with
+        | .eq A x y, .eq A' x' y' => convTy g tys A A' && conv g tys A x x' && conv g tys A y y'
+        | .eqTy A B, .eqTy A' B' => convTy g tys A A' && convTy g tys B B'
+        | .cast A B _ t, .cast A' B' _ t' => convTy g tys A A' && convTy g tys B B' && conv g tys A t t'
+        | _, _ => (isProof h && isProof h') || h.equiv h'
+      if !headsEq then none else
+      -- two proofs with only applications and projections after them (their type was not
+      -- seen to be a proposition, or `conv` would have answered): equal, with nothing to
+      -- compare. (The type returned is not used.)
+      let onProofs (sp : Array (Elim R)) : Bool := sp.all fun
+        | .app _ | .fst | .snd | .down => true
+        | _ => false
+      if isProof h && isProof h' && onProofs sp && onProofs sp' then return .unit 0 else
+      match headType g tys h with
+      | some ty => pure (0, 0, ty)
+      | none => none
+  unless sp.size - start == sp'.size - start' do none
+  let mut ty := ty₀
+  let mut acc : Val R := .neutral h (sp.extract 0 start)
+  for e in sp.extract start sp.size, e' in sp'.extract start' sp'.size do
     match e, e', whnf ty with
     | .app x, .app y, .pi _ _ _ dom cod _ =>
       unless conv g tys dom x y do none
