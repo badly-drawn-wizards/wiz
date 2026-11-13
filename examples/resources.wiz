@@ -31,9 +31,9 @@ end
 
 -- ## 2. The functional model: a `&mut` is a value handed in and handed back
 --
--- `swap` lowered takes `Uniq1 ρa U64` and `Uniq1 ρb U64` (linear handles: used once,
+-- `swap` lowered takes `Uniq ρa U64` and `Uniq ρb U64` (linear handles: used once,
 -- handed back in a `Result1`) and gives them back with its result; `swap_vals` opens two
--- borrow scopes (`Uniq1.borrow`) around the call and returns a plain `Result`. A
+-- borrow scopes (`Uniq.borrow`) around the call and returns a plain `Result`. A
 -- specification is a statement about values, proved by computation (no heap in sight):
 -- a linear handle can't be read in a proposition, so the spec of `swap` takes its
 -- arguments' values and lends them in scopes, and the clauses talk about the values.

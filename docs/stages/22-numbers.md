@@ -247,6 +247,8 @@ reject them in the kernel, but a linear variable can't be used inside a `match`
 alternative today (`match` is built on `ind`, whose methods are scaled by ω) and
 `Result`'s payload is ω, so it needs a case whose alternatives run once (R9a, a kernel
 change). Linearity would still not be uniqueness: in-place updates stay with RC.
+(Since cohesion M4, below, the handles are linear and gaps 1 and 3 are type errors; gap 2
+stays, pinned in `regions`.)
 
 **Linear handles (cohesion M4a, on linear-case stage 2).** `Uniq1 ρ A` is `&'a mut A`
 used at quantity 1. It is a one-constructor inductive with a private constructor, because a
@@ -260,7 +262,9 @@ with its region); see group `regions`.
 Gap 2 stays: the lender is an ω value, so a body that names the `Lent` token differently
 can still read it. Closing it needs linear lenders, and reading `*x` out of a linear value
 then needs a Copy notion (K3, `sfix_π`).
-Feral's lowering moves onto `Uniq1` in M4b; until then the ω handles remain.
+Feral's lowering moved onto these in M4b. Since M4b-3d they are the only mutable handles:
+the ω `Uniq`, `Mut` and `MutOpt` are gone, and `Uniq1`, `Mut1`, `MutOpt1` are renamed
+`Uniq`, `Mut`, `MutOpt` (`Result1` and `Borrowed` keep their names).
 
 Linearity closes the escape for `Uniq` (the body has one handle and must hand it back,
 so it can't also pack it) but not for `Shr`, which is a copy. The scope is already rank-2
@@ -350,6 +354,18 @@ The region discipline of 22g used to cost at run time: every handle was a cell
   `lib/Region.wiz` marks its scopes and `Uniq.set`/`Shr.weaken`. The kernel never sees
   the attribute; inlining a recursive definition stops after a few levels.
 
+* **Linear scopes (cohesion M4b).** Since `Uniq` is a linear one-constructor inductive,
+  a `match` on a handle is `T.casesOn1`, whose method takes the tag and then the fields.
+  Erasure now unfolds `casesOn1` and `casesOnA` calls as it does `casesOn`
+  (`unfoldCases?`), and `simpKnown` (`Inline.lean`, run on every definition) removes what
+  is left: a `case` on a known tag is its branch, `(case s bs) a` pushes `a` into the
+  branches, a redex is a `let`, and a lambda bound once is moved to its use (a
+  continuation such as `Uniq.end r (λ v. …)`). With `--unbox-structs`, a `Uniq.borrow`
+  scope around `push1` went from 15 objects and 8 lifted functions to 4 objects and none,
+  and two nested scopes from 29 and 23 to 6 and none (no scope: 3). What remains is the
+  handle's cell: `Uniq` is an inductive, which `--unbox-structs` doesn't unbox
+  (`/workspace/wiz-notes/linear-scope-cost.md`).
+
 Objects allocated on `#run`'s checked heap (`tests --allocs FILE ENTRY…`, a measuring
 mode of the test driver), before → after (the "unbox" columns are with `--unbox-structs`;
 the default has 22i's inlining on the boxed layout, not measured here):
@@ -431,7 +447,8 @@ loops, `?`, `U64`, and functions that return borrows.
   ω values (22g, known gaps). One Feral program shows it: `swap (&mut a) (&mut a)` is
   E0499 in the front end, yet its `#unchecked` lowering checks. The surface language
   never names handles, scopes or tokens, so when handles become linear only the text
-  emitted for scopes changes.
+  emitted for scopes changes. (Since cohesion M4b they are linear, and the kernel rejects
+  that lowering too; reading a lender under a renamed `Lent` token is the gap that stays.)
 * **Linear mode (cohesion M4b-1).** A block whose functions use `&mut` and stay in the
   fragment it covers (straight-line code, calls, `if`, `mem.swap/take/replace`) lowers to
   the linear handles of 22g (`Uniq1`). `&mut` parameters are taken at 1. `*x` becomes
@@ -441,9 +458,33 @@ loops, `?`, `U64`, and functions that return borrows.
   borrows two locals threads the outer handle through `Uniq1.borrowIn`.
   `#lower` marks such functions `-- linear handles`. The kernel then rejects passing one
   `&mut` twice (E0499) on the `#unchecked` lowering too.
-  Any other construct keeps the whole block on the ω handles for now: loops, `return`,
-  `?`, `match`/`if let`, methods, indexing, shared or field borrows, returned borrows.
-  M4b-2 and M4b-3 cover those.
+  Since M4b-2, `for` and `while` loops are covered too: the loop function takes every
+  handle it mentions at 1 and hands it back in `Result1`. So is `v.push x` on a `&mut`,
+  lowered to FeralCore's linear twin `Vec.push1`. Since M4b-3a, early exits (`return`
+  and `?`) leave scopes, joins and loops as `Flow` values inside `Result1`, with the
+  handles beside them. Since M4b-3b, shared borrows (`&x`, and `&*r` of a handle, e.g.
+  for `r.len`) and indexing (`v[i]`) work beside live handles. The scopes thread those
+  handles through (`Shr.borrowIn`, `Uniq1.shareIn`).
+  Since M4b-3c, returned borrows are linear too. A function returning `&'a mut A` returns
+  a `Borrowed (Mut1 ρ A S) H`. Its `ok` hands over the borrow, a `Mut1` whose backward
+  function rebuilds the lender. Its `err` hands the lender's handle back (D8). With two
+  lenders (`pick`), the one not returned rides along in the backward function
+  (`Mut1.alongside`). `Option (&mut A)` is a `MutOpt1`. An error exit while a returned borrow
+  is live first releases it (`Mut1.release`/`Mut1.finish`) and hands back what it held, so
+  the error alternative is built from the environment at the exit. Cursors
+  (`let mut cur := r`, `while let … := cur`, `cur := left`) are `Mut1.whole`/`Mut1.comp`.
+  `match`/`if let` through a `&mut` is a `Uniq1.reborrow` whose body peeks the value. Its
+  alternatives rebuild the constructor with `Uniq1.write`. `let h := &mut s.f` takes the
+  fields out in a reborrow (L11). A field passed to a `&mut` parameter, `f (&mut s.f)`, is
+  a `Uniq1.zoom` with the field's lens `S.fL`; `zoomIn` threads other handles through.
+  Every surface program that uses `&mut` now lowers linearly. Not yet: two fields of one
+  struct in one call (`g (&mut s.a) (&mut s.b)`; the `let` form does it).
+  Since M4b-3d, linear mode is the only mode: every block lowers to the linear handles
+  (renamed `Uniq`, `Mut`, `MutOpt`, 22g), the `-- linear handles` marker is gone, and
+  FeralCore's `&mut` functions (`Vec.push`, `Vec.get_mut`) take linear handles. The
+  hand-lowered drafts (`drafts/feral/lowered`, `rejected`) use the same API. Specs read
+  handles at ω through `Uniq.get`/`Mut.store` (03's `final` spec is stated on the place's
+  store).
 * **Located output for command macros.** Runtime `Syntax` has no positions. A command
   macro now names a node of its input by **path** (child indices), and its output may
   contain `Syntax.errorAt path msg`, `Syntax.infoAt path msg` and
