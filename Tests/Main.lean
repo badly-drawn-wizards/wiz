@@ -11,6 +11,7 @@ import Tests.Lint
 import Tests.Allocs
 import Tests.Scaling
 import Tests.Audit
+import Tests.Prop
 import Tests.Feral
 import Tests.Tower
 import Tests.Native
@@ -40,6 +41,7 @@ def groups : List Group :=
   Native.groups ++
   Smt.groups ++
   Parser.groups ++
+  Prop.groups ++
   Rig.groups ++
   Scaling.groups ++
   Tower.groups ++
@@ -189,7 +191,7 @@ def main (args : List String) : IO UInt32 := do
   if let "--tower" :: rest := args then return ← _root_.Tower.main (← _root_.Tower.defaultEnv) rest
   -- the processes the suite starts get the toolchain as flags
   let child := match args with
-    | "--run-case" :: _ | "--check" :: _ | "--check-libs" :: _ | "--probe-reuse" :: _ | "--probe-reuse-ir" :: _ | "--panic-probe" :: _ | "--grail-job" :: _ | ["--list"] | "--list-cases" :: _ | "--allocs" :: _ => true
+    | "--run-case" :: _ | "--prop-long" :: _ | "--prop-replay" :: _ | ["--prop-no-sizes"] | ["--prop-trace"] | "--check" :: _ | "--check-libs" :: _ | "--probe-reuse" :: _ | "--probe-reuse-ir" :: _ | "--panic-probe" :: _ | "--grail-job" :: _ | ["--list"] | "--list-cases" :: _ | "--allocs" :: _ => true
     | _ => false
   let (tc, args') ← suiteToolchain args (readLocal := !child)
   toolchainRef.set tc
@@ -231,6 +233,11 @@ def main (args : List String) : IO UInt32 := do
   | ["--audit-long"] => Audit.longMain
   | ["--audit-hurkens"] => Audit.hurkensMain
   | "--audit-query" :: ixs => Audit.queryMain ixs
+  -- the property harness's long run (`Tests/Prop.lean`)
+  | "--prop-long" :: rest => Prop.longMain rest
+  | "--prop-replay" :: rest => Prop.replayMain rest
+  | ["--prop-no-sizes"] => Prop.flagMain true false
+  | ["--prop-trace"] => Prop.flagMain false true
   | ["--probe-reuse"] => Scaling.probeReuse
   | "--probe-reuse-ir" :: files => Scaling.probeReuseIR files
   -- allocation counts and IR of definitions of a file (`Tests/Allocs.lean`)

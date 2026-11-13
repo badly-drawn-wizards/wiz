@@ -2,6 +2,7 @@
   {"name": "selfhost", "split": 4, "heavy": true,
    "inputs": ["selfhost/*", "lib/Prelude.wiz", "lib/IO.wiz", "lib/Std.wiz"],
    "select": [
+    "=prop-kernels",
     "=selfhost",
     "=audit-kernels"
   ]},
@@ -87,6 +88,7 @@
     "=meta",
     "observational",
     "parser",
+    "=prop",
     "quantity",
     "rig",
     "scaling",
