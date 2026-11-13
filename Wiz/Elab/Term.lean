@@ -3023,7 +3023,19 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
           pushInfo (.done (.unknownIdent ctx.info x ctx.names))
           throwAt ctx.info s!"unknown identifier '{x}'" "unknown-identifier"
         let (t, ty) ← infer ctx (.node stx.info "term.ident" #[.ident stx.info base])
-        elabFields ctx t ty (f :: fs)
+        -- (#266) `T.f` with `T` a global type (or type family, or function) and no field
+        -- `f`: a qualified name that doesn't exist (not imported, or its definition failed)
+        let qualified := (lookupLocal ctx base).isNone && match ← force ty with
+          | .sort _ | .pi .. => true
+          | _ => false
+        if qualified then
+          try elabFields ctx t ty (f :: fs)
+          catch e =>
+            if e.msg.startsWith "no field '" then
+              pushInfo (.done (.unknownIdent ctx.info x ctx.names))
+              throwAt ctx.info s!"unknown identifier '{x}'" "unknown-identifier"
+            else throw e
+        else elabFields ctx t ty (f :: fs)
       | _ =>
         pushInfo (.done (.unknownIdent ctx.info x ctx.names))
         throwAt ctx.info s!"unknown identifier '{x}'" "unknown-identifier"

@@ -698,6 +698,11 @@ def group : Group where
           "#eval s0mt (S0.mk 3 4)\n") ["4"]
         -- used at runtime it is an error (not a projection at ω behind the user's back)
         failsLib (hdr ++ "def bad (s : S0) : Nat := match s with\n  | .mk n m => n\n") "n" },
+    { name := "#266: an unknown qualified name is an unknown identifier, not a field access", run := fun _ => do
+        failsLibW "import Prelude\ndef x : Option Nat := Option.bind (.some 1) (fun n => .some n)\n" "unknown identifier 'Option.bind'"
+        failsLibW "import Prelude\ndef x : Nat := Nat.nope 3\n" "unknown identifier 'Nat.nope'"
+        -- a field of a value is still a field
+        failsLibW "import Prelude\nstructure P where\n  a : Nat\ndef p : P := P.mk 1\ndef x : Nat := p.b\n" "no field 'b'" },
     { name := "#249: recursion over a family refines later arguments at non-variable indices", run := fun _ =>
         okLib ("import Prelude\ninductive R : Nat → Nat → Type where\n  | done (s : Nat) : R s s\n" ++
           "  | step (s t u : Nat) (r : R t u) : R s u\n" ++
