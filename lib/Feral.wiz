@@ -116,7 +116,7 @@ syntax (name := feral) "feral" feral_item* "end" : command
 syntax (name := feralLower) "#lower" "feral" feral_item* "end" : command
 syntax (name := feralUnchecked) "#unchecked" "feral" feral_item* "end" : command
 -- ## Small utilities (the prelude has few; names are prefixed `Fe.`)
-infixr:60 " +++ " => String.append
+local infixr:60 " +++ " => String.append
 def Fe.ceq (c d : Char) : Bool := Nat.beq (Char.code c) (Char.code d)
 def Fe.leq : List Char → List Char → Bool
   | .nil, .nil => .true
@@ -333,7 +333,7 @@ inductive Fe.Out where
   | ind (o : Fe.Out)                    -- `o`, one level deeper
   | rgs (ts : List Fe.Ty) (ex : List String)   -- `{ρ₁ ρ₂ : Region}`: the regions of `ts` except `ex`
   | at (p : List Nat) (o : Fe.Out)      -- `o` comes from the input node at path `p` (positions)
-infixr:55 " ⊕ " => Fe.Out.cat
+local infixr:55 " ⊕ " => Fe.Out.cat
 def Fe.o (x : String) : Fe.Out := .s x
 def Fe.spaces : Nat → List Char → List Char
   | .zero, acc => acc
@@ -621,7 +621,7 @@ def Fe.sw {A : Type} (k : String) : List (String × (Unit → A)) → (Unit → 
   | .cons c cs, d => (match Fe.seq k c.1 with
     | .true => c.2 ()
     | .false => Fe.sw k cs d)
-infixr:20 " ▸ " => List.cons
+local infixr:20 " ▸ " => List.cons
 def Fe.nonEmpty : Syntax → Bool
   | .node _ (.cons _ _) => .true
   | _ => .false

@@ -462,7 +462,7 @@ argument's value when the borrow ends, its handed-back handle), with total corre
 Limitations: the fragment (LOWERING.md §1a); loop invariants, `decreases` and `final result`
 (a returned borrow) in specs are not supported; `U64` and `Vec`
 are the stand-ins of `drafts/feral/lib/FeralCore.wiz`; keywords such as `if` and `mut`
-are reserved in a file that imports `Feral`; one borrow error per function; stricter than rustc where a `&mut` would be
+are reserved only inside `feral … end` (13j), and only `feral` itself elsewhere; one borrow error per function; stricter than rustc where a `&mut` would be
 implicitly reborrowed at a shorter lifetime.
 
 ## 22k: sealed types ✅

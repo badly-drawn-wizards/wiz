@@ -2617,8 +2617,10 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
       | t => t) v) with
     | some t => (t.descTag?.map (·.1)).getD []
     | none => []
-  -- a constructor pattern of another type would match nothing (and the cases it was meant
-  -- for would be reported missing): say so where it is
+  -- (13o) a constructor pattern of another type would match nothing (and the cases it was
+  -- meant for would be reported missing): say so where it is, rather than report the
+  -- scrutinee's constructors as missing (`if n then …` at `n : Nat` is a match on
+  -- `.true`/`.false`). A pattern a macro wrote is reported at the match.
   unless ctors.isEmpty do
     -- a `mutual` block's tags are qualified (`Ev.s`), and the member's own constructors
     -- are the ones of its type (the other members' have the same family)
@@ -2630,7 +2632,10 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
           -- (a pattern a macro wrote, such as `if`'s `.true`, has no place of its own)
           let pi := (cl.pats[k]!).info
           let at_ := if pi.stop == 0 || pi.synthetic then ctx.info else pi
-          throwFix at_ s!"{T} has no constructor {c'} (its constructors are {", ".intercalate ctors})"
+          let hint := if c' == "true" || c' == "false" then
+            "; the condition of `if`, `&&` and `||` is a Bool" else ""
+          throwFix at_ (s!"the value matched has type {T}, which has no constructor .{c'} " ++
+            s!"(its constructors: {", ".intercalate (ctors.map (s!".{·}"))}){hint}")
             ErrorCode.unknownConstructor [("name", [c']), ("type", [T])]
   let nΞ := ξ.length
   -- a motive that depends on neither the indices nor the scrutinee: the non-dependent

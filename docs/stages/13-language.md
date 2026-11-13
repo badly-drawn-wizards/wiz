@@ -543,6 +543,33 @@ Before, they checked only because unsolved holes kept the equation from computin
 Research note: `wiz-notes/structure-eta.md`. Tests: group `elabfix`, "rfl at an equation
 that has computed"; group `optic`.
 
+## 13o: DSL conventions ✅
+
+The embedded languages follow one set of conventions (entering, scoping, symbols,
+printing, errors, docs, tests), collected in [docs/dsls.md](../dsls.md) with a table of
+the DSLs. This section's changes bring the libraries in line:
+
+* **Helper notation is local** (13m). `∷` (HoareTactics), `+++`, `⊕`, `▸` (Feral) and
+  `<+>` (Hdl.Core) are used only inside their modules; they were global, so every
+  importer lost those symbols and (with 11r) printed `List.cons`/`String.append` with
+  them.
+* **A reserved word says where it comes from.** An identifier position holding a keyword
+  of a `term` or `command` rule says so, with the notation (its atoms, `…` between them)
+  and the module that declared it: `def exists := 1` after `import Logic` is
+  `expected identifier ('exists' is a keyword: the notation `exists …, …` of module
+  Logic)` (`ParseError.explainKeywords`, `Wiz/Frontend/Parse.lean`; looked up only when
+  the error is reported, with the declaring modules of 11q). Built-in keywords say
+  `('def' is a keyword)`.
+* **A constructor pattern of another type** is an error that says so, at the pattern
+  (at the `match` when a macro wrote it): `if n then 1 else 2` at `n : Nat` was
+  "missing case for constructor zero" (the `.true`/`.false` match `if` expands to) and is
+  `the value matched has type Nat, which has no constructor .true (its constructors:
+  .zero, .succ); the condition of `if`, `&&` and `||` is a Bool`. Type-ascribing the
+  condition in the macro instead would lose the refinement of a variable condition in
+  the branches' types.
+
+Tests: groups `language`, `seplogic`. Audit and table: `wiz-notes/dsl-conventions.md`.
+
 ## 13p: nested structure update `{ s with a.b := v }`, printed back ✅
 
 ```

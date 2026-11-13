@@ -5980,6 +5980,12 @@ def languageGroup : Group where
     { name := "... and not its own identifiers", run := fun _ =>
         failsLib (calcDsl " (keywords := calc_kw)" ++ "#eval run_calc [no] yes done")
           "identifier ('yes' is a keyword here)" },
+    { name := "13o: a word reserved by a notation is an error that names the notation", run := fun _ =>
+        failsLib "import Prelude\nsyntax:lead (name := shout) \"shout\" term : term\ndef shout : Nat := 1"
+          "'shout' is a keyword: the notation `shout …` of this file" },
+    { name := "13o: `if` on a value that is not a Bool says so", run := fun _ =>
+        failsLib "import Prelude\ndef a (n : Nat) : Nat := if n then 1 else 2"
+          "the value matched has type Nat, which has no constructor .true (its constructors: .zero, .succ); the condition of `if`" },
     { name := "... without the scope the DSL's `when` is an application", run := fun _ => do
         let prelude ← IO.FS.readFile "lib/Prelude.wiz"
         let input := calcDsl "" ++ "#eval run_calc when [isZero] [0] yes [no] [yes] no [no (no yes)] done"
@@ -7480,6 +7486,11 @@ def seplogicGroup : Group where
   name := "seplogic"
   exercise := "Stage 24"
   cases := [
+    { name := "13o: the libraries' helper notation stays in them (∷, ▸, +++, ⊕, <+>)", run := fun _ =>
+        okLibs ("import HoareTactics\nimport Feral\nimport Hdl.Core\n" ++
+          "def l : List Nat := List.cons 1 List.nil\ninfixr:65 \" ⊕ \" => Nat.add\ninfixr:65 \" ▸ \" => Nat.mul\n" ++
+          "#check fun (s : List Nat) => List.cons 1 s\n#check fun (s t : String) => String.append s t")
+          ["fun s => List.cons Nat 1 s : List Nat → List Nat", "fun s t => String.append s t : String → String → String"] },
     { name := "the connectives; propext and funext are definitional", run := fun _ => do
         okLibs ("import Logic\n" ++
           "def t1 (P Q : Prop) (h : P ∧ Q) : Q ∧ P := And.symm h\n" ++
