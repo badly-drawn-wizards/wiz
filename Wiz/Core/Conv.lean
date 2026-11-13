@@ -283,11 +283,21 @@ partial def conv (g : Globals R) (tys : Array (VTy R)) (ty : VTy R) (a b : Val R
   -- regularity (InReg_conv): a stuck cast between convertible types is its argument
   let a := unCast g tys a
   let b := unCast g tys b
+  let neutralsAgree (_ : Unit) : Bool :=
+    (a matches .neutral ..) && (b matches .neutral ..) && (convNe g tys a b).isSome
   match ty with
+  -- (η at a Π or a Σ, after the neutral comparison: `wiz-notes/wishful/conv-sigma-eta-neutral.md`)
+  -- two neutrals are first compared as they are. `convNe` answers "equal" only for the same
+  -- head and convertible spines, which η would find too (it compares the same spines, each
+  -- extended by the same elimination), so this adds no answer; it saves η-splitting a stuck
+  -- record into its fields, each of which compares the whole stuck value again. If it
+  -- fails, η as before.
   | .pi _ _ _ dom cod _ =>
+    neutralsAgree () ||
     let v := Val.var tys.size
     conv g (tys.push dom) (Closure.inst g cod v) (vApp g a v) (vApp g b v)
   | .sigma _ _ A B _ =>
+    neutralsAgree () ||
     let a₁ := vFst a
     conv g tys A a₁ (vFst b) && conv g tys (Closure.inst g B a₁) (vSnd a) (vSnd b)
   | .unit _ => true
