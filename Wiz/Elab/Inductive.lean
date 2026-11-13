@@ -46,7 +46,9 @@ def elabTelescope (ctx : LocalCtx R) (bs : List BinderView) :
     tele := tele.push (b.name, b.bi, q, ty)
     let vty ← evalIn ctx ty
     recordBinder ctx b.info b.name vty
-    ctx := ctx.bind b.name vty
+    ctx := ctx.bindQ b.name vty (match q with
+      | .qlit r => some r
+      | _ => none)
   pure (ctx, tele)
 
 /-- `(a₁, (a₂, …, ()))` -/
@@ -319,6 +321,8 @@ def elabInductive (cmd : Syntax) (levelParams : List Name) : ElabM R (List (Decl
   let mut ctorLevels : List (List (Option Level × Option Level)) := []
   for c in ctors do
     let cname := ((c.child "name").getId?).getD "_"
+    if names.contains cname then
+      throwAt (c.child "name").info s!"the constructor {cname} is declared twice in {T}"
     let (ctxF, fs) ← elabTelescope ctxT ((c.child "binders").args.flatMap binderViews).toList
     let n := fs.size
     let target ← match (c.child "sig").args[1]? with

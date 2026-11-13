@@ -15,9 +15,10 @@ a relevant result; its rules are in the formers' files, and here its congruence,
 does **not** compare the proofs.
 
 **Formation.** `a =_A b` is formed at any sort. The kernels form it only at a sort that is
-never `Prop`, but the reducts of their own rules contain equations at propositions (the
-`Σ` rule at a proof component), so with that restriction a reduct of a well-formed type
-is not well formed. (`Opts.kernelEqFormation` in the checker restores the restriction.)
+never `Prop`, but the reducts of the rules contain equations at propositions (the `Σ` rule
+at a proof component), so with that restriction a reduct of a well-formed type is not well
+formed. (Since PR #123 the kernels compute such an equation to `True` as they build the
+reduct, so their normal forms do not contain it; the reducts here are terms, and do.) (`Opts.kernelEqFormation` in the checker restores the restriction.)
 The formation of `A ≡ B` is in the two `EqTy…` files.
 -/
 

@@ -262,6 +262,8 @@ structure Effect (R : Type) where
   cCode : Array String := #[]
   infos : Array (Info R) := #[]
   sites : Array (Name × SourceInfo × String) := #[]
+  /-- (11s) what the declarations are, and their doc comments -/
+  docs : Array (Name × DeclDoc) := #[]
   /-- (13b) names made private, and structures made opaque, with their module -/
   privates : Array (Name × String) := #[]
   opaques : Array (Name × String) := #[]
@@ -286,6 +288,7 @@ def effectOf (s s' : CommandState R) : Effect R :=
     cCode := s'.cCode.extract s.cCode.size s'.cCode.size
     infos := s'.infos.extract s.infos.size s'.infos.size
     sites := newNames.filterMap fun n => (s'.declSites.get? n).map fun (i, m) => (n, i, m)
+    docs := newNames.filterMap fun n => (s'.declDocs.get? n).map fun d => (n, d)
     privates := newEntries s.globals.privates s'.globals.privates
     opaques := newEntries s.globals.opaques s'.globals.opaques }
 where
@@ -337,6 +340,7 @@ def Effect.apply (e : Effect R) (s : CommandState R) : CommandState R :=
            coinductives := s.coinductives ++ e.coinductives, foreignTypes := e.foreignTypes ++ s.foreignTypes,
            cCode := s.cCode ++ e.cCode, infos := s.infos ++ e.infos,
            declSites := e.sites.foldl (fun m (n, i, md) => m.insert n (i, md)) s.declSites,
+           declDocs := e.docs.foldl (fun m (n, d) => m.insert n d) s.declDocs,
            pristine := false }
 
 def info (i : SourceInfo) : Sx := list [nat i.start, nat i.stop]
@@ -443,10 +447,11 @@ def Effect.toSx (e : Effect R) : Sx :=
     list (e.infos.toList.map infoSx),
     list (e.sites.toList.map fun (n, i, m) => list [str n, info i, str m]),
     list (e.privates.toList.map fun (n, m) => list [str n, str m]),
-    list (e.opaques.toList.map fun (n, m) => list [str n, str m])]
+    list (e.opaques.toList.map fun (n, m) => list [str n, str m]),
+    list (e.docs.toList.map fun (n, d) => list [str n, str d.kind, list (d.doc.toList.map str), names d.parent.toList, nat d.start])]
 
 def Effect.ofSx? (x : Sx) : Option (Effect R) := do
-  let #[ds, ms, bs, as, cs, is, cos, fts, cc, hs, ss, ps, os] ← items? x | none
+  let #[ds, ms, bs, as, cs, is, cos, fts, cc, hs, ss, ps, os, dcs] ← items? x | none
   let decl (x : Sx) : Option (Decl R) := do
     let #[n, ps, ty, v, inl, im, w] ← items? x | none
     pure { name := ← atom? n, levelParams := ← (← items? ps).toList.mapM atom?, type := ← dterm ty,
@@ -486,12 +491,16 @@ def Effect.ofSx? (x : Sx) : Option (Effect R) := do
       let #[n, i, m] ← items? x | none
       pure (← atom? n, ← dinfo i, ← atom? m))
     privates := (← (← items? ps).mapM pair)
-    opaques := (← (← items? os).mapM pair) }
+    opaques := (← (← items? os).mapM pair)
+    docs := (← (← items? dcs).mapM fun x => do
+      let #[n, k, d, p, st] ← items? x | none
+      pure (← atom? n, { kind := ← atom? k, doc := (← (← items? d).toList.mapM atom?).head?,
+                         parent := (← dnames p).head?, start := ← (← atom? st).toNat? })) }
 
 /-- The cache's version: change it whenever the format or the elaborator's output changes.
 (The directory store also mixes in the binary's own hash, `binaryId`, so two builds of
 wiz never share entries; the salt is for invalidating by hand.) -/
-def salt : UInt64 := hash "wiz-cache-16-sorts"  -- 16: mandatory component sorts (Π/Σ carry ⟨dom, cod⟩, ULift its content's sort); 15: proof markers (P2: declarations are stored marked); 14: a builtin key is registered once; 13: witnesses, assumed registrations, warnings; 12: private constructors, observations, fields (13b); 11: 22i, marked structure tails; 9: private names (13b); 8: Q4
+def salt : UInt64 := hash "wiz-cache-21-sorts-prf"  -- 21: mandatory component sorts (Π/Σ carry ⟨dom, cod⟩, ULift its content's sort) and 20: proof markers (P2: declarations are stored marked); 15: doc comments and declaration kinds (11s); 14: a builtin key is registered once; 13: witnesses, assumed registrations, warnings; 12: private constructors, observations, fields (13b); 11: 22i, marked structure tails; 9: private names (13b); 8: Q4
 
 /-! ## Keys and atomic writes (stage 23c)
 
@@ -606,6 +615,12 @@ def Store.memory : IO (Store R) := do
     seen := fun k => return (← seen.get).contains k
     markSeen := fun k _ => seen.modify (·.insert k) }
 
+/-- (28) The solver settings, as a key, when they are not the defaults (none: nothing to
+mix in, so the keys of every run without them stay as they were). -/
+def smtKey (c : Smt.Config) : Option UInt64 :=
+  let c := { c with cacheDir := none }
+  if c == {} then none else some (mixHash (hash "smt") (hash c))
+
 /-- Elaborate `input` (like `Query.elaborate`), reading and writing `store`. Returns the
 final state and how many commands came from the store. `key₀` identifies what the
 file can see besides its imports (for example its C headers); `toolchain` is mixed into
@@ -615,11 +630,20 @@ partial def elaborateWith (store : Store R) (input : String) (init : CommandStat
   let keys ← IO.mkRef ({} : Std.HashMap Name UInt64)
   -- recording every term's expected type changes the effects: a different chain
   let salt' := if init.termInfo then mixHash salt 1 else salt
+  -- (27a) so does `--trust-native` (and its fuel): a `native_refl` accepted with it is
+  -- never replayed without it, nor the error without it replayed with it. (What it ran is
+  -- already in the key: the binary, and the text of the file and of everything imported.)
+  let salt' := if init.trustNative then mixHash salt' (nativeKey init) else salt'
+  -- (28) and the solver settings (`--sat-solver`, `--solver-timeout`)
+  let salt' := match smtKey init.smt with | some k => mixHash salt' k | none => salt'
   go keys init [] input init (mixHash salt' (mixHash toolchain key₀)) .write
 where
+  nativeKey (s : CommandState R) : UInt64 := mixHash (hash "trust-native") (hash s.nativeFuel)
   keyOf (keys : IO.Ref (Std.HashMap Name UInt64)) (m : Name) : IO UInt64 := do
     -- (term info changes what a module elaborates to, like the main file's chain)
     let tc := if init.termInfo then mixHash toolchain 1 else toolchain
+    let tc := if init.trustNative then mixHash tc (nativeKey init) else tc
+    let tc := match smtKey init.smt with | some k => mixHash tc k | none => tc
     let memo := moduleKeys init.loader init.cHeaders tc [m] (← keys.get) init.trustedModule
     keys.set memo
     pure ((memo.get? m).getD 0)
@@ -680,6 +704,12 @@ where
                 let dup := (errs.find? (·.code == "duplicate-declaration")).map (·.text) |>.getD msg.text
                 s := { s with messages := s.messages.push { msg with text := dup, code := "duplicate-declaration" } ++ warns,
                               imported := m :: s.imported, pristine := false }
+                -- in a module, that is the end of it: its later commands were checked
+                -- (and their effects cached) with `m` imported, and replayed without it
+                -- they would refer to declarations that aren't there, or to the other
+                -- module's (the macro interpreter then ran a deriver of lib/Deriving.wiz
+                -- with lib/Text.wiz dropped, and panicked). The importer drops the module.
+                unless stack.isEmpty do break
               else
               s := { inner with messages := (if errs.isEmpty then s.messages else s.messages.push msg) ++ warns,
                                 module := s.module, infos := s.infos }

@@ -386,17 +386,33 @@ end Mark
 
 /-- (Mandatory sorts) A declaration with every hole in its `Π`/`Σ`/`ULift` sorts filled
 (the sorts pass, `Ctx.sortsOnly`): in the type, the value, the implementation and the
-witness. A declaration without holes is returned as it is. -/
+witness. A declaration without holes is returned as it is.
+
+The declared type is **evaluated only when the term's shape needs an expected type** (a
+`fun`, a pair, …), or when inference could not type the term: evaluating an equation
+computes its sides — the whole of a `refl` proof's computation — and the pass runs on
+every declaration (`kernel-eval`). Where the type is not needed the traversal infers the
+subterm's type instead (`Mark.infer`). -/
 def Decl.withSorts (g : Globals R) (d : Decl R) : Decl R :=
   let has := d.type.hasHole || (d.value.any (·.hasHole)) || (d.impl.any (·.hasHole)) ||
     (d.witness.any (·.hasHole))
   if !has then d else
   let ctx : Ctx R := { globals := g, sortsOnly := true }
   let type := (Mark.type ctx d.type).1
-  let ty := ctx.eval type
-  { d with type, value := d.value.map (Mark.check ctx · ty),
-           impl := d.impl.map (Mark.check ctx · ty),
-           witness := d.witness.map (Mark.check ctx · ty) }
+  let ty : Thunk (VTy R) := Thunk.mk fun _ => ctx.eval type
+  let fill (t : Term R) : Term R :=
+    if !t.hasHole then t else
+    match t with
+    -- (the shapes only an expected type can type: they need it, so it is evaluated)
+    | .lam .. | .pair .. | .tt | .up .. | .dret .. | .darg .. | .drec .. | .dhrec ..
+    | .con .. | .cocon .. => Mark.check ctx t ty.get
+    -- (where inference completes, it needs no type; the expected one, evaluated, only
+    -- where it does not: a term it could not type falls back to `check` as before)
+    | t => match Mark.infer ctx t with
+      | (t', some _) => t'
+      | (_, none) => Mark.check ctx t ty.get
+  { d with type, value := d.value.map fill, impl := d.impl.map fill,
+           witness := d.witness.map fill }
 
 /-- A declaration with its proof markers (and the `Π`/`Σ` sorts it fills on the way):
 what the kernel requires (`Check.lean`, "the proof marker"). -/

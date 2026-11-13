@@ -986,6 +986,14 @@ INLINE void rt_drop(V v) {
   (void)v;
 #endif
 }
+/* (21r) another reference (a field read from a borrowed structure, then converted) */
+INLINE void rt_dup(V v) {
+#ifdef WIZ_RC
+  inc(v);
+#else
+  (void)v;
+#endif
+}
 static uint64_t rt_in_nat(V v) { return ISBOX(v) ? (uint64_t)UNBOX(v) : 0; }
 /* (21p) a `Nat` here is 63 bits: a C number that doesn't fit is an error, not cut */
 static V rt_out_nat(uint64_t n) {
@@ -1073,6 +1081,102 @@ static double wiz_f64_div(double a, double b) { return a / b; }
 static int wiz_f64_lt(double a, double b) { return a < b; }
 static const char *wiz_f64_show(double a) { static char buf[64]; snprintf(buf, sizeof buf, "%.17g", a); return buf; }
 
+/* (P2) The step budget of a proof's read-back in the self-hosted toolchain (selfhost/Kernel.wiz,
+   `forceProof`; `Budget` in Wiz/Core/Term.lean is the Lean frontend's; as in runtime/wiz.c): a counter behind a
+   pure interface, as in Lean. `start` begins a budget of `steps` closure instantiations
+   (1: it did; 0: one is already running, the caller counts on it), `tick` takes one step
+   (1, or 0 once it ran out; always 1 when no budget runs), `end` stops it (1: it did not
+   run out). Only the read-back of a suspended proof starts one, so the kernel's own
+   evaluation never finds one running. */
+static int wiz_proof_on = 0;
+static uint64_t wiz_proof_left = 0;
+static int wiz_proof_start(uint64_t steps) { if (wiz_proof_on) return 0; wiz_proof_on = 1; wiz_proof_left = steps + 1; return 1; }
+static int wiz_proof_tick(uint64_t x) { (void)x; if (!wiz_proof_on) return 1; if (wiz_proof_left <= 1) { wiz_proof_left = 0; return 0; } wiz_proof_left--; return 1; }
+static int wiz_proof_end(uint64_t x) { (void)x; wiz_proof_on = 0; return wiz_proof_left > 0; }
+/* (21s) the runtime's set-up, once: by `rt_start`, or by the first exported function a C
+   program calls (a library has no `main`) */
+static int rt_ready;
+static void rt_ensure(void) {
+  if (rt_ready) return;
+  rt_ready = 1;
+#ifdef WIZ_RC
+  rt_nulInit();
+#else
+  GC_INIT();
+  /* collect less often: the heap of a compiler is mostly live (20% faster) */
+  GC_set_free_space_divisor(1);
+#endif
+}
+
+/* (21s) Handles, as in `runtime/wiz.c` (stage 9g): C owns the reference to a Wiz value it
+   gets (from an export, or a `Callback`'s context), `wiz_retain` makes one more and
+   `wiz_release` gives one back. `wiz_live_objects` counts the objects alive, for leak
+   checks in C tests: under reference counting, those allocated and not freed, less the
+   program's constants (what the roots reach: globals computed once, natives' closures);
+   under the collector nothing is counted (0). */
+#ifdef WIZ_RC
+static int rt_isNul(Obj *o) { return (void *)o >= (void *)rt_nul && (void *)o < (void *)(rt_nul + RT_NNUL); }
+/* a set of objects (open addressing), and a stack of objects to visit */
+static Obj **rt_seenT; static size_t rt_seenCap, rt_seenN;
+static Obj **rt_todo; static size_t rt_todoN, rt_todoCap;
+static int rt_seenAdd(Obj *o) {
+  if (2 * (rt_seenN + 1) > rt_seenCap) {
+    size_t oc = rt_seenCap; Obj **old = rt_seenT;
+    rt_seenCap = oc ? 2 * oc : 1024;
+    rt_seenT = (Obj **)calloc(rt_seenCap, sizeof(Obj *));
+    if (!rt_seenT) die("out of memory");
+    rt_seenN = 0;
+    for (size_t i = 0; i < oc; i++) if (old[i]) (void)rt_seenAdd(old[i]);
+    free(old);
+  }
+  size_t h = ((uintptr_t)o >> 4) * 11400714819323198485ull & (rt_seenCap - 1);
+  while (rt_seenT[h]) { if (rt_seenT[h] == o) return 0; h = (h + 1) & (rt_seenCap - 1); }
+  rt_seenT[h] = o; rt_seenN++;
+  return 1;
+}
+static void rt_visit(V v) {
+  if (!v || ISBOX(v)) return;
+  if (rt_todoN == rt_todoCap) {
+    rt_todoCap = rt_todoCap ? 2 * rt_todoCap : 256;
+    rt_todo = (Obj **)realloc(rt_todo, rt_todoCap * sizeof(Obj *));
+    if (!rt_todo) die("out of memory");
+  }
+  rt_todo[rt_todoN++] = OBJ(v);
+}
+static size_t rt_rooted(void) {
+  size_t n = 0;
+  rt_seenN = 0;
+  if (rt_seenT) memset(rt_seenT, 0, rt_seenCap * sizeof(Obj *));
+  for (size_t i = 0; i < rt_nroots; i++) rt_visit(*rt_roots[i]);
+  while (rt_todoN) {
+    Obj *x = rt_todo[--rt_todoN];
+    if (rt_isNul(x) || !rt_seenAdd(x)) continue;
+    n++;
+    uint32_t t = x->tag;
+    /* (the children, as `rt_drain` releases them) */
+    if (t < T_CLO || t == T_HYP) { for (uint32_t i = 0; i < x->n; i++) rt_visit(x->f[i]); }
+    else if (t == T_CLO) {
+      Clo *c = (Clo *)x;
+      for (uint32_t i = c->fn == accFn ? 2 : c->fn == thunkFn ? 1 : 0; i < c->n; i++) rt_visit(c->env[i]);
+    } else if (t == T_ARR) {
+      Arr *a = (Arr *)x;
+      for (size_t i = 0; i < a->len; i++) rt_visit(a->data[i]);
+    } else if (t == T_MAP) {
+      Node *m = (Node *)x;
+      rt_visit(m->key); rt_visit(m->val); rt_visit((V)m->l); rt_visit((V)m->r);
+    }
+  }
+  return n;
+}
+void wiz_release(void *v) { dec((V)v); }
+void wiz_retain(void *v) { inc((V)v); }
+long wiz_live_objects(void) { return (long)(rt_live - rt_rooted()); }
+#else
+void wiz_release(void *v) { (void)v; }
+void wiz_retain(void *v) { (void)v; }
+long wiz_live_objects(void) { return 0; }
+#endif
+
 /* the program needs a big stack (deep recursion): raise the limit and start again (a
    thread with a big stack would do, but the collector's stopping of the world lost
    its signals) */
@@ -1085,12 +1189,5 @@ static void rt_start(char **argv) {
     r.rlim_cur = (r.rlim_max == RLIM_INFINITY || r.rlim_max >= want) ? want : r.rlim_max;
     if (setrlimit(RLIMIT_STACK, &r) == 0) { setenv("WIZ_STACK_SET", "1", 1); execv("/proc/self/exe", argv); }
   }
-#ifdef WIZ_RC
-  rt_nulInit();
-#endif
-#ifndef WIZ_RC
-  GC_INIT();
-  /* collect less often: the heap of a compiler is mostly live (20% faster) */
-  GC_set_free_space_divisor(1);
-#endif
+  rt_ensure();
 }
