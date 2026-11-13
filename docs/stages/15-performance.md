@@ -248,3 +248,37 @@ Tests: groups `backend` (which definitions are cached), `c` and `llvm` (a table 
 loop, a diverging and a failing constant in an untaken branch, a memoised suspension, a
 big number, erased definitions, self-referential codata, no leaks; an `IO` constant run
 four times), `conc` (eight threads first using a table and a suspension in it at once).
+
+### 15j: shared projection prefixes ✅
+
+A structure (and a Σ) nests to the right, `(f₀, (f₁, (f₂, …)))`, so field `k` is `k`
+projections `.2` and a `.1`, whether it is written `s.f` or bound by a `match`. A
+function that reads every field of a wide structure did n²/2 projections: a bundle's
+`pack`, a step function over a wide state (wiz-rv's 20-field core state, the iCEstick IR
+blaster's 19 fields).
+
+* **Lean compiler.** The IR simplifier (`Simp.lean`, right after lowering) remembers
+  the projections bound on the path from the function's start, `(field, object) ↦
+  variable`, and renames a projection computed again to the first one. Each step of a
+  chain is its own binding, so `x.2.2.2.1` and `x.2.2.2.2.1` share `x.2`, `x.2.2` and
+  `x.2.2.2`, and reading every field is linear. Only what dominates is shared: a `case`
+  branch sees what was bound before the `case`, not what a sibling branch bound; a join
+  point's body starts afresh; a `lazySet` (an observed lazy cell is overwritten) forgets
+  everything. A projection still borrows from its object, so reference counting is
+  unchanged in kind: the field of an owned object is `dup`ed once instead of once per
+  read. No representation changes.
+* **Self-hosted backend.** It compiles terms, not ANF, so the prefixes are planned per
+  region (`csePlan`): at a function's body, a `case` branch and a `λ`'s body, each prefix
+  `x.2…` of a variable bound outside used twice, once on the region's straight-line path
+  (so it is evaluated there anyway), becomes a C local, `qx_1 = fld(x, 1)`, `qx_2 =
+  fld(qx_1, 1)`, … (a `let` does the same for its own variable), and every path from `x`
+  reads from the longest local. Only `.2`s are shared: `fld(·, 1)` is total and never
+  forces a hypothesis. Under reference counting the locals are borrowed from `x` (no
+  `inc`): every use of one is still a use of `x`, which therefore lives as long, and the
+  locals are declared only when `x` is still alive (used in the region, or borrowed).
+
+Tests: `scaling` (reading every field of 32- and 64-field structures takes one projection
+per field and per tail), `c` and `llvm` (a root consumed before the last read through its
+prefix, an in-place update of the root's cell while fields read through the prefix are
+live, a join point, codata between observations; the IR interpreter checks every
+reference), `selfhost` (the same in both modes; the C of a wide read has its locals).

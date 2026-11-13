@@ -61,6 +61,24 @@ def modulesGroup : Group where
         let ms ← Module.loadAll ["lib", dir]
         check (Cache.moduleKey (loaderOf ms) (fun _ => none) 0 "Other" != Cache.moduleKey (loaderOf ms) (fun _ => none) 1 "Other")
           "the toolchain is not in the key" },
+    { name := "the isolated-module key has the proof marker's options (strictProofs, proofSteps, traceProofSteps)", run := fun _ => do
+        -- a module elaborated in isolation is kept per process under `isoKey`: a module kept
+        -- under one setting must not be replayed under another
+        let loader : Name → Option String := fun n => if n == "M" then some "def x : Unit := ()\n" else none
+        let base (g : Globals ZeroOneMany) : CommandState ZeroOneMany := { loader, globals := g }
+        let g0 : Globals ZeroOneMany := {}
+        let k0 := isoKey (base g0) "M"
+        check k0.isSome "the module has no isolated key"
+        checkEq k0 (isoKey (base g0) "M")
+        for (what, g) in [("strictProofs", { g0 with strictProofs := true }),
+                          ("proofSteps", { g0 with proofSteps := g0.proofSteps + 1 }),
+                          ("traceProofSteps", { g0 with traceProofSteps := true })] do
+          check (isoKey (base g) "M" != k0) s!"{what} is not in the isolated-module key"
+          -- and on a warm cache (`M` kept under the defaults) the other setting elaborates
+          -- `M` itself, with the same result here
+          let s0 := runFrontend (R := ZeroOneMany) "import M\n" (base g0)
+          let s1 := runFrontend (R := ZeroOneMany) "import M\n" (base g)
+          check (s0.messages.isEmpty && s1.messages.isEmpty) s!"{what}: importing M reports {s1.messages.toList.map (·.text)}" },
     { name := "a module is cached once, for every file that imports it", run := fun _ => do
         let dir ← mkTree libFiles
         let cache ← IO.FS.createTempDir
@@ -363,7 +381,18 @@ def toolchainGroup : Group where
         let src := "import Pkg.Three\n#eval three\n"
         let ms ← Module.loadClosure ("lib" :: tc.searchPath) src
         let s := runFrontend (R := ZeroOneMany) src { trustedModule := Tests.libModule, loader := loaderOf ms }
-        checkEq "[2:1: info: 3]" (toString (s.messages.toList.map (·.render src))) }
+        checkEq "[2:1: info: 3]" (toString (s.messages.toList.map (·.render src))) },
+    { name := "#262: `wiz check -I src FILE` and `wiz check FILE -I src` both find the package's modules", run := fun _ => do
+        let dir ← mkTree [("src/Crux/B.wiz", "import Prelude\ndef b : Nat := 1\n"),
+                          ("src/Crux/A.wiz", "import Crux.B\n#eval b\n")]
+        let wiz := (← IO.FS.realPath ".lake/build/bin/wiz").toString
+        for args in [["check", "-I", "src", "src/Crux/A.wiz"], ["check", "src/Crux/A.wiz", "-I", "src"],
+                     ["-I", "src", "check", "src/Crux/A.wiz"]] do
+          let out ← IO.Process.output { cmd := wiz, args := (args ++ ["--no-cache"]).toArray, cwd := some dir }
+          checkEq s!"{args}: 0 src/Crux/A.wiz:2:1: info: 1\n" s!"{args}: {out.exitCode} {out.stdout}{out.stderr}"
+        -- the usage text names -I for check
+        let out ← IO.Process.output { cmd := wiz, args := #["help"] }
+        check ((out.stdout.splitOn "wiz check [-I DIR] FILE").length > 1) out.stdout }
   ]
 
 /-- (9f) An executable with a `link_c` file: editing the C file relinks it (only). -/
@@ -744,6 +773,17 @@ def testRunnerGroup : Group where
         check ((bad.splitOn "tests/sub/bad.wiz:2:").length > 1 && (bad.splitOn "error").length > 1) s!"bad.expected: {bad}"
         let (res, _) ← runTests dir tc
         check (res.all (·.ok)) "the tests failed after --update"
+        -- `--update` with nothing to update records its passes too (docs-tour: "0 recorded
+        -- passes" on the run after it)
+        let cache2 ← IO.FS.createTempDir
+        let dir2 ← mkTree testPkg
+        let tc2 : Toolchain := { cacheDir := some cache2 }
+        let _ ← runTests dir2 tc2 (update := true)
+        let (res, _) ← runTests dir2 tc2 (update := true)
+        check (res.all (·.ok)) "the second --update failed"
+        let (res, st) ← runTests dir2 tc2
+        check (res.all (·.cached)) "an unchanged --update pass was not recorded"
+        checkEq 0 st.ran
         -- passes are recorded: nothing runs again
         let (res, st) ← runTests dir tc
         check (res.all (·.cached)) "a pass was not recorded"
@@ -755,6 +795,23 @@ def testRunnerGroup : Group where
         let some two := res.find? (·.file == "tests/two.wiz") | throw (IO.userError "no test two")
         check (!two.ok) "a wrong output passed"
         check ((two.message.splitOn "info: 3").length > 1 && (two.message.splitOn "info: 2").length > 1) two.message },
+    { name := "a failing test without a `-- test:` line says it was a check (icestick-cpu C8)", run := fun _ => do
+        -- the program's expected output, but no `-- test: run`: it was compared with the
+        -- (empty) messages of checking the file, and nothing said why
+        let dir ← mkTree [("grail.wiz", "import Grail\ndef package : Package := Package.new \"t\" |> Package.tests \"tests\" \"tests\"\n"),
+          ("tests/hello.wiz", "import IO\ndef main : IO Unit := IO.println \"hi\"\n"),
+          ("tests/hello.expected", "hi\n"),
+          ("tests/two.wiz", "-- test: check\nimport Prelude\n#eval 1 + 1\n"),
+          ("tests/two.expected", "tests/two.wiz:3:1: info: 3\n")]
+        let tc : Toolchain := { cacheDir := some (← IO.FS.createTempDir) }
+        let (res, _) ← runTests dir tc
+        let some hello := res.find? (·.file == "tests/hello.wiz") | throw (IO.userError "no test hello")
+        check (!hello.ok) "it passed"
+        check ((hello.message.splitOn "-- test: run").length > 1) hello.message
+        -- with the line, a failure is only the difference
+        let some two := res.find? (·.file == "tests/two.wiz") | throw (IO.userError "no test two")
+        check (!two.ok) "two passed"
+        check ((two.message.splitOn "-- test:").length == 1) two.message },
     { name := "-- test: run compiles and runs main", run := fun _ => do
         let dir ← mkTree [("grail.wiz", "import Grail\ndef package : Package := Package.new \"t\" |> Package.tests \"tests\" \"tests\"\n"),
           ("tests/hello.wiz", "-- test: run\nimport IO\ndef main : IO Unit := IO.println \"hi\"\n"),
@@ -821,6 +878,41 @@ def testRunnerGroup : Group where
           let (code, out) ← run bad
           check (code == 2) s!"tests {" ".intercalate bad.toList}: exit code {code}, not 2:\n{out}" }
   ]
+
+/-- The language tour's examples (docs/tour.md): every file in `examples/tour/`, run as
+`grail test` runs it (its messages, or with `-- test: run` what `main` prints, against
+its `.expected`), in a package of its own so that only that file runs. -/
+def tourFiles : List String :=
+  ["00-hello", "01-basics", "02-data", "03-structures", "04-classes", "05-vec", "06-proofs",
+   "07-quantities", "08-codata", "09-ffi", "10-hdl", "11-mistakes"]
+
+def tourCase (f : String) : Case :=
+  { name := s!"examples/tour/{f}.wiz", run := fun _ => do
+      let p := s!"examples/tour/{f}"
+      let dir ← mkTree [
+        ("grail.wiz", "import Grail\ndef package : Package := Package.new \"tour\" |> Package.tests \"tour\" \"examples/tour\"\n"),
+        (p ++ ".wiz", ← IO.FS.readFile (p ++ ".wiz")),
+        (p ++ ".expected", ← IO.FS.readFile (p ++ ".expected"))]
+      let tc ← toolchain
+      let tc : Toolchain := { tc with cacheDir := some (← tc.cacheDir.getDM IO.FS.createTempDir) }
+      let (res, _) ← runTests dir tc
+      checkEq 1 res.size
+      for t in res do
+        if !t.ok && (t.message.splitOn "gmp.h").length > 1 then
+          skip "no toolchain"; return
+        check t.ok s!"{t.file}: {t.message}" }
+
+def tourGroup : Group where
+  name := "tour"
+  exercise := "docs/tour.md"
+  cases :=
+    { name := "examples/tour/ has exactly the files the group knows", run := fun _ => do
+        let mut names : Array String := #[]
+        for e in ← System.FilePath.readDir "examples/tour" do
+          names := names.push e.fileName
+        let want := tourFiles.flatMap fun f => [f ++ ".expected", f ++ ".wiz"]
+        checkEq (want.toArray.qsort (· < ·)).toList (names.qsort (· < ·)).toList } ::
+    tourFiles.map tourCase
 
 def grailSelfhostGroup : Group where
   name := "grail-selfhost"
@@ -1092,6 +1184,7 @@ def groups : List Group :=
   modulesGroup ::
   testRunnerGroup ::
   toolchainGroup ::
+  tourGroup ::
   []
 
 end Tests.Grail

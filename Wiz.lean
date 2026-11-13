@@ -49,6 +49,8 @@ import Wiz.Query
 import Wiz.Infoview
 import Wiz.Actions
 import Wiz.Inlay
+import Wiz.Completion
+import Wiz.Refs
 import Wiz.Symbols
 import Wiz.LSP
 import Wiz.Toolchain

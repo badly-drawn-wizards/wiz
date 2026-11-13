@@ -1,0 +1,5 @@
+examples/tour/02-data.wiz:12:1: info: 12
+examples/tour/02-data.wiz:28:1: info: 3
+examples/tour/02-data.wiz:29:1: info: .cons 1 (.cons 2 (.cons 3 .nil))
+examples/tour/02-data.wiz:35:1: info: .cons 4 (.cons 10 (.cons 18 .nil))
+examples/tour/02-data.wiz:40:1: info: 0

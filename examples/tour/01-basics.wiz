@@ -1,0 +1,25 @@
+-- The tour, section 1: values and functions (docs/tour.md).
+import Prelude
+
+def answer : Nat := 42
+#eval answer
+
+def double (n : Nat) : Nat := n + n
+#eval double 21
+
+-- a function is a value; `fun` makes one
+def twice (f : Nat → Nat) (x : Nat) : Nat := f (f x)
+#eval twice (fun n => n * 3) 2
+
+-- implicit arguments, in braces, are found by unification
+def compose {A B C : Type} (g : B → C) (f : A → B) : A → C := fun x => g (f x)
+#eval compose double double 5
+
+-- `let`, `if`, strings and lists (comparisons are functions: `Nat.lt`, `Nat.beq`)
+def describe (n : Nat) : String :=
+  let big := Nat.lt 100 n;
+  if big then "big" else "small"
+#eval describe 7
+#eval "wiz" ++ "ard"
+#eval [1, 2, 3] ++ [4]
+#check @compose
