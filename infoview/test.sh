@@ -73,7 +73,7 @@ def three : Nat := 1 + 2
 END
 (cd "$ROOT" && python3 "$ROOT/infoview/editor_stub.py" "$WIZ" "$TMP/lsp2.sock" "$TMP/n.wiz" 1 21 -- \
   "$BIN" "$TMP/lsp2.sock" --dump --width 60) > "$TMP/n.txt"
-for want in "Syntax" "  Add.add 1 2" "Instances" "Declarations" "three : Nat"; do
+for want in "Syntax" "  HAdd.hAdd 1 2" "Instances" "Declarations" "three : Nat"; do
   grep -qxF "$want" "$TMP/n.txt" || { echo "FAIL: end to end, notation: no line '$want' in"; cat "$TMP/n.txt"; exit 1; }
 done
 echo "ok: end to end: the syntax, expansion, instance and declaration at a notation"

@@ -1,0 +1,23 @@
+-- The tour, section 10: hardware (docs/tour.md, docs/libraries.md "H14").
+import Hdl.Core
+
+def B4 : HwTy := HwTy.bits 4
+
+-- Combinational logic is a function over any representation `r` of signals: run it on
+-- values to simulate it, or on wires to get a netlist.
+def addThree {r : HwTy → Type} [Hw r] (x : r B4) : r B4 := Hw.add x (Hw.lit 4 3)
+
+-- A circuit is a state type, an initial state and a step: (state, input) ↦ (next, output).
+-- This one sums its inputs (mod 16) and outputs the sum so far.
+def acc : Circuit B4 B4 :=
+  Circuit.mk B4 (BitVec.ofNat 4 0) (fun s x => Hw.pair (Hw.add s x) s)
+
+-- circuits compose: `acc` after `addThree`
+def pipeline : Circuit B4 B4 := Circuit.seq (Circuit.comb addThree) acc
+
+-- simulate on a list of inputs (one per clock cycle), as numbers
+#eval Circuit.runPacked pipeline [1, 2, 3, 4]
+-- the same circuit as a netlist, simulated cycle by cycle: the same outputs
+#eval Circuit.simNet Bool.true pipeline [1, 2, 3, 4]
+-- and as Verilog
+def verilog : String := Verilog.emit (Circuit.netlist "pipeline" pipeline)
