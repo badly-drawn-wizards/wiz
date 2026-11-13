@@ -1291,7 +1291,7 @@ partial def checkFun (ctx : LocalCtx R) (bs : List BinderView) (body : Syntax) (
           let vq' ← evalIn ctx q'
           let ok ← tryCatch (do unify ctx.lvl q vq'; pure true) (fun _ => pure false)
           unless ok do
-            throwAt b.info s!"binder quantity {showTerm ctx q'} does not match the expected {← showVal ctx q}" ErrorCode.binderMismatch
+            throwAt b.info s!"binder quantity {← showTermM ctx q'} does not match the expected {← showVal ctx q}" ErrorCode.binderMismatch
         recordBinder ctx b.info b.name dom
         let t ← checkFun (ctx.bindQ b.name dom ((Val.toPoly? q).bind (·.isConst?))) rest body (← instM cod (Val.var ctx.lvl))
         return .lam b.name t
@@ -2188,7 +2188,7 @@ partial def inferApp (ctx : LocalCtx R) (stx : Syntax) (postpone : Bool := true)
         unifyAt ctx fStx ty pi
         pure pi
       | ty => do
-        let msg := s!"function expected\n  {showTerm ctx f} : {← showVal ctx ty}" ++ tooManyArgsHint f
+        let msg := s!"function expected\n  {← showTermM ctx f} : {← showVal ctx ty}" ++ tooManyArgsHint f
         match ← implicitsFix ctx fStx (stx.getArg 1).args.size with
         | some data => throwFix (ctx.withInfo fStx).info msg ErrorCode.wrongArgumentCount data
         | none => throwAt (ctx.withInfo fStx).info msg ErrorCode.wrongArgumentCount
@@ -2270,7 +2270,7 @@ partial def inferAppNamed (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R ×
       | if let some (y, _, a) := named[0]? then
           throwAt (ctx.withInfo a).info s!"no parameter named '{y}' (the function's type is {← showVal ctx fty})" ErrorCode.unknownParameter
         else
-          throwAt (ctx.withInfo fStx).info (s!"function expected\n  {showTerm ctx f} : {← showVal ctx fty}" ++ tooManyArgsHint f) ErrorCode.wrongArgumentCount
+          throwAt (ctx.withInfo fStx).info (s!"function expected\n  {← showTermM ctx f} : {← showVal ctx fty}" ++ tooManyArgsHint f) ErrorCode.wrongArgumentCount
     let a ← match named.findIdx? (·.1 == x) with
       | some i =>
         let (_, e, _) := named[i]!
@@ -3554,7 +3554,7 @@ partial def runTac (code : Code) (info : SourceInfo) (st : TacState R) (v : RVal
     return ← runTac code info st (apply code (fld 1) (encodeString (← gl.show)))
   if tag == TacTag.ppExpr then
     let t ← zonk lvl (← reify st.handles (fld 1) lvl)
-    return ← runTac code info st (apply code (fld 2) (encodeString (showTerm gl.ctx t)))
+    return ← runTac code info st (apply code (fld 2) (encodeString (← showTermM gl.ctx t)))
   if tag == TacTag.goalType then
     let (r, st) ← refl st gl (quote g lvl gl.ty)
     return ← runTac code info st (apply code (fld 1) r)
@@ -3629,7 +3629,7 @@ partial def runTac (code : Code) (info : SourceInfo) (st : TacState R) (v : RVal
     -- the side to replace, and its replacement
     let (old, new) := if rtl then (b, a) else (a, b)
     let (body, found) := (abstractOcc old goalT).run false
-    unless found do throwAt info s!"rewrite: the goal does not mention {showTerm gl.ctx old}" ErrorCode.tacticFailed
+    unless found do throwAt info s!"rewrite: the goal does not mention {← showTermM gl.ctx old}" ErrorCode.tacticFailed
     let newT := body.instantiateAt 0 new
     -- `P x _ := G[x] = G[a]` (or `G[a] = G[x]`, right to left), transported along `h : a = b`
     let Ga := body.instantiateAt 0 a

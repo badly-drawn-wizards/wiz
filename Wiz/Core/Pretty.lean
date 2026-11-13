@@ -743,6 +743,12 @@ def Term.ppIn (g : Globals R) (names : List Name) (t : Term R) : String := t.pre
 
 instance : ToString (Term R) := ⟨fun t => t.pretty []⟩
 
+/-- (24e) A goal's target as text after the goal's `⊢`: in parentheses when it shows a
+`⊢` of its own (a notation, such as separation logic's entailment), so that
+`⊢ (l ↦ 1 ⊢ l ↦ 2)` doesn't read as two turnstiles of one goal. -/
+def goalTarget (s : String) : String :=
+  if (s.splitOn "⊢").length > 1 then s!"({s})" else s
+
 /-- A printed term for a message, at most about `max` characters: a longer one keeps
 its beginning and its end, and says how much was left out. (A normal form can be huge:
 an equation between two long lists computes to a Σ of a hundred `True`s.) -/
