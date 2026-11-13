@@ -1845,10 +1845,11 @@ def ioRunWith (src : String) (k : String → IO Unit) (args : Array String := #[
   let functorLib ← IO.FS.readFile "lib/Functor.wiz"
   let sysLib ← IO.FS.readFile "lib/Sys.wiz"
   let textLib ← IO.FS.readFile "lib/Text.wiz"
+  let derivingLib ← IO.FS.readFile "lib/Deriving.wiz"
   let loader : Name → Option String := fun m =>
     if m == "Prelude" then some prelude else if m == "IO" then some ioLib else if m == "Eff" then some effLib
     else if m == "Std" then some stdLib else if m == "Sys" then some sysLib else if m == "Functor" then some functorLib
-    else if m == "Text" then some textLib else none
+    else if m == "Text" then some textLib else if m == "Deriving" then some derivingLib else none
   let headers ← Build.preprocessHeaders (← toolchain) src
   let s := runFrontend (R := ZeroOneMany) src { loader, trustedModule := Tests.libModule, cHeaders := (headers[·]?) }
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
@@ -2777,10 +2778,17 @@ def globalDefs : List (String × List String × Option MTm × MTm) :=
    ("idP", ["u"], some (lam (lam (var 0))), pi (sortParam "u") (pi (var 0) (var 1))),
    ("constP", ["u", "v"], some (lam (lam (lam (lam (var 1))))),
      pi (sortParam "u") (pi (sortParam "v") (pi (var 1) (pi (var 1) (var 3))))),
+   -- a proposition whose value depends on its level and whose type does not: `polyK.{0}`
+   -- is `Prop → True`, `polyK.{1}` is `Type → True` (two instances of one constant must
+   -- not be identified by their name: the property harness compares them, `Tests/Prop.lean`)
+   ("polyK", ["u"], some (sorted 0 (pi (sortParam "u") ptrue)), prop),
    -- (W1, `wiz-notes/kernel-lint.md`) a proposition that is a theorem at level 0 and false
    -- at level 1, and a case that is stuck on its scrutinee with `A` in its environment
-   ("dLv", ["u"], some (pi (sortParam "u") (pi (var 0) (pi (var 1) (pi (pi (var 2) prop)
-     (pi (app (var 0) (var 2)) (app (var 1) (var 2))))))), prop),
+   -- (its propositional Π's carry their sort, `0`: unannotated, a cast between two of
+   -- them computes where their equation is stuck, the known U5 class of the property
+   -- harness, `Tests/Prop.lean`; `A → Prop` has a sort that depends on `u` and stays bare)
+   ("dLv", ["u"], some (sorted 0 (pi (sortParam "u") (sorted 0 (pi (var 0) (sorted 0 (pi (var 1)
+     (sorted 0 (pi (pi (var 2) prop) (sorted 0 (pi (app (var 0) (var 2)) (app (var 1) (var 2)))))))))))), prop),
    ("caseF", [], some (lam (lam (ecase prop (var 0) [var 1]))), pi prop (pi (enum 1) prop))]
 
 /-- (W1) `fun x p => p : (x : Enum 1) → caseF dLv.{l} x → caseF dLv.{l'} x`: the two types
@@ -4751,6 +4759,9 @@ def selfHostGroup : Group where
     { name := "parameterised mutual inductive types, checked in Wiz", run := fun _ =>
         selfhostCheckFile "inductive Nat where\n  | zero\n  | succ (n : Nat)\nmutual\ninductive Tree (A : Type) where\n  | leaf (a : A)\n  | node (kids : Forest A)\ninductive Forest (A : Type) where\n  | nil\n  | cons (t : Tree A) (rest : Forest A)\nend\n#check Tree.node\ndef t : Tree Nat := .node (.cons (.leaf .zero) (.cons (.leaf (.succ .zero)) .nil))\ndef size {A : Type} : Forest A → Nat\n  | .nil => .zero\n  | .cons _ r => .succ (size r)\ndef kids {A : Type} (d : Forest A) : Tree A → Forest A\n  | .node k => k\n  | _ => d\n#reduce size (kids .nil t)\n"
           "Nat : U0\nTree : (x0 : U0) → U0\nForest : (x0 : U0) → U0\n(x0 :0 U0) → (x1 : (Forest x0)) → (Tree x0)\nt : (Tree Nat)\nsize : (x0 :0 U0) → (x1 : (Forest x0)) → Nat\nkids : (x0 :0 U0) → (x1 : (Forest x0)) → (x2 : (Tree x0)) → (Forest x0)\ncon((#1, (con((#1, (con((#0, (tt, tt))), (tt, tt)))), (tt, tt))))\n" },
+    { name := "mutual types sharing a constructor name (Ev.s, Od.s), checked in Wiz", run := fun _ =>
+        selfhostCheckFile "inductive Nat where\n  | zero\n  | succ (n : Nat)\nmutual\ninductive Ev where\n  | z\n  | s (o : Od)\ninductive Od where\n  | s (e : Ev)\nend\n#check Ev.s\n#check Od.s\ndef two : Ev := .s (.s .z)\ndef isZ : Ev → Nat\n  | .z => .zero\n  | Ev.s _ => .succ .zero\ndef unOd : Od → Ev\n  | .s e => e\n#reduce isZ (unOd (.s two))\n#reduce isZ (unOd (Od.s Ev.z))\n"
+          "Nat : U0\nEv : U0\nOd : U0\n(x0 : Od) → Ev\n(x0 : Ev) → Od\ntwo : Ev\nisZ : (x0 : Ev) → Nat\nunOd : (x0 : Od) → Ev\ncon((#1, (con((#0, (tt, tt))), (tt, tt))))\ncon((#0, (tt, tt)))\n" },
     { name := "structures and projections, checked in Wiz", run := fun _ =>
         selfhostCheckFile "inductive Nat where\n  | zero\n  | succ (n : Nat)\nstructure Pair (A B : Type) where\n  fst : A\n  snd : B\n#check Pair.mk\ndef p : Pair Nat (Pair Nat Nat) := .mk .zero (.mk (.succ .zero) .zero)\n#reduce Pair.fst (Pair.snd p)\ndef swap {A B : Type} (q : Pair A B) : Pair B A := .mk (Pair.snd q) (Pair.fst q)\n#reduce Pair.fst (swap p)\n#reduce p.snd.fst\ndef swap2 {A B : Type} (q : Pair A B) : Pair B A := .mk q.snd q.fst\n#reduce (swap2 p).fst\n"
           "Nat : U0\nPair : (x0 : U0) → (x1 : U0) → U0\nPair.fst : (x0 :0 U0) → (x1 :0 U0) → (x2 : ((Pair x0) x1)) → x0\nPair.snd : (x0 :0 U0) → (x1 :0 U0) → (x2 : ((Pair x0) x1)) → x1\n(x0 :0 U0) → (x1 :0 U0) → (x2 : x0) → (x3 : x1) → ((Pair x0) x1)\np : ((Pair Nat) ((Pair Nat) Nat))\ncon((#1, (con((#0, (tt, tt))), (tt, tt))))\nswap : (x0 :0 U0) → (x1 :0 U0) → (x2 : ((Pair x0) x1)) → ((Pair x1) x0)\ncon((#0, (con((#1, (con((#0, (tt, tt))), (tt, tt)))), (con((#0, (tt, tt))), (tt, tt)))))\ncon((#1, (con((#0, (tt, tt))), (tt, tt))))\nswap2 : (x0 :0 U0) → (x1 :0 U0) → (x2 : ((Pair x0) x1)) → ((Pair x1) x0)\ncon((#0, (con((#1, (con((#0, (tt, tt))), (tt, tt)))), (con((#0, (tt, tt))), (tt, tt)))))\n" },
@@ -5829,6 +5840,28 @@ def languageGroup : Group where
           "  | .lam b => Nat.succ (size b)\n  | .app f args => Nat.add (size f) (sizes args)\ndef sizes : Tms → Nat\n" ++
           "  | .nil => 0\n  | .cons t ts => Nat.add (size t) (sizes ts)\nend\n" ++
           "#eval size (.app (.lam (.var 0)) (.cons (.var 1) (.cons (.var 2) .nil)))") ["4"] },
+    { name := "the constructors of mutual types are named per type: Ev.s and Od.s", run := fun _ => do
+        okLib ("import Prelude\nmutual\ninductive Ev where\n  | z\n  | s (o : Od)\ninductive Od where\n  | s (e : Ev)\nend\n#check Ev.z\n#check Od.s\n" ++
+          "def two : Ev := .s (.s .z)\ndef three : Od := Od.s (Ev.s (.s Ev.z))\n" ++
+          "mutual\ndef evN : Ev → Nat\n  | .z => 0\n  | Ev.s o => Nat.succ (odN o)\ndef odN : Od → Nat\n  | .s e => Nat.succ (evN e)\nend\n" ++
+          "#eval evN two\n#eval odN three\n#eval two")
+          ["Ev.z : Ev_Od .Ev", "Od.s : Ev_Od .Ev → Ev_Od .Od", "2", "3", ".s (.s .z)"]
+        failsLib ("import Prelude\nmutual\ninductive Ev where\n  | z\n  | s (o : Od)\ninductive Od where\n  | s (e : Ev)\nend\ndef bad : Od := .z") "Ev_Od .Od has no constructor z"
+        failsLib ("import Prelude\nmutual\ninductive Ev where\n  | z\n  | s (o : Od)\ninductive Od where\n  | s (e : Ev)\nend\ndef f : Ev → Nat\n  | .s _ => 1") "missing case for constructor Ev.z"
+        failsLib "inductive T where\n  | a.b" "a constructor's name is a single identifier, not a.b"
+        -- the hover on `.s` is the member's constructor
+        let prelude ← IO.FS.readFile "lib/Prelude.wiz"
+        let init : CommandState ZeroOneMany := { trustedModule := Tests.libModule, loader := fun m => if m == "Prelude" then some prelude else none }
+        let src := "import Prelude\nmutual\ninductive Ev where\n  | z\n  | s (o : Od)\ninductive Od where\n  | s (e : Ev)\nend\ndef one : Od := .s .z\n"
+        let (s, _) := Query.elaborate {} src { init with termInfo := true }
+        checkEq "(some (Od.s, Ev_Od .Ev → Ev_Od .Od))" (toString (Query.hoverAt s ((src.splitOn ".s .z")[0]!.length + 1))) },
+    { name := "mutual types sharing a constructor name, compiled (C and LLVM)", run := fun _ => do
+        let src := "import IO\nimport Deriving\nmutual\ninductive Ev where\n  | z\n  | s (o : Od)\n  deriving Repr\ninductive Od where\n  | s (e : Ev)\nend\n" ++
+          "mutual\ndef evN : Ev → Nat\n  | .z => 0\n  | .s o => Nat.succ (odN o)\ndef odN : Od → Nat\n  | Od.s e => Nat.succ (evN e)\nend\n" ++
+          "def mk : Nat → Ev\n  | .zero => .z\n  | .succ n => .s (.s (mk n))\n" ++
+          "def main : IO Unit := do\n  IO.println (Nat.toString (evN (mk 5)));\n  IO.println (Repr.repr (mk 1));\n  IO.println (Repr.repr (Od.s Ev.z))\n"
+        ioRun src "10\nEv.s (Od.s Ev.z)\nOd.s Ev.z\n"
+        ioRun src "10\nEv.s (Od.s Ev.z)\nOd.s Ev.z\n" (llvm := true) },
     { name := "tactic keywords are not reserved", run := fun _ =>
         okLib "import Prelude\ndef f (first exact : Nat) : Nat := Nat.add first exact\n#eval f 1 2\ndef t : Nat := by exact 3" ["3"] },
     { name := "a catch-all of a recursive definition is the value at hand", run := fun _ =>
@@ -5947,6 +5980,12 @@ def languageGroup : Group where
     { name := "... and not its own identifiers", run := fun _ =>
         failsLib (calcDsl " (keywords := calc_kw)" ++ "#eval run_calc [no] yes done")
           "identifier ('yes' is a keyword here)" },
+    { name := "13o: a word reserved by a notation is an error that names the notation", run := fun _ =>
+        failsLib "import Prelude\nsyntax:lead (name := shout) \"shout\" term : term\ndef shout : Nat := 1"
+          "'shout' is a keyword: the notation `shout …` of this file" },
+    { name := "13o: `if` on a value that is not a Bool says so", run := fun _ =>
+        failsLib "import Prelude\ndef a (n : Nat) : Nat := if n then 1 else 2"
+          "the value matched has type Nat, which has no constructor .true (its constructors: .zero, .succ); the condition of `if`" },
     { name := "... without the scope the DSL's `when` is an application", run := fun _ => do
         let prelude ← IO.FS.readFile "lib/Prelude.wiz"
         let input := calcDsl "" ++ "#eval run_calc when [isZero] [0] yes [no] [yes] no [no (no yes)] done"
@@ -6889,6 +6928,9 @@ def derivingGroup : Group where
         okDeriving ("import Deriving\ninductive Vec (A : Type) : Nat → Type where\n  | nil : Vec A 0\n" ++
           "  | cons {n : Nat} (x : A) (xs : Vec A n) : Vec A (.succ n)\n  deriving Repr\n" ++
           "#eval Repr.repr (Vec.cons 1 (Vec.cons 2 Vec.nil))") ["\"Vec.cons 1 (Vec.cons 2 Vec.nil)\""] },
+    { name := "Repr for mutual types: the constructors per type (Ev.s, Od.s), derived for the family", run := fun _ =>
+        okDeriving ("import Deriving\nmutual\ninductive Ev where\n  | z\n  | s (o : Od)\n  deriving Repr\ninductive Od where\n  | s (e : Ev)\nend\n" ++
+          "#eval Repr.repr (Ev.s (Od.s Ev.z))\n#eval Repr.repr (Od.s (.s (.s .z)))") ["\"Ev.s (Od.s Ev.z)\"", "\"Od.s (Ev.s (Od.s Ev.z))\""] },
     { name := "deriving BEq for an indexed family is an error", run := fun _ =>
         failsDeriving ("import Deriving\ninductive Vec (A : Type) : Nat → Type where\n  | nil : Vec A 0\n" ++
           "  | cons {n : Nat} (x : A) (xs : Vec A n) : Vec A (.succ n)\n  deriving BEq") "indexed families are not supported" },
@@ -6960,6 +7002,12 @@ def badAdd : String :=
   ownNat ++
   "def h (n : N) : K n 3 = n := refl n\ndef bad : False := absurd (h 2)\n#print axioms bad\n"
 
+/-- Replace every call `f a` by `f (wrap a)` (t1-review's probes, `trustGroup`). -/
+partial def wrapCalls (f : Name) (wrap : Term ZeroOneMany → Term ZeroOneMany) (t : Term ZeroOneMany) : Term ZeroOneMany :=
+  match t with
+  | .app (.const c us) a => if c == f then .app (.const c us) (wrap (wrapCalls f wrap a)) else .app (.const c us) (wrapCalls f wrap a)
+  | t => Id.run (t.mapChildrenM pure fun _ c => pure (wrapCalls f wrap c))
+
 /-- The trusted base: partial definitions need a kernel-checked witness (O2), and
 `builtin` registrations outside the library are tracked axioms (O3). -/
 def trustGroup : Group where
@@ -7009,8 +7057,9 @@ def trustGroup : Group where
           | .error e => ((toString e).splitOn fragment).length > 1
           | .ok _ => false
         check ((addDecl {} (f .tt)) matches .ok _) "a good implementation was rejected"
-        -- it may call the definition (a recursive definition's does): checked with `f` declared
-        check ((addDecl {} (f (.const "f" []))) matches .ok _) "an implementation calling its definition was rejected"
+        -- one that calls the definition must be its value with the calls on fields (derived):
+        -- `f` itself is not (compiled code would loop: t1-review M1), though `f ≡ tt`
+        check ((addDecl {} (f (.const "f" []))) matches .error _) "an implementation that is the definition itself was accepted"
         check (rejected (f (.const "g" [])) "implementation of f") "an implementation with an unknown constant was accepted"
         -- ill-typed, and well-typed at another type
         check (rejected (f (.app .tt .tt)) "implementation of f") "an ill-typed implementation was accepted"
@@ -7123,6 +7172,40 @@ def trustGroup : Group where
         match addDecl g0 { f with impl := g.impl } with
         | .ok _ => throw (IO.userError "f was accepted with g's compiled equations")
         | .error e => check (((toString e).splitOn "do not agree").length > 1) s!"unexpected error: {e}" },
+    { name := "recursive definitions: the agreement check on a mutual family (index unification), and its shortcuts", run := fun _ => do
+        let src := "inductive N where\n  | z\n  | s (n : N)\n" ++
+          "mutual\ninductive A where\n  | a0\n  | a1 (b : B)\ninductive B where\n  | b0\n" ++
+          "  | b1 (k : N) (r : B)\n  | b2 (a : A)\nend\n" ++
+          "def shB : B → B\n  | .b0 => .b0\n  | .b1 k r => .b1 (.s k) (shB r)\n  | .b2 a => .b2 a\n" ++
+          "def idB : B → B\n  | .b0 => .b0\n  | .b1 k r => .b1 k (idB r)\n  | .b2 a => .b2 a\n" ++
+          "def sh : N → N\n  | .z => .z\n  | .s n => .s (sh n)\n"
+        let s := runFrontend (R := ZeroOneMany) src {}
+        let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
+        unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
+        let (some shB, some idB, some sh) := (s.globals.find? "shB", s.globals.find? "idB", s.globals.find? "sh")
+          | throw (IO.userError "a definition is missing")
+        -- another definition's equations are rejected (the calls are compared as calls)
+        let g0 : Globals ZeroOneMany := { s.globals with decls := s.globals.decls.erase "shB" }
+        check ((addDecl g0 shB) matches .ok _) "shB is rejected when added again"
+        let idImpl := replaceConstTo "idB" "shB" idB.impl.get!
+        check ((addDecl g0 { shB with impl := some idImpl }) matches .error _) "shB was accepted with idB's equations"
+        -- the bridge by shape: the value as derived, and two values that only look like it
+        let v := sh.value.get!
+        check (bridgeByShape s.globals v 1 0 [] [] true 0) "the derived value has the shape"
+        let .lam x body := v | throw (IO.userError "sh's value is not a λ")
+        check (!bridgeByShape s.globals (.lam x (.letE "z" (.qlit 1) (.unit 1) .tt (body.lift 1 0))) 1 0 [] [] true 0)
+          "a value under a let has the shape"
+        let (h, args) := body.spine
+        let motiveWithColumn := args.set 0 (.var 0)  -- (N has no parameters: the motive is first)
+        check (!bridgeByShape s.globals (.lam x (motiveWithColumn.foldl .app h)) 1 0 [] [] true 0)
+          "a motive that mentions the column passes as the shape" },
+    { name := "groundEqDesc: one closed description at two levels is not identified", run := fun _ => do
+        let s := runFrontend (R := ZeroOneMany) "inductive Box.{u} : Type (u+1) where\n  | mk (T : Type u)\n" {}
+        let g := s.globals
+        let atL (u : Level) : Val ZeroOneMany := eval g [] (.const "Box.desc" [u])
+        let I : Val ZeroOneMany := .unit (.succ .zero)
+        check (groundEqDesc g 0 I (atL .zero) (atL .zero)) "Box.desc.{0} is not itself"
+        check (!groundEqDesc g 0 I (atL .zero) (atL (.succ .zero))) "Box.desc.{0} and Box.desc.{1} were identified" },
     { name := "recursive definitions: a local variable named like the definition doesn't capture its calls in compiled code", run := fun _ =>
         -- (#82's regression test.) `f n` is a recursive call (the kernel's definition
         -- recurses, so `f 2 = 0`); the compiled equations called the local `f`, and `#eval f 2`
@@ -7151,6 +7234,46 @@ def trustGroup : Group where
             "def w3 : W 3 := .cons 1 (.cons 2 (.cons 3 .nil))\n" ++
             "def thmW : h w3 = 9 := refl 9\n#eval h w3\n#run h w3\n")
           ["9", "9", "9", "9"] },
+    { name := "recursive definitions: compiled equations whose calls are not on fields are rejected (t1-review M1)", run := fun _ => do
+        -- probes t1-191-kernel / t1-191-unit: each of these agrees with the value where the
+        -- kernel looks (or at a type where every two values are equal) but compiled code
+        -- would loop; each derived one is accepted
+        let src := "inductive N where\n  | z\n  | s (n : N)\n" ++
+          "def f : N → N\n  | .z => .z\n  | .s n => f n\n" ++
+          "inductive W where\n  | sup (g : N → W)\n  | z\n" ++
+          "def wd : W → N\n  | .z => .z\n  | .sup g => wd (g .z)\n" ++
+          "inductive W2 where\n  | node (l : W2) (g : N → W2)\n  | z\n" ++
+          "def w2 : W2 → N\n  | .z => .z\n  | .node l g => w2 l\n" ++
+          "def u : N → Unit\n  | .z => ()\n  | .s n => u n\n"
+        let s := runFrontend (R := ZeroOneMany) src {}
+        let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
+        unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
+        let verdict (nm : Name) (impl : Term ZeroOneMany → Term ZeroOneMany) : IO Bool := do
+          let some d := s.globals.find? nm | throw (IO.userError s!"no {nm}")
+          let g0 : Globals ZeroOneMany := { s.globals with decls := s.globals.decls.erase nm }
+          pure ((addDecl g0 { d with impl := some (impl d.impl.get!) }) matches .ok _)
+        for nm in ["f", "wd", "w2", "u"] do
+          check (← verdict nm id) s!"{nm}'s derived equations were rejected"
+        check (!(← verdict "f" (wrapCalls "f" (fun a => .app (.const "N.s" []) a)))) "f with f (.s n) was accepted"
+        check (!(← verdict "f" (wrapCalls "f" (fun a => .app (.const "f" []) a)))) "f with f (f n) was accepted"
+        check (!(← verdict "f" fun _ => .lam "x" (.app (.const "f" []) (.var 0)))) "f with λ x. f x was accepted"
+        check (!(← verdict "f" fun _ => .const "f" [])) "f with f itself was accepted"
+        check (!(← verdict "wd" (wrapCalls "wd" (fun a => .app (.const "W.sup" []) (.lam "_" (a.lift 1)))))) "wd with wd (sup (λ _. g z)) was accepted"
+        check (!(← verdict "w2" (wrapCalls "w2" (fun a => .app (.app (.const "W2.node" []) a) (.lam "_" (a.lift 1)))))) "w2 with w2 (node l (λ _. l)) was accepted"
+        check (!(← verdict "u" (wrapCalls "u" (fun a => .app (.const "N.s" []) a)))) "u with u (.s n) was accepted (a call at Unit)"
+        -- t1-192-scrutinee / t1-192-run (M1c): a top split of `N.s x` instead of `x`, whose
+        -- "field" is then `x` itself, with the real split inside
+        let splitOfSucc (nm : Name) (impl : Term ZeroOneMany) : Term ZeroOneMany :=
+          match impl with
+          | .lam xn body =>
+            match body.spine with
+            | (h, [mot, mz, _, _]) =>
+              let inner := [mot.lift 1, mz.lift 1, .lam "m" (.app (.const nm []) (.var 1)), .var 1].foldl .app h
+              .lam xn ([mot, mz, .lam "n" inner, .app (.const "N.s" []) (.var 0)].foldl .app h)
+            | _ => impl
+          | _ => impl
+        check (!(← verdict "u" (splitOfSucc "u"))) "u with a split of (.s x) was accepted"
+        check (!(← verdict "f" (splitOfSucc "f"))) "f with a split of (.s x) was accepted" },
     { name := "O3: an unchecked registration is an axiom", run := fun _ => do
         let msgs ← messagesLib badAdd
         let expect := ["warning: builtin nat := N is not checked: it is an axiom of every declaration that depends on N (see `#print axioms`)",
@@ -7444,6 +7567,11 @@ def seplogicGroup : Group where
   name := "seplogic"
   exercise := "Stage 24"
   cases := [
+    { name := "13o: the libraries' helper notation stays in them (∷, ▸, +++, ⊕); Hdl's <+> is public", run := fun _ =>
+        okLibs ("import HoareTactics\nimport Feral\nimport Hdl.Core\n" ++
+          "def l : List Nat := List.cons 1 List.nil\ninfixr:65 \" ⊕ \" => Nat.add\ninfixr:65 \" ▸ \" => Nat.mul\n" ++
+          "#check fun (s : List Nat) => List.cons 1 s\n#check fun (s t : String) => String.append s t")
+          ["fun s => List.cons Nat 1 s : List Nat → List Nat", "fun s t => s <+> t : String → String → String"] },
     { name := "the connectives; propext and funext are definitional", run := fun _ => do
         okLibs ("import Logic\n" ++
           "def t1 (P Q : Prop) (h : P ∧ Q) : Q ∧ P := And.symm h\n" ++
@@ -7493,10 +7621,23 @@ def seplogicGroup : Group where
           "def t4 (l : Nat) : Triple (l ↦ 1) (Prog.bind (Prog.read l) (fun v => Prog.write l (Nat.succ v))) (fun _ => l ↦ 2) :=\n" ++
           "  Triple.bind (Triple.read l 1) (fun r => Triple.pure (fun e =>\n" ++
           "    @Eq.substProp Nat (fun (x : Nat) => Triple (l ↦ 1) (Prog.write l (Nat.succ x)) (fun _ => l ↦ 2)) 1 r (Eq.symm e) (Triple.write l 2 1)))") },
+    { name := "13o: separation-logic notation ⌜P⌝, ∃ʰ x, H and ⦃P⦄ c ⦃r, Q⦄, printed back (goals too)", run := fun _ =>
+        okLibs ("import HoareTactics\n" ++
+          "def w (l : Nat) : ⦃l ↦ 1⦄ Prog.write l 2 ⦃_, l ↦ 2⦄ := Triple.write l 2 1\n#check w\n#check @Triple.ref\n" ++
+          "#check fun (l : Nat) => ∃ʰ (n : Nat), l ↦ n ⋆ ⌜n = 1⌝\n" ++
+          "#check fun (l : Nat) (Q : Unit → HProp Nat) => ⦃l ↦ 1⦄ Prog.write l 2 ⦃Q⦄\n" ++
+          "def g (l v : Nat) : ⦃l ↦ v⦄ Prog.read l ⦃r, l ↦ v ⋆ ⌜r = v⌝⦄ := by\n  trace_state\n  xgo")
+          ["w : (l : Nat) → ⦃l ↦ 1⦄ Prog.write Nat l 2 ⦃_, l ↦ 2⦄",
+           "Triple.ref : {V : Type} → (v : V) → ⦃emp V⦄ Prog.ref V v ⦃l, l ↦ v⦄",
+           "fun l => ∃ʰ n, l ↦ n ⋆ ⌜n = 1⌝ : Nat → HProp Nat",
+           "fun l Q => ⦃l ↦ 1⦄ Prog.write Nat l 2 ⦃Q⦄ : Nat → (Unit → HProp Nat) → Prop",
+           "l : Nat\nv : Nat\n⊢ ⦃l ↦ v⦄ Prog.read Nat l ⦃r, l ↦ v ⋆ ⌜r = v⌝ ⦄"] },
+    { name := "... and in x-tactic failures", run := fun _ =>
+        failsLibs "import HoareTactics\ndef h (l : Nat) : (l ↦ 1) ⋆ emp ⊢ (l ↦ 2) := by xsimpl" "⊢ (l ↦ 1 ⊢ l ↦ 2)" },
     { name := "swap and in-place list reversal are verified", run := fun _ =>
         okLibs ("import HoareExamples\n#check @Prog.swap_spec\n#check @Prog.reverse_spec")
-          ["Prog.swap_spec : (p : Nat) → (q : Nat) → (a : Nat) → (b : Nat) → Triple Nat Unit (p ↦ a ⋆ q ↦ b) (Prog.swap p q) (fun _ => p ↦ b ⋆ q ↦ a)",
-           "Prog.reverse_spec : (L : List Nat) → (fuel : Nat) → (p : Nat) → Nat.lt (List.length Nat L) fuel = .true → Triple Nat Nat (MList L p) (Prog.reverse fuel p) (fun r => MList (List.reverse Nat L) r)"] },
+          ["Prog.swap_spec : (p : Nat) → (q : Nat) → (a : Nat) → (b : Nat) → ⦃p ↦ a ⋆ q ↦ b⦄ Prog.swap p q ⦃_, p ↦ b ⋆ q ↦ a⦄",
+           "Prog.reverse_spec : (L : List Nat) → (fuel : Nat) → (p : Nat) → Nat.lt (List.length Nat L) fuel = .true → ⦃MList L p⦄ Prog.reverse fuel p ⦃r, MList (List.reverse Nat L) r⦄"] },
     { name := "a faulting program has no triple from a satisfiable precondition", run := fun _ =>
         failsLibs ("import Hoare\ndef bad : Triple (@emp Nat) (@Prog.fail Nat Unit) (fun (_ : Unit) => @emp Nat) :=\n" ++
           "  Triple.ret () (fun (_ : Unit) => @emp Nat)") "mismatch" },
@@ -7523,7 +7664,7 @@ def seplogicGroup : Group where
           "def e7 (P : Prop) (hP : P) (a : HProp Nat) : a ⊢ hpure P ⋆ a := by xsimpl\n" ++
           "def e8 (p : Nat) (a : HProp Nat) : hexists (fun (n : Nat) => hpure (n = p) ⋆ a) ⊢ a := by\n  xpull as n, h\n  xsimpl") },
     { name := "xsimpl leaves what it cannot prove", run := fun _ => do
-        failsLibs "import HoareTactics\ndef bad (a b c : HProp Nat) : a ⋆ b ⊢ c ⋆ a := by xsimpl" "⊢ Entails Nat b c"
+        failsLibs "import HoareTactics\ndef bad (a b c : HProp Nat) : a ⋆ b ⊢ c ⋆ a := by xsimpl" "⊢ (b ⊢ c)"
         failsLibs "import HoareTactics\ndef bad (p : Nat) : (p ↦ 1) ⊢ (p ↦ 2) := by xsimpl" "unsolved goals"
         -- a tactic that fails says why, with the goal
         failsLibs "import HoareExamples\ndef bad (p q n : Nat) : Triple (p ↦ n) (Prog.incr q) (fun _ => p ↦ n) := by xstep" "xstep: the precondition has no cell at q"
@@ -7533,15 +7674,16 @@ def seplogicGroup : Group where
           "#check @Prog.incrAll.spec\n#check @Prog.freeAll.spec\n" ++
           "#eval Prog.show (Prog.counter) Heap.empty 0 1\n" ++
           "#eval Prog.show (Prog.length 10 1) (Heap.ofList (.cons 1 (.cons 3 (.cons 2 (.cons 5 (.cons 3 (.cons 0 .nil)))))) 1) 7 0")
-          ["Prog.incr3_spec : (p : Nat) → (q : Nat) → (m : Nat) → (n : Nat) → Triple Nat Unit (p ↦ m ⋆ q ↦ n) (Prog.incr3 p q) (fun _ => q ↦ .succ n ⋆ p ↦ .succ (.succ m))",
-           "Prog.counter_spec : Triple Nat Nat (emp Nat) Prog.counter (fun r => hexists Nat Nat (fun c => hpure Nat (r = 1) ⋆ c ↦ 1))",
-           "Prog.length_spec : (L : List Nat) → (fuel : Nat) → (p : Nat) → Nat.lt (List.length Nat L) fuel = .true → Triple Nat Nat (MList L p) (Prog.length fuel p) (fun r => hpure Nat (r = List.length Nat L) ⋆ MList L p)",
-           "Prog.incrAll.spec : (L : List Nat) → (f : Nat) → Nat.lt (List.length Nat L) f = .true → (p : Nat) → Triple Nat Unit (MList L p) (Prog.incrAll f p) (fun _ => MList (List.incr L) p)",
-           "Prog.freeAll.spec : (L : List Nat) → (f : Nat) → Nat.lt (List.length Nat L) f = .true → (p : Nat) → Triple Nat Unit (MList L p) (Prog.freeAll f p) (fun _ => emp Nat)",
+          ["Prog.incr3_spec : (p : Nat) → (q : Nat) → (m : Nat) → (n : Nat) → ⦃p ↦ m ⋆ q ↦ n⦄ Prog.incr3 p q ⦃_, q ↦ .succ n ⋆ p ↦ .succ (.succ m) ⦄",
+           "Prog.counter_spec : ⦃emp Nat⦄ Prog.counter ⦃r, ∃ʰ c, ⌜r = 1⌝ ⋆ c ↦ 1⦄",
+           "Prog.length_spec : (L : List Nat) → (fuel : Nat) → (p : Nat) → Nat.lt (List.length Nat L) fuel = .true → ⦃MList L p⦄ Prog.length fuel p ⦃r, ⌜r = List.length Nat L⌝ ⋆ MList L p⦄",
+           "Prog.incrAll.spec : (L : List Nat) → (f : Nat) → Nat.lt (List.length Nat L) f = .true → (p : Nat) → ⦃MList L p⦄ Prog.incrAll f p ⦃_, MList (List.incr L) p⦄",
+           "Prog.freeAll.spec : (L : List Nat) → (f : Nat) → Nat.lt (List.length Nat L) f = .true → (p : Nat) → ⦃MList L p⦄ Prog.freeAll f p ⦃_, emp Nat⦄",
            ".some (1, .cons (.some 1) .nil)", ".some (3, .nil)"] },
     { name := "xgo steps through values computed through private structures (Region's Uniq, as Feral lowers)", run := fun _ => do
         let src := "import HoareTactics\nimport Region\n" ++
-          "def incrU {ρ : Region} (r : Uniq ρ Nat) : Result (Unit × Uniq ρ Nat) := .ok ((), Uniq.set r (Nat.succ r.val))\n" ++
+          "def incrU {ρ : Region} (1 r : Uniq ρ Nat) : Result1 Unit (Uniq ρ Nat) :=\n" ++
+          "  let 1 (v, r) := Uniq.peek r;\n  Result1.ok () (Uniq.write r (Nat.succ v))\n" ++
           "def back (p : Nat) : Result (Unit × Nat) → Prog Nat Unit\n  | .ok x => .set p x.2 (.ret ())\n  | .err e => .fail\n" ++
           "def bumpCell (p : Nat) : Prog Nat Unit :=\n  .get p (fun a => back p (Uniq.borrow Region.static a (fun ρ h l r => incrU r)))\n"
         okLibs (src ++ "def bumpCell_spec (p a : Nat) : Triple (p ↦ a) (bumpCell p) (fun _ => p ↦ Nat.succ a) := by xgo")
@@ -8596,62 +8738,71 @@ def hdlGroup : Group where
 /-! ## Regions: borrow checking as typing (lib/Region.wiz, Feral RD12) -/
 
 def regionsPush : String :=
-  "def push1 {ρ : Region} (v : Uniq ρ (List Nat)) : Result (Unit × Uniq ρ (List Nat)) :=\n  .ok ((), Uniq.set v (List.cons 1 v.val))\n"
+  "def push1 {ρ : Region} (1 v : Uniq ρ (List Nat)) : Result1 Unit (Uniq ρ (List Nat)) :=\n  let 1 (xs, v) := Uniq.peek v;\n  .ok () (Uniq.write v (List.cons 1 xs))\n"
 def regionsLongest : String :=
   "def longest {ρa ρb : Region} (0 h : Outlives ρa ρb) (x : Shr ρa Nat) (y : Shr ρb Nat) : Result (Shr ρb Nat) :=\n" ++
   "  match Nat.lt x.val y.val with\n  | .true => .ok y\n  | .false => .ok (Shr.weaken h x)\n"
 
 /-- `swap` through two `&mut`, called on two locals borrowed in nested scopes. -/
-def regionsSwap : String := r#"def swap {ρ₁ ρ₂ : Region} {A : Type} (x : Uniq ρ₁ A) (y : Uniq ρ₂ A) : Result (Unit × Uniq ρ₁ A × Uniq ρ₂ A) :=
-  let t := x.val;
-  .ok ((), Uniq.set x y.val, Uniq.set y t)
+def regionsSwap : String := r#"def swap {ρ₁ ρ₂ : Region} {A : Type} (1 x : Uniq ρ₁ A) (1 y : Uniq ρ₂ A) : Result1 Unit ((1 _ : Uniq ρ₁ A) × Uniq ρ₂ A) :=
+  let 1 (t, x) := Uniq.peek x;
+  let 1 (u, y) := Uniq.peek y;
+  .ok () (Uniq.write x u, Uniq.write y t)
 "#
 
 /-- A linked list through `&mut`: recursion on reborrows of the tails, and a cursor. -/
-def regionsList : String := r#"partial def incrAll {ρ : Region} (l : Uniq ρ (List Nat)) : Result (Unit × Uniq ρ (List Nat)) :=
+def regionsList : String := r#"partial def incrAll {ρ : Region} (1 l : Uniq ρ (List Nat)) : Result1 Unit (Uniq ρ (List Nat)) :=
   Uniq.reborrow l (fun ρ' h l r =>
-    match r.val with
-    | .nil => .ok ((), r)
+    let 1 (v, r) := Uniq.peek r;
+    match v with
+    | .nil => .ok () r
     | .cons x tail => (match Uniq.borrow ρ' tail (fun ρt ht tail rt => incrAll rt) with
-      | .ok q => let (u, tail) := q; .ok ((), Uniq.set r (List.cons (Nat.succ x) tail))
-      | .err e => .err e))
-partial def pushBack.loop {ρ : Region} (x : Nat) (cur : Mut ρ (List Nat) (List Nat)) : Mut ρ (List Nat) (List Nat) :=
-  match Mut.get cur with
+      | .ok q => let (u, tail) := q; .ok () (Uniq.write r (List.cons (Nat.succ x) tail))
+      | .err e => .err e r))
+partial def pushBack.loop {ρ : Region} (x : Nat) (1 cur : Mut ρ (List Nat) (List Nat)) : Mut ρ (List Nat) (List Nat) :=
+  let 1 (v, cur) := Mut.peek cur;
+  match v with
   | .cons y next => pushBack.loop x (Mut.comp cur (fun (_ : List Nat) => (next, fun (n : List Nat) => List.cons y n)))
   | .nil => Mut.set cur (List.cons x List.nil)
-def pushBack {ρ : Region} (l : Uniq ρ (List Nat)) (x : Nat) : Result (Unit × Uniq ρ (List Nat)) :=
-  .ok ((), Mut.release (pushBack.loop x (Mut.whole l)))
+def pushBack {ρ : Region} (1 l : Uniq ρ (List Nat)) (x : Nat) : Result1 Unit (Uniq ρ (List Nat)) :=
+  .ok () (Mut.release (pushBack.loop x (Mut.whole l)))
 def listMain (xs : List Nat) : Result (List Nat) :=
   match Uniq.borrow Region.static xs (fun ρ h xs r =>
     match incrAll r with
-    | .ok q => let (u, r) := q; pushBack r 7
-    | .err e => .err e) with
+    | .ok u r => pushBack r 7
+    | .err e r => .err e r) with
   | .ok p => let (u, xs) := p; .ok xs
   | .err e => .err e
 "#
 
-/-- Returning one of two `&mut` borrows: `'a : 'b` is the evidence for `Mut.weaken`. -/
+/-- Returning one of two `&mut` borrows: `'a : 'b` is the evidence for `Mut.weaken`; the
+lender not returned rides along in the backward function (`Mut.alongside`). -/
 def regionsPick (bound : Bool := true) : String :=
   let (hb, hx) := if bound then ("(0 h : Outlives ρa ρb) ", "Mut.weaken h (Mut.ofUniq x)") else ("", "Mut.ofUniq x")
-  s!"def pick \{ρa ρb : Region} {hb}(c : Bool) (x : Uniq ρa Nat) (y : Uniq ρb Nat) :
-    Result (Mut ρb Nat (Uniq ρa Nat × Uniq ρb Nat)) :=
+  s!"def pick \{ρa ρb : Region} {hb}(c : Bool) (1 x : Uniq ρa Nat) (1 y : Uniq ρb Nat) :
+    Borrowed (Mut ρb Nat ((1 _ : Uniq ρa Nat) × Uniq ρb Nat)) ((1 _ : Uniq ρa Nat) × Uniq ρb Nat) :=
   match c with
-  | .true => .ok (Mut.mapBack ({hx}) (fun (x : Uniq ρa Nat) => (x, y)))
-  | .false => .ok (Mut.mapBack (Mut.ofUniq y) (fun (y : Uniq ρb Nat) => (x, y)))
+  | .true => .ok (Mut.alongside ({hx}) y (fun (x : Uniq ρa Nat) (y : Uniq ρb Nat) => (x, y)))
+  | .false => .ok (Mut.alongside (Mut.ofUniq y) x (fun (y : Uniq ρb Nat) (x : Uniq ρa Nat) => (x, y)))
 "
 
-/-- Two locals `a := 1` and `b := 2`, borrowed in nested scopes (`outer` first), and `body`
-on the borrows `ra`, `rb` (evidence `ha`, `hb`); `body` hands back `(ra, rb)` as `.ok`. -/
+def regionsSetPick : String :=
+  "def setPick {ρa ρb : Region} (0 h : Outlives ρa ρb) (c : Bool) (1 x : Uniq ρa Nat) (1 y : Uniq ρb Nat) : Result1 Unit ((1 _ : Uniq ρa Nat) × Uniq ρb Nat) :=\n" ++
+  "  match pick h c x y with\n  | .ok m => .ok () (Mut.finish (Mut.set m 10))\n  | .err e q => .err e q\n"
+
+/-- Two locals `a := 1` and `b := 2`, borrowed in nested scopes (`outer` first; the outer
+handle is threaded through the inner scope), and `body` on the borrows `ra`, `rb`
+(evidence `ha`, `hb`); `body` hands back `(ra, rb)` in a `Result1`. -/
 def regionsTwo (name outer body : String) : String :=
   let (o, i) := if outer == "a" then ("a", "b") else ("b", "a")
   s!"def {name} : Result (Nat × Nat) :=
   match Uniq.borrow Region.static {if o == "a" then 1 else 2} (fun ρ{o} h{o} {o} r{o} =>
-    match Uniq.borrow ρ{o} {if i == "a" then 1 else 2} (fun ρ{i} h{i} {i} r{i} =>
+    match Uniq.borrowIn ρ{o} {if i == "a" then 1 else 2} r{o} (fun ρ{i} h{i} {i} r{o} r{i} =>
       match {body} with
-      | .ok q => let (ra, rb) := q; .ok ({if o == "a" then "ra, rb" else "rb, ra"})
-      | .err e => .err e) with
-    | .ok q => let (r, x) := q; .ok (x, r)
-    | .err e => .err e) with
+      | .ok u q => let 1 (ra, rb) := q; .ok () (r{o}, r{i})
+      | .err e q => let 1 (ra, rb) := q; .err e (r{o}, r{i})) with
+    | .ok q r => let (u, x) := q; .ok x r
+    | .err e r => .err e r) with
   | .ok p => let (x, y) := p; .ok {if o == "a" then "(y, x)" else "(x, y)"}
   | .err e => .err e
 "
@@ -8713,52 +8864,42 @@ def regionsGroup : Group where
     { name := "using the lender while it is mutably borrowed is a type error (E0499/E0502)", run := fun _ => do
         failsLibs ("import Region\n" ++ regionsPush ++
           "def bad : Result (Nat × List Nat) := Uniq.borrow Region.static List.nil (fun ρ h v r =>\n" ++
-          "  match push1 r with\n  | .ok q => .ok (List.length v, q.2)\n  | .err e => .err e)") "mismatch"
+          "  match push1 r with\n  | .ok u r => .ok (List.length v) r\n  | .err e r => .err e r)") "mismatch"
         failsLibs ("import Region\n" ++ regionsPush ++
           "def bad : Result (Unit × List Nat) := Uniq.borrow Region.static List.nil (fun ρ1 h1 v r1 =>\n" ++
-          "  match Uniq.borrow ρ1 v (fun ρ2 h2 v r2 => push1 r2) with\n  | .ok q => .ok ((), r1)\n  | .err e => .err e)") "mismatch" },
+          "  match Uniq.borrowIn ρ1 v r1 (fun ρ2 h2 v r1 r2 => match push1 r2 with\n" ++
+          "    | .ok u r2 => .ok () (r1, r2)\n    | .err e r2 => .err e (r1, r2)) with\n" ++
+          "  | .ok q r1 => .ok () r1\n  | .err e r1 => .err e r1)") "mismatch" },
     { name := "swap through two &mut, each borrow in its own region", run := fun _ =>
-        okLibs ("import Region\n" ++ regionsSwap ++ "def swap2 {ρ₁ ρ₂ : Region} (x : Uniq ρ₁ Nat) (y : Uniq ρ₂ Nat) : Result (Uniq ρ₁ Nat × Uniq ρ₂ Nat) :=\n  match swap x y with\n  | .ok r => let (u, xy) := r; let (x, y) := xy; .ok (x, y)\n  | .err e => .err e\n" ++ regionsTwo "t" "a" "swap2 ra rb" ++ "#eval t") [".ok (2, 1)"] },
+        okLibs ("import Region\n" ++ regionsSwap ++ regionsTwo "t" "a" "swap ra rb" ++ "#eval t") [".ok (2, 1)"] },
     { name := "a linked list through &mut: recursion on reborrows of the tails, and a cursor", run := fun _ =>
         okLibs ("import Region\n" ++ regionsList ++ "#eval listMain (List.cons 1 (List.cons 2 List.nil))")
           [".ok (.cons 2 (.cons 3 (.cons 7 .nil)))"] },
     { name := "returning one of two &mut borrows needs 'a : 'b (Mut.weaken)", run := fun _ => do
-        okLibs ("import Region\n" ++ regionsPick ++ "def setPick {ρa ρb : Region} (0 h : Outlives ρa ρb) (c : Bool) (x : Uniq ρa Nat) (y : Uniq ρb Nat) : Result (Uniq ρa Nat × Uniq ρb Nat) :=\n  match pick h c x y with\n  | .ok m => .ok (Mut.finish (Mut.set m 10))\n  | .err e => .err e\n" ++
+        okLibs ("import Region\n" ++ regionsPick ++ regionsSetPick ++
           regionsTwo "t1" "a" "setPick hb .true ra rb" ++ regionsTwo "t2" "a" "setPick hb .false ra rb" ++ "#eval t1\n#eval t2")
           [".ok (10, 2)", ".ok (1, 10)"]
         failsLibs ("import Region\n" ++ regionsPick (bound := false)) "mismatch"
         -- the bound pointing the wrong way: b is borrowed first, so only 'b : 'a is known
-        failsLibs ("import Region\n" ++ regionsPick ++ "def setPick {ρa ρb : Region} (0 h : Outlives ρa ρb) (c : Bool) (x : Uniq ρa Nat) (y : Uniq ρb Nat) : Result (Uniq ρa Nat × Uniq ρb Nat) :=\n  match pick h c x y with\n  | .ok m => .ok (Mut.finish (Mut.set m 10))\n  | .err e => .err e\n" ++ regionsTwo "t" "b" "setPick ha .true ra rb") "mismatch" },
+        failsLibs ("import Region\n" ++ regionsPick ++ regionsSetPick ++ regionsTwo "t" "b" "setPick ha .true ra rb") "mismatch" },
     { name := "a borrow is shortened, never lengthened, and a local's &mut can't be returned (E0515)", run := fun _ => do
-        failsLibs ("import Region\ndef bad {σ : Region} (v : Uniq σ Nat) : Result (Unit × Uniq σ Nat) :=\n" ++
-          "  Uniq.reborrow v (fun ρ h v r => .ok ((), Mut.finish (Mut.weaken h (Mut.ofUniq r))))") "mismatch"
-        failsLibs ("import Region\ndef bad {ρ : Region} (v : Uniq ρ Nat) : Result (Mut ρ Nat (Uniq ρ Nat)) :=\n" ++
-          "  match Uniq.borrow ρ 5 (fun ρl hl l rl => .ok (Mut.ofUniq rl, rl)) with\n" ++
-          "  | .ok p => let (m, n) := p; .ok m\n  | .err e => .err e") "escapes the scope" },
+        failsLibs ("import Region\ndef bad {σ : Region} (1 v : Uniq σ Nat) : Result1 Unit (Uniq σ Nat) :=\n" ++
+          "  Uniq.reborrow v (fun ρ h v r => .ok () (Mut.finish (Mut.weaken h (Mut.ofUniq r))))") "mismatch"
+        -- (the borrow of `l` would have to leave in the result and be handed back too)
+        failsLibs ("import Region\ndef bad {ρ : Region} (1 v : Uniq ρ Nat) : Borrowed (Mut ρ Nat (Uniq ρ Nat)) (Uniq ρ Nat) :=\n" ++
+          "  match Uniq.borrow ρ 5 (fun ρl hl l rl => .ok (Mut.ofUniq rl) rl) with\n" ++
+          "  | .ok p => let (m, n) := p; .ok m\n  | .err e => .err e v") "escapes the scope" },
     { name := "two borrows of different regions are not interchangeable", run := fun _ =>
-        failsLibs ("import Region\ndef same {ρ : Region} (x y : Uniq ρ Nat) : Result (Uniq ρ Nat × Uniq ρ Nat) := .ok (x, y)\n" ++
+        failsLibs ("import Region\ndef same {ρ : Region} (1 x : Uniq ρ Nat) (1 y : Uniq ρ Nat) : Result1 Unit ((1 _ : Uniq ρ Nat) × Uniq ρ Nat) := .ok () (x, y)\n" ++
           regionsTwo "t" "a" "same ra rb") "mismatch" },
-    { name := "KNOWN GAP (accepted today; wishful: linear-case): duplicating a &mut, reading the lender under its outer name, packing a handle with its region", run := fun _ => do
-        -- E0499 by duplicating the handle: handles are ω, not linear
-        okLibs ("import Region\n" ++ regionsSwap ++ "def dup : Result (Unit × Nat) := Uniq.borrow Region.static 1 (fun ρ h a r =>\n" ++
-          "  match swap r r with\n  | .ok q => let (u, r1r2) := q; let (r1, r2) := r1r2; .ok ((), r1)\n  | .err e => .err e)\n#eval dup") [".ok ((), 1)"]
-        -- E0502: the `Lent` token only shadows the lender's name; named `tok`, `v` is visible
-        okLibs ("import Region\ndef lender (v : List Nat) : Result (Nat × List Nat) := Uniq.borrow Region.static v (fun ρ h tok r =>\n" ++
-          "  .ok (List.length v, Uniq.set r List.nil))\n#eval lender (List.cons 1 List.nil)") [".ok (1, .nil)"]
-        -- a handle leaves its scope packed with its region, and is written through afterwards
-        okLibs ("import Region\ndef esc (v : List Nat) : Result (((0 r : Region) × Uniq r (List Nat)) × List Nat) :=\n" ++
-          "  Uniq.borrow Region.static v (fun ρ h tok r => .ok ((ρ, r), r))\n" ++
-          "def use (v : List Nat) : Result (List Nat) := match esc v with\n" ++
-          "  | .ok p => let (packed, v) := p; let (ρ, r) := packed; .ok (Uniq.set r List.nil).val\n  | .err e => .err e\n" ++
-          "#eval use (List.cons 1 List.nil)") [".ok .nil"] },
-    { name := "linear handles (M4a): a scope's handle is used once and handed back on every path", run := fun _ => do
+    { name := "linear handles: a scope's handle is used once and handed back on every path (formerly KNOWN GAPs 1 and 3)", run := fun _ => do
         okLibs ("import Region\n" ++
-          "def swap {ρa ρb : Region} (1 x : Uniq1 ρa Nat) (1 y : Uniq1 ρb Nat) : Result1 Unit ((1 _ : Uniq1 ρa Nat) × Uniq1 ρb Nat) :=\n" ++
-          "  Uniq1.read x (fun a x => Uniq1.read y (fun b y => Result1.ok () (Uniq1.write x b, Uniq1.write y a)))\n" ++
+          "def swap {ρa ρb : Region} (1 x : Uniq ρa Nat) (1 y : Uniq ρb Nat) : Result1 Unit ((1 _ : Uniq ρa Nat) × Uniq ρb Nat) :=\n" ++
+          "  Uniq.read x (fun a x => Uniq.read y (fun b y => Result1.ok () (Uniq.write x b, Uniq.write y a)))\n" ++
           "-- `let mut a := 1; let mut b := 2; swap (&mut a) (&mut b); (a, b)`\n" ++
           "def main : Result (Nat × Nat) :=\n" ++
-          "  match Uniq1.borrow Region.static 1 (fun ρa ha la x =>\n" ++
-          "    match Uniq1.borrowIn Region.static 2 x (fun ρb hb lb x y => swap x y) with\n" ++
+          "  match Uniq.borrow Region.static 1 (fun ρa ha la x =>\n" ++
+          "    match Uniq.borrowIn Region.static 2 x (fun ρb hb lb x y => swap x y) with\n" ++
           "    | .ok ub x => .ok ub.2 x\n" ++
           "    | .err e x => .err e x) with\n" ++
           "  | .ok p => .ok (p.2, p.1)\n" ++
@@ -8766,24 +8907,24 @@ def regionsGroup : Group where
           "#eval main\n") [".ok (2, 1)"]
         -- E0499 by linearity: one &mut passed twice
         failsLibs ("import Region\n" ++
-          "def swap {ρa ρb : Region} (1 x : Uniq1 ρa Nat) (1 y : Uniq1 ρb Nat) : Result1 Unit ((1 _ : Uniq1 ρa Nat) × Uniq1 ρb Nat) :=\n" ++
-          "  Uniq1.read x (fun a x => Uniq1.read y (fun b y => Result1.ok () (Uniq1.write x b, Uniq1.write y a)))\n" ++
+          "def swap {ρa ρb : Region} (1 x : Uniq ρa Nat) (1 y : Uniq ρb Nat) : Result1 Unit ((1 _ : Uniq ρa Nat) × Uniq ρb Nat) :=\n" ++
+          "  Uniq.read x (fun a x => Uniq.read y (fun b y => Result1.ok () (Uniq.write x b, Uniq.write y a)))\n" ++
           "-- E0499: one &mut passed twice\n" ++
-          "def dup : Result (Unit × Nat) := Uniq1.borrow Region.static 1 (fun ρ h l r =>\n" ++
+          "def dup : Result (Unit × Nat) := Uniq.borrow Region.static 1 (fun ρ h l r =>\n" ++
           "  match swap r r with\n" ++
           "  | .ok u q => let 1 (r1, r2) := q; .ok () r1\n" ++
           "  | .err e q => let 1 (r1, r2) := q; .err e r1)\n") "quantity 1"
         -- no escape: a handle packed with its region can't also be handed back
         failsLibs ("import Region\n" ++
           "-- a handle packed with its region leaves the scope (and is also handed back)\n" ++
-          "def esc (v : List Nat) : Result (((0 r : Region) × Uniq1 r (List Nat)) × List Nat) :=\n" ++
-          "  Uniq1.borrow Region.static v (fun ρ h l r => .ok (ρ, r) r)\n") "quantity 1"
+          "def esc (v : List Nat) : Result (((0 r : Region) × Uniq r (List Nat)) × List Nat) :=\n" ++
+          "  Uniq.borrow Region.static v (fun ρ h l r => .ok (ρ, r) r)\n") "quantity 1"
         -- not forgeable
-        failsLibs "import Region\ndef forge {ρ : Region} (s : List Nat) : Uniq1 ρ (List Nat) := Uniq1.mk s" "private"
+        failsLibs "import Region\ndef forge {ρ : Region} (s : List Nat) : Uniq ρ (List Nat) := Uniq.mk s" "private"
         -- KNOWN GAP (pinned; needs linear lenders and Copy, K3): the lender is an ω value,
         -- so a body that names the Lent token differently still reads it while it is lent (E0502)
-        okLibs ("import Region\ndef lender (v : List Nat) : Result (Nat × List Nat) := Uniq1.borrow Region.static v (fun ρ h tok r =>\n" ++
-          "  .ok (List.length v) (Uniq1.write r List.nil))\n#eval lender (List.cons 1 List.nil)") [".ok (1, .nil)"] },
+        okLibs ("import Region\ndef lender (v : List Nat) : Result (Nat × List Nat) := Uniq.borrow Region.static v (fun ρ h tok r =>\n" ++
+          "  .ok (List.length v) (Uniq.write r List.nil))\n#eval lender (List.cons 1 List.nil)") [".ok (1, .nil)"] },
     { name := "handles can't be forged outside lib/Region.wiz (private constructors, 13b)", run := fun _ => do
         failsLibs "import Region\ndef forge {ρ : Region} : Shr ρ Nat := Shr.mk 5" "'Shr.mk' is private to module Region"
         failsLibs "import Region\ndef forge {ρ : Region} (s : List Nat) : Uniq ρ (List Nat) := Uniq.mk s" "private"
@@ -8795,33 +8936,39 @@ def regionsGroup : Group where
         -- compares in the elaborator's view)
         failsLibs ("import Region\nstructure MyShr (ρ : Region) (A : Type) where\n  val : A\n" ++
           "def forge {ρ : Region} (x : Nat) : Shr ρ Nat := cast rfl (MyShr.mk x : MyShr ρ Nat)") "not definitionally equal" },
-    { name := "with --unbox-structs a handle is its value at run time; a scope is its body run in place (22i)", run := fun _ => do
+    { name := "with --unbox-structs a shared handle is its value at run time and its scope is its body run in place (22i); a linear &mut scope is its body run in place, but for the handle's cell", run := fun _ => do
         let s ← libsState ("import Region\n" ++ regionsPush ++
           "def get {ρ : Region} (x : Shr ρ Nat) : Nat := x.val\n" ++
           "def scoped (xs : List Nat) : Result (Unit × List Nat) := Uniq.borrow Region.static xs (fun ρ h v r => push1 r)\n" ++
           "def direct (xs : List Nat) : Result (Unit × List Nat) := .ok ((), List.cons 1 xs)\n" ++
           "def nested (a b : List Nat) : Result (List Nat × List Nat) :=\n" ++
           "  match Uniq.borrow Region.static a (fun ρa ha a ra =>\n" ++
-          "    match Uniq.borrow ρa b (fun ρb hb b rb =>\n" ++
-          "      match push1 rb with\n      | .ok q => .ok (ra, q.2)\n      | .err e => .err e) with\n" ++
-          "    | .ok q => .ok (q.2, q.1)\n    | .err e => .err e) with\n" ++
+          "    match Uniq.borrowIn ρa b ra (fun ρb hb b ra rb =>\n" ++
+          "      match push1 rb with\n      | .ok u rb => .ok () (ra, rb)\n      | .err e rb => .err e (ra, rb)) with\n" ++
+          "    | .ok q ra => .ok q.2 ra\n    | .err e ra => .err e ra) with\n" ++
           "  | .ok p => .ok (p.2, p.1)\n  | .err e => .err e\n" ++
           "def t1 : Result (Unit × List Nat) := scoped List.nil\n" ++
           "def t0 : Result (Unit × List Nat) := direct List.nil\n" ++
           "def t2 : Result (List Nat × List Nat) := nested List.nil List.nil\n#run t1\n#eval t1\n#run t2\n" ++
+          "def shared (xs : List Nat) : Result Nat := Shr.borrow Region.static xs (fun ρ h x => .ok (List.length x.val))\n" ++
           "#run Shr.borrow Region.static 4 (fun ρ h x => .ok (get x))") (unbox := true)
         let msgs := s.messages.toList.map (·.text)
         checkEq [".ok ((), .cons 1 .nil)", ".ok ((), .cons 1 .nil)", ".ok (.nil, .cons 1 .nil)", ".ok 4"] msgs
         -- `x.val` is `x`: no projection
         let getIR ← libsIR s "get"
         check (getIR.all fun d => (d.splitOn "proj").length == 1) s!"a projection:\n{"\n".intercalate getIR}"
-        -- no closure for the scopes' bodies, and nothing lifted
-        for n in ["scoped", "nested"] do
-          let ir ← libsIR s n
-          check (ir.length == 1 && ir.all fun d => (d.splitOn "pap").length == 1 && (d.splitOn "ap x").length == 1)
-            s!"{n}: a closure:\n{"\n".intercalate ir}"
-        -- a borrow costs no allocation: the same objects as without it
-        checkEq (← libsAllocs s "t0") (← libsAllocs s "t1") }
+        -- a shared borrow's scope is its body run in place: no closure, nothing lifted
+        let shIR ← libsIR s "shared"
+        check (shIR.length == 1 && shIR.all fun d => (d.splitOn "pap").length == 1)
+          s!"shared: a closure:\n{"\n".intercalate shIR}"
+        -- a linear `&mut` scope is its body run in place too: the `match`es on the handle
+        -- (`T.casesOn1`) are unfolded and their known tags simplified (`simpKnown`), so
+        -- nothing is lifted. KNOWN COST (/workspace/wiz-notes/linear-scope-cost.md): the
+        -- handle `Uniq` is still a cell (an inductive, not unboxed like a structure).
+        -- Objects allocated without the scope / with one / with two nested (before: 3 15
+        -- 29), and lifted decls (before: 8 23).
+        checkEq "3 4 6" s!"{← libsAllocs s "t0"} {← libsAllocs s "t1"} {← libsAllocs s "t2"}"
+        checkEq "1 1" s!"{(← libsIR s "scoped").length} {(← libsIR s "nested").length}" }
   ]
 
 

@@ -270,7 +270,7 @@ where
           let msg : Msg := match errs.find? (·.code == "duplicate-declaration") with
             | some d => { info := cmd.info, severity := .error, text := d.text, code := d.code }
             | none => { info := cmd.info, severity := .error, code := ErrorCode.moduleErrors,
-                        text := s!"module {m} has errors: {errs.toList.map (·.render src)}" }
+                        text := importErrorsText m src errs }
           let msgs := if errs.isEmpty then s.messages else s.messages.push msg
           -- (a module's warnings, such as an unchecked `builtin`, are shown at the import)
           let msgs := msgs ++ (inner.messages.filter (·.severity == .warning)).map fun w =>
@@ -281,6 +281,8 @@ where
           go' input base chars stop { (inner.endModule s) with messages := msgs, module := s.module, infos } memo
       else go' input base chars stop (step chars cmd s) memo
     | .error e =>
+      -- (13o) a keyword where a name was expected: which notation, from which module
+      let e := e.explainKeywords s.tables (fun k => (s.kindSites[k]?).map (·.2))
       let msg := (e.render input).splitOn ": " |>.drop 1 |> ": ".intercalate
       go' input base chars (recoverPos chars (skipWs chars pos))
         { s with messages := s.messages.push { info := { start := e.pos, stop := e.pos },

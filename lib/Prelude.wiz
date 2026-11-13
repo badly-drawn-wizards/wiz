@@ -136,8 +136,8 @@ inductive String where
 def String.append : String → String → String
   | .mk xs, .mk ys => .mk (List.append xs ys)
 /-- `x |> f` is `f x` (stage 13): a pipeline reads left to right,
-`xs |> List.length |> Nat.succ`. -/
-def pipe {A B : Type} (a : A) (f : A → B) : B := f a
+`xs |> List.length |> Nat.succ`. At any universe, so proofs too: `h |> Eq.symm`. -/
+def pipe.{u, v} {A : Sort u} {B : Sort v} (a : A) (f : A → B) : B := f a
 infixl:10 " |> " => pipe
 
 /-- Syntax trees, as one indexed family (descriptions have no nested inductives yet):
