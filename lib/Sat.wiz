@@ -550,3 +550,86 @@ def Sat.envOf : List Bool → Nat → Bool
   | .nil, _ => .false
   | .cons b _, .zero => b
   | .cons _ bs, .succ j => Sat.envOf bs j
+
+-- ## Circuits with sharing (28c)
+--
+-- `BForm` is a tree: a goal whose definitions use an argument twice (a carry chain built
+-- from `maj`) is exponential once unfolded. Here the circuit is a list of nodes, each a
+-- gate over other nodes, and the assignment *is* the goal's own subterms: `σ v` is the
+-- subterm of node `v`. That each gate holds, `σ v = op (σ a) (σ b)`, is not computed but
+-- checked by the kernel, node by node, by conversion (`Sat.allHold`, one `refl` each:
+-- the subterm and its operands are compared folded, so the check is linear in the size
+-- of the goal as written). The Tseitin clauses then hold under `σ` itself.
+def Sat.Env : Type := Nat → Bool
+inductive Sat.Gate where
+  | inp
+  | const (b : Bool)
+  | not (a : Nat)
+  | and (a b : Nat)
+  | or (a b : Nat)
+  | xor (a b : Nat)
+  | iff (a b : Nat)
+inductive Sat.GNode where
+  | mk (v : Nat) (g : Sat.Gate)
+
+def Sat.gateHolds (σ : Nat → Bool) (v : Nat) : Sat.Gate → Prop
+  | .inp => True
+  | .const c => σ v = c
+  | .not a => σ v = Bool.not (σ a)
+  | .and a b => σ v = Bool.and (σ a) (σ b)
+  | .or a b => σ v = Bool.or (σ a) (σ b)
+  | .xor a b => σ v = Bool.xor (σ a) (σ b)
+  | .iff a b => σ v = Sat.boolEq (σ a) (σ b)
+def Sat.allHold (σ : Nat → Bool) : List Sat.GNode → Prop
+  | .nil => True
+  | .cons (.mk v g) ns => And (Sat.gateHolds σ v g) (Sat.allHold σ ns)
+-- the proof, node by node (a tactic builds it)
+def Sat.holdsNil (σ : Nat → Bool) : Sat.allHold σ .nil := True.intro
+def Sat.holdsCons (σ : Nat → Bool) (v : Nat) (g : Sat.Gate) (ns : List Sat.GNode)
+    (h : Sat.gateHolds σ v g) (t : Sat.allHold σ ns) : Sat.allHold σ (.cons (.mk v g) ns) := (h, t)
+def Sat.eqRefl (b : Bool) : b = b := rfl
+
+-- the clauses of a gate (those of the tree's gates, which have the same shape)
+def Sat.K : Sat.BForm := .const .true
+def Sat.gCnf (v : Nat) : Sat.Gate → List (List Sat.Lit)
+  | .inp => []
+  | .const c => Sat.gateCnf v 0 0 (.const c)
+  | .not a => Sat.gateCnf v a 0 (.not Sat.K)
+  | .and a b => Sat.gateCnf v a b (.and Sat.K Sat.K)
+  | .or a b => Sat.gateCnf v a b (.or Sat.K Sat.K)
+  | .xor a b => Sat.gateCnf v a b (.xor Sat.K Sat.K)
+  | .iff a b => Sat.gateCnf v a b (.iff Sat.K Sat.K)
+def Sat.dagCnf : List Sat.GNode → List (List Sat.Lit)
+  | .nil => []
+  | .cons (.mk v g) ns => List.append (Sat.gCnf v g) (Sat.dagCnf ns)
+def Sat.dagFull (nodes : List Sat.GNode) (out : Nat) : List (List Sat.Lit) :=
+  .cons [Sat.ngt out] (Sat.dagCnf nodes)
+
+def Sat.gNode_ok (σ : Nat → Bool) (v : Nat) : (g : Sat.Gate) → Sat.gateHolds σ v g → Sat.Cnf.eval σ (Sat.gCnf v g) = .true
+  | .inp, _ => rfl
+  | .const c, h => Sat.gate_const c (σ v) h
+  | .not a, h => Sat.gate_not Sat.K (σ v) (σ a) h
+  | .and a b, h => Sat.gate_and Sat.K Sat.K (σ v) (σ a) (σ b) h
+  | .or a b, h => Sat.gate_or Sat.K Sat.K (σ v) (σ a) (σ b) h
+  | .xor a b, h => Sat.gate_xor Sat.K Sat.K (σ v) (σ a) (σ b) h
+  | .iff a b, h => Sat.gate_iff Sat.K Sat.K (σ v) (σ a) (σ b) h
+def Sat.dag_ok (σ : Nat → Bool) : (ns : List Sat.GNode) → Sat.allHold σ ns → Sat.Cnf.eval σ (Sat.dagCnf ns) = .true
+  | .nil, _ => rfl
+  | .cons (.mk v g) ns, h =>
+    Sat.Cnf.append_ok σ (Sat.gCnf v g) (Sat.dagCnf ns) (Sat.gNode_ok σ v g h.1) (Sat.dag_ok σ ns h.2)
+
+-- **Deciding a circuit**: an LRAT refutation of its clauses and of `¬ out` shows `σ out`
+-- for every `σ` under which the gates hold.
+def Sat.dag_sound (nodes : List Sat.GNode) (out : Nat) (proof : List Sat.Step)
+    (h : Sat.IsTrue (Sat.lratCheck (Sat.dagFull nodes out) proof)) (σ : Sat.Env) (hn : Sat.allHold σ nodes) :
+    σ out = .true :=
+  Sat.byCases (σ out) (fun e =>
+    Sat.lratCheck_sound (Sat.dagFull nodes out) proof h σ
+      (Sat.and_intro (Bool.or (Sat.polar (σ out) .false) .false) (Sat.Cnf.eval σ (Sat.dagCnf nodes))
+        (Sat.and_left (Bool.or (Sat.polar (σ out) .false) .false) .true (Sat.unitFalse (σ out) e))
+        (Sat.dag_ok σ nodes hn)))
+-- an equation, as the node `out` that is its `iff`
+def Sat.dag_eq (nodes : List Sat.GNode) (out : Nat) (proof : List Sat.Step)
+    (h : Sat.IsTrue (Sat.lratCheck (Sat.dagFull nodes out) proof)) (σ : Sat.Env) (hn : Sat.allHold σ nodes)
+    (a b : Bool) (e : σ out = Sat.boolEq a b) : a = b :=
+  Sat.boolEq_sound a b (Eq.trans (Eq.symm e) (Sat.dag_sound nodes out proof h σ hn))
