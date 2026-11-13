@@ -108,7 +108,18 @@ def backendGroup : Group where
         -- the default of `orElse` is not computed for `some`; and (HD9's inlining) `pick`
         -- and `orElse` are inlined into `s4`, whose `case` on the known `.some 4` then
         -- picks its branch, so the `.some` cell isn't built either
-        checkEq [151, 100] [← allocs "s4" false, ← allocs "s4" true] }
+        checkEq [151, 100] [← allocs "s4" false, ← allocs "s4" true] },
+    { name := "closed definitions that do work are cached (CAFs, 15i); aliases, erased ones and the entry are not", run := fun _ => do
+        let s := runFrontend (R := ZeroOneMany) cafSrc { loader := ← preludeLoader }
+        let (decls, _) ← match Build.irProgram s "main" with
+          | .ok r => pure r
+          | .error e => throw (IO.userError e)
+        let cafs := IR.cafs decls
+        for n in ["table", "diverge", "failing", "lazySum", "big", "ones"] do
+          check (cafs.contains n) s!"{n} is not cached"
+        -- `tab` is `table` again, `four` and `Tab` are erased, `addTen` is a function
+        for n in ["tab", "four", "Tab", "addTen", "wiz.entry", "range", "loop"] do
+          check (!cafs.contains n) s!"{n} is cached" }
   ]
 
 builtin_initialize registerGroup backendGroup

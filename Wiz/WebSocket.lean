@@ -114,10 +114,20 @@ def localOrigin (origin : String) : Bool :=
       ["localhost", "127.0.0.1", "[::1]"].any fun h =>
         host == h || host.startsWith (h ++ ":")
 
+/-- (11w) The files of the web infoview a server may hand out over HTTP (`web/build.sh`'s
+output), with their media types: only these, by exact name, so no other file is reachable. -/
+def webAssets : List (String × String) :=
+  [("infoview.html", "text/html; charset=utf-8"), ("infoview.js", "text/javascript; charset=utf-8"),
+   -- (11s) the part infoview.js shares with the documentation's pages
+   ("tagged.js", "text/javascript; charset=utf-8"),
+   ("wiz-infoview.mjs", "text/javascript; charset=utf-8"), ("wiz-infoview.wasm", "application/wasm")]
+
 /-- The server's half of the handshake on a new connection: `true` if it is a WebSocket
 now. A request that is not a WebSocket upgrade, or comes from another origin
-(`localOrigin`), gets an HTTP error and `false`. -/
-def accept (r w : IO.FS.Stream) : IO Bool := do
+(`localOrigin`), gets an HTTP error and `false`. (11w) With `web` (the directory of the
+web infoview), a plain `GET` of one of `webAssets` (`/infoview.html?…`) gets that file
+and `false`; any other path gets `404`. -/
+def accept (r w : IO.FS.Stream) (web : Option String := none) : IO Bool := do
   let some (line, headers) ← readHead r | return false
   let get (k : String) := (headers.lookup k).getD ""
   let refuse (status : String) : IO Bool := do
@@ -125,11 +135,24 @@ def accept (r w : IO.FS.Stream) : IO Bool := do
     w.flush
     pure false
   unless line.startsWith "GET " do return ← refuse "405 Method Not Allowed"
-  let key := get "sec-websocket-key"
-  unless (get "upgrade").toLower == "websocket" && !key.isEmpty do
-    return ← refuse "426 Upgrade Required"
   if let some o := headers.lookup "origin" then
     unless localOrigin o do return ← refuse "403 Forbidden"
+  let key := get "sec-websocket-key"
+  unless (get "upgrade").toLower == "websocket" && !key.isEmpty do
+    let some dir := web | return ← refuse "426 Upgrade Required"
+    -- `GET /name?query HTTP/1.1`
+    let target := ((line.drop 4).toString.splitOn " ").headD ""
+    let path : String := (target.splitOn "?").headD ""
+    let name := if path.startsWith "/" then (path.drop 1).toString else path
+    let name := if name.isEmpty then "infoview.html" else name
+    let some (_, mime) := webAssets.find? (·.1 == name) | return ← refuse "404 Not Found"
+    let some body ← (try some <$> IO.FS.readBinFile (dir ++ "/" ++ name) catch _ => pure none)
+      | return ← refuse "404 Not Found"
+    w.putStr (s!"HTTP/1.1 200 OK\r\nContent-Type: {mime}\r\nContent-Length: {body.size}\r\n" ++
+      "Cache-Control: no-cache\r\nConnection: close\r\n\r\n")
+    w.write body
+    w.flush
+    return false
   w.putStr ("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n" ++
     s!"Sec-WebSocket-Accept: {acceptKey key}\r\n\r\n")
   w.flush

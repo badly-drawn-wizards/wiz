@@ -115,8 +115,8 @@ def descEqGroup : Group where
     { name := "D1 (Abel–Coquand) with two different box descriptions: checks", run := fun _ => do
         unless (abelCoquandTwoBoxes.splitOn "boxEq").length > 2 do throw (IO.userError "variant not built")
         ok abelCoquandTwoBoxes },
-    -- with regularity on, the cast between the two descriptions is still structural (they
-    -- are not syntactically equal), so it applies `boxEq`'s equivalence: `id2`, no loop
+    -- with regularity on, the cast between the two descriptions is still structural (it is
+    -- on a constructor), so no loop
     { name := "D1 (Abel–Coquand) with two different box descriptions: checks with regularity too", run := fun _ =>
         okWith .full abelCoquandTwoBoxes }
   ]

@@ -64,7 +64,7 @@ def wordGroup : Group where
         check ((out.splitOn "wiz_word_to_bits").length > 1) s!"toNat doesn't read the bits natively:\n{out}" },
     { name := "a U64 result is read back from a raw box", run := fun _ =>
         cRun "import Word\ndef main : U64 := UIntN.mul (U64.ofNat 18446744073709551615) (U64.ofNat 3)"
-          ".mk 18446744073709551613" },
+          ".mk 18446744073709551613 ()" },
     -- (7e) numeric classes at the words
     { name := "numerals and operators at word types wrap around", run := fun _ =>
         okLib ("import Word\ndef s : U8 := 250 + 10\n#eval s.toNat\ndef t : s = 4 := rfl\n#eval (300 : U8).toNat\n" ++
@@ -88,7 +88,13 @@ def wordGroup : Group where
         check ((out.splitOn "wiz_word_add").length > 1 && (out.splitOn "wiz_word_mul").length > 1 &&
           (out.splitOn "proj").length == 1) s!"no native call (or a dictionary) in:\n{out}" },
     { name := "compiled: operators at words run natively (C)", run := fun _ =>
-        cRun "import Word\ndef main : Nat := ((250 : U8) + 10 * 2).toNat + (-1 / 2 : I8).toNat" "14" }
+        cRun "import Word\ndef main : Nat := ((250 : U8) + 10 * 2).toNat + (-1 / 2 : I8).toNat" "14" },
+    { name := "22l: a word carries its range: no unchecked builder, and the constructor needs the proof", run := fun _ => do
+        -- the probe (wiz-notes/soundness-probes/a3-word-ofbitstrusted.wiz)
+        for (src, frag) in [("def bad : UIntN 1 := UIntN.ofBitsTrusted 5", "ofBitsTrusted"),
+            ("def bad : UIntN 1 := UIntN.mk 5 rfl", "private"), ("def bad : IntN 1 := IntN.mk 5 rfl", "private")] do
+          let ms ← msgsLib ("import Word\n" ++ src ++ "\n")
+          check (ms.any fun m => m.startsWith "error" && (m.splitOn frag).length > 1) s!"{src}: {ms}" }
   ]
 
 builtin_initialize registerGroup wordGroup

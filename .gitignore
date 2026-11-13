@@ -19,3 +19,6 @@ web/out/
 grail.local.wiz
 __pycache__/
 /Tests/Groups.lean
+
+# tower: a developer's own toolchain override (docs/stages/26-tower.md, 26a)
+wiz-toolchain.local

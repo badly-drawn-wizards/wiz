@@ -65,7 +65,7 @@ def seplogicGroup : Group where
           "    @Eq.substProp Nat (fun (x : Nat) => Triple (l ↦ 1) (Prog.write l (Nat.succ x)) (fun _ => l ↦ 2)) 1 r (Eq.symm e) (Triple.write l 2 1)))") },
     { name := "swap and in-place list reversal are verified", run := fun _ =>
         okLibs ("import HoareExamples\n#check @Prog.swap_spec\n#check @Prog.reverse_spec")
-          ["Prog.swap_spec : (p : Nat) → (q : Nat) → (a : Nat) → (b : Nat) → Triple Nat Unit (star Nat (pts Nat p a) (pts Nat q b)) (Prog.swap p q) (fun _ => star Nat (pts Nat p b) (pts Nat q a))",
+          ["Prog.swap_spec : (p : Nat) → (q : Nat) → (a : Nat) → (b : Nat) → Triple Nat Unit (p ↦ a ⋆ q ↦ b) (Prog.swap p q) (fun _ => p ↦ b ⋆ q ↦ a)",
            "Prog.reverse_spec : (L : List Nat) → (fuel : Nat) → (p : Nat) → Nat.lt (List.length Nat L) fuel = .true → Triple Nat Nat (MList L p) (Prog.reverse fuel p) (fun r => MList (List.reverse Nat L) r)"] },
     { name := "a faulting program has no triple from a satisfiable precondition", run := fun _ =>
         failsLibs ("import Hoare\ndef bad : Triple (@emp Nat) (@Prog.fail Nat Unit) (fun (_ : Unit) => @emp Nat) :=\n" ++
@@ -103,14 +103,103 @@ def seplogicGroup : Group where
           "#check @Prog.incrAll.spec\n#check @Prog.freeAll.spec\n" ++
           "#eval Prog.show (Prog.counter) Heap.empty 0 1\n" ++
           "#eval Prog.show (Prog.length 10 1) (Heap.ofList (.cons 1 (.cons 3 (.cons 2 (.cons 5 (.cons 3 (.cons 0 .nil)))))) 1) 7 0")
-          ["Prog.incr3_spec : (p : Nat) → (q : Nat) → (m : Nat) → (n : Nat) → Triple Nat Unit (star Nat (pts Nat p m) (pts Nat q n)) (Prog.incr3 p q) (fun _ => star Nat (pts Nat q (.succ n)) (pts Nat p (.succ (.succ m))))",
-           "Prog.counter_spec : Triple Nat Nat (emp Nat) Prog.counter (fun r => hexists Nat Nat (fun c => star Nat (hpure Nat (r = 1)) (pts Nat c 1)))",
-           "Prog.length_spec : (L : List Nat) → (fuel : Nat) → (p : Nat) → Nat.lt (List.length Nat L) fuel = .true → Triple Nat Nat (MList L p) (Prog.length fuel p) (fun r => star Nat (hpure Nat (r = List.length Nat L)) (MList L p))",
+          ["Prog.incr3_spec : (p : Nat) → (q : Nat) → (m : Nat) → (n : Nat) → Triple Nat Unit (p ↦ m ⋆ q ↦ n) (Prog.incr3 p q) (fun _ => q ↦ .succ n ⋆ p ↦ .succ (.succ m))",
+           "Prog.counter_spec : Triple Nat Nat (emp Nat) Prog.counter (fun r => hexists Nat Nat (fun c => hpure Nat (r = 1) ⋆ c ↦ 1))",
+           "Prog.length_spec : (L : List Nat) → (fuel : Nat) → (p : Nat) → Nat.lt (List.length Nat L) fuel = .true → Triple Nat Nat (MList L p) (Prog.length fuel p) (fun r => hpure Nat (r = List.length Nat L) ⋆ MList L p)",
            "Prog.incrAll.spec : (L : List Nat) → (f : Nat) → Nat.lt (List.length Nat L) f = .true → (p : Nat) → Triple Nat Unit (MList L p) (Prog.incrAll f p) (fun _ => MList (List.incr L) p)",
            "Prog.freeAll.spec : (L : List Nat) → (f : Nat) → Nat.lt (List.length Nat L) f = .true → (p : Nat) → Triple Nat Unit (MList L p) (Prog.freeAll f p) (fun _ => emp Nat)",
            ".some (1, .cons (.some 1) .nil)", ".some (3, .nil)"] },
+    { name := "xgo steps through values computed through private structures (Region's Uniq, as Feral lowers)", run := fun _ => do
+        let src := "import HoareTactics\nimport Region\n" ++
+          "def incrU {ρ : Region} (r : Uniq ρ Nat) : Result (Unit × Uniq ρ Nat) := .ok ((), Uniq.set r (Nat.succ r.val))\n" ++
+          "def back (p : Nat) : Result (Unit × Nat) → Prog Nat Unit\n  | .ok x => .set p x.2 (.ret ())\n  | .err e => .fail\n" ++
+          "def bumpCell (p : Nat) : Prog Nat Unit :=\n  .get p (fun a => back p (Uniq.borrow Region.static a (fun ρ h l r => incrU r)))\n"
+        okLibs (src ++ "def bumpCell_spec (p a : Nat) : Triple (p ↦ a) (bumpCell p) (fun _ => p ↦ Nat.succ a) := by xgo")
+        failsLibs (src ++ "def bad (p a : Nat) : Triple (p ↦ a) (bumpCell p) (fun _ => p ↦ a) := by xgo") "unsolved goals" },
     { name := "a wrong specification is not proved by the x-tactics", run := fun _ =>
-        failsLibs "import HoareExamples\ndef bad (p n : Nat) : Triple (p ↦ n) (Prog.incr p) (fun _ => p ↦ n) := by xgo" "unsolved goals" }
+        failsLibs "import HoareExamples\ndef bad (p n : Nat) : Triple (p ↦ n) (Prog.incr p) (fun _ => p ↦ n) := by xgo" "unsolved goals" },
+    { name := "EffHeap: the interpretation respects bind; a verified Eff program is called by its specification", run := fun _ => do
+        okLibs ("import EffHeap\n" ++
+          "def incrBoth (p q : Nat) : Eff (Row.cons (Cell Nat p) (Row.cons (Cell Nat q) Row.nil)) Unit := do\n" ++
+          "  a ← Cell.get p;\n" ++
+          "  Cell.put p (Nat.succ a);\n" ++
+          "  b ← Cell.get q;\n" ++
+          "  Cell.put q (Nat.succ b)\n" ++
+          "def incrBoth_spec (p q a b : Nat) :\n" ++
+          "    Triple ((p ↦ a) ⋆ (q ↦ b)) (Eff.toProg (incrBoth p q)) (fun _ => (p ↦ Nat.succ a) ⋆ (q ↦ Nat.succ b)) := by\n" ++
+          "  xgo\n" ++
+          "-- a verified Eff program called twice, by its specification (not stepped through again)\n" ++
+          "def twice (p q : Nat) : Eff (Row.cons (Cell Nat p) (Row.cons (Cell Nat q) Row.nil)) Unit :=\n" ++
+          "  Eff.bind (incrBoth p q) (fun _ => incrBoth p q)\n" ++
+          "def twice_spec (p q a b : Nat) :\n" ++
+          "    Triple ((p ↦ a) ⋆ (q ↦ b)) (Eff.toProg (twice p q))\n" ++
+          "      (fun _ => (p ↦ Nat.succ (Nat.succ a)) ⋆ (q ↦ Nat.succ (Nat.succ b))) :=\n" ++
+          "  Triple.effBind (by\n" ++
+          "    xapp (incrBoth_spec p q a b)\n" ++
+          "    xapp (incrBoth_spec p q (Nat.succ a) (Nat.succ b)))\n")
+        failsLibs ("import EffHeap\n" ++
+          "def incrBoth (p q : Nat) : Eff (Row.cons (Cell Nat p) (Row.cons (Cell Nat q) Row.nil)) Unit := do\n" ++
+          "  a ← Cell.get p;\n" ++
+          "  Cell.put p (Nat.succ a);\n" ++
+          "  b ← Cell.get q;\n" ++
+          "  Cell.put q (Nat.succ b)\n" ++
+          "def incrBoth_spec (p q a b : Nat) :\n" ++
+          "    Triple ((p ↦ a) ⋆ (q ↦ b)) (Eff.toProg (incrBoth p q)) (fun _ => (p ↦ Nat.succ a) ⋆ (q ↦ Nat.succ b)) := by\n" ++
+          "  xgo\n" ++
+          "-- a verified Eff program called twice, by its specification (not stepped through again)\n" ++
+          "def twice (p q : Nat) : Eff (Row.cons (Cell Nat p) (Row.cons (Cell Nat q) Row.nil)) Unit :=\n" ++
+          "  Eff.bind (incrBoth p q) (fun _ => incrBoth p q)\n" ++
+          "def twice_spec (p q a b : Nat) :\n" ++
+          "    Triple ((p ↦ a) ⋆ (q ↦ b)) (Eff.toProg (twice p q))\n" ++
+          "      (fun _ => (p ↦ Nat.succ a) ⋆ (q ↦ Nat.succ (Nat.succ b))) :=\n" ++
+          "  Triple.effBind (by\n" ++
+          "    xapp (incrBoth_spec p q a b)\n" ++
+          "    xapp (incrBoth_spec p q (Nat.succ a) (Nat.succ b)))\n") "unsolved goals" },
+    { name := "EffHeap: Eff programs over cells are heap programs; separate cells commute without Commute", run := fun _ => do
+        okLibs ("import EffHeap\n" ++
+          "def incrBoth (p q : Nat) : Eff (Row.cons (Cell Nat p) (Row.cons (Cell Nat q) Row.nil)) Unit := do\n" ++
+          "  a ← Cell.get p;\n" ++
+          "  Cell.put p (Nat.succ a);\n" ++
+          "  b ← Cell.get q;\n" ++
+          "  Cell.put q (Nat.succ b)\n" ++
+          "def incrBoth_spec (p q a b : Nat) :\n" ++
+          "    Triple ((p ↦ a) ⋆ (q ↦ b)) (Eff.toProg (incrBoth p q)) (fun _ => (p ↦ Nat.succ a) ⋆ (q ↦ Nat.succ b)) := by\n" ++
+          "  xgo\n" ++
+          "-- the same program, run as a heap program\n" ++
+          "def cells (o : Option (Unit × Heap Nat × Nat)) : Option (Option Nat × Option Nat) := match o with\n" ++
+          "  | .some r => .some (r.2.1 1, r.2.1 2)\n" ++
+          "  | .none => .none\n" ++
+          "#eval cells (Prog.run (Eff.toProg (incrBoth 1 2)) (Heap.union (Heap.single 1 10) (Heap.single 2 20)) 3)\n" ++
+          "-- reordering two cell operations, as a triple: a proof for one order serves the other\n" ++
+          "def swapOrder (p q x y : Nat) (H : HProp Nat) (Q : Nat × Unit → HProp Nat)\n" ++
+          "    (k : (ab : Nat × Unit) → Triple ((Cell.post p x (@CellOp.get Nat p) ab.1 ⋆ Cell.post q y (@CellOp.put Nat q 7) ab.2) ⋆ H) (Prog.ret ab) Q) :\n" ++
+          "    Triple (((p ↦ x) ⋆ (q ↦ y)) ⋆ H) (Prog.bind (Cell.both21 (@CellOp.get Nat p) (@CellOp.put Nat q 7)) (fun ab => Prog.ret ab)) Q :=\n" ++
+          "  (Cell.commute p q x y CellOp.get (CellOp.put 7) H (fun ab => Prog.ret ab) Q k).2\n")
+          [".some (.some 11, .some 21)"]
+        failsLibs ("import EffHeap\n" ++
+          "def incrBoth (p q : Nat) : Eff (Row.cons (Cell Nat p) (Row.cons (Cell Nat q) Row.nil)) Unit := do\n" ++
+          "  a ← Cell.get p;\n" ++
+          "  Cell.put p (Nat.succ a);\n" ++
+          "  b ← Cell.get q;\n" ++
+          "  Cell.put q (Nat.succ b)\n" ++
+          "def bad (p q a b : Nat) :\n" ++
+          "    Triple ((p ↦ a) ⋆ (q ↦ b)) (Eff.toProg (incrBoth p q)) (fun _ => (p ↦ Nat.succ a) ⋆ (q ↦ b)) := by\n" ++
+          "  xgo\n") "unsolved goals" },
+    { name := "HeapBorrow: a borrow of a heap cell, specified by its functional model", run := fun _ => do
+        okLibs ("import HeapBorrow\n" ++
+          "def incr (n : Nat) : Result (Unit × Nat) := Result.ok ((), Nat.succ n)\n" ++
+          "def t1 (l n : Nat) : Triple (l ↦ n) (Prog.borrowMut l incr) (fun _ => hexists (fun (v : Nat) => hpure (v = Nat.succ n) ⋆ (l ↦ v))) :=\n" ++
+          "  Prog.borrowMut_spec l n incr (fun _ v => v = Nat.succ n) rfl\n" ++
+          "def t2 (l r n m : Nat) : Triple ((l ↦ n) ⋆ (r ↦ m)) (Prog.borrowMut l incr) (fun _ => (l ↦ Nat.succ n) ⋆ (r ↦ m)) := by\n" ++
+          "  xstep\n" ++
+          "  xapp (Prog.handBack_ok l n () (Nat.succ n))\n" ++
+          "def len (n : Nat) : Result Nat := Result.ok (Nat.succ n)\n" ++
+          "def t3 (l n : Nat) : Triple (l ↦ n) (Prog.borrowShr l len) (fun k => hpure (k = Nat.succ n) ⋆ (l ↦ n)) :=\n" ++
+          "  Prog.borrowShr_spec l n len (fun k => k = Nat.succ n) rfl\n")
+        failsLibs ("import HeapBorrow\n" ++
+          "def incr (n : Nat) : Result (Unit × Nat) := Result.ok ((), Nat.succ n)\n" ++
+          "def bad (l n : Nat) : Triple (l ↦ n) (Prog.borrowMut l incr) (fun _ => hexists (fun (v : Nat) => hpure (v = n) ⋆ (l ↦ v))) :=\n" ++
+          "  Prog.borrowMut_spec l n incr (fun _ v => v = n) rfl") "not definitionally equal" }
   ]
 
 builtin_initialize registerGroup seplogicGroup

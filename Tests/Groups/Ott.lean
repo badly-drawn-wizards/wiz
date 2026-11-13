@@ -114,6 +114,16 @@ def ottGroup : Group where
           "def e (f : Unit → True) : pf f = ((), ()) := ((), ())")
           ["fun f => (0 e : True) × True"]
         fails (p ++ "def bad (f : Unit → True) (h : pf f = ((), ())) : False := h.2") "mismatch" },
+    -- (nu-transp-elab) `refl a` whose argument's type has a metavariable (`fun x => x`):
+    -- after the rule "an equation at a proposition is True", inferring the equation from
+    -- `a` alone computed it by the funext rule (the sort of `?m → ?m` unknown), which didn't
+    -- unify with the expected `(0 e : True) × True`; `refl` is now checked against `A`
+    { name := "refl at a pair with a proof component, its type from the expected equation (nu-transp-elab)", run := fun _ =>
+        ok ("def B2 : Type := (x : Unit) × (True → True)\n" ++
+          "def P (h : ((), fun (x : True) => x) = (((), fun x => x) : B2)) : Prop := True\n" ++
+          "def t3 (h : ((), fun (x : True) => x) = (((), fun x => x) : B2)) : P h := ()\n" ++
+          "def t5 : P (refl ((), fun x => x)) := t3 (refl ((), fun x => x))\n" ++
+          "def t4 : P (refl ((), fun x => x)) := t3 _\n") },
     -- KNOWN GAP (pinned): a *neutral* proposition (`P q.1` for a variable `P : A → Prop`,
     -- or `P : Prop`) is not seen by `propSort?`, so the two rules don't fire and the
     -- kernel still rejects these. Mandatory sorts (`wiz-notes/mandatory-sorts.md`: every
@@ -195,18 +205,31 @@ def ottGroup : Group where
         fails "def bad (P : Prop) (p q : P) : p = q := rfl" "equality is for types" },
     { name := "wrong equation", run := fun _ =>
         fails "def bad (A : Type) (a b : A) : a = b := rfl" "rfl: the two sides are not definitionally equal" },
-    -- D1: regularity is off by default, and the program checks; with `--regularity full`
-    -- (or `nonprop`) and an evaluator that runs proofs (`--eager-proofs`, the behaviour
-    -- before P2) checking it does not terminate
+    -- D1: regularity beyond the inert types is off by default, and the program checks. It
+    -- used to loop with `--regularity full` and an evaluator that runs proofs
+    -- (`--eager-proofs`): regularity was then a rule of evaluation, decided by comparing the
+    -- two types as written. Now regularity is decided by conversion only, so the evaluator
+    -- never fires it, and the program checks in every mode
     { name := "D1 (Abel–Coquand): the program checks (no regularity: the box's cast casts its proof field)", run := fun _ => do
         ok (abelCoquand "omega")
         ok (abelCoquand) },
-    { name := "D1 (Abel–Coquand): with regularity and eager proofs, checking the program does not terminate", run := fun _ =>
-        checkDiverges (abelCoquand) "full+eager" },
-    { name := "D1 (Abel–Coquand): a box in a box is not inert either (checks; loops with regularity and eager proofs)", run := fun _ => do
+    { name := "D1 (Abel–Coquand): with regularity and eager proofs the program checks too (regularity is a rule of conversion, not of evaluation)", run := fun _ =>
+        checkTerminates (abelCoquand) "full+eager" },
+    { name := "D1 (Abel–Coquand): a box in a box is not inert either (checks, with regularity and eager proofs too)", run := fun _ => do
         unless (abelCoquandNested.splitOn "unbox2").length > 2 do throw (IO.userError "variant not built")
         ok abelCoquandNested
-        checkDiverges abelCoquandNested "full+eager" },
+        checkTerminates abelCoquandNested "full+eager" },
+    -- (from PR #40) The cast's source type written by name, `Box T2`, or as inferred,
+    -- `Box (Top → Top)`: the syntactic rule fired for one spelling and not for the other, so
+    -- the same program looped or terminated depending on how a type was written. Decided by
+    -- conversion, the two spellings behave alike, in every mode
+    { name := "D1 (Abel–Coquand): the cast's source type by name or as inferred: the same verdict and the same termination in every mode", run := fun _ => do
+        let named := abelCoquand
+        let inferred := named.replace ": Box T2)" ": Box (Top → Top))"
+        unless named != inferred && (named.splitOn ": Box T2)").length == 2 do throw (IO.userError "variant not built")
+        for p in [named, inferred] do
+          ok p
+          for mode in ["off", "full", "full+eager", "off+eager"] do checkTerminates p mode },
     { name := "regularity at inert types: an indexed recursor computes at a data motive (Vec.length)", run := fun _ =>
         ok ("inductive N where\n  | z\n  | s (n : N)\n" ++
           "inductive V (A : Type) : N → Type where\n  | nil : V A .z\n  | cons {0 n : N} (x : A) (xs : V A n) : V A (.s n)\n" ++
@@ -216,27 +239,27 @@ def ottGroup : Group where
     { name := "no regularity at a type with a variable parameter", run := fun _ =>
         fails ("inductive L (A : Type) where\n  | nil\n  | cons (x : A) (xs : L A)\n" ++
           "def castL (A : Type) (e : L A = L A) (l : L A) : (cast e l : L A) = l := rfl\n") "rfl: the two sides are not definitionally equal" },
-    -- P1: InReg decided by ground equality is stable (h3 checks, and so does its reduct h2)
-    { name := "P1: InReg is stable under substitution (the probe's reduct checks iff the term does)", run := fun _ =>
+    -- P1: regularity at inert types is decided by conversion (InReg_conv, the default): all
+    -- eight probes check, and the control at a type variable does not
+    { name := "P1: InReg decided by conversion accepts the eight probes, open indices too (the default)", run := fun _ => do
+        checkEq (repr ["t1", "t2", "h", "h2", "h3", "g1", "g2", "g3"]).pretty (repr (p1Accepted .conv)).pretty
+        let dflt := p1Decls.filterMap fun (n, d) =>
+          if (runFrontend (R := ZeroOneMany) (p1Prelude ++ d ++ "\n")).messages.any (·.severity == .error) then none else some n
+        checkEq (repr ["t1", "t2", "h", "h2", "h3", "g1", "g2", "g3"]).pretty (repr dflt).pretty },
+    -- the evaluator's fast path alone (`--inert ground`) is stable under substitution (h3
+    -- checks, and so does its reduct h2) but gives up a neutral value at an open index
+    { name := "P1: the fast path alone (ground) is stable, and rejects t1 and t2", run := fun _ =>
         checkEq (repr ["h", "h2", "h3", "g1", "g2", "g3"]).pretty (repr (p1Accepted .ground)).pretty },
-    { name := "P1: with InReg_conv (decided by conversion), open indices too", run := fun _ =>
-        checkEq (repr ["t1", "t2", "h", "h2", "h3", "g1", "g2", "g3"]).pretty (repr (p1Accepted .conv)).pretty },
-    { name := "P1: the old syntactic InReg rejects the reduct h2 of h3 (documents the bug)", run := fun _ =>
-        checkEq (repr ["t1", "h", "h3", "g1", "g3"]).pretty (repr (p1Accepted .syntactic)).pretty },
     { name := "D1: with eager proofs, a cast between propositions applies the equivalence, not regularity", run := fun _ => do
         let s := runFrontend (R := ZeroOneMany) abelCoquandLiteral { globals := { lazyProofs := false } }
         checkEq (repr ["fun x => x"]).pretty (repr (s.messages.toList.map (·.text))).pretty },
-    { name := "D1 (R1): regularity only at non-propositions doesn't help with eager proofs (the box is a type)", run := fun _ =>
-        checkDiverges (abelCoquand) "nonprop+eager" },
-    { name := "D1 (R2, off): regularity only along refl, or none, checks the program", run := fun _ => do
-        okWith .refl (abelCoquand)
+    { name := "D1 (off): without regularity the program checks", run := fun _ =>
         okWith .off (abelCoquand) },
     -- P2 (the default): proofs are never evaluated, so the loop, which lives in a proof,
     -- is never run, even with full regularity
     { name := "P2: proofs are never evaluated, so Abel–Coquand checks even with full regularity (and nested)", run := fun _ => do
         checkTerminates (abelCoquand) "full"
         checkTerminates abelCoquandNested "full"
-        checkTerminates (abelCoquand) "nonprop"
         checkTerminates (abelCoquand) "off" },
     { name := "P2: a cast between propositions is stuck (a proof), not the equivalence applied", run := fun _ => do
         let s := runFrontend (R := ZeroOneMany) abelCoquandLiteral

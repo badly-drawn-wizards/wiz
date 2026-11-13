@@ -71,6 +71,46 @@ def languageGroup : Group where
   name := "language"
   exercise := "Stage 13"
   cases := [
+    -- (CoreSpec §6: proofs use nothing) a term at a proposition is checked erased, so a
+    -- variable at 0 may appear in a proof (wiz-cats G2/B2, wiz-reals B2)
+    { name := "a proof uses nothing: a 0-variable may appear in a proof, a linear one still must be used (both kernels)", run := fun _ => do
+        okLib "import Prelude\ndef lem (n : Nat) : n = n := refl n\ndef r {0 n : Nat} : n = n := lem n"
+        okLib "import Prelude\ndef p (k : Nat) (e : k = k) : k = k := e\ndef q {k : Nat} (e : k = k) : k = k := p k e"
+        okLib ("import Prelude\nstructure P where\n  a : Nat\n  b : Nat\n" ++
+          "def lem0 (0 n : Nat) : n = n := refl n\ndef ok {0 p : P} : p.b = p.b := lem0 p.b\ndef bad {0 p : P} : p.a = p.a := refl p.a")
+        -- controls: a 0-variable in a relevant position, and a linear one used only in a proof
+        failsLib "import Prelude\ndef badRel {0 n : Nat} : Nat := n" "quantity 0 but used 1"
+        failsLib "import Prelude\ndef lem (n : Nat) : n = n := refl n\ndef badLin (1 n : Nat) : Nat := let h : n = n := lem n; 0" "quantity 1 but used 0"
+        -- the Wiz kernel: `fun n => p n refl` at `(0 n : Unit) → n = n`, `p` a proof function
+        let kernel ← IO.FS.readFile "selfhost/Kernel.wiz"
+        let main := "def uPf : Tm := .lam (.lam (.var 0))\n" ++
+          "def uPTy : Tm := .pi (.unit 0) (.pi (.eq (.unit 0) (.var 0) (.var 0)) (.eq (.unit 0) (.var 1) (.var 1)))\n" ++
+          "def uQTy : Tm := .piq .qz (.unit 0) (.eq (.unit 0) (.var 0) (.var 0))\n" ++
+          "def uQV : Tm := .lam (.app (.app (.ann uPf uPTy) (.var 0)) (.eqRefl (.unit 0) (.var 0)))\n" ++
+          "def uRelTy : Tm := .piq .qz (.unit 0) (.unit 0)\n" ++
+          "def uOkD (ty v : Tm) : String := match checkDecl ty (.some (markClosed v ty)) with\n  | .ok _ _ => \"ok\"\n  | .err _ => \"error\"\n" ++
+          "def main : IO Unit := do\n  IO.println (uOkD uQTy uQV);\n  IO.println (uOkD uRelTy (.lam (.var 0)))\n"
+        ioRun (kernel ++ "\n" ++ main) "ok\nerror\n" },
+    -- (prf-review L1) a binder whose type is a proposition takes any usage: a linear proof
+    -- can be used once, never or twice, and a linear pair with a proof field taken apart
+    { name := "a binder whose type is a proposition takes any usage (L1, both kernels)", run := fun _ => do
+        okLib ("import Prelude\ndef lh (1 h : True) : True := h\n" ++
+          "def sp {A : Type} {P : A → Prop} (1 p : (1 x : A) × P x) : A := let 1 (a, h) := p; a\n" ++
+          "def twice (1 h : True) : True × True := (h, h)")
+        failsLib "import Prelude\ndef drop (1 n : Nat) : Nat := 0" "quantity 1 but used 0"
+        let kernel ← IO.FS.readFile "selfhost/Kernel.wiz"
+        let main := "def lOk (ty v : Tm) : String := match checkDecl ty (.some (markClosed v ty)) with\n  | .ok _ _ => \"ok\"\n  | .err _ => \"error\"\n" ++
+          "def main : IO Unit := do\n  IO.println (lOk (.piq .qo .ptrue .ptrue) (.lam (.var 0)));\n" ++
+          "  IO.println (lOk (.piq .qo (.unit 0) (.unit 0)) (.lam .star))\n"
+        ioRun (kernel ++ "\n" ++ main) "ok\nerror\n" },
+    -- a proof that uses a 0-variable is erased by compilation: the cast along it computes on
+    -- the types, and its `implemented_by` (a proof too) never runs
+    { name := "a proof that uses a 0-variable is erased when compiled (cast along it, implemented_by on it)", run := fun _ =>
+        cRun ("import Prelude\ndef T (n : Nat) : Type := Nat\n" ++
+          "def lemTy (n : Nat) : T n = Nat := rfl\ndef lemTyImpl (n : Nat) : T n = Nat := rfl\n" ++
+          "attribute [implemented_by lemTyImpl] lemTy\n" ++
+          "def useIt (0 n : Nat) (x : T n) : Nat := let h : T n = Nat := lemTy n; cast h x\n" ++
+          "def main : Nat := useIt 3 5") "5" },
     { name := "linear transport: Eq.subst, Eq.substBack and Eq.cast take a linear value (L4)", run := fun _ =>
         okLib ("import Prelude\naxiom Tok : Nat → Type\naxiom Tok.close : (1 t : Tok 0) → Unit\n" ++
           "def closeAt (0 n : Nat) (0 e : n = 0) (1 t : Tok n) : Unit := Tok.close (Eq.subst Tok e t)\n" ++
@@ -202,7 +242,7 @@ def languageGroup : Group where
     { name := "as-patterns: the name must be a variable; not a term", run := fun _ => do
         failsLib "import Prelude\ndef f : Nat → Nat\n  | (.succ k)@n => n\n  | _ => 0" "an as-pattern is `x@p` with a variable"
         failsLib "import Prelude\ndef f (n : Nat) : Nat := n@n" "only allowed in a pattern"
-        failsLib "import Prelude\ndef f : List Nat → Nat\n  | l@(.cons x) => x\n  | _ => 0" "cons expects 2 explicit arguments" },
+        failsLib "import Prelude\ndef f : List Nat → Nat\n  | l@(.cons x) => x\n  | _ => 0" "the constructor cons has 2 explicit fields, but the pattern gives it 1 argument" },
     -- 13h
     { name := "structure patterns: .mk, S.mk and ⟨…⟩ bind the fields; nested and with parameters", run := fun _ =>
         okLib ("import Prelude\nstructure Stats where\n  hits : Nat\n  misses : Nat\n" ++
@@ -273,6 +313,72 @@ def languageGroup : Group where
           "structure update needs a value of a structure type"
         failsLib ("import Prelude\nstructure D where\n  n : Nat\n  p : n = 0\ndef f (d : D) : D := { d with n := 3 }")
           "field 'p' keeps its value, but its type" },
+    -- 13p
+    { name := "13p: nested structure update a.b := v, paths into one field grouped", run := fun _ =>
+        okLib ("import Prelude\nstructure In where\n  x : Nat\n  y : Nat\nstructure Out where\n  i : In\n  n : Nat\n" ++
+          "def o0 : Out := ⟨⟨1, 2⟩, 3⟩\ndef o1 : Out := { o0 with i.x := 10, n := 4 }\n" ++
+          "def o2 : Out := { o0 with i.x := 5, i.y := 6 }\n" ++
+          "#eval o1.i.x\n#eval o1.i.y\n#eval o1.n\n#eval Nat.add o2.i.x o2.i.y\n" ++
+          "def t (o : Out) (v : Nat) : In.x (Out.i { o with i.y := v }) = In.x (Out.i o) := rfl\n" ++
+          "structure Deep where\n  o : Out\ndef d (e : Deep) : Deep := { e with o.i.y := 0 }\n#eval (d ⟨o0⟩).o.i.y\n#eval (d ⟨o0⟩).o.i.x")
+          ["10", "2", "4", "11", "0", "1"] },
+    { name := "13p: structure update of a bundle (a structure over a representation)", run := fun _ =>
+        okLib ("import Prelude\nstructure Tx (r : Type → Type) where\n  line : r Bool\n  busy : r Nat\n" ++
+          "def setBusy {r : Type → Type} (s : Tx r) (b : r Nat) : Tx r := { s with busy := b }\n" ++
+          "def Id' (A : Type) : Type := A\ndef t0 : Tx Id' := ⟨.true, 1⟩\n#eval (setBusy t0 5).busy\n#eval (setBusy t0 5).line")
+          ["5", ".true"] },
+    { name := "13p: nested structure update errors", run := fun _ => do
+        failsLib ("import Prelude\nstructure In where\n  x : Nat\n  y : Nat\nstructure Out where\n  i : In\n  n : Nat\ndef f (o : Out) : Out := { o with i.z := 1 }")
+          "In has no field 'z' (its fields are x, y)"
+        failsLib ("import Prelude\nstructure In where\n  x : Nat\n  y : Nat\nstructure Out where\n  i : In\n  n : Nat\ndef f (o : Out) : Out := { o with n.x := 1 }")
+          "field 'n' is not a structure (its type is Nat)"
+        failsLib ("import Prelude\nstructure In where\n  x : Nat\n  y : Nat\nstructure Out where\n  i : In\n  n : Nat\ndef f (o : Out) : Out := { o with i := ⟨0, 0⟩, i.x := 1 }")
+          "field 'i' is updated twice"
+        failsLib ("import Prelude\nstructure In where\n  x : Nat\n  y : Nat\nstructure Out where\n  i : In\n  n : Nat\ndef f (o : Out) : Out := { o with i.x := 1, i.x := 2 }")
+          "field 'i.x' is updated twice" },
+    { name := "13p: structure updates are printed back", run := fun _ =>
+        okLib ("import Prelude\nstructure Stats where\n  hits : Nat\n  misses : Nat\nstructure In where\n  x : Nat\n  y : Nat\nstructure Out where\n  i : In\n  n : Nat\n#check fun (s : Stats) => { s with hits := 0 }\n" ++
+          "#check fun (s : Stats) (n : Nat) => { s with misses := n, hits := 1 }\n" ++
+          "#check fun (o : Out) => { o with i.x := 10 }\n" ++
+          "def id' (s : Stats) : Stats := s\n#check fun (s : Stats) => { id' s with hits := 2 }\n" ++
+          "set_option pp.notation false\n#check fun (s : Stats) => { s with hits := 0 }")
+          ["fun s => { s with hits := 0 } : Stats → Stats",
+           "fun s n => Stats.mk 1 n : Stats → Nat → Stats",
+           "fun o => { o with i.x := 10 } : Out → Out",
+           "fun s => { id' s with hits := 2 } : Stats → Stats",
+           "fun s => Stats.mk 0 s.2.1 : Stats → Stats"] },
+    { name := "13q: numeral patterns at Nat: 0, 1, n+2; structural recursion through n+1", run := fun _ =>
+        okLib ("import Prelude\ndef cls : Nat → Nat\n  | 0 => 10\n  | 1 => 11\n  | n+2 => n\n" ++
+          "#eval cls 0\n#eval cls 1\n#eval cls 7\ndef t : cls 7 = 5 := rfl\n" ++
+          "def sum : Nat → Nat\n  | 0 => 0\n  | n + 1 => n + 1 + sum n\n#eval sum 4\n" ++
+          "def m (p : Nat × Nat) : Nat := match p with\n  | (0, k) => k\n  | (n@(_ + 3), _) => n\n  | _ => 1\n" ++
+          "#eval m (0, 5)\n#eval m (4, 0)\n#eval m (2, 0)\n" ++
+          "def h : Nat → Nat\n  | 0x10 => 1\n  | 0b11 => 2\n  | .succ .zero => 3\n  | _ => 0\n#eval h 16\n#eval h 3\n#eval h 1\n#eval h 4\n" ++
+          "def F : Nat → Type\n  | 0 => Bool\n  | _ => Nat\ndef f0 : F 0 := .true\ndef f5 : F 5 := 7")
+          ["10", "11", "5", "10", "5", "4", "1", "1", "2", "3", "0"] },
+    { name := "13q: literal patterns on words (UIntN, a definition of it) and strings, with a catch-all", run := fun _ =>
+        okLib ("import Word\nimport Text\ndef op (b : U8) : Nat := match b with\n  | 0x3F => 1\n  | 0 => 2\n  | _ => 3\n" ++
+          "#eval op 63\n#eval op 0\n#eval op 9\n" ++
+          "def BV (n : Nat) : Type := UIntN n\ndef g : BV 4 → Nat\n  | 15 => 1\n  | x => Nat.add 100 x.toNat\n#eval g 15\n#eval g 3\n" ++
+          "def two (a : U8) (n : Nat) : Nat := match a, n with\n  | 1, 0 => 10\n  | 1, k+1 => k\n  | _, _ => 0\n" ++
+          "#eval two 1 0\n#eval two 1 5\n#eval two 2 0\n" ++
+          "def s : String → Nat\n  | \"a\" => 1\n  | \"bc\" => 2\n  | _ => 0\n#eval s \"bc\"\n#eval s \"b\"")
+          ["1", "2", "3", "1", "103", "10", "4", "0", "2", "0"] },
+    { name := "13q: literal pattern errors", run := fun _ => do
+        failsLibW "import Word\ndef f (b : U8) : Nat := match b with\n  | 0 => 1\n  | 1 => 2"
+          "a match on literals of type U8 needs a catch-all case"
+        failsLibW "import Word\ndef f (b : U8) : Nat := match b with\n  | n + 1 => 1\n  | _ => 2"
+          "a pattern `n + k` needs a Nat"
+        failsLib "import Prelude\ninductive Color where\n  | red\n  | green\ndef f : Color → Nat\n  | 0 => 1\n  | _ => 2"
+          "a literal pattern needs Nat, or a type T with literals and an equality test"
+        failsLib "import Prelude\ndef f : Bool → Nat\n  | .true => 0\n  | 1 => 1\n  | _ => 2"
+          "Bool is a data type: match on its constructors"
+        failsLib "import Prelude\ndef f : Nat → Nat\n  | 300 => 1\n  | _ => 2"
+          "the numeral pattern 300 is too large"
+        failsLib "import Prelude\ndef f (m : Nat) : Nat → Nat\n  | n + m => 1\n  | _ => 2"
+          "a pattern `p + k` needs a numeral `k`"
+        failsLibW "import Word\ndef f (b : U8) : Nat := match b with\n  | 0 => 1\n  | .mk _ => 2\n  | _ => 3"
+          "can't be mixed with other patterns" },
     { name := "recursion over a family at a concrete index", run := fun _ =>
         okLib ("import Prelude\ndef len : SyntaxF .false → Nat\n  | .nil => 0\n  | .cons _ xs => Nat.succ (len xs)\n" ++
           "#eval len (.cons .missing (.cons .missing .nil))") ["2"] },
@@ -323,7 +429,7 @@ def languageGroup : Group where
           "def nope : ¬ (exists (b : Bool), b = .true ∧ b = .false) :=\n  fun h => Ex.elim h (fun b p => Bool.trueNeFalse (Eq.trans (Eq.symm p.1) p.2))\n" ++
           "def t7 : forall (n : Nat), n = n := fun n => rfl\n" ++
           "def t8 {P Q : Prop} (h : P <-> Q) (p : P) : (Q /\\ P) \\/ False := Or.inl (h.1 p, p)\n#check t5")
-          ["t5 : Ex Nat (fun n => Ex Nat (fun m => And (n = m) (m = n)))"] },
+          ["t5 : ∃ n, ∃ m, n = m ∧ m = n"] },
     { name := "13f: let with a tuple pattern of three or more names", run := fun _ =>
         okLib ("import Prelude\ndef f (p : Nat × Nat × Nat) : Nat := let (a, b, c) := p; a + b * c\n#eval f (1, 2, 3)\n" ++
           "def g (p : Nat × Bool × Nat × Nat) : Nat := let (a, b, c, d) := p; match b with\n  | .true => a + c + d\n  | .false => 0\n" ++
@@ -361,7 +467,7 @@ def languageGroup : Group where
         let s := runFrontend (R := ZeroOneMany) input { trustedModule := Tests.libModule, loader := fun m => if m == "Int" then some int else lib m }
         let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render input
         unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
-        checkEq (repr [".cons (.mk 1) (.cons (.mk 2) .nil)", ".cons 1 (.cons 2 .nil)", ".cons (.mk 255) (.cons (.mk 3) .nil)"]).pretty
+        checkEq (repr [".cons (.mk 1 ()) (.cons (.mk 2 ()) .nil)", ".cons 1 (.cons 2 .nil)", ".cons (.mk 255 ()) (.cons (.mk 3 ()) .nil)"]).pretty
           (repr (s.messages.toList.map (·.text))).pretty },
     { name := "... instance binders and Enum [..] still parse", run := fun _ =>
         okLib ("import Prelude\ndef f {m : Type → Type} [Monad m] : m Nat := Monad.pure 1\n" ++
@@ -382,6 +488,12 @@ def languageGroup : Group where
     { name := "... an importer may define the same notation at another meaning", run := fun _ =>
         okLoc locMod "import Loc\ninfixr:67 \" & \" => List.append\n#eval [1] & [2]\nsyntax (name := shout) \"shout\" term : term\nmacro_rules\n  | `(term| shout $x) => `(term| [$x])\n#eval shout 1"
           [".cons 1 (.cons 2 .nil)", ".cons 1 .nil"] },
+    { name := "local instance: found in its module, not by importers (11w)", run := fun _ => do
+        let m := "import Prelude\nclass Dflt (A : Type) where\n  dflt : A\nlocal instance : Dflt Nat := Dflt.mk 7\ndef seven : Nat := Dflt.dflt\n"
+        okLoc m "import Loc\n#eval seven" ["7"]
+        failsLoc m "import Loc\ndef x : Nat := Dflt.dflt" "failed to synthesize an instance of Dflt Nat"
+        -- the importer may give its own
+        okLoc m "import Loc\ninstance : Dflt Nat := Dflt.mk 3\n#eval (Dflt.dflt : Nat)" ["3"] },
     { name := "... in the main file it is ordinary notation; only grammar commands can be local", run := fun _ => do
         okLib "import Prelude\nlocal infixl:65 \" +! \" => Nat.add\n#eval 1 +! 2" ["3"]
         failsLib "import Prelude\nlocal def x : Nat := 1" "can be `local`" },
@@ -398,7 +510,38 @@ def languageGroup : Group where
         let prelude ← IO.FS.readFile "lib/Prelude.wiz"
         let input := calcDsl "" ++ "#eval run_calc when [isZero] [0] yes [no] [yes] no [no (no yes)] done"
         let s := runFrontend (R := ZeroOneMany) input { trustedModule := Tests.libModule, loader := fun m => if m == "Prelude" then some prelude else none }
-        check ((s.messages.filter (·.severity == .error)).size > 0) "expected errors" }
+        check ((s.messages.filter (·.severity == .error)).size > 0) "expected errors" },
+    { name := "notation prints as notation: arithmetic, lists, Booleans, logic (11r)", run := fun _ =>
+        okLib ("import Prelude\nimport Logic\n#check fun (n : Nat) => n + 1\n#check fun (a b : Nat) => a * (b + 1) - a\n" ++
+          "#check fun (xs ys : List Nat) => xs ++ ys\n#check [1, 2, 3]\n#check ([] : List Nat)\n" ++
+          "#check fun (x : Nat) (xs : List Nat) => List.cons x xs\n" ++
+          "#check fun (b c : Bool) => if b then c else !c\n#check fun (b c : Bool) => b && c || !b\n" ++
+          "#check fun (P Q : Prop) => P ∧ Q → Q ∨ ¬ P\n#check ∃ (n : Nat), n = n\n#check fun (f : Nat → Nat) => (fun x => x) (f 1) + 2")
+          ["fun n => n + 1 : Nat → Nat", "fun a b => a * (b + 1) - a : Nat → Nat → Nat",
+           "fun xs ys => xs ++ ys : List Nat → List Nat → List Nat", "[1, 2, 3] : List Nat", "[] : List Nat",
+           "fun x xs => List.cons Nat x xs : Nat → List Nat → List Nat",
+           "fun b c => if b then c else !c : Bool → Bool → Bool", "fun b c => b && c || !b : Bool → Bool → Bool",
+           "fun P Q => P ∧ Q → Q ∨ ¬P : Prop → Prop → Prop", "∃ n, n = n : Prop",
+           "fun f => (fun x => x : Nat → Nat) (f 1) + 2 : (Nat → Nat) → Nat"] },
+    { name := "... not with set_option pp.notation false (or pp.all)", run := fun _ =>
+        okLib ("import Prelude\nset_option pp.notation false\n#check fun (n : Nat) => n + 1\n#check [1]\n" ++
+          "set_option pp.notation true\n#check [1]\nset_option pp.all true\n#check [1]")
+          ["fun n => HAdd.hAdd Nat Nat Nat (instHAdd Nat instAddNat) n 1 : Nat → Nat", "List.cons Nat 1 (List.nil Nat) : List Nat",
+           "[1] : List Nat", "List.cons Nat 1 (List.nil Nat) : List Nat"] },
+    { name := "... in messages: a type mismatch", run := fun _ =>
+        failsLib "import Prelude\ndef f (n : Nat) : n + 1 = 2 := refl n" "expected: n + 1 = 2" },
+    { name := "... user notation, declared unexpanders and parenthesisation", run := fun _ =>
+        okLib ("import Prelude\ninfixr:67 \" :> \" => List.cons\ndef twice (n : Nat) : Nat := n + n\n" ++
+          "syntax:lead (name := dbl) \"dbl \" term:max : term\napp_unexpander twice\n  | `(term| $f $x) => `(term| dbl $x)\n" ++
+          "#check fun (x : Nat) (xs : List Nat) => List.cons x (List.cons x xs)\n#check fun (n : Nat) => twice (n + 1) * 2\n" ++
+          "#check fun (n : Nat) => twice (twice n)")
+          ["fun x xs => x :> x :> xs : Nat → List Nat → List Nat", "fun n => dbl (n + 1) * 2 : Nat → Nat",
+           "fun n => dbl (dbl n) : Nat → Nat"] },
+    { name := "... local notation's unexpanders end with the module", run := fun _ =>
+        okLoc locMod "import Loc\n#check fun (x : Nat) (xs : List Nat) => List.cons x xs\n#check fun (a b : String) => a &&& b"
+          ["fun x xs => List.cons Nat x xs : Nat → List Nat → List Nat", "fun a b => a &&& b : String → String → String"] },
+    { name := "... an unexpander that is not an Unexpander is rejected", run := fun _ =>
+        failsLib "import Prelude\ndef notOne : Nat := 1\nattribute [app_unexpander List.nil] notOne" "is not an unexpander" }
   ]
 
 builtin_initialize registerGroup languageGroup

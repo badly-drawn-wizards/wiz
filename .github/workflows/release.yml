@@ -1,7 +1,8 @@
 # Release tarballs (stages 26d, 26g): what `tower` installs with `--source release`, and
 # what you can untar by hand (scripts/release-tarball.sh describes the layout).
 #
-# * a tag vX.Y.Z: a GitHub release of that tag with wiz-x86_64-linux.tar.gz (+ .sha256);
+# * a tag vX.Y.Z: a GitHub release of that tag with wiz-x86_64-linux.tar.gz (+ .sha256),
+#   once the exercise tree builds (the `exercises` job; nothing is published if it fails);
 # * a push to master: the pre-release `snapshot-<sha>` of that commit, then old snapshots
 #   are pruned (scripts/release-snapshots.sh); the tag `nightly` moves to it only once CI
 #   has passed on that commit (nightly.yml);
@@ -26,6 +27,9 @@ on:
     paths:
       - scripts/release-tarball.sh
       - scripts/bundle-cc.sh
+      - web/**
+      - scripts/bundle-cc.sources
+      - scripts/release-licenses/**
       - .github/workflows/release.yml
       - Tower/**
       - scripts/release-snapshots.sh
@@ -49,8 +53,47 @@ permissions:
   contents: write # creating releases and uploading assets
 
 jobs:
+  # The exercise tree, generated from this one (docs/exercises.md): it must build, checked
+  # only for a release tag (between releases it may bitrot). The tarball job waits for it,
+  # so a tag whose exercise tree doesn't build publishes nothing. Its Lake cache is saved
+  # by tag runs only (a few per year), so it doesn't crowd the main builds out of the
+  # repository's 10 GB Actions cache.
+  exercises:
+    name: exercise tree
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: nix develop --command bash -eo pipefail {0}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup
+        with:
+          cachix-name: badlydrawnwizards
+      - name: Generate the exercise tree
+        run: python3 scripts/mkexercises.py . "$RUNNER_TEMP/exercises"
+      - name: Cache its Lake build
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/exercises/.lake
+          key: exercises-${{ runner.os }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-${{ hashFiles('lakefile.*', '**/*.lean') }}
+          restore-keys: exercises-${{ runner.os }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-
+      - name: lake build (exercise tree)
+        env:
+          LAKE_CACHE_DIR: ${{ runner.temp }}/exercises/.lake/cache
+        run: |
+          # (the dev shell comes from this checkout's flake; the build runs in the copy)
+          cd "$RUNNER_TEMP/exercises"
+          lake build wiz grail tests
+
   tarball:
     name: release tarball (x86_64-linux)
+    # after the exercise tree for a tag; without one (master, PRs, dispatch) it is skipped
+    needs: exercises
+    if: ${{ !cancelled() && (needs.exercises.result == 'success' || needs.exercises.result == 'skipped') }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
@@ -100,23 +143,58 @@ jobs:
             ldd .lake/build/bin/$b
             if ldd .lake/build/bin/$b | grep -q /nix/store; then echo "$b links /nix/store paths"; exit 1; fi
           done
+      # 11w: the web infoview (Web.wiz → C → Wasm with Emscripten), which `wiz lsp` serves
+      # for wiz.nvim's :WizInfoviewBrowser. (A dispatched old commit may not have it.)
+      - name: Build the web infoview?
+        id: web
+        run: |
+          if grep -q -- --gmp-src web/build.sh 2>/dev/null; then echo "web=yes" >> "$GITHUB_OUTPUT"; else echo "web=no" >> "$GITHUB_OUTPUT"; fi
+      - name: Emscripten
+        if: steps.web.outputs.web == 'yes'
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 6.0.9
+          actions-cache-folder: emsdk-cache
+      - name: The web infoview (Wasm)
+        if: steps.web.outputs.web == 'yes'
+        run: |
+          start=$(date +%s)
+          # GMP's source, for mini-gmp: the mirrors scripts/bundle-cc.sources lists for it
+          line=$(grep '^gmp-6.3.0.tar.xz ' .release-tools/scripts/bundle-cc.sources)
+          sum=$(echo "$line" | cut -d' ' -f2)
+          for u in $(echo "$line" | cut -d' ' -f3-); do
+            curl -sSfL --retry 2 -o gmp-6.3.0.tar.xz "$u" && echo "$sum  gmp-6.3.0.tar.xz" | sha256sum -c && break
+            rm -f gmp-6.3.0.tar.xz
+          done
+          [ -f gmp-6.3.0.tar.xz ] || { echo "no mirror had GMP's source"; exit 1; }
+          sh web/build.sh web-out --gmp-src gmp-6.3.0.tar.xz
+          ls -l web-out
+          echo "web infoview built in $(( $(date +%s) - start )) s"
       # 26f: does the built commit use share/wiz/cc? (a dispatched old one may not)
       - name: Bundle a C toolchain?
         id: bundle
         run: |
           if grep -q withBundled Wiz/Toolchain.lean; then echo "cc=yes" >> "$GITHUB_OUTPUT"; else echo "cc=no" >> "$GITHUB_OUTPUT"; fi
+      # the bundle's downloads (scripts/bundle-cc.sources), so a rebuild of the bundle
+      # needs no outside server; master also copies them to the release bundle-inputs
+      - name: Cache the bundle's downloads
+        if: steps.bundle.outputs.cc == 'yes'
+        uses: actions/cache@v4
+        with:
+          path: bundle-downloads
+          key: bundle-inputs-${{ hashFiles('.release-tools/scripts/bundle-cc.sources') }}
       - name: Cache the bundled C toolchain
         if: steps.bundle.outputs.cc == 'yes'
         uses: actions/cache@v4
         with:
           path: cc-bundle
-          key: release-cc-${{ runner.os }}-${{ hashFiles('lean-toolchain', '.release-tools/scripts/bundle-cc.sh') }}
+          key: release-cc-${{ runner.os }}-${{ hashFiles('lean-toolchain', '.release-tools/scripts/bundle-cc.sh', '.release-tools/scripts/bundle-cc.sources') }}
       - name: The bundled C toolchain (clang, glibc 2.27 sysroot, static GMP and GC)
         if: steps.bundle.outputs.cc == 'yes'
         run: |
           if [ ! -x cc-bundle/bin/cc ]; then
             sudo apt-get install -y -q m4 >/dev/null # GMP's configure
-            sh .release-tools/scripts/bundle-cc.sh cc-bundle
+            sh .release-tools/scripts/bundle-cc.sh cc-bundle bundle-downloads
           fi
           du -sh cc-bundle
           # what the compiler itself needs (Lean's libLLVM/libclang-cpp: glibc 2.30)
@@ -124,10 +202,15 @@ jobs:
             [ -L "$f" ] || echo "$(objdump -T "$f" | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -1) $f"
           done
       - name: Tarball
+        env:
+          BUNDLE_CC: ${{ steps.bundle.outputs.cc }}
+          BUNDLE_WEB: ${{ steps.web.outputs.web }}
         run: |
           mkdir -p dist
-          cc=; [ "${{ steps.bundle.outputs.cc }}" = yes ] && cc=cc-bundle
-          .release-tools/scripts/release-tarball.sh dist/wiz-x86_64-linux.tar.gz .lake/build/bin "$(git rev-parse HEAD)" $cc
+          cc=; [ "$BUNDLE_CC" = yes ] && cc="cc-bundle"
+          web=; [ "$BUNDLE_WEB" = yes ] && web="web-out"
+          [ -z "$cc" ] && [ -n "$web" ] && { echo "a web dir needs the cc argument before it"; exit 1; }
+          .release-tools/scripts/release-tarball.sh dist/wiz-x86_64-linux.tar.gz .lake/build/bin "$(git rev-parse HEAD)" $cc $web
           ls -l dist
       - name: The tarball builds programs with no C compiler or GMP installed (plain Ubuntu containers)
         # the acceptance test of 26f: the images have no gcc, cc, clang, libgmp or libc
@@ -200,17 +283,58 @@ jobs:
           PATH="$d/.tower/bin:$PATH" wiz check io.wiz
           PATH="$d/.tower/bin:$PATH" wiz build io.wiz -o io && ./io | head -1
           PATH="$d/.tower/bin:$PATH" tower toolchain list
+      # docs/release.md: tower-init.sh installs this tarball as the toolchain of a tag (a
+      # simulated one in a scratch directory for master; the tag itself for a tag push), and
+      # the toolchain's URLs, contents and commands are checked; a tag publishes nothing if
+      # it fails. Not for PRs (their branch may predate the repository's URLs) or a
+      # dispatched old commit (its tarball predates the checks).
+      - name: Install smoke test (tower-init.sh, a tag, the wiz-pl URLs)
+        if: steps.bundle.outputs.cc == 'yes' && github.event_name == 'push' && inputs.commit == ''
+        run: |
+          tag=v0.0.0
+          case "$GITHUB_REF" in refs/tags/v*) tag=$GITHUB_REF_NAME ;; esac
+          sh .release-tools/scripts/test-release-install.sh dist/wiz-x86_64-linux.tar.gz "$tag" "${{ github.repository }}"
+      - name: Mirror the bundle's downloads (the release bundle-inputs, the last mirror bundle-cc.sh tries)
+        if: steps.bundle.outputs.cc == 'yes' && github.event_name == 'push' && github.ref == 'refs/heads/master'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          r="-R ${{ github.repository }}"
+          gh release view bundle-inputs $r >/dev/null 2>&1 ||
+            gh release create bundle-inputs $r --prerelease --target "$GITHUB_SHA" --title "Inputs of the bundled C toolchain" \
+              --notes "Copies of the files scripts/bundle-cc.sources lists (sha256-checked there), the last mirror scripts/bundle-cc.sh tries. Not a Wiz release."
+          have=$(gh release view bundle-inputs $r --json assets --jq '.assets[].name')
+          for f in bundle-downloads/*; do
+            case $f in *.part) continue ;; esac
+            [ -f "$f" ] || continue
+            echo "$have" | grep -qxF "$(basename "$f")" || gh release upload bundle-inputs $r "$f"
+          done
       - uses: actions/upload-artifact@v4
         with:
           name: wiz-x86_64-linux
           path: dist/
+          # tags and snapshots are also release assets (which cost no Actions storage);
+          # the artifact is a convenience: 90 days for a tag, 7 for a snapshot, 3 for a PR
+          retention-days: ${{ startsWith(github.ref, 'refs/tags/') && 90 || (github.event_name == 'pull_request' && 3 || 7) }}
       - name: Publish (a tag)
         if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
+        # the notes are the tag's section of CHANGELOG.md (`## [X.Y.Z] - date`), which must
+        # exist. A tag's assets are never replaced (docs/stability.md): if the release
+        # exists already (a re-run), this fails; delete a half-made draft by hand first
         run: |
-          gh release create "${GITHUB_REF_NAME}" dist/* --title "Wiz ${GITHUB_REF_NAME}" --notes "Wiz ${GITHUB_REF_NAME}: install with tower (docs/stages/26-tower.md)" ||
-            gh release upload "${GITHUB_REF_NAME}" dist/* --clobber
+          v=${GITHUB_REF_NAME#v}
+          notes=$RUNNER_TEMP/notes.md
+          awk -v h="## [$v]" 'index($0, h) == 1 { on = 1; next } on && /^## \[/ { exit } on' CHANGELOG.md > "$notes"
+          if ! grep -q '[^[:space:]]' "$notes"; then echo "CHANGELOG.md has no section [$v]"; exit 1; fi
+          printf '\nInstall: `curl -sSfL https://raw.githubusercontent.com/%s/%s/scripts/tower-init.sh | sh -s -- %s` (docs/install.md).\n' \
+            "${{ github.repository }}" "$GITHUB_REF_NAME" "$GITHUB_REF_NAME" >> "$notes"
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            echo "release ${GITHUB_REF_NAME} exists already: its assets are not replaced"; exit 1
+          fi
+          gh release create "${GITHUB_REF_NAME}" dist/* --verify-tag --title "Wiz ${GITHUB_REF_NAME}" --notes-file "$notes"
       # snapshot-<sha>, then pruning (26g); nightly.yml moves nightly once CI passed
       - name: Publish (snapshot, from master)
         if: github.event_name == 'push' && github.ref == 'refs/heads/master'

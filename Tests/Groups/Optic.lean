@@ -9,10 +9,7 @@ set_option compiler.extract_closed false
 namespace Tests.Elab
 
 def failsOptic (input : String) (fragment : String) : IO Unit := do
-  let prelude ← IO.FS.readFile "lib/Prelude.wiz"
-  let optic ← IO.FS.readFile "lib/Optic.wiz"
-  let loader : Name → Option String := fun m =>
-    if m == "Prelude" then some prelude else if m == "Optic" then some optic else none
+  let loader ← libLoader
   let s := runFrontend (R := ZeroOneMany) input { loader, trustedModule := Tests.libModule }
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render input
   unless errs.size == 1 do throw (IO.userError s!"expected one error, got {errs.size}: {errs}")
@@ -41,7 +38,17 @@ def opticGroup : Group where
     { name := "an unlawful lens has no GetPut proof", run := fun _ =>
         failsOptic ("import Optic\ndef bad : Lens (List Nat) Nat := fun s => match s with\n" ++
           "  | .nil => (0, fun a => List.cons a List.nil)\n  | .cons x xs => (x, fun a => List.cons a (List.cons a xs))\n" ++
-          "def badGP : Lens.GetPut bad := fun s => refl s") "type mismatch" }
+          "def badGP : Lens.GetPut bad := fun s => refl s") "type mismatch" },
+    { name := "the frame rule for values: a zoom keeps every independent place", run := fun _ => do
+        okOptic ("import Optic\n" ++
+          "def t (m : Nat → Result (Unit × Nat)) (s : Pair2 Nat Nat) :\n" ++
+          "    Result.All (fun (p : Unit × Pair2 Nat Nat) => (Pair2.sndL p.2).1 = (Pair2.sndL s).1) (zoom Pair2.fstL m s) :=\n" ++
+          "  zoom.frame Pair2.fstL Pair2.sndL Pair2.indep m s")
+        -- the zoomed place itself is not kept
+        failsOptic ("import Optic\n" ++
+          "def bad (m : Nat → Result (Unit × Nat)) (s : Pair2 Nat Nat) :\n" ++
+          "    Result.All (fun (p : Unit × Pair2 Nat Nat) => (Pair2.fstL p.2).1 = (Pair2.fstL s).1) (zoom Pair2.fstL m s) :=\n" ++
+          "  zoom.frame Pair2.fstL Pair2.sndL Pair2.indep m s") "type mismatch" }
   ]
 
 builtin_initialize registerGroup opticGroup

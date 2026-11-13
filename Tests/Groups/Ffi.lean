@@ -22,7 +22,7 @@ def ffiGroup : Group where
           "def seq2 (1 t : Tok) : IO Nat := IO.then1 (Tok.close t) (IO.pure 3)\n" ++
           "def seq3 (1 t : Tok) : IO Nat := IO.bind (IO.println \"x\") (fun _ => IO.bind (Tok.close t) (fun _ => IO.pure 3))\n" ++
           "def bad (1 t : Tok) : IO Nat := do\n  IO.println \"closing\";\n  Tok.close t;\n  IO.pure 3")
-          "kernel rejected bad: variable t declared with quantity 1 but used ω"
+          "variable t declared with quantity 1 but used ω"
         ioRun ("import IO\ndef main : IO Unit := do1\n  IO.println \"one\";\n  n ← IO.pure 2;\n  let m := n + n;\n  IO.println (Nat.toString m)") "one\n4\n" },
     { name := "... and a linear value is still used exactly once", run := fun _ =>
         ioFails ("import IO\naxiom Tok : Type\naxiom Tok.close : (1 t : Tok) → IO Unit\n" ++ "def bad (1 t : Tok) : IO Unit := do1\n  Tok.close t;\n  Tok.close t")

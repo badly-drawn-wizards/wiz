@@ -129,7 +129,29 @@ def vecGroup : Group where
         let s := runFrontend (R := ZeroOneMany) src { trustedModule := Tests.libModule, loader := ← libLoader }
         let out := String.intercalate "\n" (s.messages.toList.map (·.text))
         check ((out.splitOn "ctor").length == 1 && (out.splitOn "proj").length == 1) s!"a word object in:\n{out}"
-        check ((out.splitOn "wiz_word_ashr").length > 1 && (out.splitOn "wiz_word_slt").length > 1) s!"no natives in:\n{out}" }
+        check ((out.splitOn "wiz_word_ashr").length > 1 && (out.splitOn "wiz_word_slt").length > 1) s!"no natives in:\n{out}" },
+    { name := "22l: the range is a theorem (toNat_lt, ext, cases1)", run := fun _ =>
+        okLibs ("import BitVec\ndef r (x : UIntN 8) : Nat.lt x.toNat 256 = .true := UIntN.toNat_lt x\n" ++
+          "def s (x : IntN 8) : Nat.lt x.toNat 256 = .true := IntN.toNat_lt x\n" ++
+          "def c (x : UIntN 1) : x = 0 ∨ x = 1 := UIntN.cases1 x\n" ++
+          "def e : (UIntN.lor (UIntN.max 8) (UIntN.ofNat 8 3) : UIntN 8) = UIntN.ofNat 8 255 := UIntN.ext _ _ rfl\n") },
+    { name := "22l: closed words with the same bits are equal by rfl, however their range was proved", run := fun _ => do
+        okLibs ("import BitVec\ndef t1 : BitVec.or (BitVec.ofNat 1 1) (BitVec.ofNat 1 0) = BitVec.ofNat 1 1 := rfl\n" ++
+          "def t2 : BitVec.and (BitVec.ofNat 4 12) (BitVec.ofNat 4 10) = BitVec.ofNat 4 8 := rfl\n" ++
+          "def t3 : BitVec.xor (BitVec.ofNat 4 12) (BitVec.ofNat 4 10) = BitVec.ofNat 4 6 := rfl\n" ++
+          "def t4 : BitVec.not (BitVec.ofNat 4 12) = BitVec.ofNat 4 3 := rfl\n" ++
+          "def t5 : BitVec.or (BitVec.ofNat 4 12) (BitVec.ofNat 4 10) = BitVec.ofNat 4 14 := rfl\n" ++
+          "def t6 : UIntN.toIntN (UIntN.ofNat 1 1) = IntN.ofNat 1 1 := rfl\n" ++
+          "def t7 : IntN.toUIntN (IntN.ofNeg 8 1) = UIntN.max 8 := rfl\n" ++
+          "def t8 : BitVec.concat (BitVec.ofNat 4 15) (BitVec.ofNat 4 1) = BitVec.ofNat 8 241 := rfl\n" ++
+          "def t9 : UIntN.zero 3 = UIntN.ofNat 3 0 := rfl\n")
+        failsLibs "import BitVec\ndef bad : BitVec.or (BitVec.ofNat 1 1) (BitVec.ofNat 1 0) = BitVec.ofNat 1 0 := rfl\n" "not definitionally equal" },
+    { name := "22l: concat and ofVec go through ofNat: interpreted and compiled agree", run := fun _ => do
+        let src := "import BitVec\ndef main : Nat := (BitVec.concat (BitVec.ofNat 4 15) (BitVec.ofNat 4 1)).toNat + " ++
+          "1000 * (BitVec.ofVec (Vec.cons Bool.true (Vec.cons Bool.false (Vec.cons Bool.true Vec.nil)))).toNat + " ++
+          "10000 * (UIntN.xor (UIntN.max 3) (UIntN.ofNat 3 2)).toNat\n"
+        okLibs (src ++ "#eval main\n") ["55241"]
+        cRunLibs src "55241" }
   ]
 
 builtin_initialize registerGroup vecGroup

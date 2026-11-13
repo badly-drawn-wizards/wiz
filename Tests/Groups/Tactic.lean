@@ -8,13 +8,6 @@ set_option compiler.extract_closed false
 
 namespace Tests.Elab
 
-/-- Every message of `input` (with `lib/` importable), as `severity: text`, in order. -/
-def msgsLib (input : String) : IO (List String) := do
-  let loader ← preludeLoader
-  let s := runFrontend (R := ZeroOneMany) input { loader, trustedModule := Tests.libModule }
-  pure (s.messages.toList.map fun m =>
-    s!"{match m.severity with | .error => "error" | .warning => "warning" | .info => "info"}: {m.text}")
-
 /-- A language server with `src` open: the server and what it sent (the diagnostics). -/
 def tacticLsp (src : String) : IO (LSP.Server × Array Lean.Json) := do
   let prelude ← IO.FS.readFile "lib/Prelude.wiz"
@@ -141,7 +134,7 @@ def tacticGroup : Group where
         failsLib "import Prelude\ndef k : Nat → Nat := by\n  intros\n  rename_i a, b\n  exact a" "rename_i: more names than inaccessible hypotheses" },
     { name := "an inaccessible name cannot be written", run := fun _ => do
         let ms ← msgsLib "import Prelude\ndef bad : (n : Nat) → Nat := by\n  intros\n  exact n"
-        checkEq ["error: unknown identifier 'n'"] ms },
+        checkEq ["error: unknown identifier 'n'; the hypothesis n✝ is inaccessible: name it with `intro n` or `rename_i n`"] ms },
     { name := "TacticM.introFresh: the binder's name, made fresh, and returned", run := fun _ =>
         okLib ("import Prelude\nsyntax (name := in3) \"in3\" : tactic\n" ++
           "def in3Tac : Tactic := fun _ => do\n  g ← TacticM.mainGoal;\n  p ← TacticM.introFresh g \"\";\n  q ← TacticM.introFresh p.2 \"\";\n  r ← TacticM.introFresh q.2 \"\";\n  s ← TacticM.introFresh r.2 \"n\";\n" ++
@@ -178,6 +171,10 @@ def tacticGroup : Group where
           ["Ent (MList L p) (MList L p)"]
         failsLib "import Prelude\ndef t : Nat := by\n  unfold List.cons\n  exact 0" "unfold: List.cons is not a definition"
         failsLib "import Prelude\ndef t : Nat := by\n  unfold nope\n  exact 0" "unfold: unknown constant nope" },
+    { name := "unfold: a definition by cases applied to a numeral computes its match (a lazy eliminator is forced)", run := fun _ =>
+        okLib ("import Prelude\ndef w2 (a0 a1 : Bool) (i : Nat) : Bool := match i with\n  | .zero => a0\n  | _ => a1\n" ++
+          "def t (a b : Bool) (h : b = .true) : w2 a b 1 = .true := by\n  unfold w2\n  trace_state\n  exact h")
+          ["a : Bool\nb : Bool\nh : b = .true\n⊢ b = .true"] },
     { name := "whnf computes the goal's head; change restates it (checked by conversion)", run := fun _ => do
         okLib (unfoldPrelude ++
           "def t4 (x : Nat) (L : List Nat) (p : Nat) : Ent (MList (.cons x L) p) (MList (.cons x L) p) := by\n  whnf\n  trace_state\n" ++

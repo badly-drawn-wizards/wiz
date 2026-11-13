@@ -138,6 +138,37 @@ def main : IO Unit := IO.bind (MVar.new (A := Nat)) (fun r =>
       IO.println (Nat.toString (a + sumN 2000 s))))))
 "
 
+/-- (15i) Closed definitions first used by several threads at once: each may build the
+table (the first to publish wins), and the memoised suspension inside the constant is
+forced under the lock. -/
+def concCaf : String := "import IO
+import Session
+import MVar
+def range : Nat → List Nat → List Nat
+  | .zero, acc => acc
+  | .succ n, acc => range n (.cons n acc)
+def sum : List Nat → Nat
+  | .nil => 0
+  | .cons x xs => x + sum xs
+def table : List Nat := range 2000 .nil
+def lazySum : Unit → Nat := memo (fun _ => sum table)
+def work : Nat → Nat → Nat
+  | .zero, acc => acc
+  | .succ k, acc => work k (acc + sum table + lazySum ())
+def spawnN (done : MVar Nat) : Nat → IO Unit
+  | .zero => IO.pure ()
+  | .succ k => Chan.fork Proto.done (fun c => Chan.close c (MVar.put done (work 100 0)))
+      (fun c => Chan.close c (spawnN done k))
+def waitN (done : MVar Nat) : Nat → Nat → IO Nat
+  | .zero, acc => IO.pure acc
+  | .succ k, acc => IO.bind (MVar.take done) (fun n => waitN done k (acc + n))
+def main : IO Unit := do1
+  done ← MVar.new (A := Nat);
+  spawnN done 8;
+  n ← waitN done 8 0;
+  IO.println (Nat.toString n)
+"
+
 def concGroup : Group where
   name := "conc"
   exercise := "lib/Session.wiz, lib/MVar.wiz, runtime threads (stage 25)"
@@ -157,10 +188,64 @@ def concGroup : Group where
         cRunLibs concCancel "cancelled after 30\n"
         cRunLibs (concCancel.replace "def main : IO Unit := Chan.fork (items 3) (serveItems 3 0) (fun c => client c)" "" ++
           "def main : IO Unit := Chan.fork (items 2) (serveItems 2 0) (fun c => full c)") "all: 3\n" },
+    { name := "owned handles (lib/Handle.wiz): released exactly once, no use after release", run := fun _ => do
+        cRunLibs ("import Handle\n" ++
+          "-- write a file through an owned handle, release it, read it back\n" ++
+          "def writeLog (p : String) : EIO Unit :=\n" ++
+          "  File.withOwned p \"w\" (fun f o =>\n" ++
+          "    Handle.use f o (fun f => File.write f \"one\\n\") (fun r1 o =>\n" ++
+          "    Handle.use f o (fun f => File.write f \"two\\n\") (fun r2 o =>\n" ++
+          "    File.releaseOwned f o (fun r => IO.pure r))))\n" ++
+          "def main : IO Unit := EIO.toIO (EIO.bind FS.createTempDir (fun d =>\n" ++
+          "  let p := Path.join d \"log.txt\";\n" ++
+          "  EIO.bind (writeLog p) (fun _ => EIO.bind (FS.readFile p) (fun s =>\n" ++
+          "    EIO.bind (FS.removeAll d) (fun _ => EIO.lift (IO.print s))))))\n") "one\ntwo\n"
+        failsLibs "import Handle\n-- a handle that is never released\ndef leak (p : String) : EIO Unit := File.withOwned p \"w\" (fun f o => EIO.pure ())" "quantity 1"
+        failsLibs "import Handle\n-- released twice\ndef twice (p : String) : EIO Unit := File.withOwned p \"w\" (fun f o =>\n  File.releaseOwned f o (fun _ => File.releaseOwned f o (fun r => IO.pure r)))" "quantity 1"
+        failsLibs "import Handle\n-- used after release\ndef after (p : String) : EIO Unit := File.withOwned p \"w\" (fun f o =>\n  File.releaseOwned f o (fun _ => Handle.use f o (fun f => File.write f \"x\") (fun r o => File.releaseOwned f o (fun r => IO.pure r))))" "quantity 1"
+        failsLibs "import Handle\ndef forge (f : File) : IO (Owned f) := Owned.mint" "private"
+        failsLibs "import Handle\n-- a second token for an owned handle (natives-review M6-1): Handle.own is private\ndef twice (p : String) : EIO Unit := File.withOwned p \"w\" (fun f o => Handle.own f (fun o2 =>\n  File.releaseOwned f o (fun _ => Handle.use f o2 (fun f => File.write f \"after release\\n\") (fun r o2 =>\n  File.releaseOwned f o2 (fun r => IO.pure r)))))" "private"
+        failsLibs "import Handle\n-- re-owning an existing handle through `with` (natives-review M6-1): Handle.with is private\ndef again (f : File) : EIO Unit := Handle.with (EIO.pure f) (fun g o => File.releaseOwned g o (fun r => IO.pure r))" "private" },
+    { name := "IO1: actions with a linear result, `x ⇐ e` in do1; owned handles in direct style", run := fun _ => do
+        cRunLibs ("import Handle\n" ++
+          "-- direct style: the token is threaded through `do1`\n" ++
+          "def writeLog (p : String) : EIO Unit :=\n" ++
+          "  File.withOwned p \"w\" (fun f o => do1\n" ++
+          "    (r1, o) ⇐ File.writeOwned f o \"one\\n\";\n" ++
+          "    (r2, o) ⇐ File.writeOwned f o \"two\\n\";\n" ++
+          "    File.closeOwned f o)\n" ++
+          "def main : IO Unit := EIO.toIO (EIO.bind FS.createTempDir (fun d =>\n" ++
+          "  let p := Path.join d \"log.txt\";\n" ++
+          "  EIO.bind (writeLog p) (fun _ => EIO.bind (FS.readFile p) (fun s =>\n" ++
+          "    EIO.bind (FS.removeAll d) (fun _ => EIO.lift (IO.print s))))))\n") "one\ntwo\n"
+        okLibs "import IO\naxiom Tok : Type\naxiom Tok.new : IO1 Tok\naxiom Tok.use : (1 t : Tok) → (n : Nat) → IO1 ((r : Nat) × Tok)\naxiom Tok.close : (1 t : Tok) → IO Unit\ndef prog : IO Nat := do1\n  t ⇐ Tok.new;\n  (r, t) ⇐ Tok.use t 3;\n  Tok.close t;\n  IO.pure r"
+        failsLibs "import IO\naxiom Tok : Type\naxiom Tok.new : IO1 Tok\naxiom Tok.close : (1 t : Tok) → IO Unit\n-- the token is dropped\ndef leak : IO Nat := do1\n  t ⇐ Tok.new;\n  IO.pure 3" "quantity 1"
+        failsLibs "import Handle\n-- the token is not given back to a release (a leak)\ndef leak (p : String) : EIO Unit :=\n  File.withOwned p \"w\" (fun f o => do1\n    (r1, o) ⇐ File.writeOwned f o \"one\\n\";\n    IO.pure r1)" "quantity 1" },
+    { name := "Ref: cells owned by linear points-to tokens; a function's type is its triple", run := fun _ => do
+        cRunLibs ("import Ref\n" ++
+          "-- swap through two tokens: the type is the triple {p ↦ a ⋆ q ↦ b} swap {p ↦ b ⋆ q ↦ a}\n" ++
+          "def swap {V B : Type} (p q : Loc V) {0 a b : V} (1 tp : Pts p a) (1 tq : Pts q b)\n" ++
+          "    (1 k : (1 tp : Pts p b) → (1 tq : Pts q a) → IO B) : IO B :=\n" ++
+          "  Ref.get p tp (fun x ex tp => Ref.get q tq (fun y ey tq =>\n" ++
+          "    Ref.set p y tp (fun tp => Ref.set q x tq (fun tq =>\n" ++
+          "      k (Pts.cast ey tp) (Pts.cast ex tq)))))\n" ++
+          "def main : IO Unit :=\n" ++
+          "  Ref.new 1 (fun p tp => Ref.new 2 (fun q tq =>\n" ++
+          "    swap p q tp tq (fun tp tq =>\n" ++
+          "      Ref.get p tp (fun x _ tp => Ref.get q tq (fun y _ tq =>\n" ++
+          "        Ref.free p tp (Ref.free q tq (IO.println (String.append (Nat.toString x) (String.append \" \" (Nat.toString y))))))))))\n") "2 1\n"
+        failsLibs "import Ref\n-- a token can't be dropped\ndef leak : IO Unit := Ref.new 1 (fun p tp => IO.pure ())" "quantity 1"
+        failsLibs "import Ref\n-- the triple in the type is checked: this isn't swap\ndef notSwap {V B : Type} (p q : Loc V) {0 a b : V} (1 tp : Pts p a) (1 tq : Pts q b)\n    (1 k : (1 tp : Pts p b) → (1 tq : Pts q a) → IO B) : IO B := k tp tq" "mismatch"
+        failsLibs "import Ref\n-- tokens can't be forged\ndef forge {V : Type} (l : Loc V) (v : V) : IO ((l : Loc V) × Pts l v) := Ref.newRaw v" "private"
+        -- no use after free: the token is gone
+        failsLibs "import Ref\ndef uaf : IO Nat := Ref.new 1 (fun p tp => Ref.free p tp (Ref.get p tp (fun x _ tp => Ref.free p tp (IO.pure x))))" "quantity 1"
+        failsLibs "import Ref\n-- a stale token can't read: the cell was written, the old token is gone\ndef stale : IO Nat := Ref.new 1 (fun p tp => Ref.set p 5 tp (fun tp' => Ref.get p tp (fun x _ t => Ref.free p t (Ref.free p tp' (IO.pure x)))))" "quantity 1" },
     { name := "MVars and locks: eight threads, one counter", run := fun _ =>
         cRunLibs concCounter "8000\n" },
     { name := "a lazy stream shared between threads", run := fun _ =>
         cRunLibs concStream "3998000\n" },
+    { name := "closed definitions (CAFs, 15i) used by eight threads at once: a table and a memoised suspension in it", run := fun _ =>
+        cRunLibs concCaf "3198400000\n" },
     { name := "an endpoint can't be used twice, dropped, or closed twice", run := fun _ => do
         failsLibs (concSum ++ "def twice (1 c : Chan sumProto) : IO Nat :=\n" ++
           "  Chan.send c 1 (fun c' => runClient 1 c)") "quantity 1"

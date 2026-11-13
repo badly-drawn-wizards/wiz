@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 """Helpers for .github/workflows/ci.yml.
 
-  scripts/ci.py matrix [BIN]         the shards of .github/test-shards.json as a JSON
+  scripts/ci.py matrix [--only JSON] [BIN]
+                                     the shards of .github/test-shards.json as a JSON
                                      matrix (one line, for $GITHUB_OUTPUT); each shard's
-                                     selectors are joined by newlines. A shard with
+                                     selectors are joined by newlines, and "heavy"
+                                     says whether it may use the self-hosted runner;
+                                     with --only ["NAME",…], only those shards (and
+                                     their parts) A shard with
                                      "split": N becomes N shards NAME-1 … NAME-N, its
                                      cases balanced by .github/test-timings.json (needs
                                      the test driver BIN; default .lake/build/bin/tests)
@@ -14,6 +18,14 @@
                                      (`Group.shard`) or to the shard with
                                      "default": true (`resolved`)
   scripts/ci.py plan [BIN]           the split shards' parts with their estimated times
+  scripts/ci.py changes BASE [HEAD]  what a change needs (path filters): reads the files
+                                     that differ between BASE and HEAD (git diff
+                                     BASE HEAD; CI: a PR's merge commit and its first
+                                     parent) and prints GitHub outputs: code=true
+                                     unless only docs changed, and shards=[NAMES], the
+                                     shards of .github/test-shards.json to run (each
+                                     shard's "inputs", see `needed_shards`). `changes
+                                     --all` prints everything
   scripts/ci.py summary TITLE FILE.. a Markdown summary for $GITHUB_STEP_SUMMARY of
                                      `lake test` logs (*.log: pass/fail, failing cases)
                                      and `--timings` files (*.jsonl: a table of every
@@ -38,7 +50,7 @@ Selectors are the arguments of `lake test --`: `=NAME` selects the group NAME,
 `=NAME#I,J` the cases I and J of it, anything else is a prefix of group names (see
 Tests/Main.lean).
 """
-import json, os, re, subprocess, sys
+import fnmatch, json, os, re, subprocess, sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SHARDS = os.path.join(ROOT, ".github", "test-shards.json")
@@ -187,9 +199,18 @@ def expanded(binary, base=None):
     return out
 
 
-def matrix(binary):
-    print(json.dumps({"shard": [{"name": n, "select": "\n".join(sel)}
-                                for n, sel, _ in expanded(binary)]}, ensure_ascii=False))
+def matrix(binary, only=None):
+    # "heavy": true shards (and the parts of a split one) may run on the self-hosted
+    # runner (vars.WIZ_RUNNER_HEAVY, docs/ci-runner.md)
+    heavy = {s["name"] for s in shards() if s.get("heavy")}
+    split = {s["name"] for s in shards() if s.get("split", 1) > 1}
+    def is_heavy(n):
+        base = n.rsplit("-", 1)[0]
+        return n in heavy or (base in split and base in heavy)
+    def wanted(n):
+        return only is None or n in only or (n.rsplit("-", 1)[0] in split and n.rsplit("-", 1)[0] in only)
+    print(json.dumps({"shard": [{"name": n, "select": "\n".join(sel), "heavy": is_heavy(n)}
+                                for n, sel, _ in expanded(binary) if wanted(n)]}, ensure_ascii=False))
 
 
 def plan(binary):
@@ -244,6 +265,79 @@ def check_shards(binary):
                 warn(f"{len(new)} cases of the split shard {s['name']!r} are unbalanced: not in "
                      f".github/test-timings.json (estimated at their group's median)", "Shard balance")
     print(f"ok: {len(groups)} groups, {len(runs)} cases, each in exactly one of {len(parts)} shards")
+    return 0
+
+
+# Path filters (`changes`). Files only people read: a change of only these runs no build
+# and no tests.
+DOCS = ["docs/*", "*.md", "LICENSE", "COPYING*"]
+# Files every shard depends on: the Lean sources (compiler, tests, grail, tower), the
+# build and its toolchain, the C runtime, CI itself. A change to any runs every shard.
+EVERYTHING = ["*.lean", "lakefile.*", "lean-toolchain", "lake-manifest.json", "flake.*",
+              "devenv.*", ".envrc", "runtime/*", "c/*", "scripts/*", ".github/*", "grail.wiz"]
+
+
+def matches(path, globs):
+    """fnmatch with `*` crossing `/` (so `docs/*` is the whole tree, `*.md` any file)."""
+    return any(fnmatch.fnmatchcase(path, g) for g in globs)
+
+
+def lib_closure(paths):
+    """`paths` plus the lib/ files they import, transitively (`import A.B` is
+    lib/A/B.wiz)."""
+    out, todo = set(), list(paths)
+    while todo:
+        p = todo.pop()
+        if p in out:
+            continue
+        out.add(p)
+        try:
+            text = open(os.path.join(ROOT, p)).read()
+        except OSError:
+            continue
+        for m in re.finditer(r"^import ([\w.]+)", text, re.M):
+            todo.append("lib/" + m.group(1).replace(".", "/") + ".wiz")
+    return out
+
+
+def needed_shards(files):
+    """The shards a change needs: all of them when a file of EVERYTHING changed; else a
+    shard with "inputs" (globs; lib/ files among them bring the lib/ files they import)
+    when one of its inputs changed, and a shard without "inputs" when anything but docs
+    changed. Nothing for a docs-only change."""
+    code = [f for f in files if not matches(f, DOCS)]
+    ss = shards()
+    if any(matches(f, EVERYTHING) for f in code):
+        return [s["name"] for s in ss]
+    out = []
+    for s in ss:
+        if "inputs" not in s:
+            if code:
+                out.append(s["name"])
+            continue
+        globs = list(s["inputs"])
+        plain = [g for g in globs if not any(c in g for c in "*?[")]
+        globs += sorted(lib_closure(plain))
+        if any(matches(f, globs) for f in code):
+            out.append(s["name"])
+    return out
+
+
+def changes(args):
+    if args[:1] == ["--all"]:
+        names = [s["name"] for s in shards()]
+        print("code=true")
+        print(f"shards={json.dumps(names)}")
+        return 0
+    base, head = args[0], (args[1] if len(args) > 1 else "HEAD")
+    out = subprocess.run(["git", "diff", "--name-only", base, head], capture_output=True,
+                         text=True, check=True, cwd=ROOT).stdout
+    files = [f for f in out.split("\n") if f]
+    names = needed_shards(files)
+    code = any(not matches(f, DOCS) for f in files)
+    print(f"code={'true' if code else 'false'}")
+    print(f"shards={json.dumps(names)}")
+    print(f"{len(files)} files changed; code: {code}; shards: {', '.join(names) or 'none'}", file=sys.stderr)
     return 0
 
 
@@ -506,6 +600,11 @@ def make_baseline(paths):
 
 
 def main(args):
+    if args[:2] == ["matrix", "--only"] and len(args) >= 3:
+        matrix(args[3] if len(args) > 3 else DEFAULT_BIN, set(json.loads(args[2])))
+        return 0
+    if args[:1] == ["changes"] and len(args) >= 2:
+        return changes(args[1:])
     binary = args[1] if len(args) > 1 else DEFAULT_BIN
     if args[:1] == ["matrix"]:
         matrix(binary)
