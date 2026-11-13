@@ -2587,6 +2587,21 @@ def Fe.ctorLines : List (String × List (String × Fe.Ty)) → String
 -- value when the borrow ends (the handed-back handle, L3: final-specs without prophecy).
 -- Not covered: a function that returns a borrow (`final result`), binders in a clause
 -- that shadow an argument's name.
+--
+-- Linear mode (`Uniq1`, M4b-1) states the same clauses but on *values*: a linear handle
+-- can't be read in a proposition (its value is only reachable by consuming it with
+-- `Uniq1.peek`/`end`), and a call on an opaque handle doesn't compute, so a `&mut`
+-- argument becomes its value (`x : A`), the call runs inside the borrow scopes a caller
+-- would open (`Uniq1.borrow`, `Uniq1.borrowIn`), and each scope hands its lender's final
+-- value back. `old x` is then `x` and `final x` the lender's final value:
+--
+--   def f.Spec {T…} (x : A) … : Prop :=
+--     P → … → Result.Holds (fun (r : (R × A) × …) => Q₁ × …)
+--       (Uniq1.borrow Region.static x (fun ρ₁ _ _ x => … f x …))
+--
+-- (handle 1's final value is the outermost component of `r`, handle `i` is `r.1…1.2`.)
+-- Not covered in linear mode: a spec with an outlives bound, or with three or more `&mut`
+-- arguments (the handle packs would need repacking).
 
 mutual
 def Fe.toks : Syntax → List String
@@ -2602,24 +2617,31 @@ end
 def Fe.valOf (ps : List (String × Fe.Ty)) (x : String) : String := match Fe.lookup x ps with
   | .some (.ref _ _ _) => "(" +++ x +++ ".val)"
   | _ => x
+-- linear mode: a `&mut` argument's value is the argument itself (the spec takes the
+-- value, not the handle); a handle has no `.val` (only `Uniq1.peek` reads it)
+def Fe.valOfL (ps : List (String × Fe.Ty)) (hs : List String) (x : String) : String :=
+  match Fe.mem x hs with
+  | .true => x
+  | .false => Fe.valOf ps x
 -- the clause's tokens, with `result`, `final x`, `old x` and the arguments replaced
 -- (`fi`/`ol`: the previous token was `final`/`old`)
-def Fe.specGo (ps : List (String × Fe.Ty)) (fin : List (String × String)) (res : String) :
-    Bool → Bool → List String → List String
+def Fe.specGo (ps : List (String × Fe.Ty)) (hs : List String) (fin : List (String × String))
+    (res : String) : Bool → Bool → List String → List String
   | _, _, .nil => .nil
   | .true, _, .cons x rest => .cons (match Fe.lookup x fin with
       | .some e => e
-      | .none => "(final " +++ x +++ ")") (Fe.specGo ps fin res .false .false rest)
-  | .false, .true, .cons x rest => .cons (Fe.valOf ps x) (Fe.specGo ps fin res .false .false rest)
+      | .none => "(final " +++ x +++ ")") (Fe.specGo ps hs fin res .false .false rest)
+  | .false, .true, .cons x rest => .cons (Fe.valOfL ps hs x) (Fe.specGo ps hs fin res .false .false rest)
   | .false, .false, .cons t rest => (match Fe.seq t "final", Fe.seq t "old", Fe.seq t "result" with
-    | .true, _, _ => Fe.specGo ps fin res .true .false rest
-    | _, .true, _ => Fe.specGo ps fin res .false .true rest
-    | _, _, .true => .cons res (Fe.specGo ps fin res .false .false rest)
+    | .true, _, _ => Fe.specGo ps hs fin res .true .false rest
+    | _, .true, _ => Fe.specGo ps hs fin res .false .true rest
+    | _, _, .true => .cons res (Fe.specGo ps hs fin res .false .false rest)
     | _, _, _ => (match Fe.lpre (Fe.chars "result.") (Fe.chars t) with
-      | .true => .cons (res +++ String.mk (Fe.drop 6 (Fe.chars t))) (Fe.specGo ps fin res .false .false rest)
-      | .false => .cons (Fe.valOf ps t) (Fe.specGo ps fin res .false .false rest)))
-def Fe.specToks (ps : List (String × Fe.Ty)) (fin : List (String × String)) (res : String) (ts : List String) : List String :=
-  Fe.specGo ps fin res .false .false ts
+      | .true => .cons (res +++ String.mk (Fe.drop 6 (Fe.chars t))) (Fe.specGo ps hs fin res .false .false rest)
+      | .false => .cons (Fe.valOfL ps hs t) (Fe.specGo ps hs fin res .false .false rest)))
+def Fe.specToks (ps : List (String × Fe.Ty)) (hs : List String) (fin : List (String × String))
+    (res : String) (ts : List String) : List String :=
+  Fe.specGo ps hs fin res .false .false ts
 -- the projections of `r` that hold the value and each handed-back argument
 -- (`Fe.packV`: `(v, (x₁, (x₂, …)))`)
 def Fe.handedProj : String → List String → List (String × String)
@@ -2629,18 +2651,43 @@ def Fe.handedProj : String → List String → List (String × String)
 def Fe.packTyStr : String → List String → String
   | ret, .nil => ret
   | ret, .cons h rest => "(" +++ ret +++ " × " +++ Fe.packTyStr h rest +++ ")"
+-- linear mode's result: `Uniq1.borrow` (and `borrowIn`) return the value with the
+-- lender's final value, so with n handles it is nested, handle 1 outermost:
+-- `((R × Aₙ) × …) × A₁`
+def Fe.dots1 : Nat → String
+  | .zero => ""
+  | .succ n => ".1" +++ Fe.dots1 n
+def Fe.nestTy (ret : String) : List String → String
+  | .nil => ret
+  | .cons t .nil => "(" +++ ret +++ " × " +++ t +++ ")"
+  | .cons t ts => "(" +++ Fe.nestTy ret ts +++ " × " +++ t +++ ")"
+-- where the value and handle `i` (1-based) of `n`'s final value sit in the result
+def Fe.linRes (n : Nat) : String := "r" +++ Fe.dots1 n
+def Fe.linFin (i n : Nat) : String := "r" +++ Fe.dots1 (Nat.sub i 1) +++ ".2"
+def Fe.linFins : Nat → Nat → List String → List (String × String)
+  | _, _, .nil => .nil
+  | i, n, .cons x xs => .cons (x, Fe.linFin i n) (Fe.linFins (Nat.succ i) n xs)
+-- the regions of `ts` that are among `rs`, without duplicates
+def Fe.nubStr : List String → List String
+  | .nil => .nil
+  | .cons x xs => (match Fe.mem x xs with
+    | .true => Fe.nubStr xs
+    | .false => .cons x (Fe.nubStr xs))
+def Fe.rgsUsed (rs : List String) : List Fe.Ty → List String
+  | .nil => .nil
+  | .cons t ts => List.append (Fe.filter (fun (r : String) => Fe.mem r rs) (Fe.rgsOf t .nil)) (Fe.rgsUsed rs ts)
 -- the tokens as source: separated by spaces, except after a `.` (`.true`, `x.1`)
 def Fe.joinToks : String → List String → String
   | _, .nil => ""
   | prev, .cons t ts => (match Bool.or (Fe.seq prev "") (Fe.seq prev ".") with
     | .true => t
     | .false => " " +++ t) +++ Fe.joinToks t ts
-def Fe.clauses (ps : List (String × Fe.Ty)) (fin : List (String × String)) (res : String) (k : String) :
-    List (Nat × Syntax) → List String
+def Fe.clauses (ps : List (String × Fe.Ty)) (hs : List String) (fin : List (String × String))
+    (res : String) (k : String) : List (Nat × Syntax) → List String
   | .nil => .nil
   | .cons c cs => (match Fe.is k c.2 with
-    | .true => .cons ("(" +++ Fe.joinToks "" (Fe.specToks ps fin res (Fe.toks (Fe.arg c.2 2))) +++ ")") (Fe.clauses ps fin res k cs)
-    | .false => Fe.clauses ps fin res k cs)
+    | .true => .cons ("(" +++ Fe.joinToks "" (Fe.specToks ps hs fin res (Fe.toks (Fe.arg c.2 2))) +++ ")") (Fe.clauses ps hs fin res k cs)
+    | .false => Fe.clauses ps hs fin res k cs)
 def Fe.joinWith (sep : String) : List String → String
   | .nil => "True"
   | .cons x .nil => x
@@ -2648,7 +2695,52 @@ def Fe.joinWith (sep : String) : List String → String
 def Fe.arrows : List String → String → String
   | .nil, b => b
   | .cons a xs, b => a +++ " → " +++ Fe.arrows xs b
-def Fe.specText (g : Fe.Glob) (p : List Nat) (it : Syntax) : Except String String :=
+-- the type of a parameter in a linear spec: a `&mut` argument is its value
+def Fe.paramTyL (hs : List String) (q : String × Fe.Ty) : Fe.Ty :=
+  match Fe.mem q.1 hs with
+  | .true => Fe.pointee q.2
+  | .false => q.2
+-- linear mode's spec text (see the section comment): the values in, the borrow scopes a
+-- caller would open around the call, the lenders' final values out
+def Fe.specLin (sig : Fe.Sig) (hs : List String) (cls : List (Nat × Syntax))
+    (ev : List (String × (String × String))) : Except String String :=
+  match ev with
+  | .cons _ _ => .error "spec: not supported yet: a `spec` for a function with an outlives bound and `&mut` arguments"
+  | .nil => (match hs with
+    | .nil => .error "spec: an internal error: linear mode with no `&mut` argument"
+    | .cons _ (.cons _ (.cons _ _)) =>
+      .error "spec: not supported yet: a `spec` for a function with three or more `&mut` arguments"
+    | _ =>
+      let n := Fe.len hs;
+      let fin := Fe.linFins 1 n hs;
+      let res := Fe.linRes n;
+      let reqs := Fe.clauses sig.params hs fin res "feral_clause.req" cls;
+      let enss := Fe.clauses sig.params hs fin res "feral_clause.ens" cls;
+      let hts := Fe.map (fun (h : String) => (match Fe.lookup h sig.params with
+        | .some t => Fe.tyStr (Fe.pointee t)
+        | .none => "_")) hs;
+      let rgs := Fe.nubStr (Fe.rgsUsed sig.rgs (Fe.map (fun (q : String × Fe.Ty) => Fe.paramTyL hs q) sig.params));
+      let call := Fe.unwords (.cons sig.name (Fe.map (fun (q : String × Fe.Ty) => q.1) sig.params));
+      let scope := (match hs with
+        | .cons x .nil =>
+          "Uniq1.borrow Region.static " +++ x +++ " (fun ρ1 h1 l1 " +++ x +++ " => " +++ call +++ ")"
+        | .cons x (.cons y .nil) =>
+          "Uniq1.borrow Region.static " +++ x +++ " (fun ρ1 h1 l1 " +++ x +++ " =>\n      "
+            +++ "Uniq1.borrowIn ρ1 " +++ y +++ " " +++ x +++ " (fun ρ2 h2 l2 " +++ x +++ " " +++ y +++ " => "
+            +++ call +++ "))"
+        | _ => "")
+      .ok (Fe.linTypes ("def " +++ sig.name +++ ".Spec "
+        +++ (match rgs with
+          | .nil => ""
+          | rs => "{" +++ Fe.words rs +++ ": Region} ")
+        +++ (match sig.tys with
+          | .nil => ""
+          | ts => "{" +++ Fe.words ts +++ ": Type} ")
+        +++ Fe.words (Fe.map (fun (q : String × Fe.Ty) => "(" +++ q.1 +++ " : " +++ Fe.tyStr (Fe.paramTyL hs q) +++ ")") sig.params)
+        +++ ": Prop :=\n  " +++ Fe.arrows reqs
+          ("Result.Holds (fun (r : " +++ Fe.nestTy (Fe.tyStr sig.ret) hts +++ ") => "
+            +++ Fe.joinWith " × " enss +++ ") (\n    " +++ scope +++ ")"))))
+def Fe.specText (g : Fe.Glob) (p : List Nat) (it : Syntax) (lin : Bool) : Except String String :=
   let f := Fe.id (Fe.arg it 1);
   match Fe.findSig f g.sigs with
   | .none => .error ("spec: no function `" +++ f +++ "` in this block")
@@ -2665,21 +2757,24 @@ def Fe.specText (g : Fe.Glob) (p : List Nat) (it : Syntax) : Except String Strin
         | _ => "r.1");
       let fin := Fe.handedProj "r.2" hs;
       let cls := Fe.kids (Fe.arg it 2);
-      let reqs := Fe.clauses sig.params fin res "feral_clause.req" cls;
-      let enss := Fe.clauses sig.params fin res "feral_clause.ens" cls;
-      let call := Fe.unwords (.cons sig.name (List.append (Fe.map (fun (e : String × (String × String)) => e.1) ev)
-        (Fe.map (fun (q : String × Fe.Ty) => q.1) sig.params)));
-      .ok ("def " +++ sig.name +++ ".Spec "
-        +++ (match sig.rgs with
-          | .nil => ""
-          | rs => "{" +++ Fe.words rs +++ ": Region} ")
-        +++ Fe.words (Fe.map (fun (e : String × (String × String)) => "(0 " +++ e.1 +++ " : Outlives " +++ e.2.1 +++ " " +++ e.2.2 +++ ")") ev)
-        +++ (match sig.tys with
-          | .nil => ""
-          | ts => "{" +++ Fe.words ts +++ ": Type} ")
-        +++ Fe.words (Fe.map (fun (q : String × Fe.Ty) => "(" +++ q.1 +++ " : " +++ Fe.tyStr q.2 +++ ")") sig.params)
-        +++ ": Prop :=\n  " +++ Fe.arrows reqs ("Result.Holds (fun (r : " +++ Fe.packTyStr (Fe.tyStr sig.ret) hts +++ ") => "
-          +++ Fe.joinWith " × " enss +++ ") (" +++ call +++ ")")))
+      match Bool.and lin (Bool.not (Fe.isNil hs)) with
+      | .true => Fe.specLin sig hs cls ev
+      | .false =>
+        let reqs := Fe.clauses sig.params .nil fin res "feral_clause.req" cls;
+        let enss := Fe.clauses sig.params .nil fin res "feral_clause.ens" cls;
+        let call := Fe.unwords (.cons sig.name (List.append (Fe.map (fun (e : String × (String × String)) => e.1) ev)
+          (Fe.map (fun (q : String × Fe.Ty) => q.1) sig.params)));
+        .ok ("def " +++ sig.name +++ ".Spec "
+          +++ (match sig.rgs with
+            | .nil => ""
+            | rs => "{" +++ Fe.words rs +++ ": Region} ")
+          +++ Fe.words (Fe.map (fun (e : String × (String × String)) => "(0 " +++ e.1 +++ " : Outlives " +++ e.2.1 +++ " " +++ e.2.2 +++ ")") ev)
+          +++ (match sig.tys with
+            | .nil => ""
+            | ts => "{" +++ Fe.words ts +++ ": Type} ")
+          +++ Fe.words (Fe.map (fun (q : String × Fe.Ty) => "(" +++ q.1 +++ " : " +++ Fe.tyStr q.2 +++ ")") sig.params)
+          +++ ": Prop :=\n  " +++ Fe.arrows reqs ("Result.Holds (fun (r : " +++ Fe.packTyStr (Fe.tyStr sig.ret) hts +++ ") => "
+            +++ Fe.joinWith " × " enss +++ ") (" +++ call +++ ")")))
 
 -- ## The command macro
 inductive Fe.Item where
@@ -2783,7 +2878,7 @@ def Fe.pass2 (g : Fe.Glob) (mode : Nat) (lin : Bool) : List Fe.Item → Fe.Outp 
     | .bad p m => Fe.pass2 g mode lin rest (Fe.Outp.mk (List.append o.errs (.cons (Syntax.errorAt p m) .nil)) o.notes o.srcs)
     | .data p text => Fe.pass2 g mode lin rest (Fe.Outp.mk o.errs (List.append o.notes (.cons (Syntax.infoAt p text) .nil))
         (List.append o.srcs (.cons (Syntax.sourceAt p text) .nil)))
-    | .spec p stx => (match Fe.specText g p stx with
+    | .spec p stx => (match Fe.specText g p stx lin with
       | .error m => Fe.pass2 g mode lin rest (Fe.Outp.mk (List.append o.errs (.cons (Syntax.errorAt p m) .nil)) o.notes o.srcs)
       | .ok text => Fe.pass2 g mode lin rest (Fe.Outp.mk o.errs (List.append o.notes (.cons (Syntax.infoAt p text) .nil))
           (List.append o.srcs (.cons (Syntax.sourceAt p text) .nil))))
