@@ -144,7 +144,7 @@ def rxM : Mealy (HwTy.El (rxC 4).st) (HwTy.El Line.code) (HwTy.El Byte.code) := 
 
 ------------------------------------------------------------------------------------
 -- 1. Generic tools: from lib/Trace.wiz (Mealy.simulatesInv, Mealy.follows, Mealy.seq,
--- Nat.All, Bool.forall9, Bool.indP) and lib/Hdl/Temporal.wiz (BitVec.eqOfNat).
+-- Nat.All, Bool.forall9, Bool.indP) and UIntN.ext (lib/Word.wiz) for word equality.
 
 ------------------------------------------------------------------------------------
 -- 2. Data as Booleans
@@ -212,16 +212,16 @@ def Uart.frameQ_all : Bool.all9 Uart.frameQ = .true := refl Bool.true
 def Uart.shift8Q_all : Bool.all9 Uart.shift8Q = .true := refl Bool.true
 
 def Uart.shift_reg9 (r : Reg9) : shift9 (reg9 r) = reg9 (Reg9.shift r) :=
-  BitVec.eqOfNat (shift9 (reg9 r)) (reg9 (Reg9.shift r)) rfl rfl
+  UIntN.ext (shift9 (reg9 r)) (reg9 (Reg9.shift r))
     (Nat.eq_of_beq _ _ (Bool.forall9 Uart.shiftQ Uart.shiftQ_all r.r0 r.r1 r.r2 r.r3 r.r4 r.r5 r.r6 r.r7 r.r8))
 def Uart.bit0_reg9 (r : Reg9) : bit0 (reg9 r) = Bool.toBits r.r0 :=
-  BitVec.eqOfNat (bit0 (reg9 r)) (Bool.toBits r.r0) rfl (Bool.indP (fun (b : Bool) => Bool.toBits b = BitVec.mk (BitVec.toNat (Bool.toBits b))) rfl rfl r.r0)
+  UIntN.ext (bit0 (reg9 r)) (Bool.toBits r.r0)
     (Nat.eq_of_beq _ _ (Bool.forall9 Uart.bit0Q Uart.bit0Q_all r.r0 r.r1 r.r2 r.r3 r.r4 r.r5 r.r6 r.r7 r.r8))
 def Uart.frame_byte (d : Bits8) : @frame9 HwTy.El _ (byte d) = reg9 (Reg9.frame d) :=
-  BitVec.eqOfNat (@frame9 HwTy.El _ (byte d)) (reg9 (Reg9.frame d)) rfl rfl
+  UIntN.ext (@frame9 HwTy.El _ (byte d)) (reg9 (Reg9.frame d))
     (Nat.eq_of_beq _ _ (Bool.forall9 Uart.frameQ Uart.frameQ_all d.b0 d.b1 d.b2 d.b3 d.b4 d.b5 d.b6 d.b7 .false))
 def Uart.shift8_byte (d : Bits8) (b : Bool) : shift8 (byte d) (Bool.toBits b) = byte (Bits8.shiftIn d b) :=
-  BitVec.eqOfNat (shift8 (byte d) (Bool.toBits b)) (byte (Bits8.shiftIn d b)) rfl rfl
+  UIntN.ext (shift8 (byte d) (Bool.toBits b)) (byte (Bits8.shiftIn d b))
     (Nat.eq_of_beq _ _ (Bool.forall9 Uart.shift8Q Uart.shift8Q_all d.b0 d.b1 d.b2 d.b3 d.b4 d.b5 d.b6 d.b7 b))
 
 ------------------------------------------------------------------------------------
