@@ -428,9 +428,11 @@ inductive Tac where
   | isDefinition (n : String) (k : Option Bool → Tac)
   -- solvers (stage 28b): ask the SAT solver about a CNF over variables `0 … nvars-1`
   -- (untrusted: `sat_decide` checks the proof); look inside an equation (an opaque handle
-  -- `a = b` at `A`: `(A, a, b)`)
+  -- `a = b` at `A`: `(A, a, b)`); (28a) close goal `g` on an SMT solver's word (trusted:
+  -- --trust-smt; it fails with a counterexample otherwise)
   | satSolve (nvars : Nat) (clauses : List (List Nat)) (k : SatAnswer → Tac)
   | eqView (g : Nat) (e : Expr) (k : Option (Expr × Expr × Expr) → Tac)
+  | smt (g : Nat) (next : Tac)
 
 -- The metaprogramming monad: requests in continuation-passing style, so `bind` is just
 -- composition. Macros and tactics both use it.
@@ -492,6 +494,7 @@ def TacticM.ctorInfo (n : String) : TacticM (Option (String × Nat × Nat)) := f
 -- or an axiom: for those `unfold` returns the term unchanged)? `none` if there is no
 -- constant `n`.
 def TacticM.isDefinition (n : String) : TacticM (Option Bool) := fun k => Tac.isDefinition n k
+def TacticM.smt (g : Nat) : TacticM Unit := fun k => Tac.smt g (k ())
 def TacticM.satSolve (nvars : Nat) (clauses : List (List Nat)) : TacticM SatAnswer := fun k => Tac.satSolve nvars clauses k
 def TacticM.eqView (g : Nat) (e : Expr) : TacticM (Option (Expr × Expr × Expr)) := fun k => Tac.eqView g e k
 def TacticM.tryCatch (t : TacticM Unit) (h : String → TacticM Unit) : TacticM Unit :=
@@ -753,6 +756,16 @@ def Tactic.trace : Tactic := fun stx => match Syntax.getArg (Syntax.getArg stx 1
   | .atom s => TacticM.trace s
   | _ => TacticM.pure ()
 attribute [tactic tactic.trace] Tactic.trace
+
+-- `smt` (stage 28a): close the goal by an SMT solver, trusted: only with --trust-smt,
+-- and the proof is an axiom `X.smt✝N` (the goal over its context) that `#print axioms`
+-- lists. A goal the solver refutes fails with the counterexample. lib/ never uses it.
+syntax (name := smt) "smt" : tactic
+def Tactic.smt : Tactic := fun _ => do
+  g ← TacticM.mainGoal;
+  TacticM.smt g;
+  TacticM.replaceMainGoal .nil
+attribute [tactic tactic.smt] Tactic.smt
 
 -- `trace_state`: the open goals, as an info message (as `trace`, at the tactic)
 def TacticM.ppGoals : List Nat → TacticM String

@@ -105,6 +105,96 @@ def group : Group where
         check (({} : Toolchain).set "sat-solver" "/bin/sh").isNone "sat-solver is a setting" }
   ]
 
-def groups : List Group := [group]
+def trusted : Smt.Config := { trust := true }
+
+def smtGroup : Group where
+  name := "smt"
+  exercise := "—"
+  cases := [
+    { name := "smt: refused without --trust-smt", run := fun _ => do
+        let ms ← msgs ("import Prelude\ndef t (a b : Nat) : Nat.add a b = Nat.add b a := by smt\n")
+        expect ms "error: SMT solving is not enabled"
+        expect ms "--trust-smt" },
+    { name := "smt: linear Nat arithmetic, Bool, hypotheses; an axiom per use with the solver's name", run := fun _ => needs "z3" do
+        let ms ← msgs ("import Prelude\n" ++
+          "def comm (a b : Nat) : Nat.add a b = Nat.add b a := by smt\n" ++
+          "def trans (a b c : Nat) (h₁ : Nat.lt a b = .true) (h₂ : Nat.lt b c = .true) : Nat.lt a c = .true := by smt\n" ++
+          "def sub0 (a : Nat) : Nat.sub a (Nat.add a 1) = 0 := by smt\n" ++
+          "def div0 (a : Nat) : Nat.div a 0 = 0 := by smt\n" ++
+          "def mod0 (a : Nat) : Nat.mod a 0 = a := by smt\n" ++
+          "def b (x y : Bool) : Bool.and x y = Bool.and y x := by smt\n" ++
+          "def use (a b : Nat) : Nat.add a b = Nat.add b a := comm a b\n" ++
+          "#print axioms comm\n#print axioms use\n") trusted
+        noErrors ms
+        expect ms "comm is accepted on the word of an SMT solver (--trust-smt)"
+        expect ms "info: 'comm' depends on axioms: [comm.smt✝1⟨z3"
+        expect ms "info: 'use' depends on axioms: [comm.smt✝1⟨z3"
+        expect ms "trusted are the solver named in the axiom" },
+    { name := "smt: Nat's truncated subtraction and division by zero are Wiz's, not SMT-LIB's", run := fun _ => needs "z3" do
+        -- over the integers `a - b + b = a`; in Wiz `0 - 1 + 1 = 1`
+        let ms ← msgs ("import Prelude\ndef wrong (a b : Nat) : Nat.add (Nat.sub a b) b = a := by smt\n") trusted
+        expect ms "smt: the solver found a counterexample"
+        -- SMT-LIB's `bvudiv x 0` is all ones; Wiz's `x / 0` is 0
+        let ms ← msgs ("import Word\ndef d (x : UIntN 8) : UIntN.div x (UIntN.zero 8) = UIntN.zero 8 := by smt\n") trusted
+        noErrors ms },
+    { name := "smt: words, with no range hypotheses (every UIntN is in range, 22l)", run := fun _ => needs "z3" do
+        let ms ← msgs ("import Word\n" ++
+          "def nn (x : UIntN 8) : UIntN.not (UIntN.not x) = x := by smt\n" ++
+          "def ac (x y : UIntN 16) : UIntN.add x y = UIntN.add y x := by smt\n" ++
+          "def xs (x : UIntN 32) : UIntN.xor x x = UIntN.zero 32 := by smt\n" ++
+          "def lt (x : UIntN 8) : Nat.lt (UIntN.toNat x) 256 = .true := by smt\n") trusted
+        noErrors ms
+        let ms ← msgs ("import Word\ndef bad (x : UIntN 8) : UIntN.add x x = x := by smt\n") trusted
+        expect ms "smt: the solver found a counterexample" },
+    { name := "smt: only the library's definitions are read as SMT operations", run := fun _ => needs "z3" do
+        -- a file of its own `UIntN` (no `import Word`): not bit vectors
+        let ms ← msgs ("import Prelude\ninductive UIntN (w : Nat) where\n  | mk (n : Nat)\n" ++
+          "def UIntN.toNat {w : Nat} : UIntN w → Nat\n  | .mk n => n\ndef UIntN.not {w : Nat} : UIntN w → UIntN w\n  | .mk n => .mk 0\n" ++
+          "def fake (x : UIntN 8) : UIntN.not (UIntN.not x) = x := by smt\n") trusted
+        expect ms "smt: the goal is not in the fragment" },
+    { name := "smt: a false goal fails with a counterexample in the user's names", run := fun _ => needs "z3" do
+        let ms ← msgs ("import Prelude\ndef wrong (apples pears : Nat) (h : Nat.lt apples pears = .true) : Nat.lt pears apples = .true := by smt\n") trusted
+        expect ms "smt: the solver found a counterexample"
+        expect ms "apples" },
+    { name := "smt: a constructor is read by its position, not its label (smt-review B1)", run := fun _ => needs "z3" do
+        -- `Flip.true` is `Bool.false` (tag 0): types are structural, labels cosmetic
+        let ms ← msgs ("import Prelude\ninductive Flip where\n  | true\n  | false\ndef x : Bool := Flip.true\n" ++
+          "def isFalse : x = Bool.false := rfl\ndef bad (b : Bool) (h : b = x) : b = Bool.true := by smt\n") trusted
+        expect ms "smt: the solver found a counterexample"
+        let ms ← msgs ("import Prelude\ninductive Flip where\n  | true\n  | false\n" ++
+          "def bad3 (b : Bool) (h : Bool.and b (Flip.false : Bool) = .true) : False := by smt\n") trusted
+        expect ms "smt: the solver found a counterexample"
+        let ms ← msgs ("import Prelude\ninductive Flip where\n  | true\n  | false\ndef x : Bool := Flip.true\n" ++
+          "def good (b : Bool) (h : b = x) : b = Bool.false := by smt\n") trusted
+        noErrors ms },
+    { name := "smt: universe parameters of the definition are the axiom's (smt-review B4)", run := fun _ => needs "z3" do
+        let ms ← msgs ("import Prelude\ndef lp.{u} (A : Type u) (a : Nat) : Nat.add a 0 = a := by smt\n#print axioms lp\n") trusted
+        noErrors ms
+        expect ms "lp.smt✝1⟨z3" },
+    { name := "the flags: --trust-smt and --smt-solver are taken and passed on; not settings", run := fun _ => do
+        let (t, rest) := ({} : Toolchain).parseFlags ["--trust-smt", "--smt-solver", "cvc5", "check", "f.wiz"]
+        check t.trustSmt "--trust-smt not taken"
+        checkEq ["check", "f.wiz"] rest
+        checkEq "cvc5" t.smt.solver
+        let (t', _) := ({} : Toolchain).parseFlags t.toFlags
+        check (t'.trustSmt && t'.smt == t.smt) "toFlags does not round-trip"
+        let (u, _) := ({} : Toolchain).parseFlags ["check", "f.wiz"]
+        check (!u.trustSmt) "--trust-smt must be off by default"
+        check (({} : Toolchain).set "smt-solver" "/bin/sh").isNone "smt-solver is a setting"
+        check (({} : Toolchain).set "trust-smt" "true").isNone "trust-smt is a setting" },
+    { name := "the answer cache is keyed by SHA-256 (known vectors)", run := fun _ => do
+        checkEq "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" (Smt.Sha256.hex "")
+        checkEq "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad" (Smt.Sha256.hex "abc")
+        checkEq "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
+          (Smt.Sha256.hex "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq") },
+    { name := "lib/ never uses smt", run := fun _ => do
+        for e in ← System.FilePath.readDir "lib" do
+          if e.path.extension == some "wiz" && e.path.fileName != some "Prelude.wiz" then
+            let src ← IO.FS.readFile e.path
+            let ws := ((src.replace "\n" " ").replace ";" " ").splitOn " "
+            check (!ws.contains "smt") s!"{e.path} uses the smt tactic" }
+  ]
+
+def groups : List Group := [group, smtGroup]
 
 end Tests.Smt
