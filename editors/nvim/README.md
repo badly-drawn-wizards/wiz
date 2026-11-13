@@ -94,6 +94,9 @@ require('wiz').setup {
     root_markers = { 'grail.wiz', 'wiz-toolchain', 'lakefile.toml', '.git' },
     on_attach = nil,                   -- function(client, bufnr)
     capabilities = nil,                -- merged into the defaults
+    completion = 'auto',               -- Neovim's own LSP completion (0.11+), after `.` and on
+                                       --   <C-Space>: true | false | 'auto' (off with nvim-cmp/blink.cmp)
+    folding = false,                   -- fold with the server's ranges (0.11+)
   },
   abbreviations = {
     enable = true,
@@ -125,6 +128,16 @@ In Wiz buffers (normal mode): `<LocalLeader>i` toggles the infoview, `<LocalLead
 refreshes it, `<LocalLeader>b` is `:WizInfoviewBrowser`, `<LocalLeader>\` is
 `:WizAbbrev` (each with a `desc`, which which-key shows). The usual LSP keymaps (`K` hover,
 `gd`, `grn`, `gra`, `]d`, …) are Neovim's own.
+
+What the server offers, and Neovim's keys for it:
+
+| | |
+|---|---|
+| completion (`lsp.completion`: pops up after `.`, `<C-Space>` in insert mode; else `<C-x><C-o>` or your completion plugin) | after `x.`: the fields of `x`'s type and the functions of its namespace (`p.norm` for `Point.norm p`); after `Nat.`: the names in `Nat`; where a term goes: the locals (with their types), then the globals whose type ends in the expected one; tactic names inside `by`, command keywords in column 0, a keyword-scoped DSL's keywords inside it; module names after `import` |
+| code actions (`gra`) | did you mean (an unknown identifier), add missing cases, add a type ascription, fill a hole `_`/`?x` from its expected type (a constructor `(.c ?x ?y)`, an anonymous constructor `⟨?px, ?py⟩`, `fun x => ?body`) |
+| references (`grr`), rename (`grn`) | a global's uses in the open files and the package's modules; a local's in its declaration. Rename refuses the toolchain's library |
+| outline (`gO`), workspace symbols (`:lua vim.lsp.buf.workspace_symbol()`) | the file's declarations (fields and constructors as children); every declaration of the open files and their imports |
+| folding (`lsp.folding`) | commands, `by` blocks, `match`es, block comments |
 
 In the infoview: `K` or `<CR>` shows what the subterm under the cursor is (its text,
 type, kind and, for a constant, where it is declared: `wiz/subtermInfo`); moving the

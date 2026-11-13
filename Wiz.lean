@@ -48,6 +48,9 @@ import Wiz.FFI.CGlue
 import Wiz.Query
 import Wiz.Infoview
 import Wiz.Actions
+import Wiz.Completion
+import Wiz.Refs
+import Wiz.Symbols
 import Wiz.LSP
 import Wiz.Toolchain
 import Wiz.Module

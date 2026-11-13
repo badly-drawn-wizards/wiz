@@ -96,6 +96,39 @@ def firstError (src : String) : IO String := do
 
 def pre : String := "import FeralCore\nimport Feral\n"
 
+/-- Elaborate as the language server does (recording what hovers read). -/
+def frontendInfo (src : String) : IO (CommandState ZeroOneMany) := do
+  pure (runFrontend (R := ZeroOneMany) src { trustedModule := Tests.libModule, loader := ← loader, termInfo := true })
+
+/-- The character offset of the `k`th occurrence of `needle` in `src`, plus `delta`. -/
+def offOf (src needle : String) (delta : Nat := 0) (k : Nat := 0) : Nat :=
+  ((src.splitOn needle).take (k + 1)).foldl (· + ·.length) 0 + needle.length * k + delta
+
+/-- The text of `src` in a range. -/
+def textAt (src : String) (i : SourceInfo) : String :=
+  String.ofList ((src.toList.drop i.start).take (i.stop - i.start))
+
+/-- What a hover at `off` shows: the type, and the source text it is about. -/
+def hoverText (s : CommandState ZeroOneMany) (src : String) (off : Nat) : String :=
+  match Query.identAt s off with
+  | some (.ident i _ _ names ty) => s!"{textAt src i} : {ty.pretty names (some s.globals)}"
+  | _ => "none"
+
+/-- Every identifier the info tree has inside the `feral` block (for failure messages). -/
+def identsIn (s : CommandState ZeroOneMany) (src : String) : String :=
+  let from_ := offOf src "\nferal\n"
+  "\n".intercalate (s.infos.toList.filterMap fun
+    | .ident i n _ names ty => if i.start ≥ from_ && i.start < offOf src "\nend\n" then
+        some s!"{i.start}-{i.stop} `{textAt src i}` {n} : {ty.pretty names (some s.globals)}" else none
+    | _ => none)
+
+/-- A program for the position tests (hovers, go to definition). -/
+def posSrc : String := pre ++ "feral\n  fn double (n : U64) : U64 := n + n\n" ++
+  "  fn bump {'a} (y : &'a mut U64) : Unit := { *y := *y + 1 }\n" ++
+  "  fn f (x : U64) : U64 := {\n    let mut v := Vec.new;\n    let r := &mut v;\n    r.push x;\n" ++
+  "    let mut a := x;\n    bump (&mut a);\n    double (v.len) + a\n  }\nend\n" ++
+  "#eval Result.map U64.toNat (f (U64.lit 3))\n"
+
 def surfaceNames : List String :=
   ["01_swap", "02_push", "03_get_mut", "04_reverse", "05_bst", "06_count", "07_disjoint", "08_first_mut",
    "09_bsearch", "10_regions", "11_list", "12_pick"]
@@ -148,6 +181,38 @@ def group : Group where
         checkEq "[.ok (8, .false), .ok (10, .true)]" (toString (infosOf s))
         let l ← frontend (a.replace "\nferal\n" "\n#lower feral\n")
         check ((infosOf l).any (has · "Result1 ((Flow Unit) Bool) (Uniq1 ρa U64)")) s!"{infosOf l}" },
+    { name := "examples/resources.wiz: Feral's swap on heap cells, verified with the x-tactics through lib/HeapBorrow.wiz", run := fun _ => do
+        let src ← IO.FS.readFile "examples/resources.wiz"
+        let s ← frontend src
+        checkEq "[]" (toString (errorsOf s src))
+        checkEq ("[.ok (2, 1), .some ((), .cons .none (.cons (.some (20, ())) (.cons (.some (10, ())) " ++
+          "(.cons (.some (30, ())) .nil))))]") (toString (infosOf s))
+        -- the heap specification of the identity is not one of swap's
+        let bad := src ++ "\ndef bad (p q : Nat) (a b : U64) :\n" ++
+          "    Triple ((p ↦ a) ⋆ (q ↦ b)) (swapCells p q) (fun _ => (p ↦ a) ⋆ (q ↦ b)) := by\n" ++
+          "  xgo\n"
+        let e ← firstError bad
+        check (((e.splitOn ":")[0]!).toNat! > 69) s!"the error is not in the added definition: {e}" },
+    { name := "spec items: a function's specification as a Wiz proposition (result, old, final)", run := fun _ => do
+        let fn := "  fn swap {'a 'b} (x : &'a mut U64) (y : &'b mut U64) : Unit := {\n    let t := *x;\n    *x := *y;\n    *y := t\n  }\n"
+        let s ← frontend (pre ++ "#lower feral\n" ++ fn ++ "  spec swap ensures (final x = old y) ensures (final y = old x)\nend\n")
+        check ((infosOf s).any (has · ("def swap.Spec {ρa ρb : Region} (x : (Uniq ρa U64)) (y : (Uniq ρb U64)) : Prop :=\n" ++
+          "  Result.Holds (fun (r : (Unit × ((Uniq ρa U64) × (Uniq ρb U64)))) => ((r.2.1.val) = (y.val)) × ((r.2.2.val) = (x.val))) ( swap x y)")))
+          s!"{infosOf s}"
+        -- a true specification is proved, a false one is not
+        let ok := pre ++ "feral\n" ++ fn ++ "  spec swap ensures (final x = old y) ensures (final y = old x)\nend\n" ++
+          "def swap_ok {ρa ρb : Region} (x : Uniq ρa U64) (y : Uniq ρb U64) : swap.Spec x y := (rfl, rfl)\n"
+        checkEq "[]" (toString (errorsOf (← frontend ok) ok))
+        let e ← firstError (pre ++ "feral\n" ++ fn ++ "  spec swap ensures (final x = old x)\nend\n" ++
+          "def swap_bad {ρa ρb : Region} (x : Uniq ρa U64) (y : Uniq ρb U64) : swap.Spec x y := rfl\n")
+        check (has e "rfl") e
+        -- requires, result
+        let r := pre ++ "feral\n  fn add1 (a : U64) : U64 := a + 1\n  spec add1 requires (Nat.lt a.val 10 = .true) ensures (result.val = Nat.succ a.val)\nend\n" ++
+          "#check @add1.Spec\n"
+        let rs ← frontend r
+        checkEq "[]" (toString (errorsOf rs r))
+        let e ← firstError (pre ++ "feral\n  spec nope ensures (True)\nend\n")
+        check (has e "no function `nope`") e },
     { name := "#lower shows the generated Wiz, item by item", run := fun _ => do
         let src := pre ++ "#lower feral\n  fn swap {'a 'b} (x : &'a mut U64) (y : &'b mut U64) : Unit := {\n" ++
           "    let t := *x;\n    *x := *y;\n    *y := t\n  }\nend\n"
@@ -198,6 +263,45 @@ def group : Group where
         let u ← frontend un
         check ((infosOf u).any (has · "E0499")) "no verdict from the front end"
         check ((errorsOf u un).any (has · "the generated source was rejected")) s!"the kernel accepts the lowering: {errorsOf u un}" },
+    { name := "positions inside a block: hovers on variables, calls, borrows and binders", run := fun _ => do
+        let s ← frontendInfo posSrc
+        checkEq "[]" (toString (errorsOf s posSrc))
+        checkEq "[.ok 6]" (toString (infosOf s))
+        let at_ (needle : String) (delta : Nat := 0) (k : Nat := 0) := hoverText s posSrc (offOf posSrc needle delta k)
+        let checkEq (want got : String) : IO Unit := check (want == got) s!"expected {want}\n      got {got}\n{identsIn s posSrc}"
+        let starts (want got : String) : IO Unit := check (got.startsWith want) s!"expected {want}…\n      got {got}\n{identsIn s posSrc}"
+        -- a variable (the second `n` of `n + n`), parameters, a `let`
+        checkEq "n : U64" (at_ "n + n" 4)
+        checkEq "n : U64" (at_ "(n : U64)" 1)
+        checkEq "x : U64" (at_ "push x" 5)
+        checkEq "a : U64" (at_ "let mut a" 8)
+        starts "y : Uniq ρa U64" (at_ "(y :" 1)
+        -- a call, the function it names, an operator, a method call
+        checkEq "double : U64 → Result U64" (at_ "double (v.len)" 1)
+        checkEq "double (v.len) : U64" (at_ "double (v.len)" 7)
+        checkEq "+ : U64 → U64 → Result U64" (at_ "n + n" 2)
+        checkEq "double (v.len) + a : U64" (at_ ") + a" 1)
+        -- a `&mut` argument (its handle) and a named borrow
+        starts "(&mut a) : Uniq ρ" (at_ "&mut a" 1)
+        starts "r : Uniq ρ" (at_ "let r" 4)
+        -- (a method call on a variable is one identifier: the receiver's handle shows)
+        starts "r.push : Uniq ρ" (at_ "r.push" 0) },
+    { name := "positions inside a block: go to definition, errors at the sub-expression", run := fun _ => do
+        let s ← frontendInfo posSrc
+        -- `double` in `f` goes to `fn double`, not to the whole block
+        match Query.definitionAt s (offOf posSrc "double (v.len)" 1) with
+        | some (n, i, m) =>
+          checkEq "double" (toString n)
+          checkEq "" m
+          check ((textAt posSrc i).startsWith "fn double (n : U64)") s!"jumps to {textAt posSrc i}"
+          check (!(textAt posSrc i).contains "fn f") s!"jumps to {textAt posSrc i}"
+        | none => throw (IO.userError "no definition for `double`")
+        -- the kernel's verdict on an unchecked lowering is at the expression it is about
+        -- (E0499_two_mut: `r2.push 2` gets the handle of a borrow of the token, line 13)
+        let src ← IO.FS.readFile "drafts/feral/rejected/surface/E0499_two_mut.wiz"
+        let un := src.replace "\nferal\n" "\n#unchecked feral\n"
+        let errs := errorsOf (← frontend un) un
+        check (errs.any fun e => !has e "generated source" && e.startsWith "13:5: ") (toString errs) },
     { name := "command macros: errors, info and generated source at a node of the input (Syntax.errorAt …)", run := fun _ => do
         let src := "import Prelude\nsyntax (name := three) \"three!\" ident ident ident : command\n" ++
           "def threeMacro : CommandMacro := fun stx => MacroM.pure (.cons (Syntax.errorAt (.cons 2 .nil) \"second\")\n" ++

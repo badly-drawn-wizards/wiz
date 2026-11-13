@@ -392,3 +392,71 @@ package's `lib` targets with its module roots (dependencies included), into
   `wiz lsp --web DIR`. With `?follow=1` the page has no editor of its own: it follows
   the editor's cursor (`wiz/infoview/cursor`, §8.2). `wiz lsp` now always runs the
   multi-connection loop (`serveWith`), so this works without `--ws`.
+
+## 11t: filling holes, and completion that knows the context
+
+* **Completion** (`Wiz/Completion.lean`): `textDocument/completion` answers a
+  `CompletionList` whose items replace the word at the cursor (a `textEdit`), with the
+  type as `detail`:
+  * `x.f…` where `x` is a value: the fields of its type (a structure or a Σ, with their
+    types) and the functions `T.f` of its type's namespace whose first explicit argument
+    is a `T` (generalised field notation, `p.norm` for `Point.norm p`); after a
+    namespace (`Nat.ad`), the names in it;
+  * the keywords the **parser** expects at the cursor. The command around the cursor is
+    parsed with the input cut at the start of the word: the tokens of the failure at the
+    cut are what may come next. So column 0 gives the command keywords, a line of a `by`
+    block the tactic names, a keyword-scoped DSL (13j) its own keywords (`yes` after
+    `run_calc when [0]`), and nothing is hard-coded;
+  * where a term or an identifier may go: the locals in scope with their types, then the
+    globals, those whose type ends in the expected type's head first;
+  * after `import`: the modules the server can load.
+
+  The text being typed rarely elaborates, so the locals and the expected type come from a
+  **patched** copy: the word replaced by a hole `_` (the hole's goal), or for `x.f…` by
+  `x` (its identifier's type). The copy stops at the end of the command around the
+  cursor, and the query engine reuses the commands before it, so a completion request
+  elaborates one command.
+* **Fill a hole** (code action, `refactor.rewrite`): a hole `_` or `?x` whose expected
+  type is known becomes a skeleton of it: one action per constructor of an inductive
+  type (`(.c ?x ?y)`, in parentheses where it is an argument), the anonymous constructor
+  of a structure or Σ type with a named hole per field (`⟨?px, ?py⟩`), or
+  `fun x => ?body` for a function type. Names of the new holes avoid the locals.
+* **wiz.nvim**: `lsp.completion` (default `'auto'`: on unless nvim-cmp or blink.cmp is
+  loaded) turns on Neovim 0.11's own LSP completion (after `.`, and `<C-Space>` in insert
+  mode); the README lists what completion and the code actions offer.
+
+```
+def foo (n : Nat) (pt : Point) : Nat := Nat.add n pt.‸   -- pt.px : Nat, pt.py : Nat, pt.norm
+def p : Point := _                                     -- [Fill with an anonymous constructor] ⟨?px, ?py⟩
+```
+## 11v: the outline, workspace symbols and folding
+
+* **Document symbols** (`textDocument/documentSymbol`, `Wiz/Symbols.lean`): one symbol per
+  command, named after the first declaration it makes, with the others it makes (a
+  structure's fields and constructor, an inductive type's constructors) as children; a
+  type is a `Struct`, a constructor a `Constructor`, the rest `Function`, with the type as
+  `detail`. The elaborator's own names (`.desc`, `.casesOn`, `.rec`, …) are left out.
+* **Workspace symbols** (`workspace/symbol`): the declarations of the open documents and
+  of the modules they import whose name contains the query, ignoring case, at most 300,
+  each where it was declared (library modules by their path).
+* **Folding ranges** (`textDocument/foldingRange`): commands spanning several lines,
+  `by` blocks, `match`es, and block comments (kind `comment`).
+* wiz.nvim: `gO` (Neovim 0.11) lists the outline; `lsp.folding = true` folds with the
+  server's ranges (`vim.lsp.foldexpr`).
+
+## 11y: references, highlights and rename
+
+`Wiz/Refs.lean`, from the info tree's identifiers (each records what it resolved to):
+
+* **References** (`textDocument/references`): for a global, its uses in every open
+  document and in the package's other modules (the library modules that aren't the
+  toolchain's, so under `grail lsp` the package's own and its dependencies'), each
+  elaborated once per source and kept by the server, plus the name in its declaration.
+  For a local, its binder and the uses that see that binder (the nearest binder of the
+  name before the use, inside the declaration).
+* **Document highlights** (`textDocument/documentHighlight`, also what tells the
+  infoview where the cursor is): the same, in the document.
+* **Rename** (`textDocument/prepareRename`, `textDocument/rename`): edits every place
+  that spells the whole name, in all those documents; it refuses a declaration of the
+  toolchain's library and a new name that isn't one. A use through generalised field
+  notation (`p.norm` for `Point.norm`) is not edited.
