@@ -295,7 +295,7 @@ def HwTy.El.mux {ω t : HwTy} (c : HwTy.El HwTy.bit) (x y : HwTy.El t) : HwTy.El
   match BitVec.isTrue (c : BitVec 1) with
   | .true => x
   | .false => y
-def HwTy.El.cat {0 m : Nat} {ω n : Nat} (a : HwTy.El (HwTy.bits m)) (b : HwTy.El (HwTy.bits n)) :
+def HwTy.El.cat {ω m n : Nat} (a : HwTy.El (HwTy.bits m)) (b : HwTy.El (HwTy.bits n)) :
     HwTy.El (HwTy.bits (Nat.add m n)) := BitVec.concat a b
 def HwTy.El.slice (ω lo w : Nat) {ω n : Nat} (a : HwTy.El (HwTy.bits n)) : HwTy.El (HwTy.bits w) :=
   BitVec.ofNat w (Nat.shiftRight (a : BitVec n).toNat lo)

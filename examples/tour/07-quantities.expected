@@ -1,0 +1,1 @@
+examples/tour/07-quantities.wiz:31:1: info: IO.bind : {A : Type} → {B : Type} → (1 x : IO A) → (1 f : A → IO B) → IO B
