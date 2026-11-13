@@ -33,6 +33,16 @@ printing the case's name and result, a failure's output, and a last line
 `GROUP #INDEX: passed|FAILED|SKIPPED`. Build the driver first (`lake build wiz tests`):
 plain `lake build` does not, and a stale driver runs whichever case had that index.
 
+**The trust ledger.** `scripts/trust-ledger.sh` walks every declaration of `lib/` (and
+`examples/hdl-verified.wiz`, which must stay axiom-free), runs `#print axioms`, and
+compares the trusted base it finds with the checked-in `.github/trust-baseline.tsv`: a
+new `axiom`, `sorry`, `native_refl` or SMT axiom, `implemented_by`/`repr:`
+implementation, `builtin` registration or `partial` definition fails until the baseline
+is updated after review. The `native` group runs the `lib/` part in CI, the
+`hdl-verified` group the example's; `scripts/trust-ledger.sh --update` regenerates the
+baseline (build the driver first). `--print` shows the recorded sources; the baseline's
+header explains the format.
+
 **Embedded files.** Lake does not track files a module reads with `include_str`, so each
 embedded file gets a library of its own whose `needs` names the file as an
 `input_file` (`lakefile.toml`): Lake mixes the file's content hash into that library's
