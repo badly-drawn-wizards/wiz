@@ -99,6 +99,19 @@ def group : Group where
         noErrors ms
         expect ms "info: 'eq4' does not depend on any axioms"
         expect ms "info: 'Sat.dag_sound' does not depend on any axioms" },
+    { name := "bv_decide (28d): word equations by bit-blasting, checked by the kernel", run := fun _ => needs "cadical" do
+        let ms ← msgs ("import BvDecide\nimport BitVec\n" ++
+          "def t1 (x y : UIntN 4) : UIntN.land x (UIntN.lor x y) = x := by bv_decide\n" ++
+          "def t2 (x y : UIntN 4) : UIntN.xor x (UIntN.xor y x) = y := by bv_decide\n" ++
+          "def t3 (x : UIntN 4) : UIntN.lor x (UIntN.ofNat 4 15) = UIntN.ofNat 4 15 := by bv_decide\n" ++
+          "def t4 (x y : BitVec 4) : BitVec.and x y = BitVec.and y x := by bv_decide\n" ++
+          "#print axioms t1\n")
+        noErrors ms
+        -- (UIntN's own seal and natives only: no axiom from the proof)
+        expect ms "info: 't1' depends on axioms: [native UIntN.toNat := UIntN.toBits, UIntN.seal✝"
+        check (!(has ms "smt✝") && !(has ms "native✝")) s!"bv_decide used an axiom: {ms}"
+        let ms ← msgs ("import BvDecide\ndef bad (x y : UIntN 4) : UIntN.land x y = UIntN.lor x y := by bv_decide\n")
+        expect ms "the goal is false; a counterexample" },
     { name := "sat_decide: a false goal fails with a counterexample", run := fun _ => needs "cadical" do
         let ms ← msgs ("import SatTactic\ndef wrong (a b : Bool) : Bool.and a b = Bool.or a b := by sat_decide\n")
         expect ms "sat_decide: the goal is false; a counterexample:" },

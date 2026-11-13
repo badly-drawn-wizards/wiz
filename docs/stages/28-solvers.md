@@ -154,3 +154,32 @@ clauses hold under `σ` itself). No axioms.
   (`native_refl`'s evaluator) did not help: comparing the stated certificate with the
   expected type costs as much as the check. Faster: a checker for the kernel's evaluator
   (arrays or maps for the clause database).
+
+## 28d: `bv_decide`: words, bit-blasted ✅ (bitwise fragment)
+
+    import BvDecide
+    def t (x y z : UIntN 8) : UIntN.land x (UIntN.lor y z) = UIntN.lor (UIntN.land x y) (UIntN.land x z) := by bv_decide
+
+An equation of words `UIntN w` / `BitVec w` (`w` a numeral) becomes 28c's circuit: bit `i`
+of a word expression `e` is the node whose value is `Bits.bit (UIntN.toNat e) i`, an
+operation's bit is a gate over its operands' bits, and **the node's proof is the
+operation's lemma** (`Bits.wland_bit x y i : bit (land x y) i = bit x i && bit y i`), which
+the kernel checks like any gate. Other words are inputs; closed words (numerals) are
+constants, their bits computed (`refl`). The output node is `Bits.eqUpTo (toNat lhs)
+(toNat rhs) w`, and `Bits.word_ext` turns it into `lhs = rhs` (two numbers below `2^w`
+with the same bits are equal; the range comes from 22l). No axioms: `#print axioms` lists
+only `UIntN`'s seal and its natives, as for any use of words.
+
+lib/BitBlast.wiz has the lemmas, all at any width: `n = 2 (half n) + odd n`, `Nat.div n 2
+= half n` and `Nat.isOdd n = odd n` (through `Nat.divGo`'s fuel), the bits of
+`Nat.bitwise` (so `land`, `lor`, `xor`), `land a b ≤ a` (Word's `land` keeps the smaller),
+and extensionality. `Bits.bit` itself runs on the native `Nat.isOdd`/`Nat.div`, so the bits
+of a numeral compute fast.
+
+**Fragment**: `land/lor/xor` (`BitVec.and/or/xor`) and closed words. Not yet: `~~~`, `+`,
+`-`, shifts, `<ᵤ` (they need lemmas about `mod 2^w`, subtraction and carries).
+
+**Kernel cost** (light probes, noise-level; distributivity of `&&&` over `|||`, three
+words, over the time to import the libraries): 4 bits ≈ 2 s, 8 bits ≈ 10 s, 16 bits ≈ 58 s.
+It grows faster than the circuit (3w inputs, ~5w gates): each kernel step costs
+~0.1–1 ms (wiz-notes/smt.md §10), so wide words are slow until the evaluator is faster.
