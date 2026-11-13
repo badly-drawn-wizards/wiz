@@ -215,6 +215,11 @@ inductive Result1 (B H : Type) where
 def Uniq1.read {ρ : Region} {A B : Type} (1 r : Uniq1 ρ A) (1 k : (a : A) → (1 r : Uniq1 ρ A) → B) : B :=
   match r with
   | .mk v => k v (Uniq1.mk v)
+-- `*r`, direct style: the value and the handle back, as a pair to take apart with
+-- `let 1 (a, r) := Uniq1.peek r` (the value comes out at ω, the handle at 1)
+def Uniq1.peek {ρ : Region} {A : Type} (1 r : Uniq1 ρ A) : (a : A) × Uniq1 ρ A :=
+  match r with
+  | .mk v => (v, Uniq1.mk v)
 -- `*r := a`
 def Uniq1.write {ρ : Region} {A : Type} (1 r : Uniq1 ρ A) (a : A) : Uniq1 ρ A :=
   match r with
@@ -286,6 +291,7 @@ def Uniq1.both {ρ : Region} {A B C : Type} (1 p : Uniq1 ρ (A × B))
     | .err e q => let 1 (ra, rb) := q; Uniq1.end ra (fun a => Uniq1.end rb (fun b => .err e (Uniq1.mk (a, b)))))
 
 attribute [inline] Uniq1.read
+attribute [inline] Uniq1.peek
 attribute [inline] Uniq1.end
 attribute [inline] Uniq1.write
 attribute [inline] Uniq1.borrow
