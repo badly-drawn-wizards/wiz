@@ -1686,15 +1686,22 @@ def Verilog.updates (cx : VCtx) : List String → List NetReg → String
     | .succ _ => "  always @(posedge clk) " <+> Verilog.load cx nm r <+> "\n") <+> Verilog.updates cx nms rs
   | _, _ => ""
 -- A memory: an array with its contents, then (after the wires) its writes in one block,
--- in order, so that a later write wins. yosys infers block RAM (iCE40: SB_RAM40_4K) when a
--- read's address or data goes through a register.
+-- in order, so that a later write wins. yosys infers block RAM (iCE40: SB_RAM40_4K;
+-- Xilinx 7-series: RAMB18E1/RAMB36E1) when a read's address or data goes through a
+-- register.
 def Verilog.memInit (nm : String) (dw : Nat) : Nat → List Nat → String
   | _, .nil => ""
   | k, .cons w ws => "    " <+> nm <+> "[" <+> Hdl.show k <+> "] = " <+> Verilog.lit dw w <+> ";\n" <+> Verilog.memInit nm dw (Nat.succ k) ws
+-- A ROM (a memory never written) of 4 Kbit or more asks for block RAM: yosys maps a RAM
+-- with a registered read to block RAM by itself (iCE40 and Xilinx), but for Xilinx it
+-- builds a ROM of LUTs unless told (`rom_style`, which iCE40's mapping honours too).
+def Verilog.memAttr (m : NetMem) : String := match m.writes, Nat.lt (Nat.mul (Nat.pow 2 m.aw) m.dw) 4096 with
+  | .nil, .false => "(* rom_style = \"block\" *) "
+  | _, _ => ""
 def Verilog.memDecls : List String → List NetMem → String
   | .cons nm nms, .cons m ms => (match m.dw with
     | .zero => ""
-    | .succ _ => "  reg " <+> Verilog.range m.dw <+> nm <+> " [0:" <+> Hdl.show (Nat.pow 2 m.aw - 1) <+> "];\n"
+    | .succ _ => "  " <+> Verilog.memAttr m <+> "reg " <+> Verilog.range m.dw <+> nm <+> " [0:" <+> Hdl.show (Nat.pow 2 m.aw - 1) <+> "];\n"
       <+> "  initial begin\n" <+> Verilog.memInit nm m.dw 0 m.init <+> "  end\n")
     <+> Verilog.memDecls nms ms
   | _, _ => ""

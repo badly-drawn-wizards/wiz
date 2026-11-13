@@ -8123,6 +8123,43 @@ def hdlMemTools : IO Unit := do
           unless (st.splitOn "SB_RAM40_4K").length > 1 do throw (IO.userError s!"no block RAM inferred for {f}:\n{st}")
 
 
+/-- examples/hdl-arty.wiz through the front end: its eight `#eval` texts (four about the
+board's pin constraints, then four Verilog modules). -/
+def hdlArtyTexts : IO (List String) := do
+    let src ← IO.FS.readFile "examples/hdl-arty.wiz"
+    let s := runFrontend (R := ZeroOneMany) src { trustedModule := Tests.libModule, loader := ← libLoader }
+    let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
+    unless errs.isEmpty do throw (IO.userError s!"unexpected errors: {errs}")
+    pure (s.messages.toList.map (·.text))
+
+/-- The pin constraints of examples/hdl-arty.wiz: the "\"set_property -dict { PACKAGE_PIN E3 IOSTANDARD LVCMOS33 } [get_ports { clk }]\\ncreate_clock -period 10.000 -name clk [get_ports { clk }]\\nset_property -dict { PACKAGE_PIN D9 IOSTANDARD LVCMOS33 } [get_ports { btn[0] }]\\nset_property -dict { PACKAGE_PIN C9 IOSTANDARD LVCMOS33 } [get_ports { btn[1] }]\\nset_property -dict { PACKAGE_PIN B9 IOSTANDARD LVCMOS33 } [get_ports { btn[2] }]\\nset_property -dict { PACKAGE_PIN B8 IOSTANDARD LVCMOS33 } [get_ports { btn[3] }]\\nset_property -dict { PACKAGE_PIN A9 IOSTANDARD LVCMOS33 } [get_ports { uart_rx }]\\nset_property -dict { PACKAGE_PIN H5 IOSTANDARD LVCMOS33 } [get_ports { led[0] }]\\nset_property -dict { PACKAGE_PIN J5 IOSTANDARD LVCMOS33 } [get_ports { led[1] }]\\nset_property -dict { PACKAGE_PIN T9 IOSTANDARD LVCMOS33 } [get_ports { led[2] }]\\nset_property -dict { PACKAGE_PIN T10 IOSTANDARD LVCMOS33 } [get_ports { led[3] }]\\nset_property -dict { PACKAGE_PIN D10 IOSTANDARD LVCMOS33 } [get_ports { uart_tx }]\\n\"" of a design on the Arty A7, the
+problems of a board that does not fit it, the two devices. -/
+def hdlArtyXdc : IO Unit := do
+    let texts ← hdlArtyTexts
+    checkEq (repr (["\"set_property -dict { PACKAGE_PIN E3 IOSTANDARD LVCMOS33 } [get_ports {clk}]\\ncreate_clock -period 10.000 [get_ports {clk}]\\nset_property -dict { PACKAGE_PIN D9 IOSTANDARD LVCMOS33 } [get_ports {btn[0]}]\\nset_property -dict { PACKAGE_PIN C9 IOSTANDARD LVCMOS33 } [get_ports {btn[1]}]\\nset_property -dict { PACKAGE_PIN B9 IOSTANDARD LVCMOS33 } [get_ports {btn[2]}]\\nset_property -dict { PACKAGE_PIN B8 IOSTANDARD LVCMOS33 } [get_ports {btn[3]}]\\nset_property -dict { PACKAGE_PIN A9 IOSTANDARD LVCMOS33 } [get_ports {uart_rx}]\\nset_property -dict { PACKAGE_PIN H5 IOSTANDARD LVCMOS33 } [get_ports {led[0]}]\\nset_property -dict { PACKAGE_PIN J5 IOSTANDARD LVCMOS33 } [get_ports {led[1]}]\\nset_property -dict { PACKAGE_PIN T9 IOSTANDARD LVCMOS33 } [get_ports {led[2]}]\\nset_property -dict { PACKAGE_PIN T10 IOSTANDARD LVCMOS33 } [get_ports {led[3]}]\\nset_property -dict { PACKAGE_PIN D10 IOSTANDARD LVCMOS33 } [get_ports {uart_tx}]\\n\"",
+      ".nil",
+      ".cons \"no pin for port btn\" (.cons \"no pin for port uart_rx\" (.cons \"port led has 4 bits, the board's led 2\" (.cons \"no pin for port uart_tx\" .nil)))",
+      ".cons (\"xc7a35ticsg324-1L\", \"xc7a35tcsg324-1\") (.cons (\"xc7a100tcsg324-1\", \"xc7a100tcsg324-1\") .nil)"] : List String)).pretty
+      (repr (texts.take 4)).pretty
+
+/-- yosys's synth_xilinx on the Verilog of examples/hdl-arty.wiz: the RAMs become a
+RAMB18E1 and a RAMB36E1, the ROM a RAMB18E1, the multiply a DSP48E1 (when yosys is on
+PATH). -/
+def hdlArtyTools : IO Unit := do
+    let ys ← (do let o ← IO.Process.output { cmd := "yosys", args := #["-V"] }; pure (o.exitCode == 0)) <|> pure false
+    unless ys do skip "no yosys"; return
+    let texts := (← hdlArtyTexts).drop 4
+    let unq (t : String) : String := ((t.drop 1).dropRight 1).replace "\\n" "\n" |>.replace "\\\"" "\""
+    IO.FS.withTempDir fun dir => do
+      let cases := [("ram18", "RAMB18E1"), ("ram36", "RAMB36E1"), ("rom", "RAMB18E1"), ("mul", "DSP48E1")]
+      for t in texts, (top, cell) in cases do
+        IO.FS.writeFile (dir / s!"{top}.v") (unq t)
+        let o ← IO.Process.output { cmd := "yosys", args := #["-q", "-p", s!"read_verilog {top}.v; synth_xilinx -family xc7 -top {top}; tee -q -o {top}.stat stat"], cwd := dir }
+        unless o.exitCode == 0 do throw (IO.userError s!"yosys fails on {top}.v:\n{o.stderr}")
+        let st ← IO.FS.readFile (dir / s!"{top}.stat")
+        unless (st.splitOn cell).length > 1 do throw (IO.userError s!"no {cell} for {top}:\n{st}")
+
+
 def hdlGroup : Group where
   name := "hdl"
   exercise := "HDL stage S0 (hdl-plan H14)"
@@ -8190,6 +8227,8 @@ def hdlGroup : Group where
           "def pre (n : Nat) (ys : Trace (BitVec 1)) : Circuit.run ctr (Trace.take n ys) = Trace.take n (Circuit.trace ctr ys) := Circuit.run_take ctr n ys\n" ++
           "#eval Hdl.map BitVec.toNat (Trace.take 8 (Circuit.trace ctr xs))\n")
           [".cons 250 (.cons 251 (.cons 252 (.cons 253 (.cons 254 (.cons 255 (.cons 0 (.cons 1 .nil)))))))"] },
+    { name := "Arty A7 (lib/Hdl/Arty.wiz): pin constraints (XDC) from the board's table, what does not fit, the two devices", run := fun _ => hdlArtyXdc },
+    { name := "Xilinx 7-series: yosys synth_xilinx maps two RAMs, a 1024-byte ROM and a multiply to RAMB18E1, RAMB36E1 and DSP48E1 (skipped without yosys)", run := fun _ => hdlArtyTools },
     { name := "optics: deriving Lens on structures and bundles (laws, independence by rfl); a step zoomed into a field, the frame rule", run := fun _ => do
         okLibs (← IO.FS.readFile "examples/hdl-optic.wiz")
           ["(.cons 1 (.cons 0 (.cons 0 (.cons 0 (.cons 0 (.cons 0 (.cons 0 (.cons 0 (.cons 0 (.cons 0 (.cons 1 (.cons 0 .nil))))))))))), .true)"]

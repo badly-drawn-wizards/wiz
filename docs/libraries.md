@@ -278,7 +278,10 @@ array with an `initial` block, reads `m[addr]`, the writes in one `always` block
 write wins). yosys maps a memory whose read data (or address) goes through a register to
 iCE40 block RAM (`SB_RAM40_4K`): `examples/hdl-mem.wiz` (a 16×8 RAM with a registered read,
 a ROM; checked by Icarus and yosys in group `hdl` when they are on PATH). Small ROMs
-become LUTs, a 256-word one block RAM. What the netlist cannot express is listed in
+become LUTs, a 256-word one block RAM. For Xilinx 7-series (`synth_xilinx`) the same RAMs
+become RAMB18E1 or RAMB36E1 and `Hw.mul` a DSP48E1; a ROM of 4 Kbit or more is declared
+`(* rom_style = "block" *)`, without which synth_xilinx builds it of LUTs
+(`examples/hdl-arty.wiz`, below). What the netlist cannot express is listed in
 `Netlist.errors` and printed as `// error:` lines: a choice between two different
 memories, a memory in a port, a state memory replaced instead of written.
 ## H14 C2: lenses for structures and bundles (`lib/OpticDerive.wiz`, `lib/Hdl/Optic.wiz`) ✅
@@ -414,6 +417,38 @@ Not done: a general bit-level round-trip lemma for bundles (above), `BitPack` fo
 inductive types with fields (a tag and the widest constructor's fields), `!` on signals,
 `match` on an enumeration signal (staged `match`, hdl-staging-research S3), asynchronous
 reset.
+
+## Xilinx 7-series pin constraints and the Arty A7 (`Hdl.Xdc`, `Hdl.Arty`)
+
+`lib/Hdl/Xdc.wiz` (`import Hdl.Xdc`) is `Pcf` for Xilinx: an `XBoard` is the clock's
+package pin and period (picoseconds), an I/O standard and a table of resources (`XPin.one
+port pin`, `XPin.bus port pins`, bit 0 first; `XPin.rename`, `XPin.take k`).
+`Xdc.emit n board` writes the XDC (`set_property -dict { PACKAGE_PIN … IOSTANDARD … }`
+per port bit, `create_clock` for `clk`) that Vivado and nextpnr-xilinx read; ports are
+looked up by name, so the table can list the whole board. `Xdc.check n board` lists the
+ports without a resource and those of another width.
+
+`lib/Hdl/Arty.wiz` (`import Hdl.Arty`) is the Digilent Arty A7 (Artix-7, CSG324): its pins
+from Digilent's master XDC (`clk` E3 at 100 MHz, `led` 4, `rgb` 12, `btn` 4, `sw` 4,
+`uart_rx` A9 and `uart_tx` D10 (FT2232 channel B), `ck_rst`, the Pmod headers `ja` … `jd`
+8 each; all LVCMOS33) as `Arty.board`, and its two devices, `Arty.Device.a35t`
+(xc7a35ticsg324-1L, the default) and `.a100t` (xc7a100tcsg324-1), with the part names
+Project X-Ray and nextpnr use. `examples/hdl-arty.wiz` (group `hdl`) checks the XDC and
+that synth_xilinx maps its RAMs, ROM and multiply to RAMB18E1, RAMB36E1 and DSP48E1. The
+flow from there to a bitstream (yosys, nextpnr-xilinx, fasm2frames, xc7frames2bit; the
+openXC7 toolchain from Nix) is a separate package, wiz-arty, as wiz-icestick-uart is for
+the iCEstick. Its four designs (blinky, UART hello and echo, and `squares` with a RAMB18E1
+and a DSP48E1) ran on an Arty A7-35T on 2026-11-12.
+
+**UART clock rates.** An FT2232 (the USB-UART of both boards) makes its baud rate from
+3 MHz with an integer divisor, so "115200" is 3 MHz / 26 = 115384.6 baud, 0.16 % fast. A
+design that relays at line rate with bounded buffering (an echo with one byte of
+buffer) must send at least as fast as the host sends. A divider rounded to the nominal
+rate makes the board slow, and it then drops a byte every few thousand in a long burst.
+That happened on the Arty with 100 MHz / 868 = 115207 baud: one byte in about 2200. The
+iCEstick's 12 MHz / 104 = 115384.6 baud equals the FT2232's rate exactly, which is why
+it never showed there. Compute the divider from the host's real rate and round it down
+(wiz-arty's `Ftdi.divisor` and `clocksPerBit`: 866 at 100 MHz).
 
 ## H14 C4: bit-level reasoning (`lib/Hdl/Bits.wiz`) ✅
 
