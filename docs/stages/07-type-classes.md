@@ -205,7 +205,67 @@ with instances for `Nat` that are the natively computed functions (`Add.mk Nat.a
   (`selfhost/Frontend.wiz`, `preludeText`) keeps `infixl " + " => Nat.add`, and its
   sources use `+` only at `Nat`, which both frontends accept.
 
-Heterogeneous `HAdd A B C` (Lean's) is not here: it needs default instances, which the
-class mechanism lacks; see /workspace/wiz-notes/num-classes.md for the design.
+Heterogeneous `HAdd A B C` (Lean's) came next, with default instances: 7f.
 Types are structural (two declarations of the same shape are one type), so an instance
-for a look-alike type applies too; numerals and patterns: numerals are not patterns yet.
+for a look-alike type applies too; numerals as patterns: see 13q (`docs/stages/13-language.md`).
+
+## 7f: heterogeneous operators, default instances ✅
+
+```
+class HAdd (A B : Type) (C : outParam Type) where
+  hAdd : A → B → C                     -- also HSub, HMul, HDiv, HMod, HPow, HAppend
+instance instHAdd {A : Type} [Add A] : HAdd A A A := HAdd.mk Add.add
+attribute [default_instance] instHAdd
+attribute [default_instance 100] instOfNatNat
+attribute [binop] HAdd.hAdd
+infixl:65 " + " => HAdd.hAdd
+instance : HMul Nat V V := HMul.mk (fun k v => V.mk (k * v.x) (k * v.y))  -- scalar × V
+```
+
+As in Lean, `+ - * / % ^ ++` are the methods of heterogeneous classes `HAdd A B C` …
+(the result type is an `outParam`), and `instHAdd [Add A] : HAdd A A A` connects them to
+the homogeneous classes of 7e, whose instances are unchanged. `^` is `HPow A B C` with
+`instHPow [Pow A B] : HPow A B A` and `Pow Nat Nat` (`Nat.pow`); `++` is `HAppend`.
+
+* **Default instances.** `attribute [default_instance p] i` (priority `p`, default 1000)
+  registers the instance `i` as a default for its class (the instance must have a name:
+  `instance instHAdd …`, 7f). When the pending instance problems can make no progress, the
+  default instances of the stuck problems are tried, highest priority first and then the
+  problems in the order they were made; the first that applies (its conclusion unifies
+  with the problem) is committed to, its instance arguments become new problems, and
+  resolution resumes. There is no backtracking. This happens at the end of a command, for a
+  definition's type before its body is checked, and for a type ascription's type
+  (`(rfl : 1 + 1 = 2)`), as Lean elaborates a type to the end.
+* **Numerals.** A numeral at an unsolved type `?T` is `@OfNat.ofNat ?T n ?i` with a
+  pending problem `OfNat ?T n` (it was a `Nat` at once, 7e): its type is decided by what
+  it meets later (`List.cons 1 xs` with `xs : List U8`). One that meets nothing becomes a
+  `Nat` through the default instance `instOfNatNat` (priority 100, so `instHAdd` decides
+  first: `x + 1` is homogeneous). Zonking turns `@OfNat.ofNat Nat n instOfNatNat` back into
+  the literal `n`, so kernel terms, native arithmetic, `rfl` and erasure see what they did
+  before. (Without an `OfNat` default instance, as in the self-hosted toolchain's prelude,
+  a numeral at a hole is a `Nat` at once, as before.)
+* **`binop`** (Lean's `binop%`, without coercions). `attribute [binop] HAdd.hAdd` marks an
+  operator whose numeral operands and constructor operands (`.succ n`) take the type of
+  its other operands, or else of its result: `x + 1` and `1 + x` at `x : U8` are
+  `HAdd U8 U8 ?C` at once (resolved by the ordinary instance `instHAdd`, no default
+  needed), `m * .succ n` at `m : Nat` finds `.succ`, and `def x : U8 := 1 + 2` puts both
+  numerals at `U8`. `^` is not a `binop`: `x ^ 2` has a `Nat` exponent. The defaults are
+  what is left for operands with no known type: `fun x => x + 1` is `Nat → Nat`.
+  (Why both: default instances alone would decide `x + 1` at the end of the command,
+  so its type would be unknown in between, and every such numeral would be a stuck
+  problem; `binop` alone cannot type `fun x => x + 1`. Lean has both for the same reasons.)
+* **The worklist.** A pending problem records the holes it waits for (the unsolved holes
+  of its non-output class arguments); it is tried again only when one of them is solved
+  (`solveMeta` puts the waiting problems on a queue). Before, every new problem and every
+  application retried all pending problems: quadratic in a big definition, and with
+  numerals deferred there are more of them.
+* **Conversion and compiled code.** `a + b` at `Nat` is `HAdd.hAdd Nat Nat Nat (instHAdd
+  Nat instAddNat) a b`, which unfolds to `Add.add Nat instAddNat a b` and to `Nat.add a b`:
+  `rfl : 2 + 3 = 5`, `a + b = Nat.add a b := rfl` and lemmas stated with `+` hold as
+  before. `HAdd` has one method, so `instHAdd` erases to its argument and `a + b` still
+  compiles to `prim nat.add` (or `wiz_word_add` at a word).
+* **Named instances.** `instance name binders : C args` names the instance (an unnamed
+  one is still named after its type, `instAddNat`).
+* **HDL signals** (lib/Hdl/Core.wiz) have homogeneous instances `Add (r (bits n))`; through
+  `instHAdd` they are the signals' `+` with no change, and `x + 1` at a signal puts the
+  numeral at the signal's width.

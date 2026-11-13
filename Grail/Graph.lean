@@ -245,21 +245,26 @@ abbrev TestResults := IO.Ref (Std.HashMap String TestResult)
 def Runner.judgeTest (r : Runner) (file : String) (update : Bool) (results : TestResults)
     (actual : Except String String) : IO Finish := do
   let (expFile, expected) ← expectedOf r.ctx.dir file
-  let report (res : TestResult) : IO Finish := do
+  -- (a pass is recorded under the key of the expected output it was compared with: with
+  -- `--update`, only if that didn't change)
+  let report (res : TestResult) (record : Bool := !update) : IO Finish := do
     results.modify (·.insert file res)
     let log := if res.ok then s!"  ✓ {file}{if res.message.isEmpty then "" else s!" ({res.message})"}\n"
       else s!"  ✗ {file}\n      {res.message}\n"
-    pure { res := if res.ok then .ok () else .error res.message, record := res.ok && !update, log }
+    pure { res := if res.ok then .ok () else .error res.message, record := res.ok && record, log }
   match actual with
   | .error e => report { file, ok := false, message := e }
   | .ok actual =>
   if update then
     if expected != some actual then IO.FS.writeFile expFile actual
     return ← report { file, ok := true, message := if expected == some actual then "" else "updated" }
+      (record := expected == some actual)
   match expected with
   | none => report { file, ok := false, message := s!"no {expFile} (grail test --update writes it)" }
   | some e =>
-    if e != actual then report { file, ok := false, message := firstDifference e actual }
+    if e != actual then
+      let note := TestKind.defaultNote (← IO.FS.readFile (r.ctx.dir / file))
+      report { file, ok := false, message := firstDifference e actual ++ note }
     else report { file, ok := true }
 
 /-- (23i) A command whose dependencies are done: its key, and the job that runs it. -/
@@ -368,18 +373,20 @@ def Runner.prep (r : Runner) (update : Bool) (results : TestResults) (n : Node)
       if !cached then return ""
       results.modify (·.insert file { file, ok := true, cached := true })
       pure s!"  ✓ {file}\n"
-    -- a dependency failed (the test's program doesn't build): the error is the output
+    -- a dependency failed (the test's program doesn't check or build): a failed test,
+    -- with or without `--update`, and nothing is recorded
     if let some (.error e) := deps.find? (· matches .error _) then
-      return .job {
-        key := key, timeoutMs := r.testTimeoutMs, force := force, onOk := onOk,
-        how := .here fun out => do IO.FS.writeFile (out / "actual") s!"error: {e}\n"; pure (.ok ()),
-        finish := some fun _ out => do r.judgeTest file update results (.ok (← IO.FS.readFile (out / "actual"))) }
+      let msg := s!"its program does not build: {e.trimAsciiEnd.toString}"
+      let f ← r.judgeTest file update results (.error msg)
+      return .fail msg f.log
     let exe := if kind == .run then ((d 0).out / testExe file).toString else ""
     pure (.job {
       key := key, timeoutMs := r.testTimeoutMs, force := force, onOk := onOk,
       how := .grail (node "test" [str file, str kind.name, str exe]),
       finish := some fun o out => do
         if o.code == 124 then r.judgeTest file update results (.error s!"timed out after {secs r.testTimeoutMs} s")
+        -- (exit 1: the test failed, its message on stderr; else the process died)
+        else if o.code == 1 && !o.stderr.trimAscii.isEmpty then r.judgeTest file update results (.error o.stderr.trimAsciiEnd.toString)
         else if o.code != 0 then r.judgeTest file update results (.error s!"the test's process failed: {failureMessage o r.testTimeoutMs}")
         else r.judgeTest file update results (.ok (← IO.FS.readFile (out / "actual"))) })
   | .source role =>
@@ -675,11 +682,11 @@ def Runner.runJob (r : Runner) (out : System.FilePath) : Sx → IO (Except Strin
     runOn exe (← IO.FS.readFile input) out file
   | .l #[.a "test", .a file, .a kind, .a exe] => do
     let kind := if kind == "run" then TestKind.run else .check
-    let actual ← match ← r.testOutput file kind exe with
-      | .ok a => pure a
-      | .error e => pure s!"error: {e}\n"
-    IO.FS.writeFile (out / "actual") actual
-    pure (.ok ())
+    -- a program that times out or fails is a failed test, not an output (`--update`
+    -- must not record it)
+    match ← r.testOutput file kind exe with
+    | .ok a => IO.FS.writeFile (out / "actual") a; pure (.ok ())
+    | .error e => pure (.error e)
   | x => pure (.error s!"unknown job {x.render}")
 
 /-- `<self> --grail-job JOB TOOLCHAIN-FLAGS`: `JOB` is `(job DIR STD BINID (ROOTS…) OUT (KIND ARGS…))`.
