@@ -1,21 +1,9 @@
-import Logic
+import Nat
 -- Bounded numbers and length-indexed vectors (`import Vec`). The length of a `Vec` is
 -- an erased index (quantity 0): at runtime a vector is a list, and `Vec.length` counts
 -- it (`Vec.length_eq` ties the count to the index).
 
--- Equality lemmas used below (`Eq.symm`, `Eq.trans` are in lib/Logic.wiz).
-def congrArg.{u, v} {A : Type u} {B : Type v} (f : A → B) {a b : A} (e : a = b) : f a = f b :=
-  transp (fun b _ => f a = f b) (refl (f a)) e
-
-def Nat.add_zero : (n : Nat) → n + 0 = n
-  | .zero => rfl
-  | .succ n => congrArg Nat.succ (Nat.add_zero n)
-def Nat.add_succ : (m n : Nat) → m + Nat.succ n = Nat.succ (m + n)
-  | .zero, _ => rfl
-  | .succ m, n => congrArg Nat.succ (Nat.add_succ m n)
-def Nat.add_comm : (m n : Nat) → m + n = n + m
-  | .zero, n => Eq.symm (Nat.add_zero n)
-  | .succ m, n => Eq.trans (congrArg Nat.succ (Nat.add_comm m n)) (Eq.symm (Nat.add_succ n m))
+-- (`congrArg`, `Nat.add_zero`, `Nat.add_succ` and `Nat.add_comm` are in lib/Nat.wiz)
 def Nat.lt_self : (n : Nat) → Nat.lt n (Nat.succ n) = .true
   | .zero => rfl
   | .succ n => Nat.lt_self n
