@@ -247,6 +247,8 @@ reject them in the kernel, but a linear variable can't be used inside a `match`
 alternative today (`match` is built on `ind`, whose methods are scaled by ω) and
 `Result`'s payload is ω, so it needs a case whose alternatives run once (R9a, a kernel
 change). Linearity would still not be uniqueness: in-place updates stay with RC.
+(Since cohesion M4, below, the handles are linear and gaps 1 and 3 are type errors; gap 2
+stays, pinned in `regions`.)
 
 **Linear handles (cohesion M4a, on linear-case stage 2).** `Uniq1 ρ A` is `&'a mut A`
 used at quantity 1. It is a one-constructor inductive with a private constructor, because a
@@ -260,7 +262,9 @@ with its region); see group `regions`.
 Gap 2 stays: the lender is an ω value, so a body that names the `Lent` token differently
 can still read it. Closing it needs linear lenders, and reading `*x` out of a linear value
 then needs a Copy notion (K3, `sfix_π`).
-Feral's lowering moves onto `Uniq1` in M4b; until then the ω handles remain.
+Feral's lowering moved onto these in M4b. Since M4b-3d they are the only mutable handles:
+the ω `Uniq`, `Mut` and `MutOpt` are gone, and `Uniq1`, `Mut1`, `MutOpt1` are renamed
+`Uniq`, `Mut`, `MutOpt` (`Result1` and `Borrowed` keep their names).
 
 Linearity closes the escape for `Uniq` (the body has one handle and must hand it back,
 so it can't also pack it) but not for `Shr`, which is a copy. The scope is already rank-2
@@ -431,7 +435,8 @@ loops, `?`, `U64`, and functions that return borrows.
   ω values (22g, known gaps). One Feral program shows it: `swap (&mut a) (&mut a)` is
   E0499 in the front end, yet its `#unchecked` lowering checks. The surface language
   never names handles, scopes or tokens, so when handles become linear only the text
-  emitted for scopes changes.
+  emitted for scopes changes. (Since cohesion M4b they are linear, and the kernel rejects
+  that lowering too; reading a lender under a renamed `Lent` token is the gap that stays.)
 * **Linear mode (cohesion M4b-1).** A block whose functions use `&mut` and stay in the
   fragment it covers (straight-line code, calls, `if`, `mem.swap/take/replace`) lowers to
   the linear handles of 22g (`Uniq1`). `&mut` parameters are taken at 1. `*x` becomes
@@ -462,6 +467,12 @@ loops, `?`, `U64`, and functions that return borrows.
   a `Uniq1.zoom` with the field's lens `S.fL`; `zoomIn` threads other handles through.
   Every surface program that uses `&mut` now lowers linearly. Not yet: two fields of one
   struct in one call (`g (&mut s.a) (&mut s.b)`; the `let` form does it).
+  Since M4b-3d, linear mode is the only mode: every block lowers to the linear handles
+  (renamed `Uniq`, `Mut`, `MutOpt`, 22g), the `-- linear handles` marker is gone, and
+  FeralCore's `&mut` functions (`Vec.push`, `Vec.get_mut`) take linear handles. The
+  hand-lowered drafts (`drafts/feral/lowered`, `rejected`) use the same API. Specs read
+  handles at ω through `Uniq.get`/`Mut.store` (03's `final` spec is stated on the place's
+  store).
 * **Located output for command macros.** Runtime `Syntax` has no positions. A command
   macro now names a node of its input by **path** (child indices), and its output may
   contain `Syntax.errorAt path msg`, `Syntax.infoAt path msg` and
