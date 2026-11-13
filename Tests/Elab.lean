@@ -7002,6 +7002,12 @@ def badAdd : String :=
   ownNat ++
   "def h (n : N) : K n 3 = n := refl n\ndef bad : False := absurd (h 2)\n#print axioms bad\n"
 
+/-- Replace every call `f a` by `f (wrap a)` (t1-review's probes, `trustGroup`). -/
+partial def wrapCalls (f : Name) (wrap : Term ZeroOneMany → Term ZeroOneMany) (t : Term ZeroOneMany) : Term ZeroOneMany :=
+  match t with
+  | .app (.const c us) a => if c == f then .app (.const c us) (wrap (wrapCalls f wrap a)) else .app (.const c us) (wrapCalls f wrap a)
+  | t => Id.run (t.mapChildrenM pure fun _ c => pure (wrapCalls f wrap c))
+
 /-- The trusted base: partial definitions need a kernel-checked witness (O2), and
 `builtin` registrations outside the library are tracked axioms (O3). -/
 def trustGroup : Group where
@@ -7228,6 +7234,46 @@ def trustGroup : Group where
             "def w3 : W 3 := .cons 1 (.cons 2 (.cons 3 .nil))\n" ++
             "def thmW : h w3 = 9 := refl 9\n#eval h w3\n#run h w3\n")
           ["9", "9", "9", "9"] },
+    { name := "recursive definitions: compiled equations whose calls are not on fields are rejected (t1-review M1)", run := fun _ => do
+        -- probes t1-191-kernel / t1-191-unit: each of these agrees with the value where the
+        -- kernel looks (or at a type where every two values are equal) but compiled code
+        -- would loop; each derived one is accepted
+        let src := "inductive N where\n  | z\n  | s (n : N)\n" ++
+          "def f : N → N\n  | .z => .z\n  | .s n => f n\n" ++
+          "inductive W where\n  | sup (g : N → W)\n  | z\n" ++
+          "def wd : W → N\n  | .z => .z\n  | .sup g => wd (g .z)\n" ++
+          "inductive W2 where\n  | node (l : W2) (g : N → W2)\n  | z\n" ++
+          "def w2 : W2 → N\n  | .z => .z\n  | .node l g => w2 l\n" ++
+          "def u : N → Unit\n  | .z => ()\n  | .s n => u n\n"
+        let s := runFrontend (R := ZeroOneMany) src {}
+        let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
+        unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
+        let verdict (nm : Name) (impl : Term ZeroOneMany → Term ZeroOneMany) : IO Bool := do
+          let some d := s.globals.find? nm | throw (IO.userError s!"no {nm}")
+          let g0 : Globals ZeroOneMany := { s.globals with decls := s.globals.decls.erase nm }
+          pure ((addDecl g0 { d with impl := some (impl d.impl.get!) }) matches .ok _)
+        for nm in ["f", "wd", "w2", "u"] do
+          check (← verdict nm id) s!"{nm}'s derived equations were rejected"
+        check (!(← verdict "f" (wrapCalls "f" (fun a => .app (.const "N.s" []) a)))) "f with f (.s n) was accepted"
+        check (!(← verdict "f" (wrapCalls "f" (fun a => .app (.const "f" []) a)))) "f with f (f n) was accepted"
+        check (!(← verdict "f" fun _ => .lam "x" (.app (.const "f" []) (.var 0)))) "f with λ x. f x was accepted"
+        check (!(← verdict "f" fun _ => .const "f" [])) "f with f itself was accepted"
+        check (!(← verdict "wd" (wrapCalls "wd" (fun a => .app (.const "W.sup" []) (.lam "_" (a.lift 1)))))) "wd with wd (sup (λ _. g z)) was accepted"
+        check (!(← verdict "w2" (wrapCalls "w2" (fun a => .app (.app (.const "W2.node" []) a) (.lam "_" (a.lift 1)))))) "w2 with w2 (node l (λ _. l)) was accepted"
+        check (!(← verdict "u" (wrapCalls "u" (fun a => .app (.const "N.s" []) a)))) "u with u (.s n) was accepted (a call at Unit)"
+        -- t1-192-scrutinee / t1-192-run (M1c): a top split of `N.s x` instead of `x`, whose
+        -- "field" is then `x` itself, with the real split inside
+        let splitOfSucc (nm : Name) (impl : Term ZeroOneMany) : Term ZeroOneMany :=
+          match impl with
+          | .lam xn body =>
+            match body.spine with
+            | (h, [mot, mz, _, _]) =>
+              let inner := [mot.lift 1, mz.lift 1, .lam "m" (.app (.const nm []) (.var 1)), .var 1].foldl .app h
+              .lam xn ([mot, mz, .lam "n" inner, .app (.const "N.s" []) (.var 0)].foldl .app h)
+            | _ => impl
+          | _ => impl
+        check (!(← verdict "u" (splitOfSucc "u"))) "u with a split of (.s x) was accepted"
+        check (!(← verdict "f" (splitOfSucc "f"))) "f with a split of (.s x) was accepted" },
     { name := "O3: an unchecked registration is an axiom", run := fun _ => do
         let msgs ← messagesLib badAdd
         let expect := ["warning: builtin nat := N is not checked: it is an axiom of every declaration that depends on N (see `#print axioms`)",

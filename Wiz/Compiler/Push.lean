@@ -11,9 +11,12 @@ hypotheses (their types mention the field it splits), so in the derived term a c
 be an argument of an inner `casesOn`, and compiled code would compute it before the case,
 whether the branch taken uses it or not. `pushCalls` moves such arguments into the
 branches of the inner split, before erasure (`eraseDecl`): a rewrite of the compiler's,
-like erasure, done on the checked term and checked again (the result must have the
-declared type, or the unrewritten term is compiled). In branch `c` the call is on
-`c fields` where its type needs the scrutinee, otherwise on the scrutinee itself.
+like erasure, done on the checked term. Its result is type-checked again (it must have
+the declared type, or the unrewritten term is compiled), but not checked to agree with the
+checked term: that it does is by construction (an argument moved into the branches of a
+case, at the value of the scrutinee there), and trusted like erasure. In branch `c` the
+call is on `c fields` where its type needs the scrutinee, otherwise on the scrutinee
+itself.
 -/
 
 namespace Wiz.Push

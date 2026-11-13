@@ -505,12 +505,17 @@ set the status (open PRs in *italics*). Sections: §3 fixed, §4 open, §5 stuck
   self-hosted sources 4× slower to check). That a call equals the hypothesis is checked
   once by conversion, or follows from the value's shape (`bridgeByShape`: the value is
   the recursor applied to arguments that do not mention the columns or index
-  variables). What these conversions prove is `impl[f := value] ≡ value`: the value is a
-  fixpoint of the compiled equations. So **if compiled code terminates, its result is the
-  value's** (induction on the run). They do not prove that it terminates (t1-review M1,
-  below). A proposition-valued definition is a proof: its value is suspended (P2), there
-  is no split to compare, and any two proofs are convertible (proof irrelevance), so a
-  well-typed implementation agrees with it. A
+  variables). The conversions prove `impl[f := value] ≡ value`: the value is a fixpoint of
+  the compiled equations, so **if compiled code terminates, its result is the value's**
+  (induction on the run). Conversion alone gives only partial correctness: at a type where
+  every two values are convertible (`Unit`) it does not see the calls, and a call on
+  a value convertible to a smaller one (`f (sup (λ _. g z))` for `f (g z)`) agrees and
+  loops. So the kernel also checks, syntactically, that every call of the definition is
+  on a field of the constructor it is in (`callsOnFields`; t1-review M1): then it
+  terminates as the kernel's recursion does. A proposition-valued definition is a proof:
+  its value is suspended (P2), there is no split to compare, and any two proofs are
+  convertible (proof irrelevance), so a well-typed implementation agrees with it (a proof
+  is erased: compiled code never runs it). A
   definition whose index variable escapes into a method gets no `impl` (compiled from its
   value). `#print axioms` lists nothing for compiled equations (it did, as `compiled f`,
   between the two steps).
