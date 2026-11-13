@@ -486,6 +486,53 @@ ISERDESE2 (NETWORKING 8:1 DDR, from an IDELAYE2), IDELAYE2 (VAR_LOAD, 200 MHz re
 IDELAYCTRL, and PLLE2_BASE as a `Clocking`. Tests (group `hdl`, examples/hdl-prim.wiz):
 the Verilog, refusal, buffer models and kind errors, and yosys synth_xilinx keeping every
 cell.
+## H14 V1: verified circuit optimisation (`lib/Hdl/Verified.wiz`) ✅
+
+The OLED demo's arithmetic units (wiz-icestick-uart, branch oled-demo: `Sphere.wiz`,
+`Blobs.wiz`) are hand-optimised: no multiplier, no divider, one result bit a cycle.
+`lib/Hdl/Verified.wiz` copies them (the same `Hw` code, with the control multiplexers
+resolved for the phase each unit is in) and states each against its plain `Nat`
+definition, one input at a time (`Hv.sqOk`, `Hv.rtOk`, …); `allBelow p n = .true` decides
+it for every input of the domain, and `allBelow_sound` turns that into a `∀`.
+
+| unit | claim | inputs | checked by |
+|---|---|---|---|
+| shift-add squarers (Sphere, 5 cycles) | `acc = ax² + ay²` | all 2¹⁰ | kernel |
+| bit-serial root (Sphere, 5 cycles) | `h = ⌊√n⌋` | n ≤ 400 (its inputs) | kernel |
+| | | n < 1024 | native |
+| bit-serial root (Blobs, 7 cycles, 14 bits) | `h = ⌊√m⌋` | all 2¹³ | native |
+| Blobs stage A (squares, × 4, root) | `ρ = 2⌊√(4(ax² + ay²))⌋` | all 2¹⁰ | native |
+| smooth-min table | entry i = (4i)²/256 (i ≤ 16), else 0 | all 32 | kernel |
+| smooth-min correction by e = abs(d₂ − d₁) | g = max(64 − e, 0), c ≤ g²/256 < c + 2 | e < 64 | kernel |
+| | | all 2¹² | native |
+| smooth minimum (`sminK`) | `min(d₁, d₂) − c − 1`, c as above | d₁, d₂ ∈ [−64, 192) | native |
+| | | d₁, d₂ ∈ [−64, 960) (the march's) | native, on demand |
+| octagonal length (`norm2`), its 11/16 | 16t ≤ 11s < 16t + 38 | s < 2048 (a, c < 1024) | kernel |
+| | | all 2¹² | native |
+| octagonal length | n² ≤ a² + c² ≤ 1.21 (n + 2)² | a, c < 256 | native |
+| | | a, c < 1024 | native, on demand |
+
+Two structure lemmas tie the 24-bit units to the kernel-checked pieces by definition
+(`rfl`): `sminK_eq` (the smooth minimum is `smin12 − c(abs(d₂ − d₁)) − 1`) and `norm2_eq`
+(`max(max(a, c), t(a + c))`). The lower bound n² ≤ a² + c² is what makes the march safe
+(a step never passes through a surface).
+
+**Trust.** `examples/hdl-verified.wiz` is kernel-checked, nothing trusted.
+`examples/hdl-verified-native.wiz` uses `native_refl` (27a): with `--trust-native` only,
+one axiom per check (`#print axioms` lists it), trusting erasure and the interpreter.
+Both run in the test group *hdl-verified* (a heavy shard: minutes). The two 2²⁰-input
+checks (about ten minutes) are `examples/hdl-verified-full.wiz`, run on demand:
+`wiz check --trust-native examples/hdl-verified-full.wiz`.
+
+**What was hard (findings).** `sat_decide` (28b/28c, PRs #197/#208) was meant to do the word-level
+units, but: (F1) it is Boolean only, and nothing bit-blasts `UIntN`/`BitVec` (the bit
+library, #167, is one-bit; the Nat div/mod lemmas a bridge needs don't exist); (F2) `unfold`
+left a definition by cases on a numeral as a raw eliminator (PR #224); (F5) its
+certificate check costs about 0.3 s per LRAT step, so a 6-bit adder's commutativity
+takes about 40 s, and these units would need 10⁴ and more; (F3) exhaustive `rfl` is
+about 14 ms per case for eight word operations, so the kernel stops near 2¹² inputs.
+A computing reflection (`bit_decide`) is in drafts/hdl-verified/, for when the check is
+fast (compiled, or a faster kernel evaluator).
 
 ## H14 C4: bit-level reasoning (`lib/Hdl/Bits.wiz`) ✅
 

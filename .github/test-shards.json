@@ -4,6 +4,9 @@
    "select": [
     "=selfhost"
   ]},
+  {"name": "hdl-verified", "heavy": true, "select": [
+    "=hdl-verified"
+  ]},
   {"name": "grail-selfhost", "heavy": true,
    "inputs": ["selfhost/*", "lib/Prelude.wiz", "lib/IO.wiz", "lib/Std.wiz", "lib/Grail.wiz"],
    "select": [
@@ -33,7 +36,7 @@
     "=grail-deps",
     "=grail-hygiene",
     "=grail-jobs",
-    "hdl",
+    "=hdl",
     "infoview",
     "language",
     "lsp",
