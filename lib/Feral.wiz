@@ -2854,7 +2854,7 @@ def Fe.specLin (sig : Fe.Sig) (hs : List String) (cls : List (Nat × Syntax))
         +++ Fe.words (Fe.map (fun (q : String × Fe.Ty) => "(" +++ q.1 +++ " : " +++ Fe.tyStr (Fe.paramTyL hs q) +++ ")") sig.params)
         +++ ": Prop :=\n  " +++ Fe.arrows reqs
           ("Result.Holds (fun (r : " +++ Fe.nestTy (Fe.tyStr sig.ret) hts +++ ") => "
-            +++ Fe.joinWith " × " enss +++ ") (\n    " +++ scope +++ ")"))))
+            +++ Fe.joinWith " × " enss +++ ") (\n    " +++ scope +++ ")"))
 def Fe.specText (g : Fe.Glob) (p : List Nat) (it : Syntax) : Except String String :=
   let f := Fe.id (Fe.arg it 1);
   match Fe.findSig f g.sigs with
@@ -2938,8 +2938,8 @@ def Fe.pass2 (g : Fe.Glob) (mode : Nat) : List Fe.Item → Fe.Outp → Fe.Outp
     | .data p text => Fe.pass2 g mode rest (Fe.Outp.mk o.errs (List.append o.notes (.cons (Syntax.infoAt p text) .nil))
         (List.append o.srcs (.cons (Syntax.sourceAt p text) .nil)))
     | .spec p stx => (match Fe.specText g p stx with
-      | .error m => Fe.pass2 g mode lin rest (Fe.Outp.mk (List.append o.errs (.cons (Syntax.errorAt p m) .nil)) o.notes o.srcs)
-      | .ok text => Fe.pass2 g mode lin rest (Fe.Outp.mk o.errs (List.append o.notes (.cons (Syntax.infoAt p text) .nil))
+      | .error m => Fe.pass2 g mode rest (Fe.Outp.mk (List.append o.errs (.cons (Syntax.errorAt p m) .nil)) o.notes o.srcs)
+      | .ok text => Fe.pass2 g mode rest (Fe.Outp.mk o.errs (List.append o.notes (.cons (Syntax.infoAt p text) .nil))
           (List.append o.srcs (.cons (Syntax.sourceAt p text) .nil))))
     | .func p stx => (match Fe.findSig (Fe.id (Fe.arg stx 1)) g.sigs with
       | .none => Fe.pass2 g mode rest o
