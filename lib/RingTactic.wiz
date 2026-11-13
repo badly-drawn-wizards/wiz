@@ -1,0 +1,251 @@
+import Rat
+/-!
+# RingTactic
+
+`ring`: prove an equation of commutative (semi)rings by reading the goal
+(`import RingTactic`).
+
+```
+import RingTactic
+
+def ex (a b : Int) : (a - b) * (a + b) = a * a - b * b := by ring
+def nat (a b c : Nat) : (a + b) * c = c * b + a * c := by ring
+def rat (p q : Q) : (p + q) * (p - q) ≈ p * p - q * q := by ring
+def all : (a b : Nat) → a + b = b + a := by ring   -- the binders are introduced
+```
+
+The goal (after introducing its `∀`s) is `lhs = rhs` at `Nat` or `Int`, or `lhs ≈ rhs`
+at `Q` (lib/Rat.wiz). The tactic looks inside the equation with `TacticM.eqView`, reifies
+both sides as expressions over atoms (`NatExpr`, `IntExpr`, `QExpr`: the normalisers of
+`nat_ring!`, `int_ring!` and `q_ring!`), compares their normal forms itself, so that a
+false equation gets a clear error, and closes the goal with the normaliser's soundness
+lemma (`NatExpr.prove ρ e₁ e₂ Ring.trivial`), which the kernel checks by computing the
+normal forms again.
+
+Reification reads elaborated terms, not syntax: `+`, `*`, `-` (binary and unary, not at
+`Nat`) through their classes (`Add.add`, …, and the heterogeneous `HAdd.hAdd`, …, once
+they exist) or as `Nat.add`/`Int.add`/`Q.add` …; numerals (`OfNat.ofNat`, literals);
+`Nat.succ`. Every other subterm is an atom, and two atoms are the same when their terms
+are equal (`Expr.beq`), so `f x` and `f (x)` are one atom, unlike in `nat_ring!`.
+-/
+
+/-- `Bool.true = Bool.true`: the certificate the normalisers' `h` is checked against, by
+computing their Boolean comparison of the normal forms. -/
+def Ring.trivial : Bool.true = Bool.true := rfl
+
+-- ## Reading terms
+
+/-- A ring operation recognised in a term: the operation and its operands. -/
+inductive RingT.Op where
+  | add (a b : Expr)
+  | mul (a b : Expr)
+  | sub (a b : Expr)
+  | neg (a : Expr)
+  | lit (n : Nat)
+  | succ (a : Expr)
+  | none
+
+/-- A binary operation after `k` type and instance arguments. -/
+def RingT.op2 (mk : Expr → Expr → RingT.Op) (k : Nat) (args : List Expr) : RingT.Op :=
+  match List.dropN k args with
+  | .cons a (.cons b .nil) => mk a b
+  | _ => .none
+/-- A unary operation after `k` type and instance arguments. -/
+def RingT.op1 (mk : Expr → RingT.Op) (k : Nat) (args : List Expr) : RingT.Op :=
+  match List.dropN k args with
+  | .cons a .nil => mk a
+  | _ => .none
+/-- `OfNat.ofNat A n inst` with a literal `n`. -/
+def RingT.numeral (args : List Expr) : RingT.Op := match args with
+  | .cons _ (.cons n (.cons _ .nil)) => match Expr.view n with
+    | .lit k => .lit k
+    | _ => .none
+  | _ => .none
+
+/-- `e` as an operation: `Add.add A inst a b`, `HAdd.hAdd A B C inst a b`,
+`Nat.add a b`, … -/
+def RingT.op (e : Expr) : RingT.Op := match Expr.view e with
+  | .lit n => .lit n
+  | .const n args =>
+    if Expr.nameEq n "Add.add" then RingT.op2 RingT.Op.add 2 args
+    else if Expr.nameEq n "HAdd.hAdd" then RingT.op2 RingT.Op.add 4 args
+    else if Expr.nameEq n "Mul.mul" then RingT.op2 RingT.Op.mul 2 args
+    else if Expr.nameEq n "HMul.hMul" then RingT.op2 RingT.Op.mul 4 args
+    else if Expr.nameEq n "Sub.sub" then RingT.op2 RingT.Op.sub 2 args
+    else if Expr.nameEq n "HSub.hSub" then RingT.op2 RingT.Op.sub 4 args
+    else if Expr.nameEq n "Neg.neg" then RingT.op1 RingT.Op.neg 2 args
+    else if Bool.or (Expr.nameEq n "Nat.add") (Bool.or (Expr.nameEq n "Int.add") (Expr.nameEq n "Q.add")) then RingT.op2 RingT.Op.add 0 args
+    else if Bool.or (Expr.nameEq n "Nat.mul") (Bool.or (Expr.nameEq n "Int.mul") (Expr.nameEq n "Q.mul")) then RingT.op2 RingT.Op.mul 0 args
+    else if Bool.or (Expr.nameEq n "Int.sub") (Expr.nameEq n "Q.sub") then RingT.op2 RingT.Op.sub 0 args
+    else if Bool.or (Expr.nameEq n "Int.neg") (Expr.nameEq n "Q.neg") then RingT.op1 RingT.Op.neg 0 args
+    else if Expr.nameEq n "Nat.succ" then RingT.op1 RingT.Op.succ 0 args
+    else if Expr.nameEq n "OfNat.ofNat" then RingT.numeral args
+    else .none
+  | _ => .none
+/-- The index of `e` among the atoms (added at the end if it is new). -/
+def RingT.atomIndex (e : Expr) : List Expr → Nat → Nat × List Expr
+  | .nil, i => (i, .cons e .nil)
+  | .cons a as, i => match Expr.beq a e with
+    | .true => (i, .cons a as)
+    | .false => match RingT.atomIndex e as (Nat.succ i) with
+      | (j, as') => (j, .cons a as')
+
+/-- An expression, read off a term, before it becomes an `Expr` of `pre`. -/
+inductive RingT.E where
+  | atom (i : Nat)
+  | lit (n : Nat)
+  | add (a b : RingT.E)
+  | mul (a b : RingT.E)
+  | neg (a : RingT.E)
+  | sub (a b : RingT.E)
+
+/-- A subterm that is not an operation: an atom. -/
+def RingT.reifyAtom (e : Expr) (atoms : List Expr) : RingT.E × List Expr :=
+  match RingT.atomIndex e atoms 0 with
+  | (i, atoms') => (.atom i, atoms')
+/-- Reify a term, extending the atoms (`fuel` bounds the depth). -/
+def RingT.reify (signed : Bool) : Nat → Expr → List Expr → RingT.E × List Expr
+  | .zero, e, atoms => RingT.reifyAtom e atoms
+  | .succ fuel, e, atoms => match RingT.op e with
+    | .add a b => match RingT.reify signed fuel a atoms with
+      | (ra, atoms1) => match RingT.reify signed fuel b atoms1 with
+        | (rb, atoms2) => (.add ra rb, atoms2)
+    | .mul a b => match RingT.reify signed fuel a atoms with
+      | (ra, atoms1) => match RingT.reify signed fuel b atoms1 with
+        | (rb, atoms2) => (.mul ra rb, atoms2)
+    | .sub a b => match signed with
+      | .true => match RingT.reify signed fuel a atoms with
+        | (ra, atoms1) => match RingT.reify signed fuel b atoms1 with
+          | (rb, atoms2) => (.sub ra rb, atoms2)
+      | .false => RingT.reifyAtom e atoms
+    | .neg a => match signed with
+      | .true => match RingT.reify signed fuel a atoms with
+        | (ra, atoms1) => (.neg ra, atoms1)
+      | .false => RingT.reifyAtom e atoms
+    | .lit n => (.lit n, atoms)
+    | .succ a => match signed with
+      | .true => RingT.reifyAtom e atoms
+      | .false => match RingT.reify signed fuel a atoms with
+        | (ra, atoms1) => (.add (.lit 1) ra, atoms1)
+    | .none => RingT.reifyAtom e atoms
+
+-- ## The three normalisers
+
+/-- As a `NatExpr` (no `-` occurs: `RingT.reify .false` makes atoms of it). -/
+def RingT.E.toNat : RingT.E → NatExpr
+  | .atom i => .atom i
+  | .lit n => .lit n
+  | .add a b => .add (RingT.E.toNat a) (RingT.E.toNat b)
+  | .mul a b => .mul (RingT.E.toNat a) (RingT.E.toNat b)
+  | .neg a => RingT.E.toNat a
+  | .sub a b => .add (RingT.E.toNat a) (RingT.E.toNat b)
+/-- As an `IntExpr`. -/
+def RingT.E.toInt : RingT.E → IntExpr
+  | .atom i => .atom i
+  | .lit n => .lit n
+  | .add a b => .add (RingT.E.toInt a) (RingT.E.toInt b)
+  | .mul a b => .mul (RingT.E.toInt a) (RingT.E.toInt b)
+  | .neg a => .neg (RingT.E.toInt a)
+  | .sub a b => .sub (RingT.E.toInt a) (RingT.E.toInt b)
+/-- As a `QExpr`. -/
+def RingT.E.toQ : RingT.E → QExpr
+  | .atom i => .atom i
+  | .lit n => .lit n
+  | .add a b => .add (RingT.E.toQ a) (RingT.E.toQ b)
+  | .mul a b => .mul (RingT.E.toQ a) (RingT.E.toQ b)
+  | .neg a => .neg (RingT.E.toQ a)
+  | .sub a b => .sub (RingT.E.toQ a) (RingT.E.toQ b)
+/-- As a term of the expression type `pre` (`"NatExpr"`, `"IntExpr"`, `"QExpr"`). -/
+def RingT.E.toExpr (pre : String) : RingT.E → Expr
+  | .atom i => .app (.const (String.append pre ".atom")) (.lit i)
+  | .lit n => .app (.const (String.append pre ".lit")) (.lit n)
+  | .add a b => Expr.mkApp (.const (String.append pre ".add")) (.cons (RingT.E.toExpr pre a) (.cons (RingT.E.toExpr pre b) .nil))
+  | .mul a b => Expr.mkApp (.const (String.append pre ".mul")) (.cons (RingT.E.toExpr pre a) (.cons (RingT.E.toExpr pre b) .nil))
+  | .neg a => .app (.const (String.append pre ".neg")) (RingT.E.toExpr pre a)
+  | .sub a b => Expr.mkApp (.const (String.append pre ".sub")) (.cons (RingT.E.toExpr pre a) (.cons (RingT.E.toExpr pre b) .nil))
+/-- A list of terms of type `ty`, as a term. -/
+def RingT.listE (ty : Expr) : List Expr → Expr
+  | .nil => .app (.const "List.nil") ty
+  | .cons x xs => Expr.mkApp (.const "List.cons") (.cons ty (.cons x (.cons (RingT.listE ty xs) .nil)))
+
+/-- The normal forms of `a` and `b` agree, at the carrier `ty` (`"Nat"`, `"Int"`, `"Q"`).
+(The same Boolean the kernel computes from `Ring.trivial`.) -/
+def RingT.agree (ty : String) (n : Nat) (a b : RingT.E) : Bool :=
+  if Expr.nameEq ty "Nat" then NatPoly.beq (NatExpr.norm (RingT.E.toNat a)) (NatExpr.norm (RingT.E.toNat b))
+  else if Expr.nameEq ty "Int" then IntPoly.beq (IntExpr.norm (RingT.E.toInt a)) (IntExpr.norm (RingT.E.toInt b))
+  else
+    let qa := RingT.E.toQ a;
+    let qb := RingT.E.toQ b;
+    Bool.and (Bool.and (QExpr.wf n qa) (QExpr.wf n qb))
+      (IntPoly.beq (IntExpr.norm (.mul (QExpr.toFrac qa).1 (QExpr.toFrac qb).2)) (IntExpr.norm (.mul (QExpr.toFrac qb).1 (QExpr.toFrac qa).2)))
+/-- The expression type of a carrier. -/
+def RingT.pre (ty : String) : String :=
+  if Expr.nameEq ty "Nat" then "NatExpr" else if Expr.nameEq ty "Int" then "IntExpr" else "QExpr"
+
+-- ## The tactic
+
+/-- Introduce every `∀` of the goal. -/
+def RingT.introAll : Nat → Nat → TacticM Nat
+  | .zero, g => TacticM.pure g
+  | .succ fuel, g => do
+    ty ← TacticM.goalType g;
+    match ty with
+    | .pi _ _ _ _ _ => do
+      r ← TacticM.introFresh g "";
+      RingT.introAll fuel r.2
+    | _ => TacticM.pure g
+
+/-- Close goal `g`, `lhs = rhs` (or `≈`) at the carrier `ty`. -/
+def RingT.close (g : Nat) (ty : String) (lhs rhs : Expr) : TacticM Unit :=
+  let signed := Bool.not (Expr.nameEq ty "Nat");
+  match RingT.reify signed 10000 lhs .nil with
+  | (ea, atoms1) => match RingT.reify signed 10000 rhs atoms1 with
+    | (eb, atoms) => match RingT.agree ty (List.length atoms) ea eb with
+      | .false => do
+        sl ← TacticM.ppExpr g lhs;
+        sr ← TacticM.ppExpr g rhs;
+        TacticM.fail (String.append "ring: not an identity of commutative rings:\n  "
+          (String.append sl (String.append "\nand\n  " (String.append sr
+            (String.append "\nhave different normal forms (atoms are compared as terms; " "the goal may need its definitions unfolded first)")))))
+      | .true =>
+        let pre := RingT.pre ty;
+        let ρ := RingT.listE (.const ty) atoms;
+        TacticM.assign g (Expr.mkApp (.const (String.append pre ".prove"))
+          (.cons ρ (.cons (RingT.E.toExpr pre ea) (.cons (RingT.E.toExpr pre eb) (.cons (.const "Ring.trivial") .nil)))))
+
+/-- Is `e` the constant `n`? -/
+def RingT.isConst (n : String) (e : Expr) : Bool := match Expr.view e with
+  | .const m .nil => Expr.nameEq m n
+  | _ => .false
+
+/-- `Equiv.equiv Q inst a b` (`a ≈ b` at `Q`): its sides. -/
+def RingT.equivQ (ty : Expr) : Option (Expr × Expr) := match Expr.view ty with
+  | .const n (.cons q (.cons _ (.cons a (.cons b .nil)))) =>
+    if Bool.and (Expr.nameEq n "Equiv.equiv") (RingT.isConst "Q" q) then .some (a, b) else .none
+  | _ => .none
+
+syntax (name := ring) "ring" : tactic
+/-- `ring`: close a goal `lhs = rhs` at `Nat` or `Int`, or `lhs ≈ rhs` at `Q`, that is an
+identity of commutative (semi)rings. -/
+def Tactic.ring : Tactic := fun _ => do
+  g0 ← TacticM.mainGoal;
+  g ← RingT.introAll 1000 g0;
+  ty ← TacticM.goalType g;
+  -- `p ≈ q` at `Q` first: `TacticM.eqView` would see the integer equation it unfolds to
+  match RingT.equivQ ty with
+  | .some ab => do
+    RingT.close g "Q" ab.1 ab.2;
+    TacticM.replaceMainGoal .nil
+  | .none => do
+    eqn ← TacticM.eqView g ty;
+    match eqn with
+    | .some eq =>
+      if RingT.isConst "Nat" eq.1 then do
+        RingT.close g "Nat" eq.2.1 eq.2.2;
+        TacticM.replaceMainGoal .nil
+      else if RingT.isConst "Int" eq.1 then do
+        RingT.close g "Int" eq.2.1 eq.2.2;
+        TacticM.replaceMainGoal .nil
+      else TacticM.fail "ring: the goal is an equation, but not at Nat or Int (at Q, state it with ≈)"
+    | .none => TacticM.fail "ring: the goal is not an equation `lhs = rhs` (at Nat or Int) or `lhs ≈ rhs` (at Q)"
+attribute [tactic tactic.ring] Tactic.ring

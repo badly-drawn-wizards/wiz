@@ -17,11 +17,11 @@ def Tx.leftL_ok {r : HwTy → Type} : Lens.Lawful (@Tx.leftL r) := Tx.leftL_lawf
 
 -- the countdown, as a step on the field alone; the transmitter's step zooms into it
 def countdown {r : HwTy → Type} [Hw r] (x : r B4) (go : r Bit) : r B4 × r Bit :=
-  (Hw.mux go (Hw.lit 4 9) (Hw.sub x (Hw.lit 4 1)), Hw.eq x (Hw.lit 4 0))
+  (if go then 9 else x - 1, x === 0)
 def txStep {r : HwTy → Type} [Hw r] (s : Tx r) (go : r Bit) : r (HwTy.prod Tx.code Bit) :=
   let n := Hdl.zoom Tx.leftL countdown s go;
   Hw.pair (Tx.pack n.1) n.2
-def txC : Circuit Bit Bit := Circuit.mk Tx.code (Bundle.toEl Tx.bundle (Tx.mk (BitVec.ofNat 1 1) (BitVec.ofNat 4 0)))
+def txC : Circuit Bit Bit := Circuit.mk Tx.code (Bundle.toEl Tx.bundle (Tx.mk 1 0))
   (fun s go => txStep (Tx.unpack s) go)
 
 -- the frame rule: the step leaves the line alone, whatever the state and the input

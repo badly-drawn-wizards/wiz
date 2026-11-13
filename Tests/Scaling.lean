@@ -217,14 +217,27 @@ def within {α : Type} (secs mb : Nat) (act : Unit → IO α) : IO α := do
     throw (IO.userError s!"took {ms} ms and {peak} MB (bounds: {secs} s, {mb} MB)")
   pure a
 
+/-- A structure of `n` numbers and a function adding every field (`s.f0 + … + s.f(n-1)`). -/
+def wideSum (n : Nat) : String :=
+  s!"structure W{n} where\n" ++ String.join ((List.range n).map (s!"  f{·} : Nat\n")) ++
+  s!"def sum{n} (s : W{n}) : Nat := " ++ " + ".intercalate ((List.range n).map (s!"s.f{·}")) ++ "\n"
+
+/-- The projections in an IR body. -/
+partial def projCount : IR.Body → Nat
+  | .vdecl _ (.proj _ _) b => projCount b + 1
+  | .vdecl _ _ b | .dup _ b | .drop _ b => projCount b
+  | .case _ alts => alts.foldl (fun n a => n + projCount a) 0
+  | .jdecl _ _ body k => projCount body + projCount k
+  | _ => 0
+
 /-- A bundle `Bn` of `n` leaves, `deriving Bundle` alone. -/
 def plainBundle (n : Nat) : String :=
   s!"structure B{n} (r : HwTy → Type) where\n" ++ String.join ((List.range n).map (s!"  l{·} : r (HwTy.bits 8)\n")) ++
   "  deriving Bundle\n"
 
 /-- The number of instructions of an IR body, without the projections. (Reading field k
-of a structure, a right-nested Σ, is k projections in the IR wherever it is written: so
-`S.pack` still has a quadratic number of projections, the lowering's to remove.) -/
+of a structure, a right-nested Σ, is k projections wherever it is written; the simplifier
+shares them since 15j: see `projCount`.) -/
 partial def bodySize : IR.Body → Nat
   | .vdecl _ (.proj _ _) b => bodySize b
   | .vdecl _ _ b | .dup _ b | .drop _ b => bodySize b + 1
@@ -282,6 +295,105 @@ def eraseMatchMs (n : Nat) : IO Nat := do
   | .ok code => check (code.contains "f") "f was not erased"
   | .error e => throw (IO.userError (toString e))
   pure ((← IO.monoMsNow) - start)
+
+/-! ### Direct hypotheses against the template (kernel-eval-2, P2)
+
+`vHyps` computes an induction's hypotheses on a canonical description directly; its
+definition is `Templates.hypsTm` (`vHypsTemplate`). They must agree, as read back, on every
+description: every global whose type ends in `Desc I`, applied to variables, at every
+constructor (the tags enumerated, the other fields variables). -/
+
+/-- The descriptions among `g`'s globals: the level, `I` and `D`, after applying each to
+fresh variables (levels from 0). -/
+def descsOf (g : Globals ZeroOneMany) : Array (Name × Level × Val ZeroOneMany × Val ZeroOneMany × Nat) := Id.run do
+  let mut out := #[]
+  for n in g.order do
+    let some d := g.find? n | continue
+    if d.value.isNone then continue
+    let mut ty := whnf (eval g [] d.type)
+    let mut v : Val ZeroOneMany := eval g [] (.const n (d.levelParams.map Level.param))
+    let mut k := 0
+    for _ in [0:12] do
+      match ty with
+      | .pi _ _ _ _ B _ =>
+        ty := whnf (Closure.inst g B (Val.var k)); v := vApp g v (Val.var k); k := k + 1
+      | _ => break
+    if let .desc l I := ty then out := out.push (n, l, I, v, k)
+  pure out
+
+/-- Payloads for `D`: the tags enumerated (at most `budget` in all), other fields fresh
+variables from level `k`. -/
+partial def payloads (g : Globals ZeroOneMany) (D : Val ZeroOneMany) (k budget : Nat) :
+    List (Val ZeroOneMany × Nat) :=
+  if budget == 0 then [] else
+  match whnf D with
+  | .darg _ S E => match tagField? S with
+    | some (ls, lifted) =>
+      (List.range ls.length).flatMap fun t =>
+        let tg : Val ZeroOneMany := if lifted then .up (.tag ls t) else .tag ls t
+        (payloads g (vApp g E tg) k (budget / ls.length)).map fun (r, k') => (.pair tg r, k')
+    | none => (payloads g (vApp g E (Val.var k)) (k + 1) budget).map fun (r, k') => (.pair (Val.var k) r, k')
+  | .drec _ _ E | .dhrec _ _ _ E => (payloads g E (k + 1) budget).map fun (r, k') => (.pair (Val.var k) r, k')
+  | _ => [(Val.var k, k + 1)]
+
+/-- The descriptions (and payloads) on which `vHyps` and the template read back differently. -/
+def hypsMismatches (g : Globals ZeroOneMany) (extra : List (Name × Level × Val ZeroOneMany × Val ZeroOneMany × Nat) := [])
+    (direct : Globals ZeroOneMany → Level → Level → (I D X P f i xs : Val ZeroOneMany) → Val ZeroOneMany := vHyps) :
+    Nat × List String := Id.run do
+  let mut n := 0
+  let mut bad := []
+  for (name, l, I, D, k) in (descsOf g).toList ++ extra do
+    for (xs, k') in payloads g D k 64 do
+      -- X P f i: variables above everything else
+      let (X, P, f, i) := (Val.var k', Val.var (k' + 1), Val.var (k' + 2), Val.var (k' + 3))
+      let L := k' + 4
+      let a := quote g L (direct g l .zero I D X P f i xs)
+      let b := quote g L (vHypsTemplate g l .zero I D X P f i xs)
+      n := n + 1
+      unless a == b do bad := s!"{name}: {a.pretty []} vs {b.pretty []}" :: bad
+  pure (n, bad)
+
+/-- Modules of `lib/` that can't be imported together with all the others (`Json`
+declares its own `Nat.repr`), checked on their own. -/
+def libApart : List String := ["Json", "Infoview"]
+
+/-- Every other module of `lib/` imported at once. -/
+def allLibSource : IO String := do
+  let mut ms := #[]
+  for e in ← System.FilePath.readDir "lib" do
+    if e.path.extension == some "wiz" then ms := ms.push (e.path.fileStem.getD "")
+    else if ← e.path.isDir then
+      for f in ← System.FilePath.readDir e.path do
+        if f.path.extension == some "wiz" then ms := ms.push (e.fileName ++ "." ++ f.path.fileStem.getD "")
+  pure (String.join (((ms.qsort (· < ·)).toList.filter (!libApart.contains ·)).map (s!"import {·}\n")))
+
+/-- `n` matches on a `len`-element list, checked by `refl`. -/
+def listMatchProgram (len n : Nat) : String :=
+  "import Prelude\n" ++
+  "def rep : Nat → List Nat\n  | .zero => .nil\n  | .succ k => .cons 1 (rep k)\n" ++
+  s!"def l : List Nat := rep {len}\n" ++
+  "def isNil : List Nat → Bool\n  | .nil => .true\n  | .cons _ _ => .false\n" ++
+  "def count : Nat → Nat\n  | .zero => 0\n  | .succ k => match isNil l with\n    | .true => count k\n    | .false => Nat.add 1 (count k)\n" ++
+  s!"def t : count {n} = {n} := refl {n}\n"
+
+/-- (icestick-cpu C7) A structurally recursive call in every alternative of a `match` on
+a type with nullary constructors, on a `len`-element list, checked by `refl`. The
+alternative of a nullary constructor is an argument of `T.casesOn`, not a `fun`, so it was
+evaluated whatever the tag: each alternative ran the recursive call on the whole tail, the
+work doubling per element (n = 20: 11 s, 910 MB). -/
+def matchAltsProgram (len : Nat) : String :=
+  "import Prelude\n" ++
+  "inductive T where\n  | a (s : String)\n  | b\n  | c\n" ++
+  "inductive U where\n  | a\n  | b\n  | c\n" ++
+  "def f : Nat → List T → Nat\n  | k, .nil => k\n  | k, .cons t ts => match t with\n    | .a s => f k ts\n    | _ => f (Nat.succ k) ts\n" ++
+  "def g : Nat → List U → Nat\n  | k, .nil => k\n  | k, .cons u us => match u with\n    | .a => g k us\n    | .b => g (Nat.succ k) us\n    | .c => g (Nat.succ k) us\n" ++
+  "def rep {A : Type} (x : A) : Nat → List A\n  | .zero => .nil\n  | .succ k => .cons x (rep x k)\n" ++
+  s!"def t1 : f 0 (rep T.b {len}) = {len} := refl {len}\n" ++
+  s!"def t2 : g 0 (rep U.c {len}) = {len} := refl {len}\n"
+
+/-- A structurally recursive function whose recursive call is under a `fun`. -/
+def hypUnderBinder : String :=
+  "def sumF : List Nat → Nat → Nat\n  | .nil => fun k => k\n  | .cons x xs => fun k => sumF xs (Nat.add k x)\n"
 
 /-- A circuit with a chain of 1500 adders and xors, and a counter on long traces. -/
 def hdlScaleSrc : String := "import Hdl.Core
@@ -373,6 +485,17 @@ def group : Group where
         unless bad.isEmpty do throw (IO.userError "they differ on the projection chain") },
     { name := "the IR of a step over bundles of 8, 16 and 32 fields (reuse was exponential: 20 took 115 s)", run := fun _ =>
         checksLibsWithin 240 ("import Hdl.Core\n" ++ String.join ([8, 16, 32].map wideBundle)) },
+    -- field k of a structure (a right-nested Σ) is k projections: reading every field
+    -- was n²/2 of them; the simplifier shares the projections already bound (15j)
+    { name := "reading every field of a 32- and a 64-field structure takes a linear number of projections (15j)", run := fun _ => do
+        let st ← elabOk ("import Prelude\n" ++ wideSum 32 ++ wideSum 64)
+        let counts ← [32, 64].mapM fun n => do
+          let ds ← loweredOf st [s!"sum{n}"]
+          match ds.find? (·.name == s!"sum{n}") with
+          | some d => pure (projCount d.body)
+          | none => throw (IO.userError s!"no IR for sum{n}")
+        -- one projection to each field and one to each of the n - 1 tails reached
+        checkEq [63, 127] counts },
     -- `deriving Bundle` wrote field k of `S.unpack` as `Hw.fst (Hw.snd^k x)`, and each
     -- `Hw.pair`/`Hw.snd` took the literal code of the rest of the product as an implicit
     -- argument, which is relevant (`{ω a b : HwTy}`): quadratic code (cubic in `unpack`),
@@ -443,6 +566,85 @@ def group : Group where
           "the identity on Type → Type was rejected"
         check ((addDecl {} { name := "i", type := idT bad, value := some (.lam "f" (.var 0)) }) matches .error _)
           "a wrong sort was accepted in a declaration's type" },
+    -- (kernel-eval) `ind` computed the hypotheses of a constructor by value, and the
+    -- hypothesis of a recursive field is `ind` on it: a `match` (`T.casesOn`, which ignores
+    -- them) on a list ran through the whole tail. 1000 matches on a 2000-element list:
+    -- 2 million `ind` steps per evaluation of the statement (the elaborator's and the
+    -- kernel's); now a hypothesis is computed when used (`Val.lazyInd`)
+    { name := "a match on a list does not run through its tail (1000 matches on 2000 elements)", run := fun _ => do
+        let _ ← within 30 1000 fun _ => elabOk (listMatchProgram 2000 1000)
+        pure () },
+    -- the same laziness must not lose a hypothesis that is used, here under a binder
+    { name := "a recursive call used under a `fun` is still computed (lazy hypotheses)", run := fun _ => do
+        let _ ← elabOk ("import Prelude\n" ++ hypUnderBinder ++ "def t : sumF (.cons 1 (.cons 2 (.cons 3 .nil))) 0 = 6 := refl 6\n")
+        let loader ← Tests.Elab.preludeLoader
+        let st := runFrontend (R := ZeroOneMany) ("import Prelude\n" ++ hypUnderBinder ++
+          "def t : sumF (.cons 1 (.cons 2 (.cons 3 .nil))) 0 = 7 := refl 7\n") { loader }
+        check (st.messages.any (·.severity == .error)) "a wrong sum was accepted" },
+    -- (icestick-cpu C7) every alternative of a `match` calling the function recursively:
+    -- exponential while a hypothesis was computed by value (the alternatives of nullary
+    -- constructors are evaluated as arguments); linear with `Val.lazyInd` on constructors
+    { name := "a recursive call in every alternative of a match is computed once per element (C7)", run := fun _ => do
+        let _ ← within 30 1000 fun _ => elabOk (matchAltsProgram 200)
+        pure () },
+    -- (P2) the direct hypotheses are the template's, on every description of the library
+    -- and the examples, and on stuck descriptions (where the direct one falls back)
+    { name := "direct induction hypotheses agree with the template on every Desc in lib/ and examples/", run := fun _ => do
+        let loader ← Tests.Elab.libLoader
+        let lib := runFrontend (R := ZeroOneMany) (← allLibSource) { trustedModule := Tests.libModule, loader }
+        let errs := lib.messages.filter (·.severity == .error)
+        unless errs.isEmpty do throw (IO.userError s!"the library has errors: {(errs.toList.take 3).map (·.text)}")
+        -- (the comparison can fail: a variant with the pairs swapped is caught)
+        let swapped := fun g l v I D X P f i xs => match vHyps g l v I D X P f i xs with
+          | .pair a b => .pair b a
+          | h => h
+        check (!(hypsMismatches lib.globals (direct := swapped)).2.isEmpty) "a wrong variant was not caught"
+        let mut total := 0
+        -- stuck: the whole description a variable, and an `arg` whose rest is a variable
+        let w : Val ZeroOneMany := .qlit QuantitySyntax.explicitDefault
+        let stuck := [("a variable", Level.zero, (.unit 0 : Val ZeroOneMany), Val.var 0, 1),
+          ("arg then a variable", .zero, .unit 0, .darg w (.sort 0) (Val.var 0), 1),
+          ("rec then a variable", .zero, .unit 0, .drec w .tt (.darg w (.sort 0) (Val.var 0)), 1)]
+        let (n, bad) := hypsMismatches lib.globals stuck
+        unless bad.isEmpty do throw (IO.userError s!"lib: {bad.take 3}")
+        total := total + n
+        for m in libApart do
+          let st := runFrontend (R := ZeroOneMany) s!"import {m}\n" { trustedModule := Tests.libModule, loader }
+          unless st.messages.all (·.severity != .error) do throw (IO.userError s!"lib/{m} has errors")
+          let (n, bad) := hypsMismatches st.globals
+          unless bad.isEmpty do throw (IO.userError s!"{m}: {bad.take 3}")
+          total := total + n
+        for e in ← System.FilePath.readDir "examples" do
+          unless e.path.extension == some "wiz" do continue
+          let st := runFrontend (R := ZeroOneMany) (← IO.FS.readFile e.path) { trustedModule := Tests.libModule, loader }
+          if st.messages.any (·.severity == .error) then continue  -- (an example of an error)
+          let (n, bad) := hypsMismatches st.globals
+          unless bad.isEmpty do throw (IO.userError s!"{e.path}: {bad.take 3}")
+          total := total + n
+        check (total > 1000) s!"only {total} cases" },
+    -- (P3) a universe-polymorphic definition unfolds at the cached levels (0, 1, 2) and at
+    -- others alike, and a wrong statement at a cached level is still rejected
+    { name := "a polymorphic definition unfolds the same at cached and uncached levels", run := fun _ => do
+        let src := "import Prelude\ndef pick.{u} (A : Type u) (a b : A) (c : Bool) : A := match c with\n  | .true => a\n  | .false => b\n" ++
+          "def t0 : pick Nat 1 2 .false = 2 := refl 2\n" ++
+          "def t1 : pick Type Nat Bool .true = Nat := refl Nat\n" ++
+          "def t2 : pick (Type 1) Type (Type → Type) .true = Type := refl Type\n" ++
+          "def t5 : pick (Type 4) (Type 3) (Type 3 → Type 3) .false = (Type 3 → Type 3) := refl (Type 3 → Type 3)\n"
+        let _ ← elabOk src
+        let loader ← Tests.Elab.preludeLoader
+        let st := runFrontend (R := ZeroOneMany) (src ++ "def bad : pick Type Nat Bool .true = Bool := refl Bool\n") { loader }
+        check (st.messages.any (·.severity == .error)) "a wrong unfolding was accepted" },
+    -- the elaborator's sort pass (`Sorts.type`) no longer evaluates an equation to learn
+    -- that it is a proposition; the kernel still checks every sort note itself
+    { name := "a wrong sort note on a Π into an equation is rejected by the kernel", run := fun _ => do
+        let w : Term ZeroOneMany := .qlit QuantitySyntax.explicitDefault
+        let ty (s : Option Level) : Term ZeroOneMany := .pi "X" .default w (.sort 1) (.eqTy (.var 0) (.var 0)) s
+        let d (s : Option Level) : Decl ZeroOneMany :=
+          -- (a `fun` at a proposition carries its proof marker, P2)
+          { name := "r", type := ty s, value := some (.prf .zero (.lam "X" (.reflTy (.var 0)))) }
+        check ((addDecl {} (d none)) matches .ok _) "the unmarked declaration was rejected"
+        check ((addDecl {} (d (some 0))) matches .ok _) "the right sort note was rejected"
+        check ((addDecl {} (d (some 1))) matches .error _) "a wrong sort note (Type for a proposition) was accepted" },
     { name := "one-pass reference counting agrees with the specification (insertRC)", run := fun _ => do
         let examples ← ["examples/std.wiz", "examples/io.wiz", "examples/effects.wiz"].mapM (fun (f : String) => IO.FS.readFile f)
         for p in examples ++ [literalProgram 300] do
