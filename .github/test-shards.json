@@ -12,6 +12,9 @@
    "select": [
     "=grail-selfhost"
   ]},
+  {"name": "hdl-temporal", "heavy": true, "select": [
+    "=hdl-temporal"
+  ]},
   {"name": "backends", "select": [
     "backend",
     "borrow",

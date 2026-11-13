@@ -8284,6 +8284,15 @@ def c3 : Circuit u8 u8 := Circuit.mk (HwTy.prod u8 u8) (BitVec.ofNat 8 1, BitVec
 def v3 : String := Verilog.emit (Circuit.netlist \"pairs\" c3)
 "
 
+-- (the UART proof checks in about 3 minutes, so it has a group and a heavy shard of its own)
+def hdlTemporalGroup : Group where
+  name := "hdl-temporal"
+  exercise := "H14 T2: temporal properties of the iCEstick UART"
+  cases := [
+    { name := "H14 T2: the iCEstick UART, temporal properties for every trace and byte (framing, idle-high, receiver, loopback)", run := fun _ => do
+        okLibs (← IO.FS.readFile "examples/hdl-uart-temporal.wiz") },
+  ]
+
 /-- The memories of examples/hdl-mem.wiz through Icarus (the RAM's test bench) and yosys
 (block RAM inferred for the RAM and a 256-word ROM), each when it is on PATH. -/
 def hdlMemTools : IO Unit := do
@@ -9445,6 +9454,7 @@ def groups : List Group :=
   ffiStructGroup ::
   group ::
   hdlGroup ::
+  hdlTemporalGroup ::
   inductiveGroup ::
   infoviewGroup ::
   languageGroup ::
