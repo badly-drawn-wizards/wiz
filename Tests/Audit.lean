@@ -227,8 +227,8 @@ def argumentTypes (l v : Nat) (concrete : Bool) : IO Unit := do
   -- needs `⟦D⟧ (μ^j D) i ≤ ⟦D⟧ (μ^∞ D) i`, which subtyping finds only once `⟦D⟧` computes.
   -- With a variable for `D` the kernel's own checker rejects this type (recorded in the
   -- audit note, T-scase); it holds for every concrete description
-  if concrete then isType "scaseMethodTy" c4 (scaseMethodTy g lv I D P (Val.var 4) w)
-  else match checkType c4 (quote g c4.lvl (scaseMethodTy g lv I D P (Val.var 4) w)) with
+  if concrete then isType "scaseMethodTy" c4 (scaseMethodTy g lv I D P (Val.var 4) (Val.qlit .many))
+  else match checkType c4 (quote g c4.lvl (scaseMethodTy g lv I D P (Val.var 4) (Val.qlit .many))) with
     | .ok _ => throw (IO.userError "scaseMethodTy now checks with a variable description: update the audit note (T-scase)")
     | .error _ => pure ()
   -- coit, scofix
