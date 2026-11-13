@@ -703,6 +703,11 @@ def group : Group where
         failsLibW "import Prelude\ndef x : Nat := Nat.nope 3\n" "unknown identifier 'Nat.nope'"
         -- a field of a value is still a field
         failsLibW "import Prelude\nstructure P where\n  a : Nat\ndef p : P := P.mk 1\ndef x : Nat := p.b\n" "no field 'b'" },
+    { name := "#261: refl is a contextual keyword: a constructor may be called refl", run := fun _ =>
+        okLib ("import Prelude\ninductive R : Nat → Type where\n  | refl (n : Nat) : R n\n" ++
+          "def r : R 3 := R.refl 3\ndef r2 : R 4 := .refl 4\n" ++
+          "def f : R 3 → Nat\n  | .refl n => n\n" ++
+          "def e : f r = 3 := refl 3\ndef refl2 (n : Nat) : n = n := refl n\n#eval f r") ["3"] },
     { name := "#249: recursion over a family refines later arguments at non-variable indices", run := fun _ =>
         okLib ("import Prelude\ninductive R : Nat → Nat → Type where\n  | done (s : Nat) : R s s\n" ++
           "  | step (s t u : Nat) (r : R t u) : R s u\n" ++
