@@ -46,7 +46,9 @@ def elabTelescope (ctx : LocalCtx R) (bs : List BinderView) :
     tele := tele.push (b.name, b.bi, q, ty)
     let vty ← evalIn ctx ty
     recordBinder ctx b.info b.name vty
-    ctx := ctx.bind b.name vty
+    ctx := ctx.bindQ b.name vty (match q with
+      | .qlit r => some r
+      | _ => none)
   pure (ctx, tele)
 
 /-- `(a₁, (a₂, …, ()))` -/

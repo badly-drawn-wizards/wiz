@@ -1265,6 +1265,13 @@ conv at a proposition       true, before either side is unfolded
     rejected by the kernel with that message; in `#reduce`, hover and messages it is
     what is printed.
   - The kernel's own evaluation has no budget and needs none: it never evaluates a proof.
+  - The self-hosted toolchain has the same budget (`forceProof` in `selfhost/Kernel.wiz`,
+    review F7): its `quote` reads a suspended proof back within 1 000 000 steps (a step
+    is `instC`, a closure's instantiation) and writes the same message, as a constant
+    (`proofStub`) that its kernel rejects with that message. The counter is the
+    runtime's (`wiz_proof_start`/`tick`/`end` in `runtime/wiz.c` and `selfhost/rt.c`);
+    a step is always granted while no read-back runs, so the kernel's checks never see
+    it. There is no `--proof-steps` flag there: the message is Lean's, word for word.
   - Not covered: the elaborator's own evaluation of a term it has not marked yet (a
     `let`-bound proof while its body is elaborated). A proof without a normal form there
     still makes elaboration loop. Nothing is accepted by a loop.
@@ -1914,11 +1921,14 @@ Each item says what the code does; the code is what the kernel checks.
 now closed). The frontend reads written quantities (`0`, `1`, `ω`) on binders, `fun`
 binders and `let`, with the Lean elaborator's defaults (ω explicit, 0 implicit; a
 constructor's parameters at 0), and the kernel checks usage. What still differs, pinned
-by the test "the self-hosted frontend: quantities, the pinned differences (21m)":
+by the test "the self-hosted frontend: quantities, the pinned differences (21m)", are below. A linear
+variable used once in each branch of a `match` was a difference until stage 21v: the Lean
+frontend now compiles such a match to the additive `T.casesOnA`, and both accept it.
+Commands: `#eval` is `#reduce` here, and `attribute [inline]` is checked and ignored
+(21u); classes and instances, the other attributes and `import_c` are errors.
 
 | program | Lean frontend | self-hosted frontend |
 |---|---|---|
-| a linear variable used once in each branch of a `match` (`def m1 (1 x : Nat) (b : Bool) : Nat := match b with \| .true => x \| .false => x`) | **rejects**: a branch is an argument of `T.casesOn`, a function whose methods are ω | **accepts**: the match is the kernel's `scase`/`ecase`, whose branches are alternatives (usage joined). Sound: `x` is used once on every path |
 | a constructor field with a quantity (`\| mk (0 n : Nat)`, a structure's `1 a : Nat`) | accepts (`Desc.arg q S D`) | **rejects** with an error: `darg S D` has no quantity, every field is stored at ω |
 | an implicit constructor field (`\| cons {n : Nat} …`) | a field at 0, filled in at the call | an explicit field at ω (the frontend has no implicit constructor fields; a call that leaves it out is rejected) |
 | `%t` quantity terms, quantity variables | yes | an error |

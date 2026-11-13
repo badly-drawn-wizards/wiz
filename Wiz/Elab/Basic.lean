@@ -1,7 +1,9 @@
 import Wiz.Core.Check
+import Std.Data.TreeMap
 import Wiz.Syntax.Basic
 import Wiz.Syntax.Children
 import Wiz.Compiler.Run
+import Wiz.Smt.Process
 
 /-!
 # The elaborator monad
@@ -44,6 +46,9 @@ structure ClassInfo where
   name : Name
   outParams : List Bool
   fields : List Name
+  /-- (7f) `attribute [binop] C.f`: an operator whose numeral operands take the type of its
+  other operands (or of its result), as Lean's `binop%` (`HAdd`, not `HPow`) -/
+  binop : Bool := false
   deriving Inhabited
 
 /-- An instance: a global whose type ends in an application of `cls`. Later instances
@@ -52,7 +57,11 @@ structure InstanceInfo where
   name : Name
   cls : Name
   priority : Nat := 1000
+  /-- (7f) an `attribute [default_instance p] name` registration (`priority` is `p`), not an
+  instance of its own: the instance `name` is also an ordinary one -/
+  isDefault : Bool := false
   deriving Inhabited
+
 
 
 /-- The local context. As in `Ctx`, the lists are aligned and index 0 is innermost. -/
@@ -68,6 +77,19 @@ structure LocalCtx (R : Type) where
   /-- variables known to be erased (constructor fields of quantity 0): a `match` that
   reverts one binds it at quantity 0 again -/
   erasedLvls : List Lvl := []
+  /-- (21v) variables bound at a literal quantity other than 0 and ω (`(1 x : A)`): a
+  `match` with one in scope uses the additive case `T.casesOnA`, so that each branch may
+  use it once -/
+  linearLvls : List Lvl := []
+
+/-- (7f) An instance problem not solved yet: the hole, in its context, and its class type.
+`blockers` are the unsolved holes in its (non-output) class arguments when it was last
+tried: it is tried again only once one of them is solved (`Elab/Class.lean`). -/
+structure PendingInst (R : Type) where
+  ctx : LocalCtx R
+  hole : Term R
+  ty : VTy R
+  blockers : Array Nat := #[]
 
 /-! ## The info tree (for the language server)
 
@@ -232,8 +254,13 @@ structure ElabState (R : Type) where
   termInfo : Bool := false
   /-- the heuristics unification may use (`Approx`) -/
   approx : Approx := .default
-  /-- instance problems not solved yet: the hole, in its context, and its class type -/
-  pendingInsts : Array (LocalCtx R × Term R × VTy R) := #[]
+  /-- instance problems not solved yet, by number (the order they were made in) -/
+  pendingInsts : Std.TreeMap Nat (PendingInst R) := {}
+  nextInst : Nat := 0
+  /-- (7f) the worklist: the problems waiting for each hole (`PendingInst.blockers`), and
+  the problems to try at the next `synthPending` (new, or a blocker was solved) -/
+  instWaiters : Std.HashMap Nat (Array Nat) := {}
+  instReadyQ : Array Nat := #[]
   /-- the names of the binders unification is under, by level (innermost first): a
   solution `?m x := t` found under a binder `n` is `fun n => t`, not `fun x7 => t`, so a
   goal a tactic makes from it shows (and `intro` takes) the name the user wrote -/
@@ -249,6 +276,14 @@ structure ElabState (R : Type) where
   while the globals stay as they are (the elaborator clears it when it changes them). -/
   unifyFails : Std.HashMap UInt64 (List (Term R × Term R × String)) := {}
   unifyFailCount : Nat := 0
+  /-- (28) how tactics reach solvers (`--sat-solver`, …) -/
+  smt : Smt.Config := {}
+  /-- (28) the definition being elaborated, which names the axioms a tactic adds (`""`:
+  not in a definition, where a tactic can't add one) -/
+  smtDecl : Name := ""
+  /-- (28) axioms a tactic added: already in `globals`, and added to the
+  command's globals before the definition that uses them -/
+  sideDecls : Array (Decl R) := #[]
 
 structure ElabError (R : Type) where
   info : SourceInfo
@@ -273,6 +308,14 @@ def define (ctx : LocalCtx R) (x : Name) (ty : VTy R) (val : Val R) : LocalCtx R
   { ctx with
     env := val :: ctx.env, names := x :: ctx.names, types := ty :: ctx.types
     bound := false :: ctx.bound, lvl := ctx.lvl + 1 }
+
+/-- (21v) `bind`, remembering a variable bound at a literal quantity other than 0 and ω
+(`linearLvls`). -/
+def bindQ (ctx : LocalCtx R) (x : Name) (ty : VTy R) (q : Option R) : LocalCtx R :=
+  let c := ctx.bind x ty
+  match q with
+  | some r => if r != 0 && QRig.many? != some r then { c with linearLvls := ctx.lvl :: c.linearLvls } else c
+  | none => c
 
 def withInfo (ctx : LocalCtx R) (stx : Syntax) : LocalCtx R :=
   -- (11q) a macro's output keeps the range of the nearest syntax the user wrote
@@ -393,7 +436,9 @@ def recordExpected (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : ElabM 
     let userName := if stx.isOfKind "term.syntheticHole" then (stx.getArg 1).getId? else none
     pushInfo (.term stx.info ctx expected hole userName)
 
-def getGlobals : ElabM R (Globals R) := return (← get).globals
+/-- The globals, for the elaborator's own evaluation and read-back: with `quoteEqs`, so a
+computed equation reads back as the equation (13n). -/
+def getGlobals : ElabM R (Globals R) := return { (← get).globals with quoteEqs := true }
 
 def evalIn (ctx : LocalCtx R) (t : Term R) : ElabM R (Val R) :=
   return eval (← getGlobals) ctx.env t
@@ -425,6 +470,9 @@ partial def type (tys : Array (VTy R)) (env : Env R) : Term R → Term R × Opti
     let (B, lB) := type (tys.push (eval g env A)) (Val.var tys.size :: env) B
     let s := s.orElse fun _ => return .max (← lA) (← lB)
     (.sigma x (term tys env q) A B s, s)
+  -- an equation is a proposition: no need to evaluate it (which computes its sides, the
+  -- whole of a `refl` proof's computation; the kernel checks every sort note anyway)
+  | t@(.eq ..) | t@(.eqTy ..) => (term tys env t, some 0)
   | t =>
     let t := term tys env t
     (t, typeSort? g tys (eval g env t))
@@ -468,10 +516,14 @@ def LocalCtx.sortVal (g : Globals R) (ctx : LocalCtx R) (v : Val R) : Val R :=
 /-- A declaration with the sorts of its types filled in (`Sorts`). -/
 def Decl.withSorts (g : Globals R) (d : Decl R) : Decl R :=
   let type := (Sorts.type g #[] [] d.type).1
-  let ty := eval g [] type
-  { d with type, value := d.value.map (Sorts.value g #[] [] · ty),
-           impl := d.impl.map (Sorts.value g #[] [] · ty),
-           witness := d.witness.map (Sorts.value g #[] [] · ty) }
+  -- (the type's value only directs `Sorts.value` under a term's leading `fun`s: it is
+  -- evaluated only for one, since evaluating an equation computes its sides)
+  let ty : Thunk (Val R) := Thunk.mk fun _ => eval g [] type
+  let value (t : Term R) : Term R := match t with
+    | .lam .. => Sorts.value g #[] [] t ty.get
+    | t => Sorts.term g #[] [] t
+  { d with type, value := d.value.map value, impl := d.impl.map value,
+           witness := d.witness.map value }
 
 def instM (c : Closure R) (v : Val R) : ElabM R (Val R) :=
   return Closure.inst (← getGlobals) c v
@@ -493,7 +545,12 @@ def lookupMeta (m : Nat) : ElabM R (MetaEntry R) := do
   | none => throwAt {} s!"internal error: unknown metavariable ?m{m}"
 
 def solveMeta (m : Nat) (v : Val R) : ElabM R Unit :=
-  modify fun s => { s with metas := s.metas.modify m ({ · with solution := some v }) }
+  modify fun s =>
+    let s := { s with metas := s.metas.modify m ({ · with solution := some v }) }
+    -- (7f) the instance problems waiting for this hole can be tried again
+    match s.instWaiters[m]? with
+    | some ps => { s with instWaiters := s.instWaiters.erase m, instReadyQ := s.instReadyQ ++ ps }
+    | none => s
 
 /-- A fresh metavariable applied to all the bound variables of `ctx`. -/
 def freshMeta (ctx : LocalCtx R) (desc : String := "_") : ElabM R (Term R) := do

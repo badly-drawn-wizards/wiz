@@ -13,6 +13,14 @@ namespace Wiz
 
 variable {R : Type} [QRig R] [DecidableEq R] [QuantitySyntax R]
 
+/-- The metavariables still occurring in a term. -/
+partial def Term.mvars (t : Term R) : Array Nat :=
+  (go t |>.run #[]).2
+where
+  go : Term R → StateM (Array Nat) Unit
+    | .mvar m => modify (·.push m)
+    | t => t.forChildren (fun _ => pure ()) (fun _ c => go c)
+
 /-- **Exercise 3.6.** Replace solved metas in `t`, a term in a context of `l` variables.
 
 Split `t` into a head and arguments. If the head is a *solved* meta, evaluate
@@ -34,6 +42,27 @@ partial def zonk (l : Lvl) (t : Term R) : ElabM R (Term R) := do
       let v := args.foldl (fun f a => vApp g f (eval g env a)) sol
       zonk l (quote g l v)
     | none => return (← args.mapM (zonk l)).foldl .app (.mvar m)
+  | .const "OfNat.ofNat" _ =>
+    let args ← args.mapM (zonk l)
+    let h ← h.mapChildrenM instLevel (fun _ c => pure c)
+    -- (7f) a numeral whose type turned out to be the `builtin nat` type (it was elaborated
+    -- at a hole: `@OfNat.ofNat ?T n ?i`) is the literal again, as if it had been written
+    -- at `Nat`: kernel terms, native arithmetic, `rfl` and erasure see what they always did
+    if let #[A, .natLit n, i] := args then
+      if i.mvars.isEmpty then
+        if let some N := (← getGlobals).builtins.lookup "nat" then
+          let g ← getGlobals
+          let env : Env R := ((List.range l).map fun i => Val.var i).reverse
+          let isNat := match A with
+            | .const c _ => c == N
+            | _ => match whnf (eval g env A) with
+              | .mu _ _ _ _ _ (some (T, _, _)) => T == N
+              | _ => false
+          if isNat then
+            match whnf (eval g env (args.foldl .app h)) with
+            | .natLit m => if m == n then return .natLit n
+            | _ => pure ()
+    return args.foldl .app h
   | _ =>
     let h' ← h.mapChildrenM instLevel (fun k c => zonk (l + k) c)
     -- a `Π`/`Σ`'s sort that stays unknown is dropped (type equality then waits)
@@ -76,14 +105,6 @@ where
   spine : Term R → Array (Term R) → Term R × Array (Term R)
     | .app f a, acc => spine f (#[a] ++ acc)
     | t, acc => (t, acc)
-
-/-- The metavariables still occurring in a term. -/
-partial def Term.mvars (t : Term R) : Array Nat :=
-  (go t |>.run #[]).2
-where
-  go : Term R → StateM (Array Nat) Unit
-    | .mvar m => modify (·.push m)
-    | t => t.forChildren (fun _ => pure ()) (fun _ c => go c)
 
 /-- Does the term mention a level metavariable? -/
 partial def Term.hasLevelMVar (t : Term R) : Bool :=

@@ -261,6 +261,27 @@ def subtermInfo (srv : LSP.Server) (session ref : Nat) : LSP.Server × Lean.Json
   let (srv, out) := LSP.handle srv (req s!"\{\"jsonrpc\":\"2.0\",\"id\":11,\"method\":\"wiz/subtermInfo\",\"params\":\{\"textDocument\":\{\"uri\":\"file:///t.wiz\"},\"session\":{session},\"ref\":{ref}}}")
   (srv, (out[0]!.getObjVal? "result").toOption.getD ((out[0]!.getObjVal? "error").toOption.getD Lean.Json.null))
 
+/-- The completion items at an offset of the open document: (label, newText, detail),
+in the order given, and whether every item's edit starts at `start` (when given). -/
+def completions (srv : LSP.Server) (src : String) (off : Nat) : Array (String × String × String) :=
+  let (_, r) := ask srv "textDocument/completion" src off
+  match LSP.get? r ["items"] with
+  | some (.arr is) => is.map fun i => (LSP.getStr i ["label"], LSP.getStr i ["textEdit", "newText"], LSP.getStr i ["detail"])
+  | _ => #[]
+
+def labels (cs : Array (String × String × String)) : List String := cs.toList.map (·.1)
+
+/-- The source of the completion cases. -/
+def completionSrc : String :=
+  "import Prelude\nstructure Point where\n  px : Nat\n  py : Nat\n" ++
+  "def Point.norm (p : Point) : Nat := p.px\n" ++
+  "def foo (n : Nat) (pt : Point) : Nat := Nat.add n pt.\n" ++
+  "def bar (k : Nat) : Nat := Nat.ad\n" ++
+  "def baz (len : Nat) (lb : Bool) : Nat := l\n" ++
+  "def qux (m : Nat) : Nat := Nat.succ \n" ++
+  "def t (A : Type) : A → A := by\n  intro x\n  ex\n" ++
+  "de\n"
+
 /-- The body of the infoview socket case. -/
 def socketCase : IO Unit := do
         let dir ← IO.FS.createTempDir
@@ -679,7 +700,7 @@ def serverGroup : Group where
         let (srv, r) := ask srv "textDocument/hover" src (offAfter src "1 +" (-1))
         let md := LSP.getStr r ["contents", "value"]
         check ((md.splitOn "Add Nat").length > 1) s!"no instance in the hover:\n{md}"
-        check ((md.splitOn "expands to\n```wiz\nAdd.add 1 2").length > 1) s!"no expansion in the hover:\n{md}"
+        check ((md.splitOn "expands to\n```wiz\nHAdd.hAdd 1 2").length > 1) s!"no expansion in the hover:\n{md}"
         -- a category's name, where a rule uses it and in the rule's target
         for needle in ["\"greet\" greeting", ": greeting"] do
           let (_, r) := ask srv "textDocument/definition" src (offAfter src needle (-2))
@@ -743,8 +764,80 @@ def serverGroup : Group where
         checkEq ["pred 3 : Nat"] ((item r "message").map (LSP.getStr · ["text"]))
         -- an instance argument, at the notation that needed it; and the syntax
         let (_, r) := ask srv "wiz/interactiveInfo" src (offAfter src "2 *" (-1))
-        checkEq ["Mul Nat"] ((item r "instance").map fun i => flatten (LSP.get? i ["type"]).get!)
+        checkEq ["HMul Nat Nat Nat"] ((item r "instance").map fun i => flatten (LSP.get? i ["type"]).get!)
         check ((item r "syntax").length == 1 && (item r "expansion").length == 1) s!"syntax items: {r.compress}" },
+    { name := "completion: locals and expected type, globals, dot completion, tactics, commands", run := fun _ => do
+        let src := completionSrc
+        let (srv, _) ← openDoc src
+        -- `l`: the locals first (with their types), then the globals ending in `Nat`
+        let cs := completions srv src (offAfter src ":= l")
+        -- (the innermost first)
+        checkEq ["lb", "len"] ((labels cs).take 2)
+        checkEq ("len", "len", "Nat") cs[1]!
+        checkEq ["lb", "len", "let"] (labels cs)
+        -- no prefix: the locals, then the globals ending in the expected `Nat`, then the rest
+        let cs := labels (completions srv src (offAfter src "Nat.succ "))
+        checkEq "m" cs[0]!
+        let (i, j) := (cs.idxOf "List.length", cs.idxOf "Bool.true")
+        check (i < j && j < cs.length) s!"ranking: {cs}"
+        -- `pt.`: the fields and the functions taking a `Point` first (not `Point.mk`)
+        let cs := completions srv src (offAfter src "n pt.")
+        checkEq ["pt.px", "pt.py", "pt.norm"] (labels cs)
+        checkEq ("pt.px", "pt.px", "Nat") cs[0]!
+        -- `Nat.ad`: in a namespace
+        checkEq ["Nat.add"] (labels (completions srv src (offAfter src "Nat := Nat.ad" (k := 1))))
+        -- a tactic, and a command
+        checkEq ["exact"] (labels (completions srv src (offAfter src "  ex")))
+        let ts := labels (completions srv src (offAfter src "intro x\n  "))
+        for t in ["intro", "exact", "apply", "rfl"] do check (ts.contains t) s!"tactic {t}: {ts}"
+        check (!ts.contains "Nat.add") s!"globals at a tactic: {ts}"
+        checkEq ["declare_syntax_cat", "def", "deriving"] (labels (completions srv src (offAfter src "\nde")))
+        -- `import`
+        let src := "import Pre"
+        let (srv, _) ← openDoc src
+        checkEq ["Prelude"] (labels (completions srv src src.length))
+        -- the edit replaces the word: `Nat.ad` ↦ `Nat.add`
+        let src := completionSrc
+        let (srv, _) ← openDoc src
+        let (_, r) := ask srv "textDocument/completion" src (offAfter src "Nat := Nat.ad" (k := 1))
+        let some (.arr is) := LSP.get? r ["items"] | throw (IO.userError s!"{r.compress}")
+        let e := is[0]!
+        let st := LSP.ofPos src (LSP.getNat e ["textEdit", "range", "start", "line"]) (LSP.getNat e ["textEdit", "range", "start", "character"])
+        let edit : Actions.Edit := { start := st, stop := offAfter src "Nat := Nat.ad" (k := 1), text := LSP.getStr e ["textEdit", "newText"] }
+        let edited := Actions.apply src #[edit]
+        check ((edited.splitOn ":= Nat.add\ndef baz").length > 1) s!"edited:\n{edited}" },
+    { name := "completion: the keywords of a keyword-scoped DSL (13j)", run := fun _ => do
+        let src := "import Prelude\ndeclare_syntax_cat calc_e (keywords := calc_kw)\n" ++
+          "syntax (name := var) ident : calc_e\nsyntax (name := host) \"[\" term \"]\" : calc_e\n" ++
+          "syntax:20 (name := ifE) \"when\" calc_e \"yes\" calc_e:20 \"no\" calc_e:20 : calc_e\n" ++
+          "syntax (name := calc) \"run_calc\" calc_e \"done\" : term\n" ++
+          "#eval run_calc when [0] ye\n#eval run_calc wh\n"
+        let (srv, _) ← openDoc src
+        checkEq ["yes"] (labels (completions srv src (offAfter src "] ye")))
+        checkEq ["when"] (labels (completions srv src (offAfter src "run_calc wh"))) },
+    { name := "code action: fill a hole from its expected type", run := fun _ => do
+        let src := "import Prelude\nstructure Point where\n  px : Nat\n  py : Nat\n" ++
+          "inductive T where\n  | a\n  | b (t : T)\n  | c (x y : Nat)\n" ++
+          "def p : Point := _\ndef q (f : T → Nat) : Nat := f ?t\ndef r : Nat → Bool := ?f\n"
+        let (srv, _) ← openDoc src
+        let fill (srv : LSP.Server) (at_ : Nat) (title : String) : IO String := do
+          let (_, as) := codeActions srv src at_
+          let some a := titled as title | throw (IO.userError s!"no {title}: {as.map (·.compress)}")
+          pure (applyEdit src (LSP.get? a ["edit"]).get!)
+        let e ← fill srv (offAfter src "Point := _" (-1)) "Fill with an anonymous constructor"
+        check ((e.splitOn "def p : Point := ⟨?px, ?py⟩\n").length > 1) s!"edited:\n{e}"
+        -- an argument: in parentheses
+        let e ← fill srv (offAfter src "f ?t" (-1)) "Fill with '.c'"
+        check ((e.splitOn "f (.c ?x ?y)\n").length > 1) s!"edited:\n{e}"
+        let e ← fill srv (offAfter src "f ?t" (-1)) "Fill with '.a'"
+        check ((e.splitOn "f .a\n").length > 1) s!"edited:\n{e}"
+        let e ← fill srv (offAfter src ":= ?f" (-1)) "Fill with 'fun x => ?body'"
+        check ((e.splitOn ":= fun x => ?body\n").length > 1) s!"edited:\n{e}"
+        -- what the fillings leave is only holes
+        let (_, out) ← openDoc e
+        let some (.arr ds) := LSP.get? out[0]! ["params", "diagnostics"] | throw (IO.userError "no diagnostics")
+        for d in ds do
+          check ((LSP.getStr d ["message"]).startsWith "could not infer") s!"diagnostic: {d.compress}" },
     { name := "references, document highlights and rename, across the package's modules (11y)", run := fun _ => do
         let lib := "import Prelude\ndef helper (n : Nat) : Nat := Nat.succ n\ndef useHelper : Nat := helper 1\n"
         let src := "import Prelude\nimport Lib\ndef double (n : Nat) : Nat := Nat.add n n\ndef four : Nat := double 2\n" ++

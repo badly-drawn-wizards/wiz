@@ -3,6 +3,7 @@ import Wiz.Query
 import Wiz.Rig.Instances
 import Wiz.Infoview
 import Wiz.Actions
+import Wiz.Completion
 import Wiz.Refs
 import Wiz.Symbols
 import Wiz.Socket
@@ -52,6 +53,11 @@ structure Server where
   libs : Std.HashMap String (String × String) := {}
   /-- the modules from the toolchain's `lib/`, whose `builtin` registrations are trusted -/
   trusted : List String := []
+  /-- (27a) `--trust-native` and `--native-fuel` -/
+  trustNative : Bool := false
+  nativeFuel : Nat := NativeRun.defaultFuel
+  /-- (28) solvers: `--sat-solver`, `--solver-timeout` -/
+  smt : Smt.Config := {}
   /-- the last session number handed out (sessions are unique over the server's life) -/
   sessions : Nat := 0
   /-- the client asked for `wiz/elaborated` notifications -/
@@ -94,7 +100,7 @@ def elabText (srv : Server) (eng : Query.Engine ZeroOneMany) (text : String) : S
   let libs := srv.libs
   let trusted := srv.trusted
   let init : St := { loader := fun m => (libs.get? m).map (·.2), termInfo := true,
-                     trustedModule := trusted.contains }
+                     trustedModule := trusted.contains, trustNative := srv.trustNative, nativeFuel := srv.nativeFuel, smt := srv.smt }
   let key₀ := hash (libs.toList.map (·.2.2) |>.toString)
   Query.elaborate eng text init key₀
 
@@ -107,6 +113,21 @@ def elaborate (srv : Server) (doc : Doc) : Doc :=
 /-- The modules `import` can reach, with their sources (for code actions). -/
 def Server.importable (srv : Server) : List (String × String) :=
   srv.libs.toList.map fun (n, (_, src)) => (n, src)
+
+/-- `textDocument/completion` (`Completion.lean`): a `CompletionList`. Patched copies of
+the document are elaborated with its engine (the commands before the cursor are reused)
+and then forgotten. -/
+def completion (srv : Server) (doc : Doc) (off : Nat) : Json :=
+  let r := Completion.complete
+    { text := doc.text, off, state := doc.state, elabText := fun t => (elabText srv doc.engine t).1,
+      modules := (srv.libs.toList.map (·.1)).toArray.qsort (· < ·) }
+  let items := r.items.map fun (i : Completion.Item) =>
+    Json.mkObj ([("label", Json.str i.label), ("kind", i.kind), ("sortText", Json.str (i.sortText ++ i.label)),
+                 ("filterText", Json.str i.label),
+                 ("textEdit", Json.mkObj [("range", Json.mkObj [("start", toPos doc.text i.start), ("end", toPos doc.text off)]),
+                                          ("newText", Json.str i.insert)])] ++
+                (if i.detail.isEmpty then [] else [("detail", Json.str i.detail)]))
+  Json.mkObj [("isIncomplete", r.incomplete), ("items", Json.arr items)]
 
 def diagnostic (srv : Server) (doc : Doc) (m : Msg) : Json :=
   let code := if m.code.isEmpty then [] else
@@ -642,10 +663,7 @@ def handle (srv : Server) (msg : Json) : Server × Array Json := Id.run do
         | .null => none
         | j => some j
       (srv, #[reply (if ts.size == 1 then ts[0]! else if ts.isEmpty then Json.null else Json.arr ts)])
-    | _ =>
-      let names : Array Name := Query.completionsAt doc.state doc.text off
-      let items : Array Json := names.map fun (n : Name) => Json.mkObj [("label", Json.str n), ("kind", (3 : Nat))]
-      (srv, #[reply (Json.arr items)])
+    | _ => (srv, #[reply (completion srv doc off)])
   | _ => (srv, if id.isSome then #[reply Json.null] else #[])
 
 /-! ## The infoview socket (`wiz lsp --infoview SOCK`, protocol §8)
@@ -779,7 +797,8 @@ per infoview) feed one channel, and this loop handles the messages in order, so 
 server's state is never shared. `ready` gets the WebSocket's port once it listens.
 Without `stdio`, the server runs until it is killed. -/
 partial def serveWith (libs : Std.HashMap String (String × String)) (stdio : Option (IO.FS.Stream × IO.FS.Stream))
-    (listen : Listen) (ready : UInt16 → IO Unit := fun _ => pure ()) (trusted : List String := []) : IO Unit := do
+    (listen : Listen) (ready : UInt16 → IO Unit := fun _ => pure ()) (trusted : List String := [])
+    (native : Bool × Nat := (false, NativeRun.defaultFuel)) (smt : Smt.Config := {}) : IO Unit := do
   let ch ← Std.Channel.Sync.new (α := Event)
   let next ← IO.mkRef 0
   let fresh : IO Nat := next.modifyGet fun k => (k, k + 1)
@@ -888,7 +907,7 @@ partial def serveWith (libs : Std.HashMap String (String × String)) (stdio : Op
     | .disconnected k =>
       if let some c := conns.get? k then Socket.shutdown c.fd
       loop srv (conns.erase k)
-  let conns ← loop { libs, trusted } {}
+  let conns ← loop { libs, trusted, trustNative := native.1, nativeFuel := native.2, smt } {}
   -- stop the other threads: the acceptors and every infoview's reader see the end
   if let (some fd, some sock) := (unixFd, listen.infoview) then Socket.close fd sock
   if let some (fd, _) ← wsRef.get then Socket.closeFd fd
@@ -902,11 +921,11 @@ def serveInfoview (libs : Std.HashMap String (String × String)) (input output :
 /-- Serve until `exit`: on stdin/stdout (unless `stdio := false`), and on the sockets of
 `listen`. -/
 partial def serve (libs : Std.HashMap String (String × String)) (listen : Listen := {}) (stdio : Bool := true)
-    (trusted : List String := []) : IO Unit := do
+    (trusted : List String := []) (native : Bool × Nat := (false, NativeRun.defaultFuel)) (smt : Smt.Config := {}) : IO Unit := do
   let stdin ← IO.getStdin
   let stdout ← IO.getStdout
   -- (11w) always through `serveWith`: `wiz/browserInfoview` may start a WebSocket later
   let ready (port : UInt16) := IO.eprintln s!"wiz lsp: WebSocket on port {port}"
-  serveWith libs (if stdio then some (stdin, stdout) else none) listen ready trusted
+  serveWith libs (if stdio then some (stdin, stdout) else none) listen ready trusted native smt
 
 end Wiz.LSP

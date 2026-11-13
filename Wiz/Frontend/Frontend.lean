@@ -84,7 +84,9 @@ partial def isoKey (base : CommandState R) (m : Name) : Option UInt64 := do
     toString (repr g.inertReg), g.builtins, g.unboxStructs, g.lazyProofs,
     -- (P2) the marker's requirement and the read-back budget decide what a module's
     -- proofs elaborate to and what it reports
-    g.strictProofs, g.proofSteps, g.traceProofSteps)
+    g.strictProofs, g.proofSteps, g.traceProofSteps,
+    -- (27a) and whether `native_refl` may run, and how far
+    base.trustNative, base.nativeFuel)
   let settings := mixHash settings (hash (g.assumed, g.quoteErasesProofs, g.pushCalls, g.strictPrivacy, g.module,
     g.pp.useNotation, ppKeys (g.pp.unexpanders.toList.map (·.1)), ppKeys (g.pp.formats.toList.map (·.1))))
   let (k, _) ← go [] m {}

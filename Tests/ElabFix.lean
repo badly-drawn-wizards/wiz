@@ -348,6 +348,19 @@ def group : Group where
         -- η still holds by `rfl`, also at an equation formed while a type was a hole
         okLib ("import Prelude\ndef GP {S : Type} (f : S → S) : Prop := (s : S) → f s = s\nstructure One where\n  a : Nat\n" ++
           "def x2 : GP (fun (s : One) => One.mk s.a) := fun s => rfl\ndef x6 : GP (fun (s : Unit) => ()) := fun s => rfl") },
+    { name := "rfl at a computed equation inside a match clause: the clause's type was read back, the equation survives (13n)", run := fun _ => do
+        -- the motive of a clause is the expected type read back (`quote`) and evaluated at
+        -- the pattern; the read-back used to spell the computed Σ out, so `rfl` no longer saw
+        -- the equation and proved it field by field (a cast at a type variable: stuck).
+        -- From cohesion-hardware (examples/hardware-tour.wiz, step_cases)
+        okLib ("import Prelude\nstructure Pair2 (A B : Type) where\n  fst : A\n  snd : B\n" ++
+          "def r1 {A : Type} (a : A) : (b : Bool) → (Bool.not b, a) = (Bool.not b, a)\n  | .true => rfl\n  | .false => rfl\n" ++
+          "def r2 {A : Type} (a : A) (b : Bool) : (b, a) = (b, a) :=\n  match b with\n  | .true => rfl\n  | .false => rfl\n" ++
+          "def r3 {A : Type} (s : Pair2 Bool A) : (b : Bool) → Pair2.mk s.fst s.snd = s\n  | .true => rfl\n  | .false => rfl\n" ++
+          "#print axioms r1\n#reduce fun (A : Type) (p q : Bool × A) => p = q\n")
+          ["'r1' does not depend on any axioms", "fun A p q => (0 e : p.1 = q.1) × cast (transp (fun y _ => A = A) (refl A) e) p.2 = q.2"]
+        failsLib "import Prelude\ndef r4 {A : Type} (a c : A) : (b : Bool) → (b, a) = (b, c)\n  | .true => rfl\n  | .false => rfl"
+          "rfl: the two sides are not definitionally equal" },
     { name := "rfl at an equation that has computed: one refl when the sides are convertible, no axiom (structure eta)", run := fun _ => do
         let pair2 := "import Prelude\nstructure Pair2 (A B : Type) where\n  fst : A\n  snd : B\n"
         let lens := "def Store (A S : Type) : Type := A × (A → S)\ndef Lens (S A : Type) : Type := S → Store A S\n" ++
@@ -685,6 +698,20 @@ def group : Group where
           "#eval s0mt (S0.mk 3 4)\n") ["4"]
         -- used at runtime it is an error (not a projection at ω behind the user's back)
         failsLib (hdr ++ "def bad (s : S0) : Nat := match s with\n  | .mk n m => n\n") "n" },
+    { name := "#249: recursion over a family refines later arguments at non-variable indices", run := fun _ =>
+        okLib ("import Prelude\ninductive R : Nat → Nat → Type where\n  | done (s : Nat) : R s s\n" ++
+          "  | step (s t u : Nat) (r : R t u) : R s u\n" ++
+          "def v5 (P : Nat → Prop) (f : (a b : Nat) → P a → P b) : {s u : Nat} → R s u → P s → P u\n" ++
+          "  | _, _, .done x, h => h\n  | _, _, .step a b c r, h => v5 P f r (f a b h)\n" ++
+          "def v6 (P : Nat → Prop) (f : (a b : Nat) → P a → P b) : (s u : Nat) → R s u → P s → P u\n" ++
+          "  | _, _, .done x, h => h\n  | _, _, .step a b c r, h => v6 P f b c r (f a b h)\n" ++
+          "inductive Vec (A : Type) : Nat → Type where\n  | nil : Vec A 0\n" ++
+          "  | cons {n : Nat} (x : A) (xs : Vec A n) : Vec A (n + 1)\n" ++
+          "def map {A B : Type} (f : A → B) : {n : Nat} → Vec A n → Vec B n\n" ++
+          "  | _, .nil => .nil\n  | _, .cons x xs => .cons (f x) (map f xs)\n" ++
+          "def len {A : Type} : {n : Nat} → Vec A n → (k : Nat) → Nat\n" ++
+          "  | _, .nil, k => k\n  | _, .cons x xs, k => len xs (k + 1)\n" ++
+          "#eval len (map (fun n => n + 1) (Vec.cons 1 (Vec.cons 2 Vec.nil))) 10") ["12"] },
     { name := "#250: the body of an impossible arm is type checked; an empty match", run := fun _ => do
         let hdr := "import Prelude\ninductive T : Bool → Type where\n  | mk : T .true\n"
         failsLibW (hdr ++ "def f (t : T .false) : False := match t with\n  | .mk => \"hello\"\n") "type mismatch"

@@ -1,0 +1,8 @@
+examples/tour/01-basics.wiz:5:1: info: 42
+examples/tour/01-basics.wiz:8:1: info: 42
+examples/tour/01-basics.wiz:12:1: info: 18
+examples/tour/01-basics.wiz:16:1: info: 20
+examples/tour/01-basics.wiz:22:1: info: "small"
+examples/tour/01-basics.wiz:23:1: info: "wizard"
+examples/tour/01-basics.wiz:24:1: info: .cons 1 (.cons 2 (.cons 3 (.cons 4 .nil)))
+examples/tour/01-basics.wiz:25:1: info: compose : {A : Type} → {B : Type} → {C : Type} → (B → C) → (A → B) → A → C

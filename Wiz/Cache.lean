@@ -626,6 +626,12 @@ def Store.memory : IO (Store R) := do
     seen := fun k => return (← seen.get).contains k
     markSeen := fun k _ => seen.modify (·.insert k) }
 
+/-- (28) The solver settings, as a key, when they are not the defaults (none: nothing to
+mix in, so the keys of every run without them stay as they were). -/
+def smtKey (c : Smt.Config) : Option UInt64 :=
+  let c := { c with cacheDir := none }
+  if c == {} then none else some (mixHash (hash "smt") (hash c))
+
 /-- Elaborate `input` (like `Query.elaborate`), reading and writing `store`. Returns the
 final state and how many commands came from the store. `key₀` identifies what the
 file can see besides its imports (for example its C headers); `toolchain` is mixed into
@@ -635,11 +641,20 @@ partial def elaborateWith (store : Store R) (input : String) (init : CommandStat
   let keys ← IO.mkRef ({} : Std.HashMap Name UInt64)
   -- recording every term's expected type changes the effects: a different chain
   let salt' := if init.termInfo then mixHash salt 1 else salt
+  -- (27a) so does `--trust-native` (and its fuel): a `native_refl` accepted with it is
+  -- never replayed without it, nor the error without it replayed with it. (What it ran is
+  -- already in the key: the binary, and the text of the file and of everything imported.)
+  let salt' := if init.trustNative then mixHash salt' (nativeKey init) else salt'
+  -- (28) and the solver settings (`--sat-solver`, `--solver-timeout`)
+  let salt' := match smtKey init.smt with | some k => mixHash salt' k | none => salt'
   go keys init [] input init (mixHash salt' (mixHash toolchain key₀)) .write
 where
+  nativeKey (s : CommandState R) : UInt64 := mixHash (hash "trust-native") (hash s.nativeFuel)
   keyOf (keys : IO.Ref (Std.HashMap Name UInt64)) (m : Name) : IO UInt64 := do
     -- (term info changes what a module elaborates to, like the main file's chain)
     let tc := if init.termInfo then mixHash toolchain 1 else toolchain
+    let tc := if init.trustNative then mixHash tc (nativeKey init) else tc
+    let tc := match smtKey init.smt with | some k => mixHash tc k | none => tc
     let memo := moduleKeys init.loader init.cHeaders tc [m] (← keys.get) init.trustedModule
     keys.set memo
     pure ((memo.get? m).getD 0)

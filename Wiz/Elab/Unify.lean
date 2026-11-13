@@ -58,7 +58,8 @@ def elimsChecked (m : Nat) (sol : Val R) (sp : Array (Elim R)) : ElabM R (Val R)
   let g ← getGlobals
   let mut v := sol
   for e in sp do
-    let fits : Bool := match v, e with
+    -- (on a constructor, `ind` is lazy for speed alone: what it computes must fit)
+    let fits : Bool := match unlazyCon v, e with
       | .neutral .., _ | .unfold .., _ | .lazyInd .., _ => true
       | .lam .., .app _ => true
       | .pair .., .fst | .pair .., .snd => true
@@ -172,7 +173,9 @@ partial def rename (m : Nat) (p : PRen) (v : Val R) : ElabM R (Term R) := do
   -- (given) a glued value keeps its name in the solution
   if let .unfold n us sp _ ← forceMeta v then return ← rename m p (.neutral (.global n us) sp)
   -- (given) and glued induction on a numeral keeps its folded form
-  if let .lazyInd lv I D w P mt i x sp _ ← forceMeta v then
+  if let .lazyInd lv I D w P mt i x sp val ← forceMeta v then
+    -- (on a constructor, `ind` is lazy for speed alone: renamed as what it computes)
+    if (whnf x matches .con _) then return ← rename m p val.get
     let t := Term.ind lv (← rename m p I) (← rename m p D) w (← rename m p P) (← rename m p mt) (← rename m p i) (← rename m p x)
     return ← sp.foldlM (fun t e => match e with
       | .app a => return .app t (← rename m p a)
@@ -539,7 +542,10 @@ failure. Force both sides first, then:
 `t.1` and `b` with `t.2`), `unit`, `tt`, `empty`; and the other eliminations in
 `unifySpine`. -/
 partial def unify (l : Lvl) (t u : Val R) : ElabM R Unit := do
-  if ← unifyGlued l (← forceMeta t) (← forceMeta u) then return ()
+  -- (kernel-eval: `ind` on a constructor is lazy for speed alone; the elaborator sees what
+  -- it computes, which may be glued: `K.beq (.cons x xs) (.cons y ys)` against
+  -- `Bool.and ?a ?b` compares the two `Bool.and`s, as before `ind` was lazy there)
+  if ← unifyGlued l (unlazyCon (← forceMeta t)) (unlazyCon (← forceMeta u)) then return ()
   -- numerals: compare two directly, or else look one step inside (`vNatView`)
   let g ← getGlobals
   let (t, u) ← match ← force t, ← force u with
@@ -621,7 +627,21 @@ partial def unify (l : Lvl) (t u : Val R) : ElabM R Unit := do
     if ← etaProjected m sp then unify l t u else solve l m sp t'
   | t', .neutral (.mvar m) sp =>
     if ← etaProjected m sp then unify l t u else solve l m sp t'
-  | .neutral h sp, .neutral h' sp' => unifyHead l h h'; unifySpine l sp sp'
+  | .neutral h sp, .neutral h' sp' =>
+    -- (P2) two proofs with only applications and projections after them are equal, with
+    -- nothing to compare (as in `convNe`): their spines need not agree (a suspended
+    -- proof on one side, a `transp` applied to a phantom tail's argument on the other).
+    -- This is what makes two values that differ only in an erased proof field equal
+    -- where the type isn't seen (an opaque type, 13b), e.g. two closed words.
+    let lazy := (← getGlobals).lazyProofs
+    let isProof : Head R → Bool
+      | .refl .. | .reflTy _ | .transp .. | .prf .. => true
+      | h => lazy && proofHead h
+    let onProofs (sp : Array (Elim R)) : Bool := sp.all fun
+      | .app _ | .fst | .snd | .down => true
+      | _ => false
+    if isProof h && isProof h' && onProofs sp && onProofs sp' then pure () else
+    unifyHead l h h'; unifySpine l sp sp'
   | _, _ => throwAt {} "rigid mismatch"
   --|ex
   --| sorry
@@ -641,7 +661,9 @@ partial def unifyGlued (l : Lvl) (t u : Val R) : ElabM R Bool := do
     let s ← get
     try x; pure true catch e => set s; keepLearnt e; pure false
   match t, u with
-  | .lazyInd .., .lazyInd .. =>
+  | .lazyInd _ _ _ _ _ _ _ x _ _, .lazyInd _ _ _ _ _ _ _ y _ _ =>
+    -- (on a constructor, `ind` is lazy for speed alone: compared by what it computes)
+    if (whnf x matches .con _) || (whnf y matches .con _) then return false
     let g ← getGlobals
     pure (quote g l t == quote g l u)
   | .unfold n us sp v, .unfold n' us' sp' v' =>
@@ -657,7 +679,7 @@ partial def unifyGlued (l : Lvl) (t u : Val R) : ElabM R Bool := do
     -- and compare again
     let g ← getGlobals
     -- (recursors compute: unfold them first; otherwise the later definition)
-    let isRec (x : Name) : Bool := x.endsWith ".rec" || x.endsWith ".casesOn" || x.endsWith ".scasesOn"
+    let isRec (x : Name) : Bool := x.endsWith ".rec" || x.endsWith ".casesOn" || x.endsWith ".casesOnA" || x.endsWith ".scasesOn"
     let first := isRec n || (!isRec n' && g.height n ≥ g.height n')
     let step := if n == n' then unify l v.get v'.get
       else if first then unify l v.get u else unify l t v'.get
