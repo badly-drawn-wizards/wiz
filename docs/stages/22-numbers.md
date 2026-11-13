@@ -354,6 +354,18 @@ The region discipline of 22g used to cost at run time: every handle was a cell
   `lib/Region.wiz` marks its scopes and `Uniq.set`/`Shr.weaken`. The kernel never sees
   the attribute; inlining a recursive definition stops after a few levels.
 
+* **Linear scopes (cohesion M4b).** Since `Uniq` is a linear one-constructor inductive,
+  a `match` on a handle is `T.casesOn1`, whose method takes the tag and then the fields.
+  Erasure now unfolds `casesOn1` and `casesOnA` calls as it does `casesOn`
+  (`unfoldCases?`), and `simpKnown` (`Inline.lean`, run on every definition) removes what
+  is left: a `case` on a known tag is its branch, `(case s bs) a` pushes `a` into the
+  branches, a redex is a `let`, and a lambda bound once is moved to its use (a
+  continuation such as `Uniq.end r (λ v. …)`). With `--unbox-structs`, a `Uniq.borrow`
+  scope around `push1` went from 15 objects and 8 lifted functions to 4 objects and none,
+  and two nested scopes from 29 and 23 to 6 and none (no scope: 3). What remains is the
+  handle's cell: `Uniq` is an inductive, which `--unbox-structs` doesn't unbox
+  (`/workspace/wiz-notes/linear-scope-cost.md`).
+
 Objects allocated on `#run`'s checked heap (`tests --allocs FILE ENTRY…`, a measuring
 mode of the test driver), before → after (the "unbox" columns are with `--unbox-structs`;
 the default has 22i's inlining on the boxed layout, not measured here):

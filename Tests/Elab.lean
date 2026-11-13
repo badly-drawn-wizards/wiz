@@ -8936,7 +8936,7 @@ def regionsGroup : Group where
         -- compares in the elaborator's view)
         failsLibs ("import Region\nstructure MyShr (ρ : Region) (A : Type) where\n  val : A\n" ++
           "def forge {ρ : Region} (x : Nat) : Shr ρ Nat := cast rfl (MyShr.mk x : MyShr ρ Nat)") "not definitionally equal" },
-    { name := "with --unbox-structs a shared handle is its value at run time and its scope is its body run in place (22i); KNOWN COST: a linear &mut scope allocates", run := fun _ => do
+    { name := "with --unbox-structs a shared handle is its value at run time and its scope is its body run in place (22i); a linear &mut scope is its body run in place, but for the handle's cell", run := fun _ => do
         let s ← libsState ("import Region\n" ++ regionsPush ++
           "def get {ρ : Region} (x : Shr ρ Nat) : Nat := x.val\n" ++
           "def scoped (xs : List Nat) : Result (Unit × List Nat) := Uniq.borrow Region.static xs (fun ρ h v r => push1 r)\n" ++
@@ -8961,12 +8961,14 @@ def regionsGroup : Group where
         let shIR ← libsIR s "shared"
         check (shIR.length == 1 && shIR.all fun d => (d.splitOn "pap").length == 1)
           s!"shared: a closure:\n{"\n".intercalate shIR}"
-        -- KNOWN COST (cohesion M4b-3d; /workspace/wiz-notes/linear-scope-cost.md): a linear `&mut`
-        -- scope is not free. `Uniq`, `Result1` are inductives (not unboxed like structures), and
-        -- the inlined scopes still lift their `1 body` lambdas. Pinned so that a fix shows up:
-        -- objects allocated without the scope / with one / with two nested, and lifted decls.
-        checkEq "3 15 29" s!"{← libsAllocs s "t0"} {← libsAllocs s "t1"} {← libsAllocs s "t2"}"
-        checkEq "8 23" s!"{(← libsIR s "scoped").length} {(← libsIR s "nested").length}" }
+        -- a linear `&mut` scope is its body run in place too: the `match`es on the handle
+        -- (`T.casesOn1`) are unfolded and their known tags simplified (`simpKnown`), so
+        -- nothing is lifted. KNOWN COST (/workspace/wiz-notes/linear-scope-cost.md): the
+        -- handle `Uniq` is still a cell (an inductive, not unboxed like a structure).
+        -- Objects allocated without the scope / with one / with two nested (before: 3 15
+        -- 29), and lifted decls (before: 8 23).
+        checkEq "3 4 6" s!"{← libsAllocs s "t0"} {← libsAllocs s "t1"} {← libsAllocs s "t2"}"
+        checkEq "1 1" s!"{(← libsIR s "scoped").length} {(← libsIR s "nested").length}" }
   ]
 
 
