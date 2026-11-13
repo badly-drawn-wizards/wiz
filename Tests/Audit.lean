@@ -157,9 +157,18 @@ def closedTemplates (l v : Nat) : IO (Globals ZeroOneMany) := do
     -- usage inside them (audit note, T-qty)
     let tm' := if declName == "T.interp" then tm else if declName == "T.all" then foldInterp tm else fold tm
     let ctx : Ctx ZeroOneMany := { globals := s.globals, erased := true }
-    match Wiz.check ctx tm' (ctx.eval (.const tyName [])) with
-    | .ok _ => pure (s.globals.insert { name := declName, type := .const tyName [], value := some tm' })
+    -- (P2) the templates are kernel-built raw terms: mark them as the elaborator would, as
+    -- every declaration is marked before the kernel. First without the requirement (the
+    -- pass checks nothing), then the real check of the marked term.
+    let tyv := ctx.eval (.const tyName [])
+    let ctx0 : Ctx ZeroOneMany := { ctx with globals := { s.globals with lazyProofs := false } }
+    match Wiz.check ctx0 tm' tyv with
     | .error e => throw (IO.userError s!"{declName} (l = {l}, v = {v}) does not have the type {tySrc}: {e}")
+    | .ok _ =>
+      let tm'' := Mark.check ctx tm' tyv
+      match Wiz.check ctx tm'' tyv with
+      | .ok _ => pure (s.globals.insert { name := declName, type := .const tyName [], value := some tm'' })
+      | .error e => throw (IO.userError s!"{declName} (l = {l}, v = {v}) does not have the type {tySrc}: {e}")
   let g ← step {} "InterpTy"
     s!"def InterpTy : {big (l + 1)} := (I : {tyI}) → Desc I → (I → {tyI}) → I → {tyI}"
     "T.interp" (Templates.interpTm lv)
@@ -636,7 +645,11 @@ where
 /-- The Lean kernel's normal form of a closed term, printed like the Wiz kernel prints. -/
 def leanNormal (t : MTm) : String :=
   let g := Elab.leanGlobals ()
-  match MTm.ofTerm (dropQty (quote g 0 (eval g [] t.toTerm))) with
+  -- (P2) the query is marked first, as the Wiz side marks it (`kernelsAgree`); a term the
+  -- pre-P2 kernel rejects is left as it is, as in `Elab.leanVerdict`
+  let tm := if !(infer (R := ZeroOneMany) { globals := { g with lazyProofs := false } } t.toTerm).toBool then
+      t.toTerm else (Mark.infer (R := ZeroOneMany) { globals := g } t.toTerm).1
+  match MTm.ofTerm (dropQty (quote g 0 (eval g [] tm))) with
   | some m => m.pretty 0
   | none => "?"
 
@@ -773,11 +786,18 @@ def templatePairs : List (String × Term ZeroOneMany) :=
 
 def kernelProgram (queries : List Query) : IO String := do
   let kernel ← IO.FS.readFile "selfhost/Kernel.wiz"
-  let verdict := "def verdict (t : Tm) : String := match infer empty t with\n  | .ok ty _ => show .nil 0 (quote 0 ty)\n  | .err _ => \"error\"\n"
+  -- (P2) every query gets its proof markers first, with `Kernel.wiz`'s own pass, as the
+  -- Lean side marks with `Mark.infer` (`leanAnswer`); a term the pre-P2 kernel rejects is
+  -- not marked (the pass checks nothing), so it answers `error` as before
+  let verdict :=
+    "def rawVerdict (t : Tm) : String := match infer empty t with\n  | .ok ty _ => show .nil 0 (quote 0 ty)\n  | .err _ => \"error\"\n" ++
+    "def markedVerdict (t : Tm) : String := rawVerdict (MR.tm (markInfer (TCtx.relevant empty) t))\n" ++
+    "def verdict (t : Tm) : String := match infer (TCtx.noMarkers empty) t with\n  | .err _ => \"error\"\n  | .ok _ _ => markedVerdict t\n" ++
+    "def markedNormalize (t : Tm) : String := show .nil 0 (quote 0 (eval .nil (MR.tm (markInfer (TCtx.relevant empty) t))))\n"
   let printAll := "def printAll : List String → IO Unit\n  | .nil => IO.pure ()\n  | .cons s ss => do\n    IO.println s;\n    printAll ss\n"
   -- one definition per query: a single list of every term is slow to elaborate
   let defs := String.join ((List.range queries.length).zip queries |>.map fun (i, (isVerdict, t)) =>
-    s!"def q{i} (u : Unit) : String := {if isVerdict then "verdict" else "normalize"} {t.toWiz}\n")
+    s!"def q{i} (u : Unit) : String := {if isVerdict then "verdict" else "markedNormalize"} {t.toWiz}\n")
   let calls := (List.range queries.length).map fun i => s!"(q{i} ())"
   let tmpl := templatePairs.map fun (n, _) => s!"(show .nil 0 ({n}))"
   pure (kernel ++ "\n" ++ verdict ++ printAll ++ defs ++
@@ -831,7 +851,12 @@ def kernelGroup : Group where
 Each attempt is rejected at the first line that needs the inconsistency
 (`/workspace/wiz-notes/soundness-audit-2.md`, §6, names the rule for each). The core-term
 versions (Hurkens with an out-of-scope variable, `ULift` lowering a universe) are in
-`pinned`. -/
+`pinned`.
+
+The level mismatches are rendered as a type mismatch whose two universes are printed
+(`mismatchReason` no longer repeats "universe level mismatch" when the types already show
+it), so each entry pins the expected/inferred pair.
+-/
 
 def pw : String := "def Pw (X : Type) : Type := X → Prop\n"
 def pwPoly : String :=
@@ -846,30 +871,30 @@ def codes : String :=
 
 /-- `(name, source, fragment of the one error, needs lib/)`. -/
 def paradoxes : List (String × String × String × Bool) := [
-  ("Hurkens: U : Type quantifying over Type", pw ++ "def U : Type := (X : Type) → (Pw (Pw X) → X) → Pw (Pw X)", "universe level mismatch", false),
-  ("Hurkens: honest universes, the self-application", pw ++ "def U : Type 1 := (X : Type) → (Pw (Pw X) → X) → Pw (Pw X)\ndef sigma (s : U) : Type 1 := s U", "universe level mismatch", false),
+  ("Hurkens: U : Type quantifying over Type", pw ++ "def U : Type := (X : Type) → (Pw (Pw X) → X) → Pw (Pw X)", "type mismatch\n  expected: Type\n  inferred: Type 1", false),
+  ("Hurkens: honest universes, the self-application", pw ++ "def U : Type 1 := (X : Type) → (Pw (Pw X) → X) → Pw (Pw X)\ndef sigma (s : U) : Type 1 := s U", "type mismatch\n  expected: Type\n  inferred: Type 1", false),
   ("Hurkens: in Prop, the powerset of a proposition is not a proposition",
-    "def Pw (X : Prop) : Type := X → Prop\ndef U : Prop := (X : Prop) → (Pw (Pw X) → X) → Pw (Pw X)", "universe level mismatch", false),
-  ("Hurkens: level-polymorphic, σ at its own level", pwPoly ++ "def sigma.{u} (s : U.{u}) : Pw (Pw U.{u}) := s U.{u} tau.{u}", "universe level mismatch", false),
+    "def Pw (X : Prop) : Type := X → Prop\ndef U : Prop := (X : Prop) → (Pw (Pw X) → X) → Pw (Pw X)", "type mismatch\n  expected: Prop\n  inferred: Type", false),
+  ("Hurkens: level-polymorphic, σ at its own level", pwPoly ++ "def sigma.{u} (s : U.{u}) : Pw (Pw U.{u}) := s U.{u} tau.{u}", "type mismatch\n  expected: Type u\n  inferred: Type (u+1)", false),
   ("Hurkens: level-polymorphic, σ one level down: Ω does not come back",
     pwPoly ++ "def sigma.{u} (s : U.{u+1}) : Pw (Pw U.{u}) := s U.{u} tau.{u}\n" ++
     "def Delta.{u} : Pw U.{u+1} := fun y => ((p : Pw U.{u}) → sigma y p → p (tau (sigma y))) → False\n" ++
     "def Omega.{u} : U.{u} := tau (fun p => (x : U.{u+1}) → sigma x p → p x)", "universe level mismatch", false),
-  ("Girard: Sort u : Sort u", "def a.{u} : Sort u := Sort u", "universe level mismatch", false),
-  ("Girard: Type (u+1) : Type u", "def b.{u} : Sort (u+1) := Sort (u+1)", "universe level mismatch", false),
-  ("Girard: a Π into Type in Sort u", "def c.{u} (A : Sort u) : Sort u := A → Type", "universe level mismatch", false),
-  ("Girard: a Π from Type in Sort u", "def d.{u} (A : Sort u) : Sort u := Type → A", "universe level mismatch", false),
-  ("Girard: Sort (max 1 u) is not Sort u", "def f.{u} (A : Sort (max 1 u)) : Sort u := A", "universe level mismatch", false),
-  ("Girard: Sort u is not Sort (max 1 u)", "def e.{u} (A : Sort u) : Sort (max 1 u) := A", "universe level mismatch", false),
-  ("Girard: imax u v is not v", "def g.{u, v} (A : Sort (imax u v)) : Sort v := A", "universe level mismatch", false),
-  ("Girard: max is not imax", "def h.{u, v} (A : Sort (max u v)) : Sort (imax u v) := A", "universe level mismatch", false),
-  ("Girard: imax is not max", "def h.{u, v} (A : Sort (imax u v)) : Sort (max u v) := A", "universe level mismatch", false),
-  ("Girard: imax (imax u v) v is not imax v u", "def k.{u, v} (A : Sort (imax (imax u v) v)) : Sort (imax v u) := A", "universe level mismatch", false),
+  ("Girard: Sort u : Sort u", "def a.{u} : Sort u := Sort u", "type mismatch\n  expected: Sort u\n  inferred: Type u", false),
+  ("Girard: Type (u+1) : Type u", "def b.{u} : Sort (u+1) := Sort (u+1)", "type mismatch\n  expected: Type u\n  inferred: Type (u+1)", false),
+  ("Girard: a Π into Type in Sort u", "def c.{u} (A : Sort u) : Sort u := A → Type", "type mismatch\n  expected: Sort u\n  inferred: Sort (imax u 2)", false),
+  ("Girard: a Π from Type in Sort u", "def d.{u} (A : Sort u) : Sort u := Type → A", "type mismatch\n  expected: Sort u\n  inferred: Sort (imax 2 u)", false),
+  ("Girard: Sort (max 1 u) is not Sort u", "def f.{u} (A : Sort (max 1 u)) : Sort u := A", "type mismatch\n  expected: Sort u\n  inferred: Sort (max 1 u)", false),
+  ("Girard: Sort u is not Sort (max 1 u)", "def e.{u} (A : Sort u) : Sort (max 1 u) := A", "type mismatch\n  expected: Sort (max 1 u)\n  inferred: Sort u", false),
+  ("Girard: imax u v is not v", "def g.{u, v} (A : Sort (imax u v)) : Sort v := A", "type mismatch\n  expected: Sort v\n  inferred: Sort (imax u v)", false),
+  ("Girard: max is not imax", "def h.{u, v} (A : Sort (max u v)) : Sort (imax u v) := A", "type mismatch\n  expected: Sort (imax u v)\n  inferred: Sort (max u v)", false),
+  ("Girard: imax is not max", "def h.{u, v} (A : Sort (imax u v)) : Sort (max u v) := A", "type mismatch\n  expected: Sort (max u v)\n  inferred: Sort (imax u v)", false),
+  ("Girard: imax (imax u v) v is not imax v u", "def k.{u, v} (A : Sort (imax (imax u v) v)) : Sort (imax v u) := A", "type mismatch\n  expected: Sort (imax v u)\n  inferred: Sort (imax (imax u v) v)", false),
   ("Berardi: no conditional from a proof into data",
-    orDefs ++ "def ite (em : EM) (P : Prop) (A : Type) (a b : A) : A := em P A (fun _ => a) (fun _ => b)", "universe level mismatch", true),
+    orDefs ++ "def ite (em : EM) (P : Prop) (A : Type) (a b : A) : A := em P A (fun _ => a) (fun _ => b)", "type mismatch\n  expected: Prop\n  inferred: Type", true),
   ("Berardi: no Bool from a disjunction",
-    orDefs ++ "def toBool (P Q : Prop) (h : Or P Q) : Bool := h Bool (fun _ => .true) (fun _ => .false)", "universe level mismatch", true),
-  ("Berardi: no proposition that stores a proposition", "def Box : Prop := (P : Prop) × P", "universe level mismatch", false),
+    orDefs ++ "def toBool (P Q : Prop) (h : Or P Q) : Bool := h Bool (fun _ => .true) (fun _ => .false)", "type mismatch\n  expected: Prop\n  inferred: Type", true),
+  ("Berardi: no proposition that stores a proposition", "def Box : Prop := (P : Prop) × P", "type mismatch\n  expected: Prop\n  inferred: Type", false),
   ("Russell: a small type with a field over all small types",
     "import Prelude\ninductive V : Type where\n  | sup (X : Type) (f : X → V)", "can't lift", true),
   ("Russell: the same as a raw description",
