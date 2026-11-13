@@ -187,6 +187,22 @@ def wp.bind {V A B : Type} (c : Prog V A) (f : A → Prog V B) :
 
 -- `{P} c {Q}`
 def Triple {V A : Type} (P : HProp V) (c : Prog V A) (Q : A → HProp V) : Prop := P ⊢ wp c Q
+-- Notation (13o): `⦃P⦄ c ⦃r, Q⦄` is `Triple P c (fun r => Q)`, and `⦃P⦄ c ⦃Q⦄` takes the
+-- postcondition as a function. Triples print that way.
+-- (Both brackets are declared " ⦃" and "⦄ ": the printer takes an atom's spacing from its
+-- first declaration, and drops it at the ends of the notation.)
+syntax:max (name := tripleB) " ⦃" term "⦄ " term " ⦃" ident "," term "⦄ " : term
+syntax:max (name := tripleW) " ⦃" term "⦄ " term " ⦃" "_" "," term "⦄ " : term
+syntax:max (name := triple) " ⦃" term "⦄ " term " ⦃" term "⦄ " : term
+macro_rules
+  | `(term| ⦃$P⦄ $c ⦃$r, $Q⦄) => `(term| Triple $P $c (fun $r => $Q))
+macro_rules
+  | `(term| ⦃$P⦄ $c ⦃_, $Q⦄) => `(term| Triple $P $c (fun _ => $Q))
+macro_rules
+  | `(term| ⦃$P⦄ $c ⦃$Q⦄) => `(term| Triple $P $c $Q)
+app_unexpander Triple
+  | `(term| $f $P $c (fun _ => $Q)) => `(term| ⦃$P⦄ $c ⦃_, $Q⦄)
+  | `(term| $f $P $c (fun $r => $Q)) => `(term| ⦃$P⦄ $c ⦃$r, $Q⦄)
 
 -- consequence
 def Triple.conseq {V A : Type} {0 P P' : HProp V} {ω c : Prog V A} {0 Q Q' : A → HProp V}

@@ -1036,7 +1036,9 @@ def eraseDecl (g : Globals R) (d : Decl R) : TCM ETerm := do
   let ctx : Ctx R := { globals := { g with module := (g.declModule[d.name]?).getD "" }, proof := true }
   -- compiled equations (derived from the value, `deriveImpl`): the calls a nested split
   -- reverted go into its branches, and a constructor rebuilt from a branch's fields is the
-  -- scrutinee (`Push`), if the result checks (else the step before, else the impl as is)
+  -- scrutinee (`Push`), if the result type-checks (else the step before, else the impl as
+  -- is). Not checked to agree with the impl: equal by construction, trusted like erasure,
+  -- as is the substitution of call closures afterwards (`ETerm.inlineCalls`)
   let derived := g.pushCalls && d.impl.isSome && d.value.isSome && Push.mentions d.name v
   let v := if derived then
       let ok (t : Term R) : Bool := (check ctx t (ctx.eval d.type)) matches .ok _

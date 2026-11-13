@@ -192,7 +192,8 @@ def goalJson (g : TaggedGoal) (tj : TT → Json) : Json :=
   Json.mkObj [
     ("hyps", Json.arr (g.hyps.map fun (x, t, v) => Json.mkObj [("names", Json.arr #[Json.str x]),
       ("type", tj t), ("val", match v with | some v => tj v | none => Json.null)])),
-    ("type", tj g.target), ("goalPrefix", "⊢ "),
+    ("type", tj (if goalTarget g.target.flatten != g.target.flatten then .append #[.text "(", g.target, .text ")"] else g.target)),
+    ("goalPrefix", "⊢ "),
     ("userName", match g.userName with | some n => Json.str n | none => Json.null)]
 
 def plainGoals (gs : Array (GoalView ZeroOneMany)) (traces : Array String := #[]) (g : Option (Globals ZeroOneMany) := none) : Json :=

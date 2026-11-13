@@ -59,6 +59,8 @@ def Hdl.indexed {A : Type} : Nat → List A → List (Nat × A)
   | _, .nil => .nil
   | k, .cons x xs => .cons (k, x) (Hdl.indexed (Nat.succ k) xs)
 
+-- (public: `Hdl.Xdc`, `Hdl.Xilinx7`, `Hdl.Prim`, `Hdl.Sim` and the examples build
+-- strings with it; unlike a DSL's own helper notation this one is the library's API)
 infixr:67 " <+> " => String.append
 def Hdl.digitsAux : Nat → Nat → List Char → List Char
   | .zero, _, acc => acc

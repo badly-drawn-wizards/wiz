@@ -427,6 +427,21 @@ def Term.descTag? {R : Type} : Term R → Option (List Name × Bool × Term R)
   | .darg _ (.ulift _ _ (.enum ls)) F => some (ls, true, F)
   | _ => none
 
+/-- The constant of the constructor with tag `c` of the data type `T`: `T.c`. A `mutual`
+block's family (`Elab/Command.lean`, `mutualInductive`) holds every member's
+constructors under tags qualified by the member (`Ev.s`, `Od.s`: two members may share a
+constructor name), and such a constructor is named by its tag alone, so `Ev.s` is the
+constant and the family's name stays internal. An ordinary constructor's tag is one
+identifier without a dot (`inductive` rejects `| a.b`). -/
+def ctorConst (T c : Name) : Name := if c.contains '.' then c else T ++ "." ++ c
+
+/-- A constructor tag as written after a dot (`.s`): a qualified tag's last component. -/
+def ctorShort (c : Name) : Name := ((c.splitOn ".").getLast?).getD c
+
+/-- Does the constructor written `.c'` (or `T.c'`, `c'` then the resolved tag) select
+the tag `c`? A qualified tag (`Ev.s`) is also selected by its last component. -/
+def ctorSelects (c' c : Name) : Bool := c' == c || (c.contains '.' && ctorShort c == c')
+
 /-- The binder name of a **phantom** argument (`Elab/Inductive.lean`): a type whose
 parameters no field mentions ends in `(0 phantom✝ : D) → … → Unit` instead of `Unit`,
 with `D` mentioning the parameter. Such a function type has one inhabitant up to η,

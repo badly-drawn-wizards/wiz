@@ -2392,11 +2392,17 @@ def conv : TCtx → Val → Val → Val → Bool
       | w => isPropW c w) with
     | .true => .true
     | .false => match whnf ty with
-      | .vpi _ _ _ dom env cod =>
-        let x := fresh (TCtx.lvl c);
-        conv (TCtx.bind c dom) (eval (.cons x env) cod) (vapp a x) (vapp b x)
-      | .vsigma _ _ _ ta env tb =>
-        Bool.and (conv c ta (vfst a) (vfst b)) (conv c (eval (.cons (vfst a) env) tb) (vsnd a) (vsnd b))
+      -- (η at a Π or a Σ, after the neutral comparison, as in `Conv.lean`: two neutrals
+      -- that `convNe` finds equal are equal, and η would find it too; otherwise η)
+      | .vpi _ _ _ dom env cod => match neutralsAgree c a b with
+        | .true => .true
+        | .false =>
+          let x := fresh (TCtx.lvl c);
+          conv (TCtx.bind c dom) (eval (.cons x env) cod) (vapp a x) (vapp b x)
+      | .vsigma _ _ _ ta env tb => match neutralsAgree c a b with
+        | .true => .true
+        | .false =>
+          Bool.and (conv c ta (vfst a) (vfst b)) (conv c (eval (.cons (vfst a) env) tb) (vsnd a) (vsnd b))
       | .vunit _ => .true
       -- (Q4) η: compare the contents
       | .vulift _ _ A => conv c A (vdown a) (vdown b)
@@ -2470,6 +2476,12 @@ def convTyW : TCtx → Val → Val → Bool
   --|ex
   --| | _, _, _ => .false
   --sol>
+-- two values that are both neutrals (after `whnf`), equal as neutrals (`convNe`)
+def neutralsAgree (c : TCtx) (a b : Val) : Bool := match whnf a with
+  | .vne _ _ => match whnf b with
+    | .vne _ _ => convNe c a b
+    | _ => .false
+  | _ => .false
 def convNe (c : TCtx) (a b : Val) : Bool := match lazyDelta c a b with
   | .true => .true
   | .false => convNeW c (whnf a) (whnf b)

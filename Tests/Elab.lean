@@ -1847,10 +1847,11 @@ def ioRunWith (src : String) (k : String → IO Unit) (args : Array String := #[
   let functorLib ← IO.FS.readFile "lib/Functor.wiz"
   let sysLib ← IO.FS.readFile "lib/Sys.wiz"
   let textLib ← IO.FS.readFile "lib/Text.wiz"
+  let derivingLib ← IO.FS.readFile "lib/Deriving.wiz"
   let loader : Name → Option String := fun m =>
     if m == "Prelude" then some prelude else if m == "IO" then some ioLib else if m == "Eff" then some effLib
     else if m == "Std" then some stdLib else if m == "Sys" then some sysLib else if m == "Functor" then some functorLib
-    else if m == "Text" then some textLib else none
+    else if m == "Text" then some textLib else if m == "Deriving" then some derivingLib else none
   let headers ← Build.preprocessHeaders (← toolchain) src
   let s := runFrontend (R := ZeroOneMany) src { loader, trustedModule := Tests.libModule, cHeaders := (headers[·]?) }
   let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
@@ -2780,10 +2781,16 @@ def globalDefs : List (String × List String × Option MTm × MTm) :=
    ("idP", ["u"], some (lam (lam (var 0))), pi (sortParam "u") (pi (var 0) (var 1))),
    ("constP", ["u", "v"], some (lam (lam (lam (lam (var 1))))),
      pi (sortParam "u") (pi (sortParam "v") (pi (var 1) (pi (var 1) (var 3))))),
+   -- a proposition whose value depends on its level and whose type does not: `polyK.{0}`
+   -- is `Prop → True`, `polyK.{1}` is `Type → True` (two instances of one constant must
+   -- not be identified by their name: the property harness compares them, `Tests/Prop.lean`)
+   ("polyK", ["u"], some (pi (sortParam "u") ptrue), prop),
    -- (W1, `wiz-notes/kernel-lint.md`) a proposition that is a theorem at level 0 and false
    -- at level 1, and a case that is stuck on its scrutinee with `A` in its environment
-   ("dLv", ["u"], some (pi (sortParam "u") (pi (var 0) (pi (var 1) (pi (pi (var 2) prop)
-     (pi (app (var 0) (var 2)) (app (var 1) (var 2))))))), prop),
+   -- (its Π's are written with holes, which the sorts pass fills: mandatory sorts remove
+   -- the U5 class this used to pin — an unannotated Π against an annotated one, whose cast
+   -- computes where its equation is stuck, `Tests/Prop.lean`)
+   ("dLv", ["u"], some (pi (sortParam "u") (pi (var 0) (pi (var 1) (pi (pi (var 2) prop) (pi (app (var 0) (var 2)) (app (var 1) (var 2))))))), prop),
    ("caseF", [], some (lam (lam (ecase prop (var 0) [var 1]))), pi prop (pi (enum 1) prop))]
 
 /-- (W1) `fun x p => p : (x : Enum 1) → caseF dLv.{l} x → caseF dLv.{l'} x`: the two types
@@ -4778,6 +4785,9 @@ def selfHostGroup : Group where
     { name := "parameterised mutual inductive types, checked in Wiz", run := fun _ =>
         selfhostCheckFile "inductive Nat where\n  | zero\n  | succ (n : Nat)\nmutual\ninductive Tree (A : Type) where\n  | leaf (a : A)\n  | node (kids : Forest A)\ninductive Forest (A : Type) where\n  | nil\n  | cons (t : Tree A) (rest : Forest A)\nend\n#check Tree.node\ndef t : Tree Nat := .node (.cons (.leaf .zero) (.cons (.leaf (.succ .zero)) .nil))\ndef size {A : Type} : Forest A → Nat\n  | .nil => .zero\n  | .cons _ r => .succ (size r)\ndef kids {A : Type} (d : Forest A) : Tree A → Forest A\n  | .node k => k\n  | _ => d\n#reduce size (kids .nil t)\n"
           "Nat : U0\nTree : (x0 : U0) → U0\nForest : (x0 : U0) → U0\n(x0 :0 U0) → (x1 : (Forest x0)) → (Tree x0)\nt : (Tree Nat)\nsize : (x0 :0 U0) → (x1 : (Forest x0)) → Nat\nkids : (x0 :0 U0) → (x1 : (Forest x0)) → (x2 : (Tree x0)) → (Forest x0)\ncon((#1, (con((#1, (con((#0, (tt, tt))), (tt, tt)))), (tt, tt))))\n" },
+    { name := "mutual types sharing a constructor name (Ev.s, Od.s), checked in Wiz", run := fun _ =>
+        selfhostCheckFile "inductive Nat where\n  | zero\n  | succ (n : Nat)\nmutual\ninductive Ev where\n  | z\n  | s (o : Od)\ninductive Od where\n  | s (e : Ev)\nend\n#check Ev.s\n#check Od.s\ndef two : Ev := .s (.s .z)\ndef isZ : Ev → Nat\n  | .z => .zero\n  | Ev.s _ => .succ .zero\ndef unOd : Od → Ev\n  | .s e => e\n#reduce isZ (unOd (.s two))\n#reduce isZ (unOd (Od.s Ev.z))\n"
+          "Nat : U0\nEv : U0\nOd : U0\n(x0 : Od) → Ev\n(x0 : Ev) → Od\ntwo : Ev\nisZ : (x0 : Ev) → Nat\nunOd : (x0 : Od) → Ev\ncon((#1, (con((#0, (tt, tt))), (tt, tt))))\ncon((#0, (tt, tt)))\n" },
     { name := "structures and projections, checked in Wiz", run := fun _ =>
         selfhostCheckFile "inductive Nat where\n  | zero\n  | succ (n : Nat)\nstructure Pair (A B : Type) where\n  fst : A\n  snd : B\n#check Pair.mk\ndef p : Pair Nat (Pair Nat Nat) := .mk .zero (.mk (.succ .zero) .zero)\n#reduce Pair.fst (Pair.snd p)\ndef swap {A B : Type} (q : Pair A B) : Pair B A := .mk (Pair.snd q) (Pair.fst q)\n#reduce Pair.fst (swap p)\n#reduce p.snd.fst\ndef swap2 {A B : Type} (q : Pair A B) : Pair B A := .mk q.snd q.fst\n#reduce (swap2 p).fst\n"
           "Nat : U0\nPair : (x0 : U0) → (x1 : U0) → U0\nPair.fst : (x0 :0 U0) → (x1 :0 U0) → (x2 : ((Pair x0) x1)) → x0\nPair.snd : (x0 :0 U0) → (x1 :0 U0) → (x2 : ((Pair x0) x1)) → x1\n(x0 :0 U0) → (x1 :0 U0) → (x2 : x0) → (x3 : x1) → ((Pair x0) x1)\np : ((Pair Nat) ((Pair Nat) Nat))\ncon((#1, (con((#0, (tt, tt))), (tt, tt))))\nswap : (x0 :0 U0) → (x1 :0 U0) → (x2 : ((Pair x0) x1)) → ((Pair x1) x0)\ncon((#0, (con((#1, (con((#0, (tt, tt))), (tt, tt)))), (con((#0, (tt, tt))), (tt, tt)))))\ncon((#1, (con((#0, (tt, tt))), (tt, tt))))\nswap2 : (x0 :0 U0) → (x1 :0 U0) → (x2 : ((Pair x0) x1)) → ((Pair x1) x0)\ncon((#0, (con((#1, (con((#0, (tt, tt))), (tt, tt)))), (con((#0, (tt, tt))), (tt, tt)))))\n" },
@@ -5864,6 +5874,28 @@ def languageGroup : Group where
           "  | .lam b => Nat.succ (size b)\n  | .app f args => Nat.add (size f) (sizes args)\ndef sizes : Tms → Nat\n" ++
           "  | .nil => 0\n  | .cons t ts => Nat.add (size t) (sizes ts)\nend\n" ++
           "#eval size (.app (.lam (.var 0)) (.cons (.var 1) (.cons (.var 2) .nil)))") ["4"] },
+    { name := "the constructors of mutual types are named per type: Ev.s and Od.s", run := fun _ => do
+        okLib ("import Prelude\nmutual\ninductive Ev where\n  | z\n  | s (o : Od)\ninductive Od where\n  | s (e : Ev)\nend\n#check Ev.z\n#check Od.s\n" ++
+          "def two : Ev := .s (.s .z)\ndef three : Od := Od.s (Ev.s (.s Ev.z))\n" ++
+          "mutual\ndef evN : Ev → Nat\n  | .z => 0\n  | Ev.s o => Nat.succ (odN o)\ndef odN : Od → Nat\n  | .s e => Nat.succ (evN e)\nend\n" ++
+          "#eval evN two\n#eval odN three\n#eval two")
+          ["Ev.z : Ev_Od .Ev", "Od.s : Ev_Od .Ev → Ev_Od .Od", "2", "3", ".s (.s .z)"]
+        failsLib ("import Prelude\nmutual\ninductive Ev where\n  | z\n  | s (o : Od)\ninductive Od where\n  | s (e : Ev)\nend\ndef bad : Od := .z") "Ev_Od .Od has no constructor z"
+        failsLib ("import Prelude\nmutual\ninductive Ev where\n  | z\n  | s (o : Od)\ninductive Od where\n  | s (e : Ev)\nend\ndef f : Ev → Nat\n  | .s _ => 1") "missing case for constructor Ev.z"
+        failsLib "inductive T where\n  | a.b" "a constructor's name is a single identifier, not a.b"
+        -- the hover on `.s` is the member's constructor
+        let prelude ← IO.FS.readFile "lib/Prelude.wiz"
+        let init : CommandState ZeroOneMany := { trustedModule := Tests.libModule, loader := fun m => if m == "Prelude" then some prelude else none }
+        let src := "import Prelude\nmutual\ninductive Ev where\n  | z\n  | s (o : Od)\ninductive Od where\n  | s (e : Ev)\nend\ndef one : Od := .s .z\n"
+        let (s, _) := Query.elaborate {} src { init with termInfo := true }
+        checkEq "(some (Od.s, Ev_Od .Ev → Ev_Od .Od))" (toString (Query.hoverAt s ((src.splitOn ".s .z")[0]!.length + 1))) },
+    { name := "mutual types sharing a constructor name, compiled (C and LLVM)", run := fun _ => do
+        let src := "import IO\nimport Deriving\nmutual\ninductive Ev where\n  | z\n  | s (o : Od)\n  deriving Repr\ninductive Od where\n  | s (e : Ev)\nend\n" ++
+          "mutual\ndef evN : Ev → Nat\n  | .z => 0\n  | .s o => Nat.succ (odN o)\ndef odN : Od → Nat\n  | Od.s e => Nat.succ (evN e)\nend\n" ++
+          "def mk : Nat → Ev\n  | .zero => .z\n  | .succ n => .s (.s (mk n))\n" ++
+          "def main : IO Unit := do\n  IO.println (Nat.toString (evN (mk 5)));\n  IO.println (Repr.repr (mk 1));\n  IO.println (Repr.repr (Od.s Ev.z))\n"
+        ioRun src "10\nEv.s (Od.s Ev.z)\nOd.s Ev.z\n"
+        ioRun src "10\nEv.s (Od.s Ev.z)\nOd.s Ev.z\n" (llvm := true) },
     { name := "tactic keywords are not reserved", run := fun _ =>
         okLib "import Prelude\ndef f (first exact : Nat) : Nat := Nat.add first exact\n#eval f 1 2\ndef t : Nat := by exact 3" ["3"] },
     { name := "a catch-all of a recursive definition is the value at hand", run := fun _ =>
@@ -5982,6 +6014,12 @@ def languageGroup : Group where
     { name := "... and not its own identifiers", run := fun _ =>
         failsLib (calcDsl " (keywords := calc_kw)" ++ "#eval run_calc [no] yes done")
           "identifier ('yes' is a keyword here)" },
+    { name := "13o: a word reserved by a notation is an error that names the notation", run := fun _ =>
+        failsLib "import Prelude\nsyntax:lead (name := shout) \"shout\" term : term\ndef shout : Nat := 1"
+          "'shout' is a keyword: the notation `shout …` of this file" },
+    { name := "13o: `if` on a value that is not a Bool says so", run := fun _ =>
+        failsLib "import Prelude\ndef a (n : Nat) : Nat := if n then 1 else 2"
+          "the value matched has type Nat, which has no constructor .true (its constructors: .zero, .succ); the condition of `if`" },
     { name := "... without the scope the DSL's `when` is an application", run := fun _ => do
         let prelude ← IO.FS.readFile "lib/Prelude.wiz"
         let input := calcDsl "" ++ "#eval run_calc when [isZero] [0] yes [no] [yes] no [no (no yes)] done"
@@ -6924,6 +6962,9 @@ def derivingGroup : Group where
         okDeriving ("import Deriving\ninductive Vec (A : Type) : Nat → Type where\n  | nil : Vec A 0\n" ++
           "  | cons {n : Nat} (x : A) (xs : Vec A n) : Vec A (.succ n)\n  deriving Repr\n" ++
           "#eval Repr.repr (Vec.cons 1 (Vec.cons 2 Vec.nil))") ["\"Vec.cons 1 (Vec.cons 2 Vec.nil)\""] },
+    { name := "Repr for mutual types: the constructors per type (Ev.s, Od.s), derived for the family", run := fun _ =>
+        okDeriving ("import Deriving\nmutual\ninductive Ev where\n  | z\n  | s (o : Od)\n  deriving Repr\ninductive Od where\n  | s (e : Ev)\nend\n" ++
+          "#eval Repr.repr (Ev.s (Od.s Ev.z))\n#eval Repr.repr (Od.s (.s (.s .z)))") ["\"Ev.s (Od.s Ev.z)\"", "\"Od.s (Ev.s (Od.s Ev.z))\""] },
     { name := "deriving BEq for an indexed family is an error", run := fun _ =>
         failsDeriving ("import Deriving\ninductive Vec (A : Type) : Nat → Type where\n  | nil : Vec A 0\n" ++
           "  | cons {n : Nat} (x : A) (xs : Vec A n) : Vec A (.succ n)\n  deriving BEq") "indexed families are not supported" },
@@ -6995,6 +7036,12 @@ def badAdd : String :=
   ownNat ++
   "def h (n : N) : K n 3 = n := refl n\ndef bad : False := absurd (h 2)\n#print axioms bad\n"
 
+/-- Replace every call `f a` by `f (wrap a)` (t1-review's probes, `trustGroup`). -/
+partial def wrapCalls (f : Name) (wrap : Term ZeroOneMany → Term ZeroOneMany) (t : Term ZeroOneMany) : Term ZeroOneMany :=
+  match t with
+  | .app (.const c us) a => if c == f then .app (.const c us) (wrap (wrapCalls f wrap a)) else .app (.const c us) (wrapCalls f wrap a)
+  | t => Id.run (t.mapChildrenM pure fun _ c => pure (wrapCalls f wrap c))
+
 /-- The trusted base: partial definitions need a kernel-checked witness (O2), and
 `builtin` registrations outside the library are tracked axioms (O3). -/
 def trustGroup : Group where
@@ -7044,8 +7091,9 @@ def trustGroup : Group where
           | .error e => ((toString e).splitOn fragment).length > 1
           | .ok _ => false
         check ((addDecl {} (f .tt)) matches .ok _) "a good implementation was rejected"
-        -- it may call the definition (a recursive definition's does): checked with `f` declared
-        check ((addDecl {} (f (.const "f" []))) matches .ok _) "an implementation calling its definition was rejected"
+        -- one that calls the definition must be its value with the calls on fields (derived):
+        -- `f` itself is not (compiled code would loop: t1-review M1), though `f ≡ tt`
+        check ((addDecl {} (f (.const "f" []))) matches .error _) "an implementation that is the definition itself was accepted"
         check (rejected (f (.const "g" [])) "implementation of f") "an implementation with an unknown constant was accepted"
         -- ill-typed, and well-typed at another type
         check (rejected (f (.app .tt .tt)) "implementation of f") "an ill-typed implementation was accepted"
@@ -7159,6 +7207,40 @@ def trustGroup : Group where
         match addDecl g0 { f with impl := g.impl } with
         | .ok _ => throw (IO.userError "f was accepted with g's compiled equations")
         | .error e => check (((toString e).splitOn "do not agree").length > 1) s!"unexpected error: {e}" },
+    { name := "recursive definitions: the agreement check on a mutual family (index unification), and its shortcuts", run := fun _ => do
+        let src := "inductive N where\n  | z\n  | s (n : N)\n" ++
+          "mutual\ninductive A where\n  | a0\n  | a1 (b : B)\ninductive B where\n  | b0\n" ++
+          "  | b1 (k : N) (r : B)\n  | b2 (a : A)\nend\n" ++
+          "def shB : B → B\n  | .b0 => .b0\n  | .b1 k r => .b1 (.s k) (shB r)\n  | .b2 a => .b2 a\n" ++
+          "def idB : B → B\n  | .b0 => .b0\n  | .b1 k r => .b1 k (idB r)\n  | .b2 a => .b2 a\n" ++
+          "def sh : N → N\n  | .z => .z\n  | .s n => .s (sh n)\n"
+        let s := runFrontend (R := ZeroOneMany) src {}
+        let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
+        unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
+        let (some shB, some idB, some sh) := (s.globals.find? "shB", s.globals.find? "idB", s.globals.find? "sh")
+          | throw (IO.userError "a definition is missing")
+        -- another definition's equations are rejected (the calls are compared as calls)
+        let g0 : Globals ZeroOneMany := { s.globals with decls := s.globals.decls.erase "shB" }
+        check ((addDecl g0 shB) matches .ok _) "shB is rejected when added again"
+        let idImpl := replaceConstTo "idB" "shB" idB.impl.get!
+        check ((addDecl g0 { shB with impl := some idImpl }) matches .error _) "shB was accepted with idB's equations"
+        -- the bridge by shape: the value as derived, and two values that only look like it
+        let v := sh.value.get!
+        check (bridgeByShape s.globals v 1 0 [] [] true 0) "the derived value has the shape"
+        let .lam x body := v | throw (IO.userError "sh's value is not a λ")
+        check (!bridgeByShape s.globals (.lam x (.letE "z" (.qlit 1) (.unit 1) .tt (body.lift 1 0))) 1 0 [] [] true 0)
+          "a value under a let has the shape"
+        let (h, args) := body.spine
+        let motiveWithColumn := args.set 0 (.var 0)  -- (N has no parameters: the motive is first)
+        check (!bridgeByShape s.globals (.lam x (motiveWithColumn.foldl .app h)) 1 0 [] [] true 0)
+          "a motive that mentions the column passes as the shape" },
+    { name := "groundEqDesc: one closed description at two levels is not identified", run := fun _ => do
+        let s := runFrontend (R := ZeroOneMany) "inductive Box.{u} : Type (u+1) where\n  | mk (T : Type u)\n" {}
+        let g := s.globals
+        let atL (u : Level) : Val ZeroOneMany := eval g [] (.const "Box.desc" [u])
+        let I : Val ZeroOneMany := .unit (.succ .zero)
+        check (groundEqDesc g 0 I (atL .zero) (atL .zero)) "Box.desc.{0} is not itself"
+        check (!groundEqDesc g 0 I (atL .zero) (atL (.succ .zero))) "Box.desc.{0} and Box.desc.{1} were identified" },
     { name := "recursive definitions: a local variable named like the definition doesn't capture its calls in compiled code", run := fun _ =>
         -- (#82's regression test.) `f n` is a recursive call (the kernel's definition
         -- recurses, so `f 2 = 0`); the compiled equations called the local `f`, and `#eval f 2`
@@ -7187,6 +7269,46 @@ def trustGroup : Group where
             "def w3 : W 3 := .cons 1 (.cons 2 (.cons 3 .nil))\n" ++
             "def thmW : h w3 = 9 := refl 9\n#eval h w3\n#run h w3\n")
           ["9", "9", "9", "9"] },
+    { name := "recursive definitions: compiled equations whose calls are not on fields are rejected (t1-review M1)", run := fun _ => do
+        -- probes t1-191-kernel / t1-191-unit: each of these agrees with the value where the
+        -- kernel looks (or at a type where every two values are equal) but compiled code
+        -- would loop; each derived one is accepted
+        let src := "inductive N where\n  | z\n  | s (n : N)\n" ++
+          "def f : N → N\n  | .z => .z\n  | .s n => f n\n" ++
+          "inductive W where\n  | sup (g : N → W)\n  | z\n" ++
+          "def wd : W → N\n  | .z => .z\n  | .sup g => wd (g .z)\n" ++
+          "inductive W2 where\n  | node (l : W2) (g : N → W2)\n  | z\n" ++
+          "def w2 : W2 → N\n  | .z => .z\n  | .node l g => w2 l\n" ++
+          "def u : N → Unit\n  | .z => ()\n  | .s n => u n\n"
+        let s := runFrontend (R := ZeroOneMany) src {}
+        let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
+        unless errs.isEmpty do throw (IO.userError s!"unexpected errors:\n{"\n".intercalate errs.toList}")
+        let verdict (nm : Name) (impl : Term ZeroOneMany → Term ZeroOneMany) : IO Bool := do
+          let some d := s.globals.find? nm | throw (IO.userError s!"no {nm}")
+          let g0 : Globals ZeroOneMany := { s.globals with decls := s.globals.decls.erase nm }
+          pure ((addDecl g0 { d with impl := some (impl d.impl.get!) }) matches .ok _)
+        for nm in ["f", "wd", "w2", "u"] do
+          check (← verdict nm id) s!"{nm}'s derived equations were rejected"
+        check (!(← verdict "f" (wrapCalls "f" (fun a => .app (.const "N.s" []) a)))) "f with f (.s n) was accepted"
+        check (!(← verdict "f" (wrapCalls "f" (fun a => .app (.const "f" []) a)))) "f with f (f n) was accepted"
+        check (!(← verdict "f" fun _ => .lam "x" (.app (.const "f" []) (.var 0)))) "f with λ x. f x was accepted"
+        check (!(← verdict "f" fun _ => .const "f" [])) "f with f itself was accepted"
+        check (!(← verdict "wd" (wrapCalls "wd" (fun a => .app (.const "W.sup" []) (.lam "_" (a.lift 1)))))) "wd with wd (sup (λ _. g z)) was accepted"
+        check (!(← verdict "w2" (wrapCalls "w2" (fun a => .app (.app (.const "W2.node" []) a) (.lam "_" (a.lift 1)))))) "w2 with w2 (node l (λ _. l)) was accepted"
+        check (!(← verdict "u" (wrapCalls "u" (fun a => .app (.const "N.s" []) a)))) "u with u (.s n) was accepted (a call at Unit)"
+        -- t1-192-scrutinee / t1-192-run (M1c): a top split of `N.s x` instead of `x`, whose
+        -- "field" is then `x` itself, with the real split inside
+        let splitOfSucc (nm : Name) (impl : Term ZeroOneMany) : Term ZeroOneMany :=
+          match impl with
+          | .lam xn body =>
+            match body.spine with
+            | (h, [mot, mz, _, _]) =>
+              let inner := [mot.lift 1, mz.lift 1, .lam "m" (.app (.const nm []) (.var 1)), .var 1].foldl .app h
+              .lam xn ([mot, mz, .lam "n" inner, .app (.const "N.s" []) (.var 0)].foldl .app h)
+            | _ => impl
+          | _ => impl
+        check (!(← verdict "u" (splitOfSucc "u"))) "u with a split of (.s x) was accepted"
+        check (!(← verdict "f" (splitOfSucc "f"))) "f with a split of (.s x) was accepted" },
     { name := "O3: an unchecked registration is an axiom", run := fun _ => do
         let msgs ← messagesLib badAdd
         let expect := ["warning: builtin nat := N is not checked: it is an axiom of every declaration that depends on N (see `#print axioms`)",
@@ -7480,6 +7602,11 @@ def seplogicGroup : Group where
   name := "seplogic"
   exercise := "Stage 24"
   cases := [
+    { name := "13o: the libraries' helper notation stays in them (∷, ▸, +++, ⊕); Hdl's <+> is public", run := fun _ =>
+        okLibs ("import HoareTactics\nimport Feral\nimport Hdl.Core\n" ++
+          "def l : List Nat := List.cons 1 List.nil\ninfixr:65 \" ⊕ \" => Nat.add\ninfixr:65 \" ▸ \" => Nat.mul\n" ++
+          "#check fun (s : List Nat) => List.cons 1 s\n#check fun (s t : String) => String.append s t")
+          ["fun s => List.cons Nat 1 s : List Nat → List Nat", "fun s t => s <+> t : String → String → String"] },
     { name := "the connectives; propext and funext are definitional", run := fun _ => do
         okLibs ("import Logic\n" ++
           "def t1 (P Q : Prop) (h : P ∧ Q) : Q ∧ P := And.symm h\n" ++
@@ -7529,10 +7656,23 @@ def seplogicGroup : Group where
           "def t4 (l : Nat) : Triple (l ↦ 1) (Prog.bind (Prog.read l) (fun v => Prog.write l (Nat.succ v))) (fun _ => l ↦ 2) :=\n" ++
           "  Triple.bind (Triple.read l 1) (fun r => Triple.pure (fun e =>\n" ++
           "    @Eq.substProp Nat (fun (x : Nat) => Triple (l ↦ 1) (Prog.write l (Nat.succ x)) (fun _ => l ↦ 2)) 1 r (Eq.symm e) (Triple.write l 2 1)))") },
+    { name := "13o: separation-logic notation ⌜P⌝, ∃ʰ x, H and ⦃P⦄ c ⦃r, Q⦄, printed back (goals too)", run := fun _ =>
+        okLibs ("import HoareTactics\n" ++
+          "def w (l : Nat) : ⦃l ↦ 1⦄ Prog.write l 2 ⦃_, l ↦ 2⦄ := Triple.write l 2 1\n#check w\n#check @Triple.ref\n" ++
+          "#check fun (l : Nat) => ∃ʰ (n : Nat), l ↦ n ⋆ ⌜n = 1⌝\n" ++
+          "#check fun (l : Nat) (Q : Unit → HProp Nat) => ⦃l ↦ 1⦄ Prog.write l 2 ⦃Q⦄\n" ++
+          "def g (l v : Nat) : ⦃l ↦ v⦄ Prog.read l ⦃r, l ↦ v ⋆ ⌜r = v⌝⦄ := by\n  trace_state\n  xgo")
+          ["w : (l : Nat) → ⦃l ↦ 1⦄ Prog.write Nat l 2 ⦃_, l ↦ 2⦄",
+           "Triple.ref : {V : Type} → (v : V) → ⦃emp V⦄ Prog.ref V v ⦃l, l ↦ v⦄",
+           "fun l => ∃ʰ n, l ↦ n ⋆ ⌜n = 1⌝ : Nat → HProp Nat",
+           "fun l Q => ⦃l ↦ 1⦄ Prog.write Nat l 2 ⦃Q⦄ : Nat → (Unit → HProp Nat) → Prop",
+           "l : Nat\nv : Nat\n⊢ ⦃l ↦ v⦄ Prog.read Nat l ⦃r, l ↦ v ⋆ ⌜r = v⌝ ⦄"] },
+    { name := "... and in x-tactic failures", run := fun _ =>
+        failsLibs "import HoareTactics\ndef h (l : Nat) : (l ↦ 1) ⋆ emp ⊢ (l ↦ 2) := by xsimpl" "⊢ (l ↦ 1 ⊢ l ↦ 2)" },
     { name := "swap and in-place list reversal are verified", run := fun _ =>
         okLibs ("import HoareExamples\n#check @Prog.swap_spec\n#check @Prog.reverse_spec")
-          ["Prog.swap_spec : (p : Nat) → (q : Nat) → (a : Nat) → (b : Nat) → Triple Nat Unit (p ↦ a ⋆ q ↦ b) (Prog.swap p q) (fun _ => p ↦ b ⋆ q ↦ a)",
-           "Prog.reverse_spec : (L : List Nat) → (fuel : Nat) → (p : Nat) → Nat.lt (List.length Nat L) fuel = .true → Triple Nat Nat (MList L p) (Prog.reverse fuel p) (fun r => MList (List.reverse Nat L) r)"] },
+          ["Prog.swap_spec : (p : Nat) → (q : Nat) → (a : Nat) → (b : Nat) → ⦃p ↦ a ⋆ q ↦ b⦄ Prog.swap p q ⦃_, p ↦ b ⋆ q ↦ a⦄",
+           "Prog.reverse_spec : (L : List Nat) → (fuel : Nat) → (p : Nat) → Nat.lt (List.length Nat L) fuel = .true → ⦃MList L p⦄ Prog.reverse fuel p ⦃r, MList (List.reverse Nat L) r⦄"] },
     { name := "a faulting program has no triple from a satisfiable precondition", run := fun _ =>
         failsLibs ("import Hoare\ndef bad : Triple (@emp Nat) (@Prog.fail Nat Unit) (fun (_ : Unit) => @emp Nat) :=\n" ++
           "  Triple.ret () (fun (_ : Unit) => @emp Nat)") "mismatch" },
@@ -7559,7 +7699,7 @@ def seplogicGroup : Group where
           "def e7 (P : Prop) (hP : P) (a : HProp Nat) : a ⊢ hpure P ⋆ a := by xsimpl\n" ++
           "def e8 (p : Nat) (a : HProp Nat) : hexists (fun (n : Nat) => hpure (n = p) ⋆ a) ⊢ a := by\n  xpull as n, h\n  xsimpl") },
     { name := "xsimpl leaves what it cannot prove", run := fun _ => do
-        failsLibs "import HoareTactics\ndef bad (a b c : HProp Nat) : a ⋆ b ⊢ c ⋆ a := by xsimpl" "⊢ Entails Nat b c"
+        failsLibs "import HoareTactics\ndef bad (a b c : HProp Nat) : a ⋆ b ⊢ c ⋆ a := by xsimpl" "⊢ (b ⊢ c)"
         failsLibs "import HoareTactics\ndef bad (p : Nat) : (p ↦ 1) ⊢ (p ↦ 2) := by xsimpl" "unsolved goals"
         -- a tactic that fails says why, with the goal
         failsLibs "import HoareExamples\ndef bad (p q n : Nat) : Triple (p ↦ n) (Prog.incr q) (fun _ => p ↦ n) := by xstep" "xstep: the precondition has no cell at q"
@@ -7569,11 +7709,11 @@ def seplogicGroup : Group where
           "#check @Prog.incrAll.spec\n#check @Prog.freeAll.spec\n" ++
           "#eval Prog.show (Prog.counter) Heap.empty 0 1\n" ++
           "#eval Prog.show (Prog.length 10 1) (Heap.ofList (.cons 1 (.cons 3 (.cons 2 (.cons 5 (.cons 3 (.cons 0 .nil)))))) 1) 7 0")
-          ["Prog.incr3_spec : (p : Nat) → (q : Nat) → (m : Nat) → (n : Nat) → Triple Nat Unit (p ↦ m ⋆ q ↦ n) (Prog.incr3 p q) (fun _ => q ↦ .succ n ⋆ p ↦ .succ (.succ m))",
-           "Prog.counter_spec : Triple Nat Nat (emp Nat) Prog.counter (fun r => hexists Nat Nat (fun c => hpure Nat (r = 1) ⋆ c ↦ 1))",
-           "Prog.length_spec : (L : List Nat) → (fuel : Nat) → (p : Nat) → Nat.lt (List.length Nat L) fuel = .true → Triple Nat Nat (MList L p) (Prog.length fuel p) (fun r => hpure Nat (r = List.length Nat L) ⋆ MList L p)",
-           "Prog.incrAll.spec : (L : List Nat) → (f : Nat) → Nat.lt (List.length Nat L) f = .true → (p : Nat) → Triple Nat Unit (MList L p) (Prog.incrAll f p) (fun _ => MList (List.incr L) p)",
-           "Prog.freeAll.spec : (L : List Nat) → (f : Nat) → Nat.lt (List.length Nat L) f = .true → (p : Nat) → Triple Nat Unit (MList L p) (Prog.freeAll f p) (fun _ => emp Nat)",
+          ["Prog.incr3_spec : (p : Nat) → (q : Nat) → (m : Nat) → (n : Nat) → ⦃p ↦ m ⋆ q ↦ n⦄ Prog.incr3 p q ⦃_, q ↦ .succ n ⋆ p ↦ .succ (.succ m) ⦄",
+           "Prog.counter_spec : ⦃emp Nat⦄ Prog.counter ⦃r, ∃ʰ c, ⌜r = 1⌝ ⋆ c ↦ 1⦄",
+           "Prog.length_spec : (L : List Nat) → (fuel : Nat) → (p : Nat) → Nat.lt (List.length Nat L) fuel = .true → ⦃MList L p⦄ Prog.length fuel p ⦃r, ⌜r = List.length Nat L⌝ ⋆ MList L p⦄",
+           "Prog.incrAll.spec : (L : List Nat) → (f : Nat) → Nat.lt (List.length Nat L) f = .true → (p : Nat) → ⦃MList L p⦄ Prog.incrAll f p ⦃_, MList (List.incr L) p⦄",
+           "Prog.freeAll.spec : (L : List Nat) → (f : Nat) → Nat.lt (List.length Nat L) f = .true → (p : Nat) → ⦃MList L p⦄ Prog.freeAll f p ⦃_, emp Nat⦄",
            ".some (1, .cons (.some 1) .nil)", ".some (3, .nil)"] },
     { name := "xgo steps through values computed through private structures (Region's Uniq, as Feral lowers)", run := fun _ => do
         let src := "import HoareTactics\nimport Region\n" ++
