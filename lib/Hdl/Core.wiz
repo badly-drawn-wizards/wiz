@@ -121,6 +121,20 @@ def HwTy.unpack : (ω t : HwTy) → Nat → HwTy.El t
 -- (`HwTy.bit` rather than `HwTy.bits 1`: class field types are elaborated without
 --  numerals or macros; wishful: numerals-in-class-decls)
 def HwTy.bit : HwTy := HwTy.bits 1
+-- the kinds of leaves that connect primitives only (`PortKind`, `lib/Hdl/Prim.wiz`)
+def HwTy.clock : HwTy := HwTy.named "@clock" HwTy.bit
+def HwTy.pad (n : Nat) : HwTy := HwTy.named "@pad" (HwTy.bits n)
+def HwTy.inout (n : Nat) : HwTy := HwTy.named "@inout" (HwTy.bits n)
+
+-- A primitive (a vendor cell, a black box: `lib/Hdl/Prim.wiz`): module name, parameters,
+-- port names (one per leaf of `i`, then of `o`), and a behavioural model at values, if any.
+structure Prim (i o : HwTy) where
+  name : String
+  params : List (String × String)   -- Verilog text (`PrimParam.pairs` writes it)
+  ins : List String
+  outs : List String
+  model : Option (HwTy.El i → HwTy.El o)
+
 
 -- The leaves of a code: bit vectors, in order (first component first). Memories are not
 -- leaves (no port or register carries one); `HwTy.memShapes` lists them.
@@ -148,9 +162,14 @@ def HwTy.ofLeavesAux : (ω t : HwTy) → List Nat → HwTy.El t × List Nat
 def HwTy.ofLeaves (ω t : HwTy) (ks : List Nat) : HwTy.El t := (HwTy.ofLeavesAux t ks).1
 
 -- Leaf names: the `named` segments on the path to the leaf, joined with `_`.
-def Hdl.joinName (pre s : String) : String := match pre with
-  | .mk .nil => s
-  | _ => pre <+> "_" <+> s
+def Hdl.isMarker (s : String) : Bool := match s with
+  | .mk (.cons c _) => Nat.beq (Char.code c) 64
+  | _ => .false
+def Hdl.joinName (pre s : String) : String := match Hdl.isMarker s with
+  | .true => pre
+  | .false => match pre with
+    | .mk .nil => s
+    | _ => pre <+> "_" <+> s
 def HwTy.pathsAux : String → HwTy → List String
   | pre, .bits _ => .cons pre .nil
   | pre, .prod a b => List.append (HwTy.pathsAux pre a) (HwTy.pathsAux pre b)
@@ -251,6 +270,10 @@ class Hw (r : HwTy → Type) where
   -- takes its writes at the clock edge). A reset leaves a memory's contents alone.
   memRead : {ω aw dw : Nat} → r (HwTy.mem aw dw) → r (HwTy.bits aw) → r (HwTy.bits dw)
   memWrite : {ω aw dw : Nat} → r (HwTy.mem aw dw) → r HwTy.bit → r (HwTy.bits aw) → r (HwTy.bits dw) → r (HwTy.mem aw dw)
+  -- primitive instances (vendor cells, `lib/Hdl/Prim.wiz`), and the implicit clock as a
+  -- clock net for their clock ports
+  prim : {ω i o : HwTy} → Prim i o → r i → r o
+  clock : r HwTy.clock
 
 -- Auto-share: the elaborator turns `let x := v; body` into `ShareLet.share v (fun x =>
 -- body)` when an instance `ShareLet A B` exists for the value's type `A` and the
@@ -335,6 +358,11 @@ def HwTy.El.memWrite {0 aw : Nat} {ω dw : Nat} (m : HwTy.El (HwTy.mem aw dw)) (
     (d : HwTy.El (HwTy.bits dw)) : HwTy.El (HwTy.mem aw dw) :=
   Hdl.memWr (BitVec.isTrue (we : BitVec 1)) (m : BitVec aw → BitVec dw) (a : BitVec aw) (d : BitVec dw)
 
+-- a primitive at values: its model, or 0
+def HwTy.El.prim {ω i o : HwTy} (p : Prim i o) (x : HwTy.El i) : HwTy.El o := match p.model with
+  | .some f => f x
+  | .none => HwTy.unpack o 0
+
 instance : Hw HwTy.El where
   lit := fun n k => BitVec.ofNat n k
   add := fun a b => BitVec.add a b
@@ -365,10 +393,67 @@ instance : Hw HwTy.El where
   hold := HwTy.El.mux
   memRead := HwTy.El.memRead
   memWrite := HwTy.El.memWrite
+  prim := HwTy.El.prim
+  clock := BitVec.ofNat 1 0
 
 ------------------------------------------------------------------------------------
 -- The netlist IR: flat, widths concrete, one node per bit-vector operation
 
+-- Primitive instances (vendor cells: black boxes, `lib/Hdl/Prim.wiz`). A leaf of a
+-- primitive's port types, or of a circuit's input or output, is data, or one of three
+-- kinds that only connect primitives: a clock net, a pad (a package pin driven or read
+-- by an I/O buffer) and a bidirectional pad. They are marked by a `named` segment
+-- beginning with `@` (`HwTy.clock`, `HwTy.pad`, `HwTy.inout`), which leaf, port and
+-- memory names skip.
+inductive PortKind where
+  | data
+  | clock
+  | pad
+  | inout
+
+def PortKind.code : PortKind → Nat
+  | .data => 0
+  | .clock => 1
+  | .pad => 2
+  | .inout => 3
+def PortKind.name : PortKind → String
+  | .data => "data signal"
+  | .clock => "clock"
+  | .pad => "pad"
+  | .inout => "inout pad"
+def PortKind.ofMarker (s : String) : PortKind :=
+  match Hdl.strEq s "@clock", Hdl.strEq s "@pad", Hdl.strEq s "@inout" with
+  | .true, _, _ => .clock
+  | _, .true, _ => .pad
+  | _, _, .true => .inout
+  | _, _, _ => .data
+-- the kind of every leaf: the innermost marker on its path wins
+def HwTy.kindsAux : PortKind → HwTy → List PortKind
+  | k, .bits _ => .cons k .nil
+  | k, .prod a b => List.append (HwTy.kindsAux k a) (HwTy.kindsAux k b)
+  | k, .named s t => (match PortKind.ofMarker s with
+    | .data => HwTy.kindsAux k t
+    | m => HwTy.kindsAux m t)
+  | k, .mem _ _ => .nil
+def HwTy.leafKinds (t : HwTy) : List PortKind := HwTy.kindsAux PortKind.data t
+
+-- A primitive instance as the netlist keeps it: the Verilog module, its parameters
+-- (names and Verilog text), its port names (one per leaf, inputs then outputs), the
+-- leaves' kinds, the outputs' widths, and the behavioural model on leaves (input
+-- values ↦ output values), when the declaration has one.
+structure NetPrim where
+  name : String
+  params : List (String × String)
+  ins : List String
+  outs : List String
+  inKinds : List PortKind
+  outKinds : List PortKind
+  outWidths : List Nat
+  model : Option (List Nat → List Nat)
+
+-- (`inst p`: one node of width 0 per instance, whose arguments are the instance's
+--  input leaves; `instOut j lo`: its output leaf `j`, at bit `lo` of the outputs packed
+--  first-leaf-lowest, whose one argument is the instance; `clock`: the implicit clock)
 inductive NetOp where
   | input (port : Nat)
   | const (v : Nat)
@@ -392,6 +477,9 @@ inductive NetOp where
   | lshr
   | ashr
   | slt
+  | inst (p : NetPrim)
+  | instOut (j lo : Nat)
+  | clock
 
 structure NetNode where
   op : NetOp
@@ -458,6 +546,9 @@ def NetOp.code : NetOp → List Nat
   | .lshr => List.cons 21 List.nil
   | .ashr => List.cons 22 List.nil
   | .slt => List.cons 23 List.nil
+  | .inst p => List.cons 30 List.nil
+  | .instOut j lo => List.cons 31 (List.cons j (List.cons lo List.nil))
+  | .clock => List.cons 32 List.nil
 
 def NetOp.commutative : NetOp → Bool
   | .add => .true
@@ -782,6 +873,46 @@ def Wire.memWrite {ω aw dw : Nat} (m : Wire (HwTy.mem aw dw)) (we : Wire HwTy.b
   y ← d;
   NetM.pure (mm.1, List.append mm.2 (.cons (e, (x, y)) .nil))
 
+def Prim.erase {ω i o : HwTy} (p : Prim i o) : NetPrim :=
+  NetPrim.mk p.name p.params p.ins p.outs (HwTy.leafKinds i) (HwTy.leafKinds o) (HwTy.leafWidths o)
+    (match p.model with
+    | .none => Option.none
+    | .some f => Option.some (fun (ls : List Nat) => HwTy.leaves o (f (HwTy.ofLeaves i ls))))
+
+-- What is wrong with a declaration: port names that do not match the leaves.
+def Prim.problems {ω i o : HwTy} (p : Prim i o) : List String :=
+  let ω a : List String := match Nat.beq (List.length p.ins) (List.length (HwTy.leafWidths i)) with
+    | .true => List.nil
+    | .false => .cons (p.name <+> ": " <+> Hdl.show (List.length p.ins) <+> " input port names for "
+        <+> Hdl.show (List.length (HwTy.leafWidths i)) <+> " input leaves") .nil;
+  let ω b : List String := match Nat.beq (List.length p.outs) (List.length (HwTy.leafWidths o)) with
+    | .true => List.nil
+    | .false => .cons (p.name <+> ": " <+> Hdl.show (List.length p.outs) <+> " output port names for "
+        <+> Hdl.show (List.length (HwTy.leafWidths o)) <+> " output leaves") .nil;
+  List.append a b
+
+
+-- the wire instance: one `inst` node (never shared: two buffers with the same inputs are
+-- two buffers), then one `instOut` node per output leaf
+def NetM.pushRaw (op : NetOp) (w : Nat) (args : List Nat) : NetM Nat := fun s => NetS.push s op w args s.table
+def NetM.errors : List String → NetM Unit
+  | .nil => NetM.pure ()
+  | .cons e es => NetM.bind (NetM.error e) (fun u => NetM.errors es)
+def Wire.primOuts (k : Nat) : Nat → Nat → List Nat → NetM (List Nat)
+  | _, _, .nil => NetM.pure List.nil
+  | j, lo, .cons w ws => NetM.bind (NetM.emit (NetOp.instOut j lo) w (.cons k .nil)) (fun x =>
+      NetM.bind (Wire.primOuts k (Nat.succ j) (lo + w) ws) (fun xs => NetM.pure (List.cons x xs)))
+def Wire.prim {ω i o : HwTy} (p : Prim i o) (x : Wire i) : NetM (HwTy.Ids o) := do
+  ids ← (x : NetM (HwTy.Ids i));
+  NetM.errors (match List.append (HwTy.memShapes i) (HwTy.memShapes o) with
+    | .nil => List.nil
+    | _ => .cons (p.name <+> ": a primitive's ports cannot carry a memory") .nil);
+  NetM.errors (Prim.problems p);
+  k ← NetM.pushRaw (NetOp.inst (Prim.erase p)) 0 (HwTy.idsLeaves i ids);
+  outs ← Wire.primOuts k 0 0 (HwTy.leafWidths o);
+  NetM.pure (HwTy.idsTake o outs).1
+def Wire.clock : NetM Nat := NetM.emit NetOp.clock 1 List.nil
+
 instance : Hw Wire where
   lit := Wire.lit
   add := Wire.add
@@ -812,6 +943,8 @@ instance : Hw Wire where
   hold := Wire.hold
   memRead := Wire.memRead
   memWrite := Wire.memWrite
+  prim := Wire.prim
+  clock := Wire.clock
 
 -- Running a wire computation from scratch (for combinational tests): its ids and the
 -- builder's state.
@@ -901,6 +1034,15 @@ def Hdl.memOf (ws : List Nat) : HTrie Nat := Hdl.memOfAux 0 ws HTrie.tip
 def Hdl.memGet (t : HTrie Nat) (a : Nat) : Nat := match HTrie.getN a t with
   | .some v => v
   | .none => 0
+-- A primitive's outputs packed first-leaf-lowest (`instOut j lo` takes them apart), and
+-- its value in simulation: its model's, or 0 without one (`Prim.unmodelled` names
+-- those; the checked runners refuse them).
+def Hdl.packLow : List Nat → List Nat → Nat
+  | .cons w ws, .cons v vs => Nat.wrap w v + Nat.shiftLeft (Hdl.packLow ws vs) w
+  | _, _ => 0
+def NetPrim.eval (p : NetPrim) (ins : List Nat) : Nat := match p.model with
+  | .none => 0
+  | .some f => Hdl.packLow p.outWidths (f ins)
 def SimNode.eval (n : SimNode) (vals : Hdl.Vec Nat) (ins : List Nat) (regs : Hdl.Vec Nat) (mems : Hdl.Vec (HTrie Nat)) : Nat :=
   let ω arg := fun (i : Nat) => Hdl.Vec.get 0 vals (Hdl.nthD 0 n.args i);
   let ω w := n.width;
@@ -933,6 +1075,9 @@ def SimNode.eval (n : SimNode) (vals : Hdl.Vec Nat) (ins : List Nat) (regs : Hdl
     | .true => arg 2
     | .false => arg 1)
   | .memRead m => Hdl.memGet (Hdl.Vec.get HTrie.tip mems m) (arg 0)
+  | .inst p => NetPrim.eval p (Hdl.map (fun (k : Nat) => Hdl.Vec.get 0 vals k) n.args)
+  | .instOut j lo => Nat.wrap w (Nat.shiftRight (arg 0) lo)
+  | .clock => 0
 
 def SimNode.evalAll (ins : List Nat) (regs : Hdl.Vec Nat) (mems : Hdl.Vec (HTrie Nat)) : List SimNode → Hdl.Vec Nat → Hdl.Vec Nat
   | .nil, vals => vals
@@ -1442,6 +1587,79 @@ def Circuit.build {ω i o : HwTy} (c : Circuit i o) : NetM (List Nat × (List Na
   NetM.memNexts 0 (HwTy.idsMems c.st res.1);
   NetM.pure (ins, (cur, (HwTy.idsLeaves c.st res.1, HwTy.idsLeaves o res.2)))
 
+-- Kinds: a clock net or a pad reaches only the primitive ports of its kind (and a pad
+-- the output port it drives); data never reaches a clock or a pad port. What breaks
+-- that is an error of the netlist (`Netlist.errors`).
+def Net.kindEq (a b : PortKind) : Bool := Nat.beq (PortKind.code a) (PortKind.code b)
+def Net.kindOf (nodes : Hdl.Vec NetNode) (ins : List PortKind) (k : Nat) : PortKind :=
+  let ω n := Hdl.Vec.get NetNode.none nodes k;
+  match n.op, n.args with
+  | .input p, _ => Hdl.nthD PortKind.data ins p
+  | .clock, _ => PortKind.clock
+  | .instOut j _, .cons i _ => (match (Hdl.Vec.get NetNode.none nodes i).op with
+    | .inst q => Hdl.nthD PortKind.data q.outKinds j
+    | _ => PortKind.data)
+  | _, _ => PortKind.data
+def Net.describe (nodes : Hdl.Vec NetNode) (inNames : List String) (k : Nat) : String :=
+  let ω n := Hdl.Vec.get NetNode.none nodes k;
+  match n.op, n.args with
+  | .input p, _ => "input " <+> Hdl.nthD "?" inNames p
+  | .clock, _ => "the clock"
+  | .instOut j _, .cons i _ => (match (Hdl.Vec.get NetNode.none nodes i).op with
+    | .inst q => q.name <+> "." <+> Hdl.nthD "?" q.outs j
+    | _ => "?")
+  | _, _ => "node " <+> Hdl.show k
+structure Net.KindCx where
+  nodes : Hdl.Vec NetNode
+  ins : List PortKind
+  inNames : List String
+def Net.KindCx.kind (cx : Net.KindCx) (k : Nat) : PortKind := Net.kindOf cx.nodes cx.ins k
+def Net.KindCx.name (cx : Net.KindCx) (k : Nat) : String := Net.describe cx.nodes cx.inNames k
+-- data wanted at each of these nodes (`what` says where)
+def Net.wantData (cx : Net.KindCx) (what : String) : List Nat → List String
+  | .nil => .nil
+  | .cons a as => match Net.KindCx.kind cx a with
+    | .data => Net.wantData cx what as
+    | k => .cons ("a " <+> PortKind.name k <+> " (" <+> Net.KindCx.name cx a <+> ") is used as data by " <+> what)
+        (Net.wantData cx what as)
+-- a primitive's inputs: each of its port's kind (a pad input straight from an input port)
+def Net.wantPorts (cx : Net.KindCx) (q : NetPrim) : List String → List PortKind → List Nat → List String
+  | .cons pn pns, .cons want ws, .cons a as =>
+    let ω got := Net.KindCx.kind cx a;
+    let ω rest := Net.wantPorts cx q pns ws as;
+    (match Net.kindEq want got with
+    | .true => rest
+    | .false => .cons (q.name <+> " port " <+> pn <+> " wants a " <+> PortKind.name want <+> ", not a "
+        <+> PortKind.name got <+> " (" <+> Net.KindCx.name cx a <+> ")") rest)
+  | _, _, _ => .nil
+def Net.kindNodes (cx : Net.KindCx) : Nat → List NetNode → List String
+  | _, .nil => .nil
+  | k, .cons n ns => List.append (match n.op with
+    | .inst q => Net.wantPorts cx q q.ins q.inKinds n.args
+    | .instOut _ _ => .nil
+    | _ => Net.wantData cx ("node " <+> Hdl.show k) n.args) (Net.kindNodes cx (Nat.succ k) ns)
+def Net.kindRegs (cx : Net.KindCx) : List NetReg → List String
+  | .nil => .nil
+  | .cons r rs => List.append (Net.wantData cx ("register " <+> r.name) (NetReg.reads r)) (Net.kindRegs cx rs)
+def Net.kindMems (cx : Net.KindCx) : List NetMem → List String
+  | .nil => .nil
+  | .cons m ms => List.append (Net.wantData cx ("memory " <+> m.name) (NetMem.reads m.writes)) (Net.kindMems cx ms)
+def Net.kindOuts (cx : Net.KindCx) : List PortKind → List NetPort → List String
+  | .cons want ws, .cons p ps =>
+    let ω got := Net.KindCx.kind cx p.node;
+    let ω rest := Net.kindOuts cx ws ps;
+    (match Net.kindEq want got with
+    | .true => rest
+    | .false => .cons ("output " <+> p.name <+> " is a " <+> PortKind.name want <+> " but gets a "
+        <+> PortKind.name got <+> " (" <+> Net.KindCx.name cx p.node <+> ")") rest)
+  | _, _ => .nil
+def Netlist.kindErrors (n : Netlist) (ins outs : List PortKind) : List String :=
+  let ω cx := Net.KindCx.mk (Hdl.Vec.ofList n.nodes) ins (Hdl.map (fun (p : NetPort) => p.name) n.inputs);
+  List.append (Net.kindNodes cx 0 n.nodes) (List.append (Net.kindRegs cx n.regs)
+    (List.append (Net.kindMems cx n.mems) (Net.kindOuts cx outs n.outputs)))
+def Netlist.withErrors (n : Netlist) (es : List String) : Netlist :=
+  Netlist.mk n.name n.nodes n.regs n.inputs n.outputs n.hints n.mems (List.append n.errors es)
+
 -- the netlist, and the builder's final state
 def Circuit.netlistS {ω i o : HwTy} (cse : Bool) (name : String) (c : Circuit i o) : Netlist × NetS :=
   let ω r := Circuit.build c (NetS.init cse);
@@ -1449,9 +1667,10 @@ def Circuit.netlistS {ω i o : HwTy} (cse : Bool) (name : String) (c : Circuit i
   let ω s := r.2;
   let ω nodes := Hdl.Vec.ofList (Hdl.reverse s.nodes);
   let ω regs := Net.regs nodes (HwTy.portNames "r" c.st) (HwTy.leafWidths c.st) (HwTy.leaves c.st c.init) ids.2.1 ids.2.2.1;
-  (Net.finish name s regs ids.2.1
+  let ω n := Net.finish name s regs ids.2.1
     (Net.ports (HwTy.portNames "x" i) (HwTy.leafWidths i) ids.1)
-    (Net.ports (HwTy.portNames "y" o) (HwTy.leafWidths o) ids.2.2.2), s)
+    (Net.ports (HwTy.portNames "y" o) (HwTy.leafWidths o) ids.2.2.2);
+  (Netlist.withErrors n (Netlist.kindErrors n (HwTy.leafKinds i) (HwTy.leafKinds o)), s)
 
 def Circuit.netlist {ω i o : HwTy} (name : String) (c : Circuit i o) : Netlist := (Circuit.netlistS .true name c).1
 -- without hash-consing (to measure what it saves)
@@ -1568,21 +1787,29 @@ def Verilog.range (w : Nat) : String := match w with
 
 -- how each node is referred to: a port or register by its name, a constant by its
 -- value, anything of width 0 as `1'd0`, a labelled node by its label, others `nK`
-def Verilog.refOf (vn : VNames) (hints : HTrie String) (used : Hdl.Set) (k : Nat) (n : NetNode) : String × Hdl.Set :=
-  match n.width with
+-- (a primitive instance is named by its label or `uK`; a primitive's output that is a
+--  pad is the output port it drives, `pads`; the implicit clock is `clk`)
+def Verilog.refOf (vn : VNames) (hints pads : HTrie String) (used : Hdl.Set) (k : Nat) (n : NetNode) : String × Hdl.Set :=
+  match n.op, HTrie.getN k pads with
+  | .inst _, _ => (match HTrie.getN k hints with
+    | .some h => Verilog.fresh used h
+    | .none => Verilog.fresh used ("u" <+> Hdl.show k))
+  | _, .some port => (port, used)
+  | _, .none => match n.width with
   | .zero => ("1'd0", used)
   | .succ _ => match n.op with
     | .input p => (Hdl.nthD "?" vn.ins p, used)
     | .reg r => (Hdl.nthD "?" vn.regs r, used)
     | .const v => (Verilog.lit n.width v, used)
+    | .clock => ("clk", used)
     | _ => match HTrie.getN k hints with
       | .some h => Verilog.fresh used h
       | .none => Verilog.fresh used ("n" <+> Hdl.show k)
-def Verilog.refs (vn : VNames) (hints : HTrie String) : Nat → List NetNode → Hdl.Set → Hdl.Vec String → Hdl.Vec String
+def Verilog.refs (vn : VNames) (hints pads : HTrie String) : Nat → List NetNode → Hdl.Set → Hdl.Vec String → Hdl.Vec String
   | _, .nil, _, acc => acc
   | k, .cons n ns, used, acc =>
-    let ω r := Verilog.refOf vn hints used k n;
-    Verilog.refs vn hints (Nat.succ k) ns r.2 (Hdl.Vec.push acc r.1)
+    let ω r := Verilog.refOf vn hints pads used k n;
+    Verilog.refs vn hints pads (Nat.succ k) ns r.2 (Hdl.Vec.push acc r.1)
 -- the first label of each node wins
 def Verilog.hintMap : List (Nat × String) → HTrie String → HTrie String
   | .nil, m => m
@@ -1651,6 +1878,9 @@ def Verilog.expr (cx : VCtx) (n : NetNode) : String := match n.op with
   | .memRead m => (match n.args with
     | .cons a _ => Hdl.nthD "?" cx.mems m <+> "[" <+> VCtx.ref cx a <+> "]"
     | _ => "?")
+  | .inst _ => "?"
+  | .instOut _ _ => "?"
+  | .clock => "clk"
 
 def Verilog.declared (n : NetNode) : Bool := match n.width with
   | .zero => .false
@@ -1658,12 +1888,26 @@ def Verilog.declared (n : NetNode) : Bool := match n.width with
     | .input _ => .false
     | .reg _ => .false
     | .const _ => .false
+    | .clock => .false
     | _ => .true
+-- the kind of a primitive's output leaf (`data` for any other node)
+def Verilog.outKind (cx : VCtx) (k : Nat) : PortKind := match (VCtx.node cx k).op, (VCtx.node cx k).args with
+  | .instOut j _, .cons i _ => (match (VCtx.node cx i).op with
+    | .inst p => Hdl.nthD PortKind.data p.outKinds j
+    | _ => PortKind.data)
+  | _, _ => PortKind.data
+def Verilog.isPad (cx : VCtx) (k : Nat) : Bool := match Verilog.outKind cx k with
+  | .pad => .true
+  | .inout => .true
+  | _ => .false
+-- (a primitive's output is a wire its instance drives; a pad is a port, not a wire)
 def Verilog.wires (cx : VCtx) : Nat → List NetNode → String
   | _, .nil => ""
-  | k, .cons n ns => (match Verilog.declared n with
-    | .true => "  wire " <+> Verilog.range n.width <+> VCtx.ref cx k <+> " = " <+> Verilog.expr cx n <+> ";\n"
-    | .false => "") <+> Verilog.wires cx (Nat.succ k) ns
+  | k, .cons n ns => (match Verilog.declared n, n.op, Verilog.isPad cx k with
+    | .true, .instOut _ _, .false => "  wire " <+> Verilog.range n.width <+> VCtx.ref cx k <+> ";\n"
+    | .true, .instOut _ _, .true => ""
+    | .true, _, _ => "  wire " <+> Verilog.range n.width <+> VCtx.ref cx k <+> " = " <+> Verilog.expr cx n <+> ";\n"
+    | .false, _, _ => "") <+> Verilog.wires cx (Nat.succ k) ns
 -- A register's declaration with its initial value (sized), and, after the wires
 -- (Verilog wants a name declared before its use), its update.
 def Verilog.regDecls : List String → List NetReg → String
@@ -1725,22 +1969,77 @@ def Verilog.portDecls (dir : String) : List String → List NetPort → String
     | .zero => ""
     | .succ _ => ", " <+> dir <+> " " <+> Verilog.range p.width <+> nm) <+> Verilog.portDecls dir nms ps
   | _, _ => ""
-def Verilog.assigns (cx : VCtx) : List String → List NetPort → String
+-- outputs: an output that is a primitive's bidirectional pad is `inout`
+def Verilog.outDecls (cx : VCtx) : List String → List NetPort → String
   | .cons nm nms, .cons p ps => (match p.width with
     | .zero => ""
-    | .succ _ => "  assign " <+> nm <+> " = " <+> VCtx.ref cx p.node <+> ";\n") <+> Verilog.assigns cx nms ps
+    | .succ _ => ", " <+> (match Verilog.outKind cx p.node with
+        | .inout => "inout"
+        | _ => "output") <+> " " <+> Verilog.range p.width <+> nm) <+> Verilog.outDecls cx nms ps
+  | _, _ => ""
+def Verilog.assigns (cx : VCtx) : List String → List NetPort → String
+  | .cons nm nms, .cons p ps => (match p.width, Verilog.isPad cx p.node with
+    | .zero, _ => ""
+    | _, .true => ""
+    | .succ _, .false => "  assign " <+> nm <+> " = " <+> VCtx.ref cx p.node <+> ";\n") <+> Verilog.assigns cx nms ps
   | _, _ => ""
 
+-- the output ports that primitives' pads drive: node ↦ port
+def Verilog.padsOf (cx : VCtx) (nodes : Hdl.Vec NetNode) : List String → List NetPort → HTrie String → HTrie String
+  | .cons nm nms, .cons p ps, m => (match Verilog.isPad cx p.node with
+    | .true => Verilog.padsOf cx nodes nms ps (HTrie.putN p.node nm m)
+    | .false => Verilog.padsOf cx nodes nms ps m)
+  | _, _, m => m
+
 def Verilog.ctx (n : Netlist) (vn : VNames) : VCtx :=
-  VCtx.mk vn.mems (Verilog.refs vn (Verilog.hintMap n.hints HTrie.tip) 0 n.nodes vn.used Hdl.Vec.empty) (Hdl.Vec.ofList n.nodes)
+  let ω nodes := Hdl.Vec.ofList n.nodes;
+  let ω hints := Verilog.hintMap n.hints HTrie.tip;
+  let ω cx0 := VCtx.mk vn.mems (Verilog.refs vn hints HTrie.tip 0 n.nodes vn.used Hdl.Vec.empty) nodes;
+  let ω pads := Verilog.padsOf cx0 nodes vn.outs n.outputs HTrie.tip;
+  VCtx.mk vn.mems (Verilog.refs vn hints pads 0 n.nodes vn.used Hdl.Vec.empty) nodes
+
+-- Primitive instances: `NAME #(.P(v), …) uK (.port(net), …);`, after the wires. An
+-- output nothing reads is left unconnected.
+def Hdl.sepBy (sep : String) : List String → String
+  | .nil => ""
+  | .cons x .nil => x
+  | .cons x xs => x <+> sep <+> Hdl.sepBy sep xs
+def Verilog.conn (port net : String) : String := "." <+> port <+> "(" <+> net <+> ")"
+def Verilog.inConns (cx : VCtx) : List String → List Nat → List String
+  | .cons pn pns, .cons a as => .cons (Verilog.conn pn (VCtx.ref cx a)) (Verilog.inConns cx pns as)
+  | _, _ => .nil
+-- each instance's outputs that are read: instance ↦ (leaf, node), newest first
+def Verilog.instOuts : Nat → List NetNode → HTrie (List (Nat × Nat)) → HTrie (List (Nat × Nat))
+  | _, .nil, m => m
+  | k, .cons n ns, m => Verilog.instOuts (Nat.succ k) ns (match n.op, n.args with
+    | .instOut j _, .cons i _ => HTrie.putN i (.cons (j, k) (match HTrie.getN i m with
+      | .some xs => xs
+      | .none => .nil)) m
+    | _, _ => m)
+def Verilog.outConns (cx : VCtx) (p : NetPrim) : List (Nat × Nat) → List String → List String
+  | .nil, acc => acc
+  | .cons jk rest, acc => Verilog.outConns cx p rest (.cons (Verilog.conn (Hdl.nthD "?" p.outs jk.1) (VCtx.ref cx jk.2)) acc)
+def Verilog.params : List (String × String) → String
+  | .nil => ""
+  | ps => " #(" <+> Hdl.sepBy ", " (Hdl.map (fun (q : String × String) => Verilog.conn q.1 q.2) ps) <+> ")"
+def Verilog.insts (cx : VCtx) (outs : HTrie (List (Nat × Nat))) : Nat → List NetNode → String
+  | _, .nil => ""
+  | k, .cons n ns => (match n.op with
+    | .inst p => "  " <+> p.name <+> Verilog.params p.params <+> " " <+> VCtx.ref cx k <+> " ("
+        <+> Hdl.sepBy ", " (List.append (Verilog.inConns cx p.ins n.args)
+          (Verilog.outConns cx p (match HTrie.getN k outs with
+            | .some xs => xs
+            | .none => .nil) .nil)) <+> ");\n"
+    | _ => "") <+> Verilog.insts cx outs (Nat.succ k) ns
 
 def Verilog.emit (n : Netlist) : String :=
   let ω vn := Verilog.portIdents n;
   let ω cx := Verilog.ctx n vn;
   "module " <+> Verilog.ident n.name <+> "(input clk" <+> Verilog.portDecls "input" vn.ins n.inputs
-  <+> Verilog.portDecls "output" vn.outs n.outputs <+> ");\n" <+> Verilog.errors n.errors <+> Verilog.regDecls vn.regs n.regs
+  <+> Verilog.outDecls cx vn.outs n.outputs <+> ");\n" <+> Verilog.errors n.errors <+> Verilog.regDecls vn.regs n.regs
   <+> Verilog.memDecls vn.mems n.mems
-  <+> Verilog.wires cx 0 n.nodes <+> Verilog.updates cx vn.regs n.regs <+> Verilog.memUpdates cx vn.mems n.mems
+  <+> Verilog.wires cx 0 n.nodes <+> Verilog.insts cx (Verilog.instOuts 0 n.nodes HTrie.tip) 0 n.nodes
+  <+> Verilog.updates cx vn.regs n.regs <+> Verilog.memUpdates cx vn.mems n.mems
   <+> Verilog.assigns cx vn.outs n.outputs <+> "endmodule\n"
 
 ------------------------------------------------------------------------------------

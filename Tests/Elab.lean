@@ -8160,6 +8160,55 @@ def hdlArtyTools : IO Unit := do
         unless (st.splitOn cell).length > 1 do throw (IO.userError s!"no {cell} for {top}:\n{st}")
 
 
+/-- examples/hdl-prim.wiz through the front end: its seven `#eval` texts. -/
+def hdlPrimTexts : IO (List String) := do
+    let src ← IO.FS.readFile "examples/hdl-prim.wiz"
+    let s := runFrontend (R := ZeroOneMany) src { trustedModule := Tests.libModule, loader := ← libLoader }
+    let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render src
+    unless errs.isEmpty do throw (IO.userError s!"unexpected errors: {errs}")
+    pure (s.messages.toList.map (·.text))
+
+def hdlUnq (t : String) : String := ((t.drop 1).dropRight 1).replace "\\n" "\n" |>.replace "\\\"" "\""
+
+/-- Primitive instances (H14 P1): the Verilog of a PLL-wrapped OSERDESE2/IOBUF/ODDR/OBUF
+design, the refusal to simulate cells without a model, a buffer simulated by its model,
+and the kind errors. -/
+def hdlPrimCheck : IO Unit := do
+    let texts ← hdlPrimTexts
+    unless texts.length == 7 do throw (IO.userError s!"expected 7 texts, got {texts.length}: {texts}")
+    let v := hdlUnq texts[0]!
+    for frag in ["module serial_core(input clk, input [0:0] sys4x, input [7:0] d, output [0:0] ck, output [0:0] q, inout [0:0] dq, output [0:0] back);",
+        "OSERDESE2 #(.DATA_RATE_OQ(\"DDR\"), .DATA_RATE_TQ(\"BUF\"), .DATA_WIDTH(8), .TRISTATE_WIDTH(1), .SERDES_MODE(\"MASTER\"))",
+        ".CLK(sys4x), .CLKDIV(clk), .D1(", ".OCE(1'd1), .RST(1'd0), .T1(r), .TCE(1'd1), .OQ(", "IOBUF u", ".IO(dq));", "ODDR #(.DDR_CLK_EDGE(\"SAME_EDGE\"), .INIT(1'b0), .SRTYPE(\"SYNC\"))", ".O(ck));",
+        "module serial(input clk, input [7:0] d, output [0:0] ck, output [0:0] q, inout [0:0] dq, output [0:0] back);",
+        "PLLE2_BASE #(.CLKIN1_PERIOD(10.0), .CLKFBOUT_MULT(8), .DIVCLK_DIVIDE(1), .CLKOUT0_DIVIDE(8), .CLKOUT0_PHASE(0.0), .CLKOUT1_DIVIDE(2), .CLKOUT1_PHASE(0.0)) clocking (.CLKIN1(clk), .RST(1'b0), .PWRDWN(1'b0), .CLKFBOUT(ck_CLKFBOUT), .CLKFBIN(ck_CLKFBOUT), .CLKOUT0(ck_CLKOUT0), .CLKOUT1(ck_CLKOUT1));",
+        "BUFG bufg_CLKOUT0 (.I(ck_CLKOUT0), .O(ck_CLKOUT0_g));",
+        "serial_core core (.clk(ck_CLKOUT0_g), .sys4x(ck_CLKOUT1_g), .d(d), .ck(ck), .q(q), .dq(dq), .back(back));"] do
+      unless (v.splitOn frag).length > 1 do throw (IO.userError s!"missing from the Verilog: {frag}\n{v}")
+    if (v.splitOn "assign dq").length > 1 then throw (IO.userError s!"a pad is assigned:\n{v}")
+    checkEq (repr ([".cons \"OSERDESE2 (node 14) has no behavioural model\" (.cons \"ODDR (node 21) has no behavioural model\" .nil)",
+      ".error \"simulation refused: OSERDESE2 (node 14) has no behavioural model; ODDR (node 21) has no behavioural model\"",
+      ".nil",
+      "\"module blink(input clk, input [0:0] x, output [0:0] led, inout [0:0] pin, output [0:0] seen);\\n  reg [0:0] r; initial r = 1'd0;\\n  wire [0:0] n2 = ~x;\\n  wire [0:0] n4;\\n  wire [0:0] n6 = ~r;\\n  IOBUF u3 (.I(r), .T(n2), .O(n4), .IO(pin));\\n  OBUF u7 (.I(r), .O(led));\\n  always @(posedge clk) r <= n6;\\n  assign seen = n4;\\nendmodule\\n\"",
+      ".ok (.cons (.mk 0 (), .mk 0 (), .mk 0 ()) (.cons (.mk 1 (), .mk 1 (), .mk 0 ()) (.cons (.mk 0 (), .mk 0 (), .mk 0 ()) (.cons (.mk 1 (), .mk 1 (), .mk 1 ()) .nil))))",
+      ".cons \"ODDR port C wants a clock, not a data signal (node 2)\" (.cons \"a clock (input sys4x) is used as data by register r\" (.cons \"output y_1 is a data signal but gets a pad (OBUF.O)\" .nil))"] : List String)).pretty
+      (repr (texts.drop 1)).pretty
+
+/-- yosys's synth_xilinx keeps the primitives of examples/hdl-prim.wiz as cells:
+PLLE2_BASE, BUFG, OSERDESE2, IOBUF, ODDR, OBUF (when yosys is on PATH). -/
+def hdlPrimTools : IO Unit := do
+    let ys ← (do let o ← IO.Process.output { cmd := "yosys", args := #["-V"] }; pure (o.exitCode == 0)) <|> pure false
+    unless ys do skip "no yosys"; return
+    let v := hdlUnq (← hdlPrimTexts)[0]!
+    IO.FS.withTempDir fun dir => do
+      IO.FS.writeFile (dir / "serial.v") v
+      let o ← IO.Process.output { cmd := "yosys", args := #["-q", "-p", "read_verilog serial.v; synth_xilinx -family xc7 -top serial; tee -q -o serial.stat stat"], cwd := dir }
+      unless o.exitCode == 0 do throw (IO.userError s!"yosys fails on serial.v:\n{o.stderr}")
+      let st ← IO.FS.readFile (dir / "serial.stat")
+      for cell in ["PLLE2_BASE", "BUFG", "OSERDESE2", "IOBUF", "ODDR", "OBUF"] do
+        unless (st.splitOn cell).length > 1 do throw (IO.userError s!"no {cell} in serial:\n{st}")
+      if (o.stderr.splitOn "has no driver").length > 1 then throw (IO.userError s!"undriven wire:\n{o.stderr}")
+
 def hdlGroup : Group where
   name := "hdl"
   exercise := "HDL stage S0 (hdl-plan H14)"
@@ -8228,6 +8277,8 @@ def hdlGroup : Group where
           "#eval Hdl.map BitVec.toNat (Trace.take 8 (Circuit.trace ctr xs))\n")
           [".cons 250 (.cons 251 (.cons 252 (.cons 253 (.cons 254 (.cons 255 (.cons 0 (.cons 1 .nil)))))))"] },
     { name := "Arty A7 (lib/Hdl/Arty.wiz): pin constraints (XDC) from the board's table, what does not fit, the two devices", run := fun _ => hdlArtyXdc },
+    { name := "H14 P1: primitive instances: Verilog of an OSERDESE2/IOBUF/ODDR/OBUF design under a PLL wrapper, refusal without models, buffer models, kind errors", run := fun _ => hdlPrimCheck },
+    { name := "H14 P1: yosys synth_xilinx keeps PLLE2_BASE, BUFG, OSERDESE2, IOBUF, ODDR, OBUF (skipped without yosys)", run := fun _ => hdlPrimTools },
     { name := "Xilinx 7-series: yosys synth_xilinx maps two RAMs, a 1024-byte ROM and a multiply to RAMB18E1, RAMB36E1 and DSP48E1 (skipped without yosys)", run := fun _ => hdlArtyTools },
     { name := "optics: deriving Lens on structures and bundles (laws, independence by rfl); a step zoomed into a field, the frame rule", run := fun _ => do
         okLibs (← IO.FS.readFile "examples/hdl-optic.wiz")

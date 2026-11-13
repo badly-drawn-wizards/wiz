@@ -450,6 +450,43 @@ iCEstick's 12 MHz / 104 = 115384.6 baud equals the FT2232's rate exactly, which 
 it never showed there. Compute the divider from the host's real rate and round it down
 (wiz-arty's `Ftdi.divisor` and `clocksPerBit`: 866 at 100 MHz).
 
+## H14 P1: vendor primitives (black boxes): `Hdl.Prim`, `Hdl.Xilinx7` ✅
+
+A `Prim i o` (in `Hdl.Core`) declares a vendor cell: its Verilog module name, parameters
+(Verilog text; `PrimParam` and `Prim.decl` write them), one port name per leaf of `i` and
+of `o`, and optionally a behavioural model `HwTy.El i → HwTy.El o`. `Hw` has two more
+operations: `Hw.prim p x`, an instance, and `Hw.clock`, the implicit clock as a clock
+net. At the wire instance an instance is one netlist node (`NetOp.inst`, never
+hash-consed) with an `instOut` node per output leaf; `Verilog.emit` prints it as a module
+instance after the wires (`OSERDESE2 #(.DATA_WIDTH(8), …) u22 (.CLK(sys4x), .CLKDIV(clk),
+…)`). An instance none of whose outputs is used is dropped, like any unused node.
+
+Three kinds of leaf connect primitives only, marked by a `named` segment starting with
+`@` that port names skip: `HwTy.clock` (a clock net), `HwTy.pad n` (a package pin a
+buffer drives or reads) and `HwTy.inout n` (a bidirectional one, an `inout` port). A
+clock goes from a circuit's clock input, `Hw.clock` or a primitive's clock output to a
+primitive's clock port; a pad from a circuit's input to a buffer, or from a buffer to the
+circuit's output, which is then the buffer's port with no `assign`. The netlist checks
+this (`Netlist.kindErrors`, appended to `Netlist.errors`): a clock or pad used as data,
+data fed to a clock port, a pad on a data output.
+
+Registers stay on the one implicit clock. For more clocks a `Clocking` (`Hdl.Prim`)
+describes a top-level wrapper: `Verilog.emitTop n ck` prints the circuit as `NAME_core`
+and a module `NAME` whose clock primitive (a PLL, `X7.pll`) takes the board's `clk`, and
+drives the core's `clk` and its clock inputs through BUFGs. Logic in several clock
+domains (CDC) is not supported.
+
+Simulation: a primitive without a model is 0 at values and in `Netlist.simulate`.
+`Netlist.unmodelled`/`Circuit.unmodelled` name such instances, and
+`Circuit.runModelled`/`Netlist.simulateModelled` refuse to run a circuit with one.
+
+`Hdl.Xilinx7` (`X7.*`) declares the 7-series cells of a DDR3 PHY: OBUF, IBUF, IOBUF,
+OBUFDS, IOBUFDS, BUFG (with models), ODDR, OSERDESE2 (8:1 DDR with tristate),
+ISERDESE2 (NETWORKING 8:1 DDR, from an IDELAYE2), IDELAYE2 (VAR_LOAD, 200 MHz reference),
+IDELAYCTRL, and PLLE2_BASE as a `Clocking`. Tests (group `hdl`, examples/hdl-prim.wiz):
+the Verilog, refusal, buffer models and kind errors, and yosys synth_xilinx keeping every
+cell.
+
 ## H14 C4: bit-level reasoning (`lib/Hdl/Bits.wiz`) ✅
 
 The toy CPU's finding C2: `rfl` reduces a multiplexer on a known select but not a gate on
