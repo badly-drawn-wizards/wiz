@@ -1,6 +1,6 @@
 # Stage 15: performance for self-hosting
 
-## 15a: lazy unfolding ✅
+## 15a: lazy unfolding
 
 `memo : (Unit → A) → Unit → A` (Prelude, `builtin memo`) is a memoised suspension. To
 the kernel and the interpreters it is the identity; compiled code makes it a thunk
@@ -15,7 +15,7 @@ field. For a mutual family, that field's induction hypothesis wants the index eq
 after the field's argument; the recursive call now supplies it, as `fun h => ih h
 proof`.)
 
-## 15b: the self-hosted pipeline, measured ✅
+## 15b: the self-hosted pipeline, measured
 
 A benchmark checks a file of 300 definitions (and one of 3000) with the self-hosted
 pipeline compiled to C, against the Lean-hosted `wiz check`. At first the self-hosted
@@ -44,7 +44,7 @@ the largest share left is reference counting (about 1.4 billion `inc`/`dec` for 
 
 Next: fewer index equations for mutual families (elaboration time and code size).
 
-### 15c: known constructors and constant folding ✅
+### 15c: known constructors and constant folding
 
 `Wiz/Compiler/Simp.lean` simplifies every function of the IR right after lowering
 (before constants are hoisted and before reference counting). A native operation on
@@ -58,20 +58,20 @@ its field. A branch also learns from its test: in the `true` branch of
 now counts operations on numbers, tests and tags as pure. `#ir` shows the folded form;
 `#run`, C and LLVM agree (group `c`/`llvm`: "constant folding and known constructors").
 
-### 15d: the self-hosted C at `-O2` ✅
+### 15d: the self-hosted C at `-O2`
 
 Stage 2 of the bootstrap (`scripts/fixpoint.sh`, grail's `stage2` target) and the
 self-hosted compile-and-run tests compile the self-hosted backend's C with `-O2`
 instead of `-O1`, like `wiz build`.
 
-### 15e: dead code in the self-hosted backend ✅
+### 15e: dead code in the self-hosted backend
 
 The reference counting mode compiles a `let`'s body first, so it knows whether the
 variable is live: a dead `let` whose value has no effects (variables, globals, numbers,
 objects and projections of such, closures, suspensions; no applications) is not
 compiled at all. Before, it was computed and released at once.
 
-### 15f: self tail calls are loops ✅
+### 15f: self tail calls are loops
 
 A function that calls itself in tail position runs in constant stack, whatever the C
 compiler does (tested at `-O0` on a 1 MB stack, 10 million iterations). In the Lean
@@ -90,7 +90,7 @@ under a match on a computed value (`match Nat.beq … with`) is not yet in tail 
 the match's payload is a suspended `let`, and its branches are closures (under reference
 counting lets are strict, and it is a loop).
 
-### 15g: big numerals ✅
+### 15g: big numerals
 
 A numeral like `1000000000` in a file compiled by the self-hosted compiler crashed the
 compiler (a stack overflow), when that compiler was the one built by the Lean
@@ -133,7 +133,7 @@ self-hosted compiler (group `selfhost`), numerals up to `2^63 - 1` compiled and 
 with both collectors, the error from `2^63`, and the compiler's exit code and
 standard error for a program with errors.
 
-### 15h: case-shaped calls (`Bool.and` and `Bool.or` short-circuit) ✅
+### 15h: case-shaped calls (`Bool.and` and `Bool.or` short-circuit)
 
 Application is call by value in compiled code: `Bool.and a b` computed `b` before
 looking at `a`. So `p x && all p xs` (written with `Bool.and`) walked the whole list
@@ -200,11 +200,11 @@ above), groups `c` and `llvm` (a second argument that never returns; ten million
 of `Bool.or (Nat.beq i n) (upFrom n (i + 1))` on a 1 MB stack at `-O0`).
 
 The self-hosted backend does the same for its own input (small case-shaped functions
-inlined with lazy arguments, branch `agent/selfhost-demand-d`); `&&` and `||` as macros
-that expand to matches (`agent/prelude-batch`) need neither.
+inlined with lazy arguments); `&&` and `||` as macros
+that expand to matches need neither.
 
 
-### 15i: closed definitions are computed once (CAFs) ✅
+### 15i: closed definitions are computed once (CAFs)
 
 A top-level definition without parameters after erasure, such as a table
 `def Fx.fontT : RomT := RomT.build 7 Fx.font`, compiled to a function that computed its
@@ -241,7 +241,7 @@ The cost is the GHC one: a constant that is large and used once stays in memory 
 program ends, and an immortal value is never unique, so it is copied, not updated in place.
 
 Benchmark: `examples/closed-table-bench.wiz` (a 256-entry table and a ROM tree built from
-it, read in a loop; `/workspace/wiz-tools/bench/closed-table`). Informal, 100000 lookups:
+it, read in a loop; `wiz-tools/bench/closed-table`). Informal, 100000 lookups:
 8.1 s with the table rebuilt at each use, 0.08 s cached.
 
 Tests: groups `backend` (which definitions are cached), `c` and `llvm` (a table in a
@@ -249,7 +249,7 @@ loop, a diverging and a failing constant in an untaken branch, a memoised suspen
 big number, erased definitions, self-referential codata, no leaks; an `IO` constant run
 four times), `conc` (eight threads first using a table and a suspension in it at once).
 
-### 15j: shared projection prefixes ✅
+### 15j: shared projection prefixes
 
 A structure (and a Σ) nests to the right, `(f₀, (f₁, (f₂, …)))`, so field `k` is `k`
 projections `.2` and a `.1`, whether it is written `s.f` or bound by a `match`. A

@@ -1,6 +1,6 @@
 # Libraries
 
-## H0c: vectors and bit vectors ✅
+## H0c: vectors and bit vectors
 
 `lib/Vec.wiz` (`import Vec`): `Fin n` (a `Nat` with an erased proof `Nat.lt val n = .true`;
 `Fin.of 5 3 rfl`) and `Vec A n`, whose length is an **erased** index: at runtime a
@@ -41,7 +41,7 @@ Not yet: facts like `Vec.get v (Fin.of 3 1 rfl) = 20 := rfl` (the `rfl` shape
 problem above; `drafts/vec-lib/VecProofs.wiz`), arithmetic facts about `BitVec` in general, numerals and operators
 (`a + b`) for `BitVec` (decision HD9).
 
-## H14 S0: hardware as tagless-final code, with sharing ✅
+## H14 S0: hardware as tagless-final code, with sharing
 
 `lib/Hdl/Core.wiz` (`import Hdl.Core`) is the L2 layer of the HDL plan: combinational
 logic is code polymorphic in its representation, `{r : HwTy → Type} → [Hw r] → r a → r b`,
@@ -67,11 +67,11 @@ Sharing has two parts:
   of an object value names one wire: the doubling chain `let y := x + x` at depth 20
   emits 20 adders in 25 builder steps. Write `let ω x := …` to opt out.
 
-## H14 S1: a usable HDL: names, bundles, composition, reset, emitters ✅
+## H14 S1: a usable HDL: names, bundles, composition, reset, emitters
 
 Driven by a real design (a UART on a Lattice iCEstick, written in this library and run on
 the board; its findings G1–G10 are the requirements). Design notes:
-`/workspace/wiz-notes/hdl-usability.md`. Everything is in `lib/Hdl/Core.wiz`; examples and
+`wiz-notes/hdl-usability.md`. Everything is in `lib/Hdl/Core.wiz`; examples and
 tests in `examples/hdl-compose.wiz` (group `hdl`) and in the `scaling` group.
 
 ```
@@ -139,7 +139,7 @@ Not done: module hierarchy in the Verilog, enumerations at `HwTy`, wire names fr
 binders (an elaborator hook, wishful `hdl-let-names`), asynchronous reset, several clocks.
 (Numerals and operators: H14 S2.)
 
-## H14 S2: operator notation for signals ✅
+## H14 S2: operator notation for signals
 
 Signals are written with operators: `c + 1`, `x &&& ~~~y`, `s.left === 0`,
 `if go then 10 else if tick then s.left - 1 else s.left`, instead of
@@ -195,7 +195,7 @@ shift and `&&`/`||` on signals: H14 S4.)
 Stating and proving properties of circuits over unbounded time, after TLA+, LTL and
 SVA. `lib/Hdl/Temporal.wiz`, on the traces and Mealy machines of H14 C1 (`lib/Trace.wiz`);
 examples and tests in `examples/hdl-temporal.wiz` (group `hdl`). Survey and design:
-`/workspace/wiz-notes/hdl-temporal.md`.
+`wiz-notes/hdl-temporal.md`.
 
 ```
 def Uart.onlyThat_a5 :     -- the loopback reports byte 0xa5 and nothing else, for ever
@@ -237,10 +237,10 @@ invariance as a theorem, a deep embedding printable as SVA, notation (□, ◇, 
 dsl-ergo, stacked on this), case splits on neutral bits (they need the range of `UIntN` in
 the sealed type; wishful `uintn-range-proof`), a tactic for the Bool case splits.
 
-## H14 C1: traces, the common semantics (`lib/Trace.wiz`) ✅
+## H14 C1: traces, the common semantics (`lib/Trace.wiz`)
 
 One semantics for everything that runs step by step (design:
-`/workspace/wiz-notes/cohesion-hardware.md`, 2.1). A trace is a function, `Trace A :=
+`wiz-notes/cohesion-hardware.md`, 2.1). A trace is a function, `Trace A :=
 Nat → A` (equality is pointwise and computes; a ν-stream's is stuck), and a Mealy machine
 is a step `Mealy S I O := S → I → S × O`, run along an input trace by
 `Mealy.stateAt m s0 xs t` and `Mealy.outAt`. `Mealy.run` is the finite run on a list and
@@ -256,7 +256,7 @@ per cycle, what temporal formulas are about), and `Circuit.run_take`:
 simulation prints is what a theorem about the trace says. The temporal logic (H14 T)
 builds on these.
 
-## H14 C3: memories (`HwTy.mem`) ✅
+## H14 C3: memories (`HwTy.mem`)
 
 The toy CPU's finding C1 (no memories: a ROM as a chain of multiplexers, RAM as
 flip-flops). A memory is a code, `HwTy.mem aw dw` (2^aw words of dw bits), and at values
@@ -284,7 +284,7 @@ become RAMB18E1 or RAMB36E1 and `Hw.mul` a DSP48E1; a ROM of 4 Kbit or more is d
 (`examples/hdl-arty.wiz`, below). What the netlist cannot express is listed in
 `Netlist.errors` and printed as `// error:` lines: a choice between two different
 memories, a memory in a port, a state memory replaced instead of written.
-## H14 C2: lenses for structures and bundles (`lib/OpticDerive.wiz`, `lib/Hdl/Optic.wiz`) ✅
+## H14 C2: lenses for structures and bundles (`lib/OpticDerive.wiz`, `lib/Hdl/Optic.wiz`)
 
 `deriving Lens` gives every field of a structure a lens (lib/Optic.wiz's `Lens S A`), its
 laws and the independence of every two distinct fields, all by `rfl`:
@@ -299,7 +299,7 @@ unchanged, for every state (no evaluation needed). `Bundle.lens b` (with
 `Bundle.Lawful b`, `rfl` for derived bundles) and `HwTy.fstL`/`sndL` are the packed
 views at values. Example: `examples/hdl-optic.wiz` (group `hdl`).
 
-## H14 S3: fast simulation for compiled programs (`import Hdl.Sim`) ✅
+## H14 S3: fast simulation for compiled programs (`import Hdl.Sim`)
 
 Compiled, the value simulation (`Circuit.run`, `Design.runLeaves`) runs the step function
 at `HwTy.El` every cycle, and with it every meta-level computation the step contains:
@@ -340,9 +340,9 @@ Not done: skipping nodes whose arguments did not change (event-driven simulation
 generated C for a netlist, a value simulation that keeps its meta-level work (caching
 closed top-level definitions in compiled code would remove the table rebuilding).
 
-## H14 S4: the iCEstick gaps: shifts by a signal, signed operations, `&&`/`||`, BitPack, reset and enable ✅
+## H14 S4: the iCEstick gaps: shifts by a signal, signed operations, `&&`/`||`, BitPack, reset and enable
 
-What the iCEstick projects (`/workspace/wiz-icestick-uart`, FINDINGS.md) still had to
+What the iCEstick projects (`wiz-icestick-uart`, FINDINGS.md) still had to
 work around after S1 and S2. Everything is in `lib/Hdl/Core.wiz`; the examples and tests
 are `examples/hdl-gaps.wiz` (group `hdl`, with Icarus Verilog test benches when
 `iverilog` is installed) and a shifter in `examples/hdl-sim.wiz` (S3's fast simulation).
@@ -450,7 +450,7 @@ iCEstick's 12 MHz / 104 = 115384.6 baud equals the FT2232's rate exactly, which 
 it never showed there. Compute the divider from the host's real rate and round it down
 (wiz-arty's `Ftdi.divisor` and `clocksPerBit`: 866 at 100 MHz).
 
-## H14 P1: vendor primitives (black boxes): `Hdl.Prim`, `Hdl.Xilinx7` ✅
+## H14 P1: vendor primitives (black boxes): `Hdl.Prim`, `Hdl.Xilinx7`
 
 A `Prim i o` (in `Hdl.Core`) declares a vendor cell: its Verilog module name, parameters
 (Verilog text; `PrimParam` and `Prim.decl` write them), one port name per leaf of `i` and
@@ -486,7 +486,7 @@ ISERDESE2 (NETWORKING 8:1 DDR, from an IDELAYE2), IDELAYE2 (VAR_LOAD, 200 MHz re
 IDELAYCTRL, and PLLE2_BASE as a `Clocking`. Tests (group `hdl`, examples/hdl-prim.wiz):
 the Verilog, refusal, buffer models and kind errors, and yosys synth_xilinx keeping every
 cell.
-## H14 V1: verified circuit optimisation (`lib/Hdl/Verified.wiz`) ✅
+## H14 V1: verified circuit optimisation (`lib/Hdl/Verified.wiz`)
 
 The OLED demo's arithmetic units (wiz-icestick-uart, branch oled-demo: `Sphere.wiz`,
 `Blobs.wiz`) are hand-optimised: no multiplier, no divider, one result bit a cycle.
@@ -534,7 +534,7 @@ about 14 ms per case for eight word operations, so the kernel stops near 2¹² i
 A computing reflection (`bit_decide`) is in drafts/hdl-verified/, for when the check is
 fast (compiled, or a faster kernel evaluator).
 
-## H14 C4: bit-level reasoning (`lib/Hdl/Bits.wiz`) ✅
+## H14 C4: bit-level reasoning (`lib/Hdl/Bits.wiz`)
 
 The toy CPU's finding C2: `rfl` reduces a multiplexer on a known select but not a gate on
 a symbolic bit (`Hw.and 0 x`), so a circuit had to be written with multiplexers for its
@@ -552,7 +552,7 @@ Boolean bridge `Bit.toBool` (a homomorphism: `toBool_and/or/xor/not/mux`;
 with gates, proved equal to its multiplexer form and, once the opcode is known, to
 `!txReady`, for every value of the status bits).
 
-## Logic, heap predicates and Hoare triples ✅
+## Logic, heap predicates and Hoare triples
 
 `lib/Logic.wiz` (`∧`, `∨`, `∃` with binder notation `∃ x : A, P`, `↔`, `¬`, ASCII
 `/\`, `\/`, `exists`, `<->`, equality lemmas, `funext`, `propext`; [13e](stages/13-language.md)),
@@ -592,7 +592,7 @@ that it is the index. The trusted part is the four natives `wiz_ref_*` (runtime/
 over MVar cells) and their types, kept true by an invariant the API maintains; the header
 of lib/Ref.wiz has the argument. Compiled code only.
 
-## Owned handles (`lib/Handle.wiz`) ✅
+## Owned handles (`lib/Handle.wiz`)
 
 `Owned h` is the obligation to release the handle `h`: a token at quantity 1 indexed by
 the handle, as `MVar.Hole m` and `Lock.Guard l` are ([25d](stages/25-concurrency.md)).
@@ -633,7 +633,7 @@ is an `Applicative` and every `Applicative` a `Functor`; `Monad`/`Functor` insta
 `List.flatMap` (`List.map` is `lib/Text.wiz`'s, which Functor imports). See [13d](stages/13-language.md). The Prelude itself has `if … then …
 else`, short-circuiting `&&` and `||`, and `!` ([13c](stages/13-language.md)).
 
-## 9j: text and lists (`lib/Text.wiz`) ✅
+## 9j: text and lists (`lib/Text.wiz`)
 
 `import Text` (only `Prelude` underneath): the string and list functions a program needs,
 pure (so `#eval` runs them) and linear in their input.
@@ -661,7 +661,7 @@ reverse once); and each call into C converts the list to a C string and back. Sp
 `String.eq`, `String.chars`, `String.beq`, `Nat.repr`, `List.revApp` and `List.reverse`
 instead of copies of their own (two modules declaring one name are an error at import).
 
-## Numbers: classes, integers, words ✅
+## Numbers: classes, integers, words
 
 (Stage doc: docs/stages/07-type-classes.md, 7e and 7f.) The Prelude's `Add`, `Sub`, `Mul`,
 `Div`, `Mod`, `Neg` and `OfNat` give `+ - * / %`, prefix `-` and numerals at every
@@ -697,7 +697,7 @@ library gives an `Add` instance and gets `+`; it may also give a mixed one (`HMu
   `lib/BitVec.wiz`: a one-bit word is 0 or 1). Compiled, `a + b : U32` is the native `wiz_word_add` (the dictionary is
   inlined away), as `UIntN.add a b` was.
 
-## Arithmetic: laws, orders and ring normalisers ✅
+## Arithmetic: laws, orders and ring normalisers
 
 Moved from the dogfooding package wiz-reals (its finding G2: lib/ had no arithmetic
 library, so it proved everything from `0` and `succ`). Each module has a module doc
@@ -749,7 +749,7 @@ def v (p q : Q) : (p + q) * (p + q) ≈ p * p + 2 * p * q + q * q :=
   integer identity and `q_ring!` is `int_ring!` on numerators and denominators. Use the
   congruences (`Q.add_congr`, `Q.le_congr`, …) to rewrite under `≈`.
 * `Vec.wiz` and `Hoare.wiz` import `Nat` for the lemmas they used to define themselves.
-## Native structures: word arrays, word maps, interned strings ✅
+## Native structures: word arrays, word maps, interned strings
 
 `lib/WordArray.wiz` (`U8Array`, `U32Array`, `U64Array`), `lib/WordMap.wiz` (`U64Map V`)
 and `lib/Intern.wiz` (`InternTable`, ids as `U32`): list models with laws, run natively

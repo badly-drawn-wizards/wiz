@@ -1,6 +1,6 @@
 # Stage 9: the C FFI
 
-## 9a: IO, machine types, foreign functions ✅
+## 9a: IO, machine types, foreign functions
 
 ```
 import IO
@@ -34,7 +34,7 @@ def main : IO Unit := do
 * `wiz run` on `main : IO A` runs it. Foreign functions only run in compiled code
   (`#eval`/`#run` report them).
 
-## 9b: importing C headers ✅
+## 9b: importing C headers
 
 ```
 import IO
@@ -55,7 +55,7 @@ or structs by value) are skipped. On glibc, `string.h` gives 66 prototypes and
 |-----|--------------------|---------------------------------------------------|
 | 9.1 | `FFI/CParse.lean`  | `declarator`: pointers, names, parameter lists    |
 
-## 9c: checked C glue ✅
+## 9c: checked C glue
 
 ```
 import_c "string.h"
@@ -75,7 +75,7 @@ checked code is emitted into the program, with its headers, and bound like an
 |-----|--------------------|------------------------------------------|
 | 9.2 | `FFI/CGlue.lean`   | `expr`: types of glue expressions        |
 
-## 9d: foreign pointers, finalizers, buffers ✅
+## 9d: foreign pointers, finalizers, buffers
 
 ```
 foreign_type FILE (finalizer := "fclose")
@@ -94,7 +94,7 @@ extern "fputs" (header := "stdio.h") fputs : String → FILE → IO Nat
 Later sections: callbacks and exported functions (C calling Wiz) are 9g; structs by
 value and more of a header's pointer types are 9i.
 
-## 9e: linear sequencing ✅
+## 9e: linear sequencing
 
 ```
 axiom Tok : Type
@@ -131,7 +131,7 @@ def finish (1 t : Tok) : IO Nat := do1
   passes its argument's usage through), e.g. `Chan (dual (dual p))` to `Chan p` given
   a proof (Prelude; plan L4).
 
-## 9f: C source files and libraries ✅
+## 9f: C source files and libraries
 
 ```
 link_c "term.c"                       -- relative to this .wiz file
@@ -166,7 +166,7 @@ extern "iv_term_open" Term.open : IO Nat
 Not done: `pkg-config` names (`link_pkg "gtk+-3.0"`) — for now, give their flags with
 `--cflags`/`--ldflags`.
 
-## 9g: callbacks and exported functions ✅
+## 9g: callbacks and exported functions
 
 ```
 import IO
@@ -240,7 +240,7 @@ Tests: `callbacks` (qsort with Wiz comparators, a closure kept by C and called l
 in `IO`, the leak when it isn't released, C calling an export from a program, a C
 program linked with a `--lib` build, both backends), `web/test.sh`.
 
-## 9h: system interfaces: processes, environment, files ✅
+## 9h: system interfaces: processes, environment, files
 
 ```
 import Sys
@@ -306,7 +306,7 @@ removal, handles), on both backends.
 Binary data on handles, descriptors with time limits, spawn options and serial ports
 came later: 9k.
 
-## 9i: C structs by value; header pointer types as foreign types ✅
+## 9i: C structs by value; header pointer types as foreign types
 
 ```
 import IO
@@ -384,7 +384,7 @@ with `struct in_addr`, `clock_gettime` with `struct timespec`, a header of our o
 nested structs, strings, byte arrays, an opaque pointer type and a buffer function, the
 opt-outs, and the glue checks).
 
-## 9k: bytes on handles, time limits, spawn options, serial ports ✅
+## 9k: bytes on handles, time limits, spawn options, serial ports
 
 ```
 import Serial

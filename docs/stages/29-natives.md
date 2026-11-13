@@ -21,9 +21,9 @@ pattern:
 
 Tests: group `natives` (in CI's `library` shard). Its differential programs are
 `examples/wordarray.wiz`, `examples/wordmap.wiz` and `examples/intern.wiz`. Benchmark:
-`examples/natives-bench.wiz` (`/workspace/wiz-tools/bench/natives`).
+`examples/natives-bench.wiz` (`wiz-tools/bench/natives`).
 
-## 29a: unboxed word arrays (`lib/WordArray.wiz`) ✅
+## 29a: unboxed word arrays (`lib/WordArray.wiz`)
 
 `U8Array`, `U32Array` and `U64Array`, with `empty`, `ofList`/`toList`, `size`,
 `get`/`getD`, `set`, `push`, `pop`, `slice` (`[start, start + n)`, cut at the end),
@@ -55,7 +55,7 @@ the default (`get` gives 0) and `set` changes nothing.
 * `replicate`, `pushN` and `foldl` are Wiz loops over the natives, not natives of their
   own. They are definitions, so nothing more is trusted.
 
-## 29b: maps from 64-bit words (`lib/WordMap.wiz`) ✅
+## 29b: maps from 64-bit words (`lib/WordMap.wiz`)
 
 `U64Map V`, with `empty`, `insert`, `erase`, `find` (an `Option`), `findD`,
 `contains`, `size`, `toList`, `ofList`, `foldl` and `keys`. Other word types, typed ids
@@ -80,7 +80,7 @@ the default (`get` gives 0) and `set` changes nothing.
   rest on the sorted-keys invariant. They are tested (the random operations in
   `examples/wordmap.wiz`), not proved yet.
 
-## 29c: interned strings (`lib/Intern.wiz`) ✅
+## 29c: interned strings (`lib/Intern.wiz`)
 
 `InternTable`, with `empty`, `intern` (the table with the string, and the string's
 id), `internAll`, `find`, `lookup`, `size` and `toList`. An id is a `U32`, so ids
