@@ -289,17 +289,18 @@ def group : Group where
         checkEq "n : U64" (at_ "(n : U64)" 1)
         checkEq "x : U64" (at_ "push x" 5)
         checkEq "a : U64" (at_ "let mut a" 8)
-        starts "y : Uniq ρa U64" (at_ "(y :" 1)
+        starts "y : Uniq1 ρa U64" (at_ "(y :" 1)
         -- a call, the function it names, an operator, a method call
         checkEq "double : U64 → Result U64" (at_ "double (v.len)" 1)
         checkEq "double (v.len) : U64" (at_ "double (v.len)" 7)
         checkEq "+ : U64 → U64 → Result U64" (at_ "n + n" 2)
         checkEq "double (v.len) + a : U64" (at_ ") + a" 1)
-        -- a `&mut` argument (its handle) and a named borrow
-        starts "(&mut a) : Uniq ρ" (at_ "&mut a" 1)
-        starts "r : Uniq ρ" (at_ "let r" 4)
+        -- a `&mut` argument (its handle) and a named borrow (this block is linear now:
+        -- its `&mut`s, a `push` and `len` are inside the linear fragment)
+        starts "(&mut a) : Uniq1 ρ" (at_ "&mut a" 1)
+        starts "r : Uniq1 ρ" (at_ "let r" 4)
         -- (a method call on a variable is one identifier: the receiver's handle shows)
-        starts "r.push : Uniq ρ" (at_ "r.push" 0) },
+        starts "r.push : Uniq1 ρ" (at_ "r.push" 0) },
     { name := "positions inside a block: go to definition, errors at the sub-expression", run := fun _ => do
         let s ← frontendInfo posSrc
         -- `double` in `f` goes to `fn double`, not to the whole block

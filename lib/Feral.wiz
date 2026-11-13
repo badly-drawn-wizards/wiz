@@ -2506,6 +2506,14 @@ def Fe.nameAtO (bs : List (String × List Nat)) (x : String) : Fe.Out := match F
 def Fe.paramsAtO (bs : List (String × List Nat)) : List Fe.Var → Fe.Out
   | .nil => Fe.o ""
   | .cons w rest => Fe.Out.s "(" ⊕ Fe.nameAtO bs w.name ⊕ Fe.Out.s " : " ⊕ Fe.Out.t w.ty ⊕ Fe.Out.s ") " ⊕ Fe.paramsAtO bs rest
+-- the same in linear mode (`(1 x : T)` for a handle): a parameter's hover works in a
+-- block that lowers linearly too
+def Fe.paramsLatO (bs : List (String × List Nat)) : List Fe.Var → Fe.Out
+  | .nil => Fe.o ""
+  | .cons w rest => (match Fe.isHandleTy w.ty with
+    | .true => Fe.Out.s "(1 "
+    | .false => Fe.Out.s "(") ⊕ Fe.nameAtO bs w.name ⊕ Fe.Out.s " : " ⊕ Fe.Out.t w.ty ⊕ Fe.Out.s ") "
+      ⊕ Fe.paramsLatO bs rest
 -- L1: region parameters first, then the bounds as erased `Outlives` arguments, then type
 -- parameters, then values; the result is always a `Result` (L2)
 def Fe.fnText (lin : Bool) (g : Fe.Glob) (p : List Nat) (it : Syntax) (sig : Fe.Sig) : Fe.M String := do
@@ -2539,10 +2547,11 @@ def Fe.fnText (lin : Bool) (g : Fe.Glob) (p : List Nat) (it : Syntax) (sig : Fe.
         | .nil => ""
         | ts => "{" +++ Fe.words ts +++ ": Type} "))
     ⊕ (match Bool.and lin (Bool.not (Fe.isNil handed)) with
-      | .true => Fe.paramsL (Fe.rev env .nil) ⊕ Fe.Out.s ": Result1 " ⊕ Fe.Out.t sig.ret ⊕ Fe.Out.s " "
+      | .true => Fe.paramsLatO (Fe.binderPaths (Fe.sub p 2) (Fe.kids (Fe.arg it 2))) (Fe.rev env .nil)
+          ⊕ Fe.Out.s ": Result1 " ⊕ Fe.Out.t sig.ret ⊕ Fe.Out.s " "
           ⊕ Fe.packHT (Fe.map (fun (w : Fe.Var) => w.ty) handed)
       | .false => (match lin with
-        | .true => Fe.paramsL (Fe.rev env .nil)
+        | .true => Fe.paramsLatO (Fe.binderPaths (Fe.sub p 2) (Fe.kids (Fe.arg it 2))) (Fe.rev env .nil)
         | .false => Fe.paramsAtO (Fe.binderPaths (Fe.sub p 2) (Fe.kids (Fe.arg it 2))) (Fe.rev env .nil)) ⊕ Fe.Out.s ": Result " ⊕ Fe.Out.t rt)
     ⊕ Fe.Out.s " :=" ⊕ Fe.Out.ind (Fe.Out.nl ⊕ body);
   let txt := String.mk (Fe.renderAll sb (List.append aux (.cons head .nil)) .nil);
