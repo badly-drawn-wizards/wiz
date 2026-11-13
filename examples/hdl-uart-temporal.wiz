@@ -188,12 +188,8 @@ def Nat.eq_of_beq : (a b : Nat) → Nat.beq a b = .true → a = b
   | .zero, .succ b, e => absurd e.1
   | .succ a, .zero, e => absurd e.1
   | .succ a, .succ b, e => Nat.eq_of_beq a b e
--- Two words with equal numbers are equal, when each is (by evaluation) a word built from
--- its number: true of every word an operation computes (`hx`, `hy` by `rfl`). With the
--- words' range (stage 22l, PR #145) this is `UIntN.ext`.
-def BitVec.eqOfNat {0 n : Nat} (x y : BitVec n) (hx : x = BitVec.mk (BitVec.toNat x)) (hy : y = BitVec.mk (BitVec.toNat y))
-    (h : BitVec.toNat x = BitVec.toNat y) : x = y :=
-  Eq.trans hx (Eq.trans (Eq.congrArg (fun (k : Nat) => @BitVec.mk n k) h) (Eq.symm hy))
+-- Words with equal numbers are equal (`UIntN.ext`: a word carries its range, so it is
+-- not definitionally `BitVec.mk` of its number; the Boolean check below gives the numbers).
 
 -- Refinement under an invariant of the specification: `Mealy.simulates` for the
 -- reachable states only (the premise is one step from a state satisfying `inv`).
@@ -308,16 +304,16 @@ def Uart.frameQ_all : Bool.all9 Uart.frameQ = .true := refl Bool.true
 def Uart.shift8Q_all : Bool.all9 Uart.shift8Q = .true := refl Bool.true
 
 def Uart.shift_reg9 (r : Reg9) : shift9 (reg9 r) = reg9 (Reg9.shift r) :=
-  BitVec.eqOfNat (shift9 (reg9 r)) (reg9 (Reg9.shift r)) rfl rfl
+  UIntN.ext (shift9 (reg9 r)) (reg9 (Reg9.shift r))
     (Nat.eq_of_beq _ _ (Bool.forall9 Uart.shiftQ Uart.shiftQ_all r.r0 r.r1 r.r2 r.r3 r.r4 r.r5 r.r6 r.r7 r.r8))
 def Uart.bit0_reg9 (r : Reg9) : bit0 (reg9 r) = Bool.toBits r.r0 :=
-  BitVec.eqOfNat (bit0 (reg9 r)) (Bool.toBits r.r0) rfl (Bool.indP (fun (b : Bool) => Bool.toBits b = BitVec.mk (BitVec.toNat (Bool.toBits b))) rfl rfl r.r0)
+  UIntN.ext (bit0 (reg9 r)) (Bool.toBits r.r0)
     (Nat.eq_of_beq _ _ (Bool.forall9 Uart.bit0Q Uart.bit0Q_all r.r0 r.r1 r.r2 r.r3 r.r4 r.r5 r.r6 r.r7 r.r8))
 def Uart.frame_byte (d : Bits8) : @frame9 HwTy.El _ (byte d) = reg9 (Reg9.frame d) :=
-  BitVec.eqOfNat (@frame9 HwTy.El _ (byte d)) (reg9 (Reg9.frame d)) rfl rfl
+  UIntN.ext (@frame9 HwTy.El _ (byte d)) (reg9 (Reg9.frame d))
     (Nat.eq_of_beq _ _ (Bool.forall9 Uart.frameQ Uart.frameQ_all d.b0 d.b1 d.b2 d.b3 d.b4 d.b5 d.b6 d.b7 .false))
 def Uart.shift8_byte (d : Bits8) (b : Bool) : shift8 (byte d) (Bool.toBits b) = byte (Bits8.shiftIn d b) :=
-  BitVec.eqOfNat (shift8 (byte d) (Bool.toBits b)) (byte (Bits8.shiftIn d b)) rfl rfl
+  UIntN.ext (shift8 (byte d) (Bool.toBits b)) (byte (Bits8.shiftIn d b))
     (Nat.eq_of_beq _ _ (Bool.forall9 Uart.shift8Q Uart.shift8Q_all d.b0 d.b1 d.b2 d.b3 d.b4 d.b5 d.b6 d.b7 b))
 
 ------------------------------------------------------------------------------------
