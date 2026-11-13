@@ -542,7 +542,7 @@ cases or by structural recursion is `fun x => T.rec … x`: unfolding it means u
 is where the `match` computes), and nobody wants a recursive call folded into `T.rec`. -/
 def isRecursor (g : Globals R) (n : Name) : Bool :=
   match (n.splitOn ".").reverse with
-  | e :: rest => ["rec", "recN", "casesOn", "casesOnN", "scasesOn", "scasesOnN"].contains e &&
+  | e :: rest => ["rec", "recN", "casesOn", "casesOnN", "casesOnA", "scasesOn", "scasesOnN"].contains e &&
       !rest.isEmpty && g.contains (".".intercalate rest.reverse ++ ".desc")
   | _ => false
 

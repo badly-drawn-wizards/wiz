@@ -207,9 +207,8 @@ wrong specification left unproved).
 **What is next** (plan S3–S6). A `wpgen` (characteristic formulas computed by a
 function, SLF chapter WPgen) once tactics can read constructors; an `xif`/`xcase` with
 case analysis inside a tactic (needs a `cases` request or motives built from the goal);
-a second effect observation from `Eff` (lib/Eff.wiz) state operations into `W` — the
-morphism-based shape means this is a translation `Eff [Heap] → Prog` plus its morphism
-lemma (watch agent/lin-fixes's one-shot continuations); linear points-to tokens at
+a second effect observation from `Eff` (lib/Eff.wiz) state operations into `W` (done
+for state on cells: lib/EffHeap.wiz, `Eff.toProg`, a monad morphism by `Eff.toProg_bind`); linear points-to tokens at
 quantity 1 over a native heap (CS7b: lib/Ref.wiz, docs/libraries.md; adequacy against this
 model is argued in its header, not yet mechanised);
 then a scheduler semantics, CSL with resource invariants and PCM ghost state (CS10a).

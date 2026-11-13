@@ -1,0 +1,9 @@
+-- test: run
+-- The tour, section 0: a program (docs/tour.md). `wiz run examples/tour/00-hello.wiz`
+import IO
+
+def greet (name : String) : String := "hello, " ++ name
+
+def main : IO Unit := do
+  IO.println (greet "Wiz");
+  IO.println (Nat.toString (6 * 7))

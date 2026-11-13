@@ -1,0 +1,36 @@
+-- The tour, section 5: dependent types (docs/tour.md).
+import Prelude
+
+-- A family of types indexed by a number: `Vec A n` holds exactly `n` values.
+-- The length is an erased argument (quantity 0): it is not there at run time.
+inductive Vec (A : Type) : Nat → Type where
+  | nil : Vec A .zero
+  | cons {0 n : Nat} (x : A) (xs : Vec A n) : Vec A (.succ n)
+
+-- `head` only takes vectors of length `n + 1` (`.succ n`): there is no `nil` case to write
+def Vec.head {A : Type} {0 n : Nat} : Vec A (.succ n) → A
+  | .cons x _ => x
+
+-- the types say that `map` keeps the length and `zip` needs two equal ones
+def Vec.map {A B : Type} (f : A → B) {0 n : Nat} : Vec A n → Vec B n
+  | .nil => .nil
+  | .cons x xs => .cons (f x) (Vec.map f xs)
+
+def Vec.zip {A B : Type} {0 n : Nat} : Vec A n → Vec B n → Vec (A × B) n
+  | .nil, .nil => .nil
+  | .cons a as, .cons b bs => .cons (a, b) (Vec.zip as bs)
+
+def Vec.toList {A : Type} {0 n : Nat} : Vec A n → List A
+  | .nil => []
+  | .cons x xs => .cons x (Vec.toList xs)
+
+def v : Vec Nat 3 := .cons 1 (.cons 2 (.cons 3 .nil))
+#eval Vec.head v
+#eval Vec.toList (Vec.map (fun x => x * 10) v)
+#eval Vec.toList (Vec.zip v v)
+
+-- a type computed by a function
+def NTuple : Nat → Type
+  | .zero => Unit
+  | .succ n => Nat × NTuple n
+def triple : NTuple 3 := (1, 2, 3, ())

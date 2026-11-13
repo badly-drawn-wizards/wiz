@@ -3,6 +3,7 @@ import Wiz.Query
 import Wiz.Rig.Instances
 import Wiz.Infoview
 import Wiz.Actions
+import Wiz.Completion
 import Wiz.Refs
 import Wiz.Symbols
 import Wiz.Socket
@@ -108,6 +109,21 @@ set_option maxHeartbeats 800000 in
 def elaborate (srv : Server) (doc : Doc) : Doc :=
   let (s, eng) := elabText srv doc.engine doc.text
   { doc with state := s, engine := eng }
+
+/-- `textDocument/completion` (`Completion.lean`): a `CompletionList`. Patched copies of
+the document are elaborated with its engine (the commands before the cursor are reused)
+and then forgotten. -/
+def completion (srv : Server) (doc : Doc) (off : Nat) : Json :=
+  let r := Completion.complete
+    { text := doc.text, off, state := doc.state, elabText := fun t => (elabText srv doc.engine t).1,
+      modules := (srv.libs.toList.map (·.1)).toArray.qsort (· < ·) }
+  let items := r.items.map fun (i : Completion.Item) =>
+    Json.mkObj ([("label", Json.str i.label), ("kind", i.kind), ("sortText", Json.str (i.sortText ++ i.label)),
+                 ("filterText", Json.str i.label),
+                 ("textEdit", Json.mkObj [("range", Json.mkObj [("start", toPos doc.text i.start), ("end", toPos doc.text off)]),
+                                          ("newText", Json.str i.insert)])] ++
+                (if i.detail.isEmpty then [] else [("detail", Json.str i.detail)]))
+  Json.mkObj [("isIncomplete", r.incomplete), ("items", Json.arr items)]
 
 def diagnostic (doc : Doc) (m : Msg) : Json :=
   let code := if m.code.isEmpty then [] else
@@ -643,10 +659,7 @@ def handle (srv : Server) (msg : Json) : Server × Array Json := Id.run do
         | .null => none
         | j => some j
       (srv, #[reply (if ts.size == 1 then ts[0]! else if ts.isEmpty then Json.null else Json.arr ts)])
-    | _ =>
-      let names : Array Name := Query.completionsAt doc.state doc.text off
-      let items : Array Json := names.map fun (n : Name) => Json.mkObj [("label", Json.str n), ("kind", (3 : Nat))]
-      (srv, #[reply (Json.arr items)])
+    | _ => (srv, #[reply (completion srv doc off)])
   | _ => (srv, if id.isSome then #[reply Json.null] else #[])
 
 /-! ## The infoview socket (`wiz lsp --infoview SOCK`, protocol §8)
