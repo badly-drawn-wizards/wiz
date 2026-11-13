@@ -37,7 +37,8 @@ typedef uintptr_t wiz_val;
 
 enum { WIZ_TAG_FIRST_SPECIAL = 0xFFFF0000u, WIZ_TAG_CLO = 0xFFFF0000u, WIZ_TAG_BIG = 0xFFFF0001u, WIZ_TAG_RAW = 0xFFFF0002u,
        WIZ_TAG_EXT = 0xFFFF0003u, WIZ_TAG_BYTES = 0xFFFF0004u, WIZ_TAG_ARRAY = 0xFFFF0005u,
-       WIZ_TAG_STR = 0xFFFF0006u, WIZ_TAG_MAP = 0xFFFF0007u, WIZ_TAG_THUNK = 0xFFFF0008u };
+       WIZ_TAG_STR = 0xFFFF0006u, WIZ_TAG_MAP = 0xFFFF0007u, WIZ_TAG_THUNK = 0xFFFF0008u,
+       WIZ_TAG_WARRAY = 0xFFFF0009u, WIZ_TAG_WMAP = 0xFFFF000Au, WIZ_TAG_ITAB = 0xFFFF000Bu };
 
 
 typedef struct {
@@ -108,6 +109,36 @@ typedef struct {
   wiz_val *keys; /* Str objects, or 0 for empty */
   wiz_val *vals;
 } wiz_map;
+
+/* an unboxed array of machine words (lib/WordArray.wiz): `len` elements of `width`
+   bytes (1, 4 or 8) at `data`, contiguous, as C would have them */
+typedef struct {
+  wiz_hdr h;
+  size_t len, cap;
+  uint32_t width;
+  void *data;
+} wiz_warray;
+
+/* a hash map from 64-bit words to Wiz values (lib/WordMap.wiz): open addressing,
+   linear probing, deletion by backward shift; an empty slot has vals[i] == 0 (no Wiz
+   value is 0: a scalar has bit 0 set, an object is a pointer) */
+typedef struct {
+  wiz_hdr h;
+  size_t count, cap; /* cap: a power of two */
+  uint64_t *keys;
+  wiz_val *vals;
+} wiz_wmap;
+
+/* an intern table (lib/Intern.wiz): the strings by id (`String` values, owned), and a
+   hash index from a string to its id + 1 (0: an empty slot) */
+typedef struct {
+  wiz_hdr h;
+  size_t count, scap; /* ids in use; room in strs/hashes */
+  size_t cap;         /* slots in the index: a power of two */
+  wiz_val *strs;
+  uint64_t *hashes;
+  uint32_t *slots;
+} wiz_itab;
 
 /* objects allocated minus objects freed, per thread (see `wiz_live_exited`) */
 static __thread int64_t wiz_live = 0;
@@ -242,6 +273,16 @@ static void wiz_free(wiz_val v) {
     wiz_map *m = (wiz_map *)v;
     for (size_t i = 0; i < m->cap; i++) if (m->keys[i]) { wiz_dec(m->keys[i]); wiz_dec(m->vals[i]); }
     free(m->keys); free(m->vals);
+  } else if (h->tag == WIZ_TAG_WARRAY) {
+    free(((wiz_warray *)v)->data);
+  } else if (h->tag == WIZ_TAG_WMAP) {
+    wiz_wmap *m = (wiz_wmap *)v;
+    for (size_t i = 0; i < m->cap; i++) if (m->vals[i]) wiz_dec(m->vals[i]);
+    free(m->keys); free(m->vals);
+  } else if (h->tag == WIZ_TAG_ITAB) {
+    wiz_itab *t = (wiz_itab *)v;
+    for (size_t i = 0; i < t->count; i++) wiz_dec(t->strs[i]);
+    free(t->strs); free(t->hashes); free(t->slots);
   } else {
     wiz_ctor *o = (wiz_ctor *)v;
     for (uint32_t i = 0; i < h->size; i++) wiz_dec(o->fields[i]);
@@ -251,16 +292,65 @@ static void wiz_free(wiz_val v) {
   free(h);
 }
 
-/* a shared constant: never freed, and not counted as live (so not a leak) */
+/* A shared constant (a hoisted constant, or the value of a closed top-level definition):
+   never freed, and not counted as live (so not a leak). Everything it reaches that one
+   thread owns (rc > 0) becomes immortal too (rc 0), whatever its kind: the value of a
+   closed definition may hold closures, suspensions, numbers, arrays … An object shared
+   between threads (rc < 0) keeps its count: other threads may be changing it, and it
+   stays alive as long as the constant holds its reference. Iterative (a constant may be
+   a long list). */
 static void wiz_immortal(wiz_val v) {
-  if (WIZ_IS_SCALAR(v)) return;
-  wiz_hdr *h = (wiz_hdr *)v;
-  if (h->rc <= 0) return; /* immortal already (or shared: not a fresh constant) */
-  h->rc = 0;
-  wiz_live--;
-  wiz_untrack(h);
-  if (h->tag < WIZ_TAG_FIRST_SPECIAL)
-    for (uint32_t i = 0; i < h->size; i++) wiz_immortal(((wiz_ctor *)v)->fields[i]);
+  if (WIZ_IS_SCALAR(v) || ((wiz_hdr *)v)->rc <= 0) return;
+  size_t cap = 64, n = 0;
+  wiz_val *st = (wiz_val *)malloc(cap * sizeof(wiz_val));
+  st[n++] = v;
+#define WIZ_PUSH(x) do { wiz_val y_ = (x); if (!WIZ_IS_SCALAR(y_) && ((wiz_hdr *)y_)->rc > 0) { \
+    if (n == cap) { cap *= 2; st = (wiz_val *)realloc(st, cap * sizeof(wiz_val)); } st[n++] = y_; } } while (0)
+  while (n) {
+    wiz_val x = st[--n];
+    wiz_hdr *h = (wiz_hdr *)x;
+    if (h->rc <= 0) continue; /* reached twice, or immortal or shared already */
+    h->rc = 0;
+    wiz_live--;
+    wiz_untrack(h);
+    switch (h->tag) {
+    case WIZ_TAG_CLO: for (uint32_t i = 0; i < h->size; i++) WIZ_PUSH(((wiz_clo *)x)->args[i]); break;
+    case WIZ_TAG_THUNK: { wiz_thunk *t = (wiz_thunk *)x; WIZ_PUSH(t->fn ? t->fn : t->val); break; }
+    case WIZ_TAG_ARRAY: { wiz_array *a = (wiz_array *)x; for (size_t i = 0; i < a->len; i++) WIZ_PUSH(a->data[i]); break; }
+    case WIZ_TAG_MAP: { wiz_map *m = (wiz_map *)x;
+      for (size_t i = 0; i < m->cap; i++)
+        if (m->keys[i]) { WIZ_PUSH(m->keys[i]); WIZ_PUSH(m->vals[i]); }
+      break; }
+    case WIZ_TAG_WMAP: { wiz_wmap *m = (wiz_wmap *)x;
+      for (size_t i = 0; i < m->cap; i++) if (m->vals[i]) WIZ_PUSH(m->vals[i]);
+      break; }
+    case WIZ_TAG_ITAB: { wiz_itab *t = (wiz_itab *)x;
+      for (size_t i = 0; i < t->count; i++) WIZ_PUSH(t->strs[i]);
+      break; }
+    case WIZ_TAG_BIG: case WIZ_TAG_RAW: case WIZ_TAG_EXT: case WIZ_TAG_BYTES: case WIZ_TAG_STR: case WIZ_TAG_WARRAY: break;
+    default: for (uint32_t i = 0; i < h->size; i++) WIZ_PUSH(((wiz_ctor *)x)->fields[i]);
+    }
+  }
+#undef WIZ_PUSH
+  free(st);
+}
+
+/* The value of a closed top-level definition (a CAF), computed on its first use and
+   kept for the rest of the run, immortal. The generated code reads `*slot` itself and
+   calls this only while it is still 0 (no value is 0: scalars are odd). Threads may race
+   to build it: the first to publish wins; a loser's copy stays immortal and unused. A
+   definition that uses itself while it is being built builds itself again (as it did
+   without the cache): it loops exactly when it looped before. */
+WIZ_API wiz_val wiz_caf_init(wiz_val *slot, wiz_val (*build)(void)) {
+  wiz_val v = __atomic_load_n(slot, __ATOMIC_ACQUIRE);
+  if (!v) {
+    wiz_val z = 0;
+    v = build();
+    wiz_immortal(v);
+    if (!__atomic_compare_exchange_n(slot, &z, v, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) v = z;
+  }
+  wiz_inc(v); /* (nothing, unless the value was shared between threads already) */
+  return v;
 }
 
 static void wiz_mark_mt(wiz_val v);
@@ -568,13 +658,16 @@ WIZ_API wiz_val wiz_apply(wiz_val f, uint32_t n, wiz_val *args) {
     wiz_thunk *t = (wiz_thunk *)f;
     /* a thunk shared between threads is forced under one (recursive) lock, and its
        value is shared too; pure code never blocks, so the lock can't deadlock */
-    int shared = WIZ_RC(&t->h) < 0;
+    /* An immortal thunk (part of a constant, which every thread can see) is forced
+       under the lock too, and its value made immortal: the constant keeps it. */
+    int64_t rc = WIZ_RC(&t->h);
+    int shared = rc <= 0;
     if (shared) wiz_thunk_lock();
     if (t->fn) {
       wiz_val g = t->fn;
       t->fn = 0;
       t->val = wiz_apply(g, 1, args);
-      if (shared) wiz_mark_mt(t->val);
+      if (rc < 0) wiz_mark_mt(t->val); else if (rc == 0) wiz_immortal(t->val);
     } else wiz_dec(args[0]);
     wiz_val r = t->val;
     wiz_inc(r);
@@ -1225,6 +1318,449 @@ WIZ_API wiz_val wiz_map_find(wiz_val v, wiz_val k, wiz_val dflt) {
 }
 WIZ_API uint64_t wiz_map_size(wiz_val v) { uint64_t n = ((wiz_map *)v)->count; wiz_dec(v); return n; }
 
+/* ---- unboxed arrays of words (lib/WordArray.wiz): functional, updated in place when
+   unique ----
+   The model is `mk (toList : List (UIntN w))` for w = 8, 32, 64 (`U8Array`, `U32Array`,
+   `U64Array`); these implement its operations, on `width`-byte elements. Each consumes
+   its arguments. Indices are `NatObj`s: one of 2^62 or more (a GMP number) is out of
+   range, as in the model. */
+
+/* an index (consumed): a big number is past every array */
+static uint64_t wiz_index(wiz_val n) {
+  if (WIZ_IS_SCALAR(n)) return WIZ_UNBOX(n);
+  wiz_dec(n);
+  return UINT64_MAX;
+}
+/* a word's bits (consumed); words in these structures are below 2^64 */
+static uint64_t wiz_word_take(wiz_val v) {
+  uint64_t b = 0;
+  if (!wiz_word_in(v, &b)) wiz_panic("a word above 64 bits in a word array or map");
+  wiz_dec(v);
+  return b;
+}
+static wiz_val wiz_warray_new(uint32_t width, size_t cap) {
+  wiz_warray *a = (wiz_warray *)wiz_alloc(sizeof(wiz_warray), WIZ_TAG_WARRAY, 0);
+  a->len = 0; a->cap = cap; a->width = width;
+  a->data = cap ? malloc(cap * width) : NULL;
+  if (cap && !a->data) wiz_panic("out of memory");
+  return (wiz_val)a;
+}
+static inline uint64_t wiz_warray_at(const wiz_warray *a, size_t i) {
+  switch (a->width) {
+  case 1: return ((const uint8_t *)a->data)[i];
+  case 4: return ((const uint32_t *)a->data)[i];
+  default: return ((const uint64_t *)a->data)[i];
+  }
+}
+static inline void wiz_warray_put(wiz_warray *a, size_t i, uint64_t x) {
+  switch (a->width) {
+  case 1: ((uint8_t *)a->data)[i] = (uint8_t)x; break;
+  case 4: ((uint32_t *)a->data)[i] = (uint32_t)x; break;
+  default: ((uint64_t *)a->data)[i] = x;
+  }
+}
+/* room for n elements */
+static void wiz_warray_reserve(wiz_warray *a, size_t n) {
+  if (n <= a->cap) return;
+  size_t c = a->cap ? 2 * a->cap : 8;
+  if (c < n) c = n;
+  a->data = realloc(a->data, c * a->width);
+  if (!a->data) wiz_panic("out of memory");
+  a->cap = c;
+}
+/* v itself if unique, else a copy (with room for `extra` more) */
+static wiz_val wiz_warray_unique(wiz_val v, size_t extra) {
+  wiz_warray *a = (wiz_warray *)v;
+  if (WIZ_RC(&a->h) == 1) return v;
+  wiz_warray *c = (wiz_warray *)wiz_warray_new(a->width, a->len + extra);
+  if (a->len) memcpy(c->data, a->data, a->len * a->width);
+  c->len = a->len;
+  wiz_dec(v);
+  return (wiz_val)c;
+}
+/* the model's constructor: a list of words as an array */
+static wiz_val wiz_warray_of_list(uint32_t width, wiz_val l) {
+  size_t n = 0;
+  for (wiz_val c = l; wiz_tag(c) == 1; c = wiz_field_ref(c, 1)) n++;
+  wiz_warray *a = (wiz_warray *)wiz_warray_new(width, n);
+  for (wiz_val c = l; wiz_tag(c) == 1; c = wiz_field_ref(c, 1)) {
+    uint64_t b = 0;
+    if (!wiz_word_in(wiz_field_ref(c, 0), &b)) wiz_panic("a word above 64 bits in a word array");
+    wiz_warray_put(a, a->len++, b);
+  }
+  wiz_dec(l);
+  return (wiz_val)a;
+}
+WIZ_API wiz_val wiz_u8array_empty(void) { return wiz_warray_new(1, 0); }
+WIZ_API wiz_val wiz_u32array_empty(void) { return wiz_warray_new(4, 0); }
+WIZ_API wiz_val wiz_u64array_empty(void) { return wiz_warray_new(8, 0); }
+WIZ_API wiz_val wiz_u8array_of_list(wiz_val l) { return wiz_warray_of_list(1, l); }
+WIZ_API wiz_val wiz_u32array_of_list(wiz_val l) { return wiz_warray_of_list(4, l); }
+WIZ_API wiz_val wiz_u64array_of_list(wiz_val l) { return wiz_warray_of_list(8, l); }
+/* the model's field: the elements as a list */
+WIZ_API wiz_val wiz_warray_to_list(wiz_val v) {
+  wiz_warray *a = (wiz_warray *)v;
+  wiz_val l = WIZ_BOX(0);
+  for (size_t i = a->len; i > 0; i--) {
+    wiz_val fs[2] = {wiz_word_out(wiz_warray_at(a, i - 1)), l};
+    l = wiz_con(1, 2, fs);
+  }
+  wiz_dec(v);
+  return l;
+}
+WIZ_API wiz_val wiz_warray_size(wiz_val v) { size_t n = ((wiz_warray *)v)->len; wiz_dec(v); return WIZ_BOX(n); }
+/* the element at i, or the default */
+WIZ_API wiz_val wiz_warray_get(wiz_val v, wiz_val i, wiz_val d) {
+  wiz_warray *a = (wiz_warray *)v;
+  uint64_t k = wiz_index(i);
+  wiz_val r = d;
+  if (k < a->len) { r = wiz_word_out(wiz_warray_at(a, k)); wiz_dec(d); }
+  wiz_dec(v);
+  return r;
+}
+/* x at i (nothing changes when i is out of range) */
+WIZ_API wiz_val wiz_warray_set(wiz_val v, wiz_val i, wiz_val x) {
+  uint64_t k = wiz_index(i), b = wiz_word_take(x);
+  if (k >= ((wiz_warray *)v)->len) return v;
+  v = wiz_warray_unique(v, 0);
+  wiz_warray_put((wiz_warray *)v, k, b);
+  return v;
+}
+WIZ_API wiz_val wiz_warray_push(wiz_val v, wiz_val x) {
+  uint64_t b = wiz_word_take(x);
+  v = wiz_warray_unique(v, 1);
+  wiz_warray *a = (wiz_warray *)v;
+  wiz_warray_reserve(a, a->len + 1);
+  wiz_warray_put(a, a->len++, b);
+  return v;
+}
+/* without its last element (empty stays empty) */
+WIZ_API wiz_val wiz_warray_pop(wiz_val v) {
+  if (((wiz_warray *)v)->len == 0) return v;
+  v = wiz_warray_unique(v, 0);
+  ((wiz_warray *)v)->len--;
+  return v;
+}
+/* elements [start, start + n), cut at the end */
+WIZ_API wiz_val wiz_warray_slice(wiz_val v, wiz_val start, wiz_val n) {
+  wiz_warray *a = (wiz_warray *)v;
+  uint64_t s = wiz_index(start), k = wiz_index(n);
+  if (s > a->len) s = a->len;
+  if (k > a->len - s) k = a->len - s;
+  if (s == 0 && WIZ_RC(&a->h) == 1) { a->len = k; return v; }
+  wiz_warray *c = (wiz_warray *)wiz_warray_new(a->width, k);
+  if (k) memcpy(c->data, (char *)a->data + s * a->width, k * a->width);
+  c->len = k;
+  wiz_dec(v);
+  return (wiz_val)c;
+}
+/* a's elements, then b's (one element width: the types agree) */
+WIZ_API wiz_val wiz_warray_append(wiz_val a, wiz_val b) {
+  wiz_warray *y = (wiz_warray *)b;
+  size_t n = y->len;
+  if (n) {
+    a = wiz_warray_unique(a, n);
+    wiz_warray *x = (wiz_warray *)a;
+    wiz_warray_reserve(x, x->len + n);
+    memcpy((char *)x->data + x->len * x->width, y->data, n * x->width);
+    x->len += n;
+  }
+  wiz_dec(b);
+  return a;
+}
+/* For C code (`link_c`, `glue`) given a word array as a Wiz value: its elements, `len`
+   contiguous `uint8_t`/`uint32_t`/`uint64_t`s, borrowed (valid while the caller holds the
+   array, which it must not update meanwhile); and a new array copied from C memory.
+   Part of the C interface whatever WIZ_API is, like `wiz_release`. */
+void *wiz_warray_data(wiz_val v) { return ((wiz_warray *)v)->data; }
+size_t wiz_warray_len(wiz_val v) { return ((wiz_warray *)v)->len; }
+wiz_val wiz_warray_of_c(uint32_t width, const void *p, size_t n) {
+  if (width != 1 && width != 4 && width != 8) wiz_panic("wiz_warray_of_c: width 1, 4 or 8");
+  wiz_warray *a = (wiz_warray *)wiz_warray_new(width, n);
+  if (n) memcpy(a->data, p, n * width);
+  a->len = n;
+  return (wiz_val)a;
+}
+
+/* ---- maps from 64-bit words (lib/WordMap.wiz): functional, updated in place when
+   unique ----
+   The model is `mk (entries : List (U64 × V))` with the keys strictly increasing, so
+   the list read back (`wiz_wmap_to_list`) is sorted. */
+
+static inline uint64_t wiz_mix64(uint64_t x) {
+  x ^= x >> 33; x *= 0xff51afd7ed558ccdULL;
+  x ^= x >> 33; x *= 0xc4ceb9fe1a85ec53ULL;
+  x ^= x >> 33;
+  return x;
+}
+static wiz_wmap *wiz_wmap_alloc(size_t cap) {
+  wiz_wmap *m = (wiz_wmap *)wiz_alloc(sizeof(wiz_wmap), WIZ_TAG_WMAP, 0);
+  m->count = 0; m->cap = cap;
+  m->keys = (uint64_t *)malloc(cap * sizeof(uint64_t));
+  m->vals = (wiz_val *)calloc(cap, sizeof(wiz_val));
+  if (!m->keys || !m->vals) wiz_panic("out of memory");
+  return m;
+}
+WIZ_API wiz_val wiz_wmap_empty(void) { return (wiz_val)wiz_wmap_alloc(8); }
+/* the slot holding k, or the empty slot where it would go */
+static size_t wiz_wmap_slot(const wiz_wmap *m, uint64_t k) {
+  size_t mask = m->cap - 1, i = wiz_mix64(k) & mask;
+  while (m->vals[i] && m->keys[i] != k) i = (i + 1) & mask;
+  return i;
+}
+static wiz_val wiz_wmap_unique(wiz_val v) {
+  wiz_wmap *m = (wiz_wmap *)v;
+  if (WIZ_RC(&m->h) == 1) return v;
+  wiz_wmap *c = wiz_wmap_alloc(m->cap);
+  c->count = m->count;
+  memcpy(c->keys, m->keys, m->cap * sizeof(uint64_t));
+  for (size_t i = 0; i < m->cap; i++) if ((c->vals[i] = m->vals[i])) wiz_inc(m->vals[i]);
+  wiz_dec(v);
+  return (wiz_val)c;
+}
+static void wiz_wmap_put(wiz_wmap *m, uint64_t k, wiz_val x) {
+  if (2 * (m->count + 1) > m->cap) {
+    size_t oc = m->cap;
+    uint64_t *ok = m->keys;
+    wiz_val *ov = m->vals;
+    m->cap = 2 * oc;
+    m->keys = (uint64_t *)malloc(m->cap * sizeof(uint64_t));
+    m->vals = (wiz_val *)calloc(m->cap, sizeof(wiz_val));
+    if (!m->keys || !m->vals) wiz_panic("out of memory");
+    for (size_t i = 0; i < oc; i++)
+      if (ov[i]) { size_t j = wiz_wmap_slot(m, ok[i]); m->keys[j] = ok[i]; m->vals[j] = ov[i]; }
+    free(ok); free(ov);
+  }
+  size_t i = wiz_wmap_slot(m, k);
+  if (m->vals[i]) wiz_dec(m->vals[i]); else { m->count++; m->keys[i] = k; }
+  m->vals[i] = x;
+}
+WIZ_API wiz_val wiz_wmap_insert(wiz_val v, wiz_val k, wiz_val x) {
+  uint64_t key = wiz_word_take(k);
+  v = wiz_wmap_unique(v);
+  wiz_wmap_put((wiz_wmap *)v, key, x);
+  return v;
+}
+/* the value for k as an `Option` */
+WIZ_API wiz_val wiz_wmap_find(wiz_val v, wiz_val k) {
+  wiz_wmap *m = (wiz_wmap *)v;
+  size_t i = wiz_wmap_slot(m, wiz_word_take(k));
+  wiz_val r = WIZ_BOX(0);
+  if (m->vals[i]) { wiz_val fs[1] = {m->vals[i]}; wiz_inc(fs[0]); r = wiz_con(1, 1, fs); }
+  wiz_dec(v);
+  return r;
+}
+/* the value for k, or the default */
+WIZ_API wiz_val wiz_wmap_find_d(wiz_val v, wiz_val k, wiz_val d) {
+  wiz_wmap *m = (wiz_wmap *)v;
+  size_t i = wiz_wmap_slot(m, wiz_word_take(k));
+  wiz_val r = d;
+  if (m->vals[i]) { r = m->vals[i]; wiz_inc(r); wiz_dec(d); }
+  wiz_dec(v);
+  return r;
+}
+WIZ_API int wiz_wmap_contains(wiz_val v, wiz_val k) {
+  wiz_wmap *m = (wiz_wmap *)v;
+  int r = m->vals[wiz_wmap_slot(m, wiz_word_take(k))] != 0;
+  wiz_dec(v);
+  return r;
+}
+/* without k: empty its slot, then shift back the entries after it that may move */
+WIZ_API wiz_val wiz_wmap_erase(wiz_val v, wiz_val k) {
+  uint64_t key = wiz_word_take(k);
+  if (!((wiz_wmap *)v)->vals[wiz_wmap_slot((wiz_wmap *)v, key)]) return v;
+  v = wiz_wmap_unique(v);
+  wiz_wmap *m = (wiz_wmap *)v;
+  size_t mask = m->cap - 1, i = wiz_wmap_slot(m, key);
+  wiz_dec(m->vals[i]);
+  m->vals[i] = 0;
+  m->count--;
+  for (size_t j = (i + 1) & mask; m->vals[j]; j = (j + 1) & mask) {
+    size_t home = wiz_mix64(m->keys[j]) & mask;
+    /* the entry at j may fill the hole at i unless its home lies in (i, j] (cyclically) */
+    if (((j - home) & mask) >= ((j - i) & mask)) {
+      m->keys[i] = m->keys[j]; m->vals[i] = m->vals[j]; m->vals[j] = 0;
+      i = j;
+    }
+  }
+  return v;
+}
+WIZ_API wiz_val wiz_wmap_size(wiz_val v) { size_t n = ((wiz_wmap *)v)->count; wiz_dec(v); return WIZ_BOX(n); }
+typedef struct { uint64_t k; wiz_val v; } wiz_wmap_ent;
+static int wiz_wmap_ent_cmp(const void *a, const void *b) {
+  uint64_t x = ((const wiz_wmap_ent *)a)->k, y = ((const wiz_wmap_ent *)b)->k;
+  return x < y ? -1 : x > y;
+}
+/* the model's field: the entries as pairs, by increasing key */
+WIZ_API wiz_val wiz_wmap_to_list(wiz_val v) {
+  wiz_wmap *m = (wiz_wmap *)v;
+  wiz_wmap_ent *es = (wiz_wmap_ent *)malloc((m->count ? m->count : 1) * sizeof(wiz_wmap_ent));
+  size_t n = 0;
+  for (size_t i = 0; i < m->cap; i++) if (m->vals[i]) { es[n].k = m->keys[i]; es[n].v = m->vals[i]; n++; }
+  qsort(es, n, sizeof(wiz_wmap_ent), wiz_wmap_ent_cmp);
+  wiz_val l = WIZ_BOX(0);
+  for (size_t i = n; i > 0; i--) {
+    wiz_inc(es[i - 1].v);
+    wiz_val p[2] = {wiz_word_out(es[i - 1].k), es[i - 1].v};
+    wiz_val fs[2] = {wiz_con(0, 2, p), l};
+    l = wiz_con(1, 2, fs);
+  }
+  free(es);
+  wiz_dec(v);
+  return l;
+}
+/* the model's constructor: a list of (key, value) pairs as a map */
+WIZ_API wiz_val wiz_wmap_of_list(wiz_val l) {
+  wiz_wmap *m = wiz_wmap_alloc(8);
+  for (wiz_val c = l; wiz_tag(c) == 1; c = wiz_field_ref(c, 1)) {
+    wiz_val p = wiz_field_ref(c, 0), k = wiz_field_ref(p, 0), x = wiz_field_ref(p, 1);
+    uint64_t b = 0;
+    if (!wiz_word_in(k, &b)) wiz_panic("a key above 64 bits in a word map");
+    wiz_inc(x);
+    wiz_wmap_put(m, b, x);
+  }
+  wiz_dec(l);
+  return (wiz_val)m;
+}
+
+/* ---- intern tables (lib/Intern.wiz): functional, updated in place when unique ----
+   The model is `mk (strs : List String)`, distinct strings in the order they were
+   interned; a string's id is its index. A `String` is `String.mk (List Char)` and a
+   `Char` is `Char.mk Nat` (see `wiz_in_string`): hashed and compared by code points. */
+
+static uint64_t wiz_string_hash(wiz_val s) {
+  uint64_t h = 1469598103934665603ULL;
+  for (wiz_val l = wiz_field_ref(s, 0); wiz_tag(l) == 1; l = wiz_field_ref(l, 1)) {
+    wiz_val cp = wiz_field_ref(wiz_field_ref(l, 0), 0);
+    h ^= WIZ_IS_SCALAR(cp) ? WIZ_UNBOX(cp) : mpz_get_ui(((wiz_big *)cp)->z);
+    h *= 1099511628211ULL;
+  }
+  return h;
+}
+static int wiz_nat_same(wiz_val a, wiz_val b) {
+  if (WIZ_IS_SCALAR(a) || WIZ_IS_SCALAR(b)) return a == b;
+  return mpz_cmp(((wiz_big *)a)->z, ((wiz_big *)b)->z) == 0;
+}
+static int wiz_string_same(wiz_val a, wiz_val b) {
+  if (a == b) return 1;
+  wiz_val x = wiz_field_ref(a, 0), y = wiz_field_ref(b, 0);
+  for (; wiz_tag(x) == 1 && wiz_tag(y) == 1; x = wiz_field_ref(x, 1), y = wiz_field_ref(y, 1))
+    if (x == y) return 1; /* a shared tail */
+    else if (!wiz_nat_same(wiz_field_ref(wiz_field_ref(x, 0), 0), wiz_field_ref(wiz_field_ref(y, 0), 0))) return 0;
+  return wiz_tag(x) == wiz_tag(y);
+}
+static wiz_itab *wiz_itab_alloc(size_t scap, size_t cap) {
+  wiz_itab *t = (wiz_itab *)wiz_alloc(sizeof(wiz_itab), WIZ_TAG_ITAB, 0);
+  t->count = 0; t->scap = scap; t->cap = cap;
+  t->strs = (wiz_val *)malloc(scap * sizeof(wiz_val));
+  t->hashes = (uint64_t *)malloc(scap * sizeof(uint64_t));
+  t->slots = (uint32_t *)calloc(cap, sizeof(uint32_t));
+  if (!t->strs || !t->hashes || !t->slots) wiz_panic("out of memory");
+  return t;
+}
+WIZ_API wiz_val wiz_itab_empty(void) { return (wiz_val)wiz_itab_alloc(8, 16); }
+/* the index slot holding s (hash h), or the empty slot where it would go */
+static size_t wiz_itab_slot(const wiz_itab *t, uint64_t h, wiz_val s) {
+  size_t mask = t->cap - 1, i = wiz_mix64(h) & mask;
+  for (; t->slots[i]; i = (i + 1) & mask) {
+    uint32_t id = t->slots[i] - 1;
+    if (t->hashes[id] == h && wiz_string_same(t->strs[id], s)) break;
+  }
+  return i;
+}
+static wiz_val wiz_itab_unique(wiz_val v) {
+  wiz_itab *t = (wiz_itab *)v;
+  if (WIZ_RC(&t->h) == 1) return v;
+  wiz_itab *c = wiz_itab_alloc(t->scap, t->cap);
+  c->count = t->count;
+  for (size_t i = 0; i < t->count; i++) { c->strs[i] = t->strs[i]; wiz_inc(t->strs[i]); }
+  memcpy(c->hashes, t->hashes, t->count * sizeof(uint64_t));
+  memcpy(c->slots, t->slots, t->cap * sizeof(uint32_t));
+  wiz_dec(v);
+  return (wiz_val)c;
+}
+/* s's id, adding s (consumed) if it is new */
+static uint32_t wiz_itab_add(wiz_itab *t, wiz_val s) {
+  uint64_t h = wiz_string_hash(s);
+  size_t i = wiz_itab_slot(t, h, s);
+  if (t->slots[i]) { wiz_dec(s); return t->slots[i] - 1; }
+  if (t->count >= 0xFFFFFFFEu) wiz_panic("an intern table with 2^32 strings");
+  if (t->count == t->scap) {
+    t->scap *= 2;
+    t->strs = (wiz_val *)realloc(t->strs, t->scap * sizeof(wiz_val));
+    t->hashes = (uint64_t *)realloc(t->hashes, t->scap * sizeof(uint64_t));
+    if (!t->strs || !t->hashes) wiz_panic("out of memory");
+  }
+  uint32_t id = (uint32_t)t->count++;
+  t->strs[id] = s; t->hashes[id] = h;
+  if (2 * t->count > t->cap) {
+    free(t->slots);
+    t->cap *= 2;
+    t->slots = (uint32_t *)calloc(t->cap, sizeof(uint32_t));
+    if (!t->slots) wiz_panic("out of memory");
+    for (uint32_t k = 0; k < t->count; k++) {
+      size_t j = wiz_mix64(t->hashes[k]) & (t->cap - 1);
+      while (t->slots[j]) j = (j + 1) & (t->cap - 1);
+      t->slots[j] = k + 1;
+    }
+  } else t->slots[i] = id + 1;
+  return id;
+}
+/* (the table with s, s's id) */
+WIZ_API wiz_val wiz_itab_intern(wiz_val v, wiz_val s) {
+  wiz_itab *t = (wiz_itab *)v;
+  uint64_t h = wiz_string_hash(s);
+  uint32_t id;
+  size_t i = wiz_itab_slot(t, h, s);
+  if (t->slots[i]) { id = t->slots[i] - 1; wiz_dec(s); }
+  else { v = wiz_itab_unique(v); id = wiz_itab_add((wiz_itab *)v, s); }
+  wiz_val p[2] = {v, WIZ_BOX(id)};
+  return wiz_con(0, 2, p);
+}
+/* s's id as an `Option` (the table is unchanged) */
+WIZ_API wiz_val wiz_itab_find(wiz_val v, wiz_val s) {
+  wiz_itab *t = (wiz_itab *)v;
+  size_t i = wiz_itab_slot(t, wiz_string_hash(s), s);
+  wiz_val r = WIZ_BOX(0);
+  if (t->slots[i]) { wiz_val fs[1] = {WIZ_BOX(t->slots[i] - 1)}; r = wiz_con(1, 1, fs); }
+  wiz_dec(v); wiz_dec(s);
+  return r;
+}
+/* the string with this id (a `U32`), or "" */
+WIZ_API wiz_val wiz_itab_lookup(wiz_val v, wiz_val id) {
+  wiz_itab *t = (wiz_itab *)v;
+  uint64_t k = wiz_word_take(id);
+  wiz_val r;
+  if (k < t->count) { r = t->strs[k]; wiz_inc(r); }
+  else { wiz_val fs[1] = {WIZ_BOX(0)}; r = wiz_con(0, 1, fs); }
+  wiz_dec(v);
+  return r;
+}
+WIZ_API wiz_val wiz_itab_size(wiz_val v) { size_t n = ((wiz_itab *)v)->count; wiz_dec(v); return WIZ_BOX(n); }
+/* the model's field: the strings, by id */
+WIZ_API wiz_val wiz_itab_to_list(wiz_val v) {
+  wiz_itab *t = (wiz_itab *)v;
+  wiz_val l = WIZ_BOX(0);
+  for (size_t i = t->count; i > 0; i--) {
+    wiz_inc(t->strs[i - 1]);
+    wiz_val fs[2] = {t->strs[i - 1], l};
+    l = wiz_con(1, 2, fs);
+  }
+  wiz_dec(v);
+  return l;
+}
+/* the model's constructor: distinct strings (the module keeps them so), by id */
+WIZ_API wiz_val wiz_itab_of_list(wiz_val l) {
+  wiz_itab *t = wiz_itab_alloc(8, 16);
+  for (wiz_val c = l; wiz_tag(c) == 1; c = wiz_field_ref(c, 1)) {
+    wiz_val s = wiz_field_ref(c, 0);
+    wiz_inc(s);
+    wiz_itab_add(t, s);
+  }
+  wiz_dec(l);
+  return (wiz_val)t;
+}
+
 WIZ_API void wiz_io_write_file(const char *path, const char *text) {
   FILE *f = fopen(path, "wb");
   if (f) { fputs(text, f); fclose(f); }
@@ -1274,6 +1810,19 @@ WIZ_API double wiz_f64_div(double a, double b) { return a / b; }
 WIZ_API int wiz_f64_lt(double a, double b) { return a < b; }
 WIZ_API const char *wiz_f64_show(double a) { static __thread char buf[64]; snprintf(buf, sizeof buf, "%.17g", a); return buf; }
 WIZ_API const char *wiz_nat_show(uint64_t a) { static __thread char buf[32]; snprintf(buf, sizeof buf, "%llu", (unsigned long long)a); return buf; }
+
+/* (P2) The step budget of a proof's read-back in the self-hosted toolchain (selfhost/Kernel.wiz,
+   `forceProof`; `Budget` in Wiz/Core/Term.lean is the Lean frontend's): a counter behind a
+   pure interface, as in Lean. `start` begins a budget of `steps` closure instantiations
+   (1: it did; 0: one is already running, the caller counts on it), `tick` takes one step
+   (1, or 0 once it ran out; always 1 when no budget runs), `end` stops it (1: it did not
+   run out). Only the read-back of a suspended proof starts one, so the kernel's own
+   evaluation never finds one running. (Per thread, like the read-back.) */
+static __thread int wiz_proof_on = 0;
+static __thread uint64_t wiz_proof_left = 0;
+WIZ_API int wiz_proof_start(uint64_t steps) { if (wiz_proof_on) return 0; wiz_proof_on = 1; wiz_proof_left = steps + 1; return 1; }
+WIZ_API int wiz_proof_tick(uint64_t x) { (void)x; if (!wiz_proof_on) return 1; if (wiz_proof_left <= 1) { wiz_proof_left = 0; return 0; } wiz_proof_left--; return 1; }
+WIZ_API int wiz_proof_end(uint64_t x) { (void)x; wiz_proof_on = 0; return wiz_proof_left > 0; }
 
 /* ---- system interfaces (stage 9h, lib/Sys.wiz): processes, environment, files ----
 
@@ -1583,9 +2132,10 @@ WIZ_API uint64_t wiz_sys_file_flush(void *p) {
 }
 WIZ_API uint64_t wiz_sys_file_close(void *p) {
   wiz_sys_file *h = (wiz_sys_file *)p;
-  if (!h->f) return EBADF;
-  int r = h->owned ? fclose(h->f) : fflush(h->f);
-  h->f = NULL;
+  /* take the stream atomically: two threads closing one handle close it once */
+  FILE *f = __atomic_exchange_n(&h->f, (FILE *)NULL, __ATOMIC_ACQ_REL);
+  if (!f) return EBADF;
+  int r = h->owned ? fclose(f) : fflush(f);
   return wiz_sys_status(r == 0 ? 0 : -1);
 }
 
@@ -2107,9 +2657,11 @@ WIZ_API void wiz_sys_fd_set_pty(void *p) { ((wiz_sys_fdh *)p)->eio_eof = 1; }
 WIZ_API void wiz_sys_fd_keep(void *p) { (void)p; }
 WIZ_API uint64_t wiz_sys_fd_close(void *p) {
   wiz_sys_fdh *h = (wiz_sys_fdh *)p;
-  if (h->fd < 0) return EBADF;
-  int r = h->owned ? close(h->fd) : 0;
-  h->fd = -1;
+  /* take the number atomically: two threads closing one handle close it once (never a
+     second close(2) of a number another thread may have reused) */
+  int fd = __atomic_exchange_n(&h->fd, -1, __ATOMIC_ACQ_REL);
+  if (fd < 0) return EBADF;
+  int r = h->owned ? close(fd) : 0;
   return wiz_sys_status(r);
 }
 /* a pipe: (read end) + 2^32 * (write end), both close-on-exec */
@@ -2317,7 +2869,11 @@ static void wiz_mark_mt(wiz_val v) {
       for (size_t i = 0; i < m->cap; i++)
         if (m->keys[i]) { WIZ_PUSH(m->keys[i]); WIZ_PUSH(m->vals[i]); }
       break; }
-    case WIZ_TAG_BIG: case WIZ_TAG_RAW: case WIZ_TAG_EXT: case WIZ_TAG_BYTES: case WIZ_TAG_STR: break;
+    case WIZ_TAG_WMAP: { wiz_wmap *m = (wiz_wmap *)x;
+      for (size_t i = 0; i < m->cap; i++) if (m->vals[i]) WIZ_PUSH(m->vals[i]);
+      break; }
+    case WIZ_TAG_ITAB: { wiz_itab *t = (wiz_itab *)x; for (size_t i = 0; i < t->count; i++) WIZ_PUSH(t->strs[i]); break; }
+    case WIZ_TAG_BIG: case WIZ_TAG_RAW: case WIZ_TAG_EXT: case WIZ_TAG_BYTES: case WIZ_TAG_STR: case WIZ_TAG_WARRAY: break;
     default: for (uint32_t i = 0; i < h->size; i++) WIZ_PUSH(((wiz_ctor *)x)->fields[i]);
     }
   }
@@ -2522,6 +3078,24 @@ WIZ_API wiz_val wiz_mvar_read(wiz_val mv) { return wiz_mvar_take_(mv, 1); }
 /* the hole is a token with nothing in it */
 WIZ_API wiz_val wiz_mvar_take_hole(wiz_val mv) { return wiz_pair(wiz_mvar_take_(mv, 0), WIZ_BOX(0)); }
 WIZ_API void wiz_mvar_fill(wiz_val mv, wiz_val hole, wiz_val a) { wiz_dec(hole); wiz_mvar_put(mv, a); }
+
+/* lib/Handle.wiz: the obligation to release a handle is an empty box (as an MVar hole) */
+WIZ_API wiz_val wiz_handle_own(void) { return WIZ_BOX(0); }
+WIZ_API void wiz_handle_disown(wiz_val tok) { wiz_dec(tok); }
+/* lib/Ref.wiz: a cell is an MVar that stays full; its ownership token is a box with
+   nothing in it (as an MVar hole). The token's index (the cell's value) is a ghost: the
+   types in Ref.wiz are trusted to keep it equal to what the cell holds. */
+WIZ_API wiz_val wiz_ref_new(wiz_val a) { return wiz_pair(wiz_mvar_new_full(a), WIZ_BOX(0)); }
+WIZ_API wiz_val wiz_ref_read(wiz_val mv, wiz_val tok) { return wiz_pair(wiz_mvar_take_(mv, 1), wiz_pair(WIZ_BOX(0), tok)); }
+WIZ_API wiz_val wiz_ref_write(wiz_val mv, wiz_val a, wiz_val tok) {
+  wiz_inc(mv); /* take_ and put each consume one reference */
+  wiz_dec(wiz_mvar_take_(mv, 0));
+  wiz_mvar_put(mv, a);
+  return tok;
+}
+/* the value goes now (take_ empties the cell and consumes our reference to it); the cell
+   itself when the last Loc does */
+WIZ_API void wiz_ref_free(wiz_val mv, wiz_val tok) { wiz_dec(tok); wiz_dec(wiz_mvar_take_(mv, 0)); }
 
 /* a lock is a binary semaphore, so a guard may be released by another thread */
 typedef struct {

@@ -223,6 +223,8 @@ def SatT.decideEq (g : Nat) (lhs rhs : Expr) : TacticM Unit :=
 
 inductive SatT.St where
   | mk (memo : List (Expr × Nat)) (nodes : List Sat.GNode) (vals : List Expr) (next : Nat)
+       -- (28d) each node's proof that its gate holds, when it is not `refl` (a lemma)
+       (pfs : List (Option Expr))
 
 def SatT.memoFind (e : Expr) : List (Expr × Nat) → Option Nat
   | .nil => .none
@@ -231,12 +233,16 @@ def SatT.memoFind (e : Expr) : List (Expr × Nat) → Option Nat
     | .false => SatT.memoFind e ps
 
 def SatT.St.find (e : Expr) : SatT.St → Option Nat
-  | .mk memo _ _ _ => SatT.memoFind e memo
+  | .mk memo _ _ _ _ => SatT.memoFind e memo
 def SatT.St.remember (e : Expr) (i : Nat) : SatT.St → SatT.St
-  | .mk memo nodes vals next => .mk (.cons (e, i) memo) nodes vals next
+  | .mk memo nodes vals next pfs => .mk (.cons (e, i) memo) nodes vals next pfs
 -- a new node `gate` whose value is `e`
 def SatT.St.add (e : Expr) (gate : Sat.Gate) : SatT.St → Nat × SatT.St
-  | .mk memo nodes vals next => (next, .mk (.cons (e, next) memo) (.cons (.mk next gate) nodes) (.cons e vals) (Nat.succ next))
+  | .mk memo nodes vals next pfs => (next, .mk (.cons (e, next) memo) (.cons (.mk next gate) nodes) (.cons e vals) (Nat.succ next) (.cons .none pfs))
+-- … with `pf` as the proof of its gate (28d: a bit of a word operation, by a lemma)
+def SatT.St.addP (e : Expr) (gate : Sat.Gate) (pf : Expr) : SatT.St → Nat × SatT.St
+  | .mk memo nodes vals next pfs => (next, .mk (.cons (e, next) memo) (.cons (.mk next gate) nodes) (.cons e vals) (Nat.succ next) (.cons (.some pf) pfs))
+def SatT.St.empty : SatT.St := .mk .nil .nil .nil 0 .nil
 
 -- `f` applied to variables `k-1 … 0`, under `k` binders
 def SatT.varsFrom : Nat → List Expr
@@ -347,21 +353,26 @@ def SatT.gateProofE : Sat.Gate → Expr → Expr
   | _, e => .app (.const "Sat.eqRefl") e
 -- the proof that every gate holds under `σ` (each by `refl` at the node's own subterm);
 -- `nodesC` is the node list (a constant), and the tail after node `i` is `List.dropN i nodesC`
-def SatT.holdsE (σ nodesC : Expr) : Nat → List Sat.GNode → List Expr → Expr
-  | _, .nil, _ => .app (.const "Sat.holdsNil") σ
-  | i, .cons (.mk v gt) ns, .cons e es =>
+def SatT.pfOr (gt : Sat.Gate) (e : Expr) : Option Expr → Expr
+  | .some p => p
+  | .none => SatT.gateProofE gt e
+def SatT.holdsE (σ nodesC : Expr) : Nat → List Sat.GNode → List Expr → List (Option Expr) → Expr
+  | _, .nil, _, _ => .app (.const "Sat.holdsNil") σ
+  | i, .cons (.mk v gt) ns, .cons e es, .cons p ps =>
     let tl := Expr.mkApp (.const "List.dropN") (.cons (.const "Sat.GNode") (.cons (.lit (Nat.succ i)) (.cons nodesC .nil)));
     Expr.mkApp (.const "Sat.holdsCons") (.cons σ (.cons (.lit v) (.cons (SatT.gateE gt)
-      (.cons tl (.cons (SatT.gateProofE gt e) (.cons (SatT.holdsE σ nodesC (Nat.succ i) ns es) .nil))))))
-  | _, .cons _ _, .nil => .const "Sat.holdsNil"
+      (.cons tl (.cons (SatT.pfOr gt e p) (.cons (SatT.holdsE σ nodesC (Nat.succ i) ns es ps) .nil))))))
+  | _, _, _, _ => .const "Sat.holdsNil"
 
 -- the nodes, newest first, with their values in the same order
 def SatT.St.nodes : SatT.St → List Sat.GNode
-  | .mk _ nodes _ _ => nodes
+  | .mk _ nodes _ _ _ => nodes
 def SatT.St.vals : SatT.St → List Expr
-  | .mk _ _ vals _ => vals
+  | .mk _ _ vals _ _ => vals
 def SatT.St.next : SatT.St → Nat
-  | .mk _ _ _ next => next
+  | .mk _ _ _ next _ => next
+def SatT.St.pfs : SatT.St → List (Option Expr)
+  | .mk _ _ _ _ pfs => pfs
 -- the values by node number (oldest first)
 def SatT.revE : List Expr → List Expr → List Expr
   | .nil, acc => acc
@@ -402,22 +413,26 @@ def SatT.solveDag (g : Nat) (native : Bool) (out : Nat) (st : SatT.St) (close : 
     σ ← TacticM.define g (.const "Sat.Env") (.app (.const "Sat.envOf") (SatT.exprsE (.const "Bool") (SatT.revE (SatT.St.vals st) .nil)));
     nodesC ← TacticM.define g (.app (.const "List") (.const "Sat.GNode")) (SatT.gnodesE nodes);
     hE ← SatT.checkProof g native nodesC out proofE;
-    TacticM.assign g (close nodesC proofE hE σ (SatT.holdsE σ nodesC 0 nodes (SatT.St.vals st)))
+    -- (not checked now: the kernel checks the declaration, which is where it costs)
+    TacticM.assignLate g (close nodesC proofE hE σ (SatT.holdsE σ nodesC 0 nodes (SatT.St.vals st) (SatT.St.pfs st)))
 
-def SatT.decideDag (g : Nat) (native : Bool) (lhs rhs : Expr) : TacticM Unit := match SatT.isConst "Bool.true" rhs with
+-- (from `st0`: nodes another tactic has already made, e.g. `bv_decide`'s comparisons)
+def SatT.decideDagFrom (g : Nat) (native : Bool) (st0 : SatT.St) (lhs rhs : Expr) : TacticM Unit := match SatT.isConst "Bool.true" rhs with
   | .true => do
-    r ← SatT.node g 1000 lhs (.mk .nil .nil .nil 0);
+    r ← SatT.node g 1000 lhs st0;
     SatT.solveDag g native r.1 r.2 (fun nodesE proofE hE σ holdsE =>
       Expr.mkApp (.const "Sat.dag_sound") (.cons nodesE (.cons (.lit r.1) (.cons proofE (.cons hE
         (.cons σ (.cons holdsE .nil)))))))
   | .false => do
-    ra ← SatT.node g 1000 lhs (.mk .nil .nil .nil 0);
+    ra ← SatT.node g 1000 lhs st0;
     rb ← SatT.node g 1000 rhs ra.2;
     let iffE := Expr.mkApp (.const "Sat.boolEq") (.cons lhs (.cons rhs .nil));
     let ro := SatT.St.add iffE (.iff ra.1 rb.1) rb.2;
     SatT.solveDag g native ro.1 ro.2 (fun nodesE proofE hE σ holdsE =>
       Expr.mkApp (.const "Sat.dag_eq") (.cons nodesE (.cons (.lit ro.1) (.cons proofE (.cons hE
         (.cons σ (.cons holdsE (.cons lhs (.cons rhs (.cons (.app (.const "Sat.eqRefl") iffE) .nil))))))))))
+
+def SatT.decideDag (g : Nat) (native : Bool) (lhs rhs : Expr) : TacticM Unit := SatT.decideDagFrom g native SatT.St.empty lhs rhs
 
 def SatT.run (native : Bool) : TacticM Unit := do
   g0 ← TacticM.mainGoal;
@@ -436,7 +451,7 @@ syntax (name := satDecide) "sat_decide" : tactic
 def Tactic.satDecide : Tactic := fun _ => SatT.run .false
 attribute [tactic tactic.satDecide] Tactic.satDecide
 -- (28e) the same, with the LRAT check run compiled instead of by the kernel: an axiom
--- `X.satK.native✝` (trusted: erasure and the interpreter, as `native_refl`; not the solver)
+-- `X.satK.native✝` (trusted: erasure and the interpreter, as the 27a evaluator; not the solver)
 syntax (name := satDecideNative) "sat_decide_native" : tactic
 def Tactic.satDecideNative : Tactic := fun _ => SatT.run .true
 attribute [tactic tactic.satDecideNative] Tactic.satDecideNative

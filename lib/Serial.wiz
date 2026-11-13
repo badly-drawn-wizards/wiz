@@ -117,9 +117,9 @@ def SerialSettings.matches (s : SerialSettings) (c : SerialConfig) : Bool :=
 
 -- a result with bit 63 for an error
 def Serial.checkHigh (what : String) (x : IO Nat) : EIO Nat :=
-  IO.bind x (fun n => IO.pure (match Nat.lt n 9223372036854775808 with
+  IO.bind x (fun n => IO.pure (match Nat.lt n 0x8000000000000000 with
     | .true => .ok n
-    | .false => .error (Sys.message what (Nat.sub n 9223372036854775808))))
+    | .false => .error (Sys.message what (Nat.sub n 0x8000000000000000))))
 
 -- set a terminal to raw mode with this configuration (read back: an error if the device
 -- did not keep it)

@@ -133,6 +133,11 @@ partial def runDescr : ParserDescr → P (Array Syntax)
         setPos t'.stop
         pure #[.node { start := t.start, stop := t'.stop } "antiquot" #[tokSyntax t, tokSyntax t']]
       | _ => failAt i "identifier"
+    -- a word that a `term`/`command` rule reserved: say so (`ParseError.explainKeywords`
+    -- names the rule when the error is reported, 13o)
+    | some { tok := .atom v, .. } =>
+      if v != "" && isIdStart v.front && v.all isIdRest then failAt i s!"identifier ('{v}' is a keyword)"
+      else failAt i "identifier"
     | _ => failAt i "identifier"
   | .num => do
     let i ← nextPos
@@ -239,6 +244,7 @@ partial def categoryLoop (c : Name) (rbp : Nat) : P Syntax := do
   let tables := (← ctx).tables
   let some cat := tables.cats[c]? | failAt (← nextPos) s!"declared syntax category {c}"
   --<sol
+  let errBefore := (← state).err
   let mut leading := #[]
   for lp in cat.leading, i in [0:cat.leading.size] do
     if lp.prec ≥ rbp then
@@ -246,7 +252,12 @@ partial def categoryLoop (c : Name) (rbp : Nat) : P Syntax := do
       if let some cand ← tryAlternative (run >>= fun r => pure r[0]!)
           lp.prec lp.priority i then
         leading := leading.push cand
-  let some best := Candidate.best leading | failAt (← nextPos) c
+  let some best := Candidate.best leading | do
+    -- nothing got past the first token: say "expected term", not every token a term
+    -- can start with
+    let p ← nextPos
+    collapseErrAt p errBefore c
+    failAt p c
   commit best
   trailingLoop cat rbp best.stx best.prec
   --|ex
@@ -257,6 +268,7 @@ partial def categoryLoop (c : Name) (rbp : Nat) : P Syntax := do
 partial def trailingLoop (cat : Category) (rbp : Nat) (lhs : Syntax) (lhsPrec : Nat) :
     P Syntax := do
   let start := (← state).pos
+  let errBefore := (← state).err
   let mut cands := #[]
   for tp in cat.trailing, i in [0:cat.trailing.size] do
     if tp.prec ≥ rbp && tp.lhsPrec ≤ lhsPrec then
@@ -267,7 +279,12 @@ partial def trailingLoop (cat : Category) (rbp : Nat) (lhs : Syntax) (lhsPrec : 
       if let some cand ← tryAlternative p tp.prec tp.priority i then
         if cand.stop > start then cands := cands.push cand
   match Candidate.best cands with
-  | none => pure lhs
+  | none =>
+    -- nothing continues the phrase here: what a continuation would have needed at the
+    -- next token (an operator, an argument) is not what to report if the parse fails
+    -- there ("expected ')'", not every infix operator)
+    markSecondaryAt (← nextPos) errBefore
+    pure lhs
   | some best =>
     commit best
     trailingLoop cat rbp best.stx best.prec

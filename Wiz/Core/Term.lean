@@ -75,6 +75,11 @@ inductive Term (R : Type) where
   | empty (level : Level)
   /-- `absurd t : motive`, given `t : empty l` -/
   | absurd (motive t : Term R)
+  /-- `let () := u; b`: the unit eliminator (linear logic's 1-elimination, linear-case
+  stage 2). `u : Unit_l` is consumed (its usage counts), then `b`. It computes to `b` by
+  η (every `u` is `()`), but compiled code evaluates `u` first: a consumer stashed in a
+  unit runs. The only way a linear `Unit` is used up. -/
+  | letUnit (u b : Term R)
   -- Stage 4c: observational equality.
   /-- `a = b` at type `A : Type u`. A proposition that *computes* by `A`. -/
   | eq (A a b : Term R)
@@ -136,10 +141,12 @@ inductive Term (R : Type) where
   `f : (s : Size) → ((j : Size< s) → (i : I) → (y : μ^j D i) → P i y) → (i : I) → (x : μ^s D i) → P i x`.
   It unfolds only on a constructor. -/
   | sfix (l : Level) (I D : Term R) (v : Level) (P f s i x : Term R)
-  /-- sized case analysis: `scase P m s i x : P i x` for `x : μ^s D i`, where
-  `m : (j : Size< s) → (i : I) → (xs : ⟦D⟧ (μ^j D) i) → P i (con xs)`: the fields have
-  some size below `s` -/
-  | scase (l : Level) (I D : Term R) (v : Level) (P m s i x : Term R)
+  /-- sized case analysis at a quantity: `scase_q P m s i x : P i x` for `x : μ^s D i`, where
+  `m : (j : Size< s) → (i : I) → (q xs : ⟦D⟧ (μ^j D) i) → P i (con xs)`: the fields have
+  some size below `s`, and the payload is handed over at `q` (K1 of the linear-case
+  design: `q = ω` is the ordinary case, `q = 1` takes a linear value apart). `q` is a
+  quantity term, as `split`'s. -/
+  | scase (l : Level) (q : Term R) (I D : Term R) (v : Level) (P m s i x : Term R)
   /-- a ν constructor: `cocon xs : ν^{↑s} D i` for `xs : ⟦D⟧ (ν^s D) i` -/
   | cocon (x : Term R)
   /-- sized corecursion: `scofix A f s i a : ν^s D i`, where
@@ -242,6 +249,7 @@ don't need a case per constructor. -/
   | .unit l => return .unit (← fl l)
   | .empty l => return .empty (← fl l)
   | .absurd a b => return .absurd (← f 0 a) (← f 0 b)
+  | .letUnit u b => return .letUnit (← f 0 u) (← f 0 b)
   | .eq A a b => return .eq (← f 0 A) (← f 0 a) (← f 0 b)
   | .eqTy A B => return .eqTy (← f 0 A) (← f 0 B)
   | .refl A a => return .refl (← f 0 A) (← f 0 a)
@@ -266,8 +274,8 @@ don't need a case per constructor. -/
   | .sfix l I D v P g s i x =>
     return .sfix (← fl l) (← f 0 I) (← f 0 D) (← fl v) (← f 0 P) (← f 0 g) (← f 0 s) (← f 0 i) (← f 0 x)
   | .cocon x => return .cocon (← f 0 x)
-  | .scase l I D v P m s i x =>
-    return .scase (← fl l) (← f 0 I) (← f 0 D) (← fl v) (← f 0 P) (← f 0 m) (← f 0 s) (← f 0 i) (← f 0 x)
+  | .scase l q I D v P m s i x =>
+    return .scase (← fl l) (← f 0 q) (← f 0 I) (← f 0 D) (← fl v) (← f 0 P) (← f 0 m) (← f 0 s) (← f 0 i) (← f 0 x)
   | .scofix l I D A g s i a =>
     return .scofix (← fl l) (← f 0 I) (← f 0 D) (← f 0 A) (← f 0 g) (← f 0 s) (← f 0 i) (← f 0 a)
   | .coit l I D S st i s =>
@@ -340,6 +348,9 @@ def spine : Term R → Term R × List (Term R)
 
 /-- Instantiate universe level parameters `ps` with `us`. -/
 partial def instLevels (ps : List Name) (us : List Level) (t : Term R) : Term R :=
+  -- (no parameters: nothing to replace; the copy cost a traversal of the body at every
+  -- unfolding of a global, `wiz-notes/kernel-eval.md`)
+  if ps.isEmpty then t else
   Id.run <| t.mapChildrenM (fun l => pure (l.instParams ps us)) (fun _ c => pure (instLevels ps us c))
 
 /-- Does `var ix` occur free in `t`? (Trusted: `Ctx.instArg` in `Check.lean` skips
@@ -366,6 +377,21 @@ def Term.descTag? {R : Type} : Term R → Option (List Name × Bool × Term R)
   | .darg _ (.enum ls) F => some (ls, false, F)
   | .darg _ (.ulift _ (.enum ls)) F => some (ls, true, F)
   | _ => none
+
+/-- The constant of the constructor with tag `c` of the data type `T`: `T.c`. A `mutual`
+block's family (`Elab/Command.lean`, `mutualInductive`) holds every member's
+constructors under tags qualified by the member (`Ev.s`, `Od.s`: two members may share a
+constructor name), and such a constructor is named by its tag alone, so `Ev.s` is the
+constant and the family's name stays internal. An ordinary constructor's tag is one
+identifier without a dot (`inductive` rejects `| a.b`). -/
+def ctorConst (T c : Name) : Name := if c.contains '.' then c else T ++ "." ++ c
+
+/-- A constructor tag as written after a dot (`.s`): a qualified tag's last component. -/
+def ctorShort (c : Name) : Name := ((c.splitOn ".").getLast?).getD c
+
+/-- Does the constructor written `.c'` (or `T.c'`, `c'` then the resolved tag) select
+the tag `c`? A qualified tag (`Ev.s`) is also selected by its last component. -/
+def ctorSelects (c' c : Name) : Bool := c' == c || (c.contains '.' && ctorShort c == c')
 
 /-- The binder name of a **phantom** argument (`Elab/Inductive.lean`): a type whose
 parameters no field mentions ends in `(0 phantom✝ : D) → … → Unit` instead of `Unit`,
@@ -504,6 +530,9 @@ the environment does so deterministically (never iterate the hash map directly).
 structure Globals (R : Type) where
   decls : Std.HashMap Name (Decl R) := {}
   order : Array Name := #[]
+  /-- each declaration's position in `order` (its definitional height, for lazy delta in
+  unification: `Globals.height`) -/
+  heights : Std.HashMap Name Nat := {}
   /-- `builtin key := name` registrations, such as `("nat", Nat)` and `("nat.add", Nat.add)` -/
   builtins : List (Name × Name) := []
   /-- the registrations made outside the toolchain's library, which nothing checks: each
@@ -541,6 +570,12 @@ structure Globals (R : Type) where
   /-- (P2, internal) `quote` writes every suspended proof as `()` instead of evaluating
   it: set by the kernel's own comparisons (`sameVal`), which must not run proofs -/
   quoteErasesProofs : Bool := false
+  /-- (13n, elaborator) `quote` reads a Σ that `vEq` computed from an equation back as the
+  equation (`eqSigmaSides?`), so that a type that is read back and evaluated again (a
+  `match` clause's motive, `zonk`) still shows `rfl` the equation it came from. Set by the
+  elaborator's `getGlobals`; off in the kernel and for `#reduce` (which prints the
+  computed form) -/
+  quoteEqs : Bool := false
   /-- (P1) regularity at inert types: decided by conversion (`conv`) by default -/
   inertReg : InertReg := .conv
   /-- a compiler option, not read by the kernel (`--unbox-structs`, stage 22i): erasure
@@ -571,6 +606,12 @@ structure Globals (R : Type) where
   hidden : Std.HashMap Name (Decl R) := {}
   /-- the module being elaborated (`""`: the main file), for `privates` and `opaques` -/
   module : String := ""
+  /-- (kernel-eval, P3) a universe-polymorphic definition's value instantiated at the
+  levels most uses take (every parameter `0`, `1` or `2`: a `casesOn`'s motive in `Prop`,
+  `Type`, `Type 1`), computed once (a `Thunk`) instead of copied at every unfolding
+  (`Term.instLevels`). Built by `insert` from the value inserted with it; a pure function
+  of that value, so it can't change what unfolding gives (`instValue`). -/
+  instCache : Std.HashMap Name (List (List Level × Thunk (Term R))) := {}
   /-- (11r) how terms print as notation: unexpanders and the grammar (`Syntax/PPTable.lean`).
   The kernel ignores this. -/
   pp : PPTable := {}
@@ -591,13 +632,43 @@ def contains (g : Globals R) (n : Name) : Bool := g.decls.contains n
 def builtinKey? (g : Globals R) (n : Name) : Option Name :=
   (g.builtins.find? (·.2 == n)).map (·.1)
 
+/-- `instCache` with the entry of `d` (its value's instantiations, made when needed), or
+without one (no value, or no level parameters). -/
+def cacheInst (g : Globals R) (d : Decl R) : Std.HashMap Name (List (List Level × Thunk (Term R))) :=
+  let ofNat (k : Nat) : Level := (List.range k).foldl (fun l _ => .succ l) .zero
+  let inst : List (List Level × Thunk (Term R)) := match d.value with
+    | some v => if d.levelParams.isEmpty then [] else [0, 1, 2].map fun k =>
+        let us := d.levelParams.map fun _ => ofNat k
+        (us, Thunk.mk fun _ => v.instLevels d.levelParams us)
+    | none => []
+  if inst.isEmpty then g.instCache.erase d.name else g.instCache.insert d.name inst
+/-- A declaration's position in `order` (later declarations are higher); 0 if unknown. -/
+def height (g : Globals R) (n : Name) : Nat :=
+  match g.heights[n]? with
+  | some h => h
+  | none => if g.heights.isEmpty then (g.order.idxOf? n).getD 0 else 0
+
 /-- Unchecked insertion. Use `Wiz.addDecl` to type check first. -/
 def insert (g : Globals R) (d : Decl R) : Globals R :=
   { g with
     decls := g.decls.insert d.name d
     order := if g.decls.contains d.name then g.order else g.order.push d.name
+    instCache := g.cacheInst d
+    heights := if g.decls.contains d.name then g.heights else g.heights.insert d.name g.order.size
     declModule := if g.module == "" || g.decls.contains d.name then g.declModule
       else g.declModule.insert d.name g.module }
+
+/-- The value `v` of the global `n` (its parameters `ps`) at the levels `us`:
+`v.instLevels ps us`, from `instCache` when `insert` computed it. (The cache is keyed by
+the name and built from the value `insert` stored; `decls` changes only through `insert`,
+by removing a value or a declaration, or by `renamePrivate`, which moves the entries along
+with the renamed declarations (`cacheInst`), so an entry belongs to the value found under its
+name.) -/
+def instValue (g : Globals R) (n : Name) (v : Term R) (ps : List Name) (us : List Level) : Term R :=
+  if ps.isEmpty then v else
+  match (g.instCache[n]?).bind fun es => es.find? (·.1 == us) with
+  | some (_, t) => t.get
+  | none => v.instLevels ps us
 
 /-- (13b) The environment as the elaborator sees it in `g.module`: a structure whose
 constructor is private to another module has no definition (it doesn't unfold), so

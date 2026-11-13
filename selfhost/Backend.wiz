@@ -125,13 +125,14 @@ partial def quickType (c : TCtx) (t : Tm) : Option Val := match t with
   | .ind _ _ _ _ P _ i x => .some (vapp (vapp (eval (TCtx.env c) P) (eval (TCtx.env c) i)) (eval (TCtx.env c) x))
   -- (the forms a match leaves: without these, erasing a match inferred the whole match
   -- again at every nested split)
-  | .scase _ _ _ _ P _ _ i x => .some (vapp (vapp (eval (TCtx.env c) P) (eval (TCtx.env c) i)) (eval (TCtx.env c) x))
+  | .scase _ _ _ _ _ P _ _ i x => .some (vapp (vapp (eval (TCtx.env c) P) (eval (TCtx.env c) i)) (eval (TCtx.env c) x))
   | .exfalso m _ => .some (eval (TCtx.env c) m)
   | .coe _ B _ _ => .some (eval (TCtx.env c) B)
   | .tag k _ => .some (.venum k)
   | .star => .some (.vunit 1)
   | .letE A v b => quickType (TCtx.define c (eval (TCtx.env c) v) (eval (TCtx.env c) A)) b
   | .letq _ A v b => quickType (TCtx.define c (eval (TCtx.env c) v) (eval (TCtx.env c) A)) b
+  | .letUnit _ b => quickType c b
   | .down x => match quickType c x with
     | .some xty => match whnf xty with
       | .vulift _ A => .some A
@@ -258,6 +259,10 @@ def eraseCheck (c : TCtx) (t : Tm) (ty : Val) : ER := match erasable c ty with
       | .ok b' => .ok (.letE v' b')
       | e => e
     | e => e
+  -- (linear-case stage 2) `let () := u; b` must evaluate `u` before `b`, and this
+  -- backend's `let`s are lazy (a `let` whose variable is unused is dropped): refuse it
+  -- rather than skip `u`. The self-hosted frontend never produces it.
+  | .letUnit _ _ => .err "erasure: `let () := u` (the unit eliminator) is not supported by the self-hosted backend"
   | _ => eraseInfer c t
   --|ex
   --| .err "not implemented"
@@ -274,6 +279,7 @@ def eraseInfer (c : TCtx) (t : Tm) : ER := match quickType c t with
       | .ann x A => eraseCheck c x (eval (TCtx.env c) A)
       | .letE _ _ _ => eraseCheck c t ty
       | .letq _ _ _ _ => eraseCheck c t ty
+      | .letUnit _ _ => eraseCheck c t ty
       | .fst p => match eraseInfer c p with
         | .ok p' => .ok (.proj 0 p')
         | e => e
@@ -307,15 +313,17 @@ def eraseInfer (c : TCtx) (t : Tm) : ER := match quickType c t with
             | e => e
           | e => e
         | e => e
-      | .scase l I D v P m sz i x =>
-        -- `m ◾ i payload`
+      | .scase l q I D v P m sz i x =>
+        -- `m ◾ i payload` (K1: a case at 0 has an erased scrutinee, whose payload is ◾)
         let vI := eval (TCtx.env c) I;
         let vD := eval (TCtx.env c) D;
-        match eraseCheck c m (scaseMethodTy l vI vD (eval (TCtx.env c) P) (eval (TCtx.env c) sz)) with
+        match eraseCheck c m (scaseMethodTy l q vI vD (eval (TCtx.env c) P) (eval (TCtx.env c) sz)) with
         | .ok m' => match eraseCheck c i vI with
-          | .ok i' => match eraseInfer c x with
-            | .ok x' => .ok (eapps m' (.cons .erased (etms2 i' (payloadOf (.vmu l vI vD (eval (TCtx.env c) i) .vszInf) x'))))
-            | e => e
+          | .ok i' => match q with
+            | .qz => .ok (eapps m' (.cons .erased (etms2 i' .erased)))
+            | _ => match eraseInfer c x with
+              | .ok x' => .ok (eapps m' (.cons .erased (etms2 i' (payloadOf (.vmu l vI vD (eval (TCtx.env c) i) .vszInf) x'))))
+              | e => e
           | e => e
         | e => e
       | _ => .err "erasure: unsupported term"
@@ -369,18 +377,6 @@ def mangleChars : List Char → List Char
 def mangle (n : String) : String := match n with
   | .mk cs => .mk (mangleChars cs)
 
--- the globals the runtime provides
-def nativeNames : List String :=
-  .cons "Nat.zero" (.cons "Nat.succ" (.cons "Nat.add" (.cons "Nat.sub" (.cons "Nat.mul" (.cons "Nat.pred"
-  (.cons "Nat.beq" (.cons "Nat.blt" (.cons "Nat.lt" (.cons "Nat.le" (.cons "Nat.toString"
-  (.cons "IO.ePrintln" (.cons "Process.exit" (.cons "IO.println" (.cons "IO.print" (.cons "IO.readFile" (.cons "IO.argCount" (.cons "IO.arg" (.cons "Str.ofString"
-  (.cons "Array.empty" (.cons "Array.push" (.cons "Array.size" (.cons "Array.getD" (.cons "Array.set"
-  (.cons "StrMap.empty" (.cons "StrMap.insert" (.cons "StrMap.findD" (.cons "StrMap.size" (.cons "memo"
-  (.cons "Nat.div" (.cons "Nat.mod" (.cons "Nat.pow" (.cons "Nat.land" (.cons "Nat.lor" (.cons "Nat.xor"
-  (.cons "Nat.shiftLeft" (.cons "Nat.shiftRight" (.cons "Nat.log2" .nil)))))))))))))))))))))))))))))))))))))
-def elemStr (x : String) : List String → Bool
-  | .nil => .false
-  | .cons y rest => Bool.or (strEq x y) (elemStr x rest)
 def isNative (n : String) : Bool := elemStr n nativeNames
 
 -- the free variables of a term (indices at its top, each once)
@@ -426,26 +422,35 @@ def Doc.nat (n : Nat) : Doc := .t (Nat.toString n)
 -- arity of each global defined by `λ`s (called directly when applied to that many
 -- arguments: through curried closures, a call of `n` arguments made `n` closures, each
 -- copying the arguments before it), and (reference counting mode) a reuse token wanted
--- by an allocation not yet given one (`Wish`, see `rcE`)
+-- by an allocation not yet given one (`Wish`, see `rcE`), and the projection prefixes
+-- bound in the current scope (stage 15j, by level of their variable: `x.2`, …, `x.2^k`)
+-- (the prefixes bound, by level: `x.2`, …, `x.2^k`)
+inductive PE where
+  | nil
+  | cons (x k : Nat) (rest : PE)
 inductive Wish where
   | idle
   | want (w : String) (n : Nat)
 inductive CG where
-  | mk (fns : List Doc) (n : Nat) (ar : StrMap Nat) (pend : Wish)
+  | mk (fns : List Doc) (n : Nat) (ar : StrMap Nat) (pend : Wish) (pe : PE)
 inductive CR where
   | mk (code : Doc) (st : CG)
 inductive FR where
   | mk (name : String) (st : CG)
 def CG.fresh (st : CG) (base : String) : FR := match st with
-  | .mk fns n ar p => .mk (String.append base (Nat.toString n)) (.mk fns (n + 1) ar p)
+  | .mk fns n ar p pe => .mk (String.append base (Nat.toString n)) (.mk fns (n + 1) ar p pe)
 def CG.emit (st : CG) (f : Doc) : CG := match st with
-  | .mk fns n ar p => .mk (.cons f fns) n ar p
+  | .mk fns n ar p pe => .mk (.cons f fns) n ar p pe
 def CG.arity (st : CG) (g : String) : Nat := match st with
-  | .mk _ _ ar _ => StrMap.findD ar (Str.ofString g) 0
+  | .mk _ _ ar _ _ => StrMap.findD ar (Str.ofString g) 0
 def CG.pend (st : CG) : Wish := match st with
-  | .mk _ _ _ p => p
+  | .mk _ _ _ p _ => p
 def CG.setPend (st : CG) (p : Wish) : CG := match st with
-  | .mk fns n ar _ => .mk fns n ar p
+  | .mk fns n ar _ pe => .mk fns n ar p pe
+def CG.pe (st : CG) : PE := match st with
+  | .mk _ _ _ _ pe => pe
+def CG.setPe (st : CG) (pe : PE) : CG := match st with
+  | .mk fns n ar p _ => .mk fns n ar p pe
 -- an application's head and arguments
 inductive ESpine where
   | mk (head : ETm) (args : List ETm)
@@ -617,6 +622,164 @@ def codesC : List Nat → Doc
   | .cons n rest => match rest with
     | .nil => Doc.nat n
     | .cons _ _ => Doc.nat n ⧺ .t "," ⧺ codesC rest
+-- **Shared projection prefixes** (stage 15j). Field `k` of a structure (a right-nested
+-- chain of pairs) is read as `k` projections `.2` and a `.1`, so reading every field of
+-- a wide structure took n²/2 `fld`s. As the Lean compiler's simplifier shares the
+-- projections already bound, a region's head (a function's body, a `case` branch, a
+-- `λ`'s body) binds each prefix `x.2.2…` of a variable bound outside it that the region
+-- uses twice, once on its straight-line path (so it is evaluated there anyway), as C
+-- locals: `qx_1 = fld(x, 1)`, `qx_2 = fld(qx_1, 1)`, … A `let` does the same for its
+-- own variable, with the plan of its region's head. Uses then read from the longest
+-- prefix bound. Only `.2`s are shared: `fld(·, 1)` is total and never forces a
+-- hypothesis. Under reference counting the locals are borrowed from `x` (no `inc`):
+-- every use of one is still a use of `x`, so `x` lives as long, and nothing else
+-- changes.
+-- the uses of each variable (by level): the two longest prefixes and the longest on
+-- the straight-line path
+inductive PS where
+  | nil
+  | cons (x a1 a2 s1 : Nat) (rest : PS)
+-- the prefixes a head binds for variables bound outside it: `x`'s from `k0 + 1` to `k`
+inductive EM where
+  | nil
+  | cons (x k0 k : Nat) (rest : EM)
+inductive Plan where
+  | mk (pe : PE) (em : EM)
+-- a path's innermost run of `.2`s on a variable (its index, its length)
+inductive PRun where
+  | no
+  | at (j r : Nat)
+def pMin (a b : Nat) : Nat := match Nat.lt a b with
+  | .true => a
+  | .false => b
+def psAdd (x r : Nat) (s : Bool) : PS → PS
+  | .nil => .cons x r 0 (match s with
+    | .true => r
+    | .false => 0) .nil
+  | .cons y a1 a2 s1 rest => match Nat.beq x y with
+    | .true => .cons y (Nat.max a1 r) (match Nat.lt a1 r with
+        | .true => a1
+        | .false => Nat.max a2 r) (match s with
+        | .true => Nat.max s1 r
+        | .false => s1) rest
+    | .false => .cons y a1 a2 s1 (psAdd x r s rest)
+def run1 : ETm → PRun
+  | .var j => .at j 0
+  | .proj i t => match i with
+    | .zero => .no
+    | .succ z => match z with
+      | .zero => match run1 t with
+        | .at j r => .at j (r + 1)
+        | .no => .no
+      | .succ _ => .no
+  | _ => .no
+def innerRun : ETm → PRun
+  | .proj i u => match run1 (.proj i u) with
+    | .at j r => .at j r
+    | .no => innerRun u
+  | t => run1 t
+def pBase : ETm → ETm
+  | .proj _ t => pBase t
+  | t => t
+def peFind (x : Nat) : PE → Nat
+  | .nil => 0
+  | .cons y k rest => match Nat.beq x y with
+    | .true => k
+    | .false => peFind x rest
+def peSet (x k : Nat) : PE → PE
+  | .nil => .cons x k .nil
+  | .cons y k2 rest => match Nat.beq x y with
+    | .true => .cons y k rest
+    | .false => .cons y k2 (peSet x k rest)
+-- (the entries of levels from `d0`: variables of another region)
+def peBelow (d0 : Nat) : PE → PE
+  | .nil => .nil
+  | .cons y k rest => match Nat.lt y d0 with
+    | .true => .cons y k (peBelow d0 rest)
+    | .false => peBelow d0 rest
+-- the uses in `t` at depth `d`: on the straight-line path (`s`), or in a branch, where
+-- only the variables bound outside the branches (levels below `lim`) count; not under
+-- a `λ` (another function)
+mutual
+def cseScan (s : Bool) (lim d : Nat) (t : ETm) (acc : PS) : PS := match t with
+  | .proj i u => match innerRun (.proj i u) with
+    | .at j r => match Bool.and (Nat.lt 0 r) (Nat.lt j d) with
+      | .true => match Bool.or s (Nat.lt (d - 1 - j) lim) with
+        | .true => psAdd (d - 1 - j) r s acc
+        | .false => acc
+      | .false => acc
+    | .no => cseScan s lim d (pBase u) acc
+  | .letE v b => cseScan s lim (d + 1) b (cseScan s lim d v acc)
+  | .app f a => cseScan s lim d a (cseScan s lim d f acc)
+  | .obj _ fs => cseScanEs s lim d fs acc
+  | .prim _ as => cseScanEs s lim d as acc
+  | .case sc bs => cseScanEs .false (match s with
+      | .true => d
+      | .false => lim) d bs (cseScan s lim d sc acc)
+  | _ => acc
+def cseScanEs (s : Bool) (lim d : Nat) (ts : ETms) (acc : PS) : PS := match ts with
+  | .nil => acc
+  | .cons t rest => cseScanEs s lim d rest (cseScan s lim d t acc)
+end
+def planPS (d0 : Nat) : PE → EM → PS → Plan
+  | pe, em, .nil => .mk pe em
+  | pe, em, .cons x _ a2 s1 rest =>
+    let k := pMin a2 s1;
+    match Nat.lt 0 k with
+    | .false => planPS d0 pe em rest
+    | .true => match Nat.lt x d0 with
+      | .false => planPS d0 (peSet x k pe) em rest
+      | .true =>
+        let k0 := peFind x pe;
+        match Nat.lt k0 k with
+        | .true => planPS d0 (peSet x k pe) (.cons x k0 k em) rest
+        | .false => planPS d0 pe em rest
+-- the plan of a head at depth `d0` with body `t`, the prefixes bound outside being `pe`
+def csePlan (pe : PE) (d0 : Nat) (t : ETm) : Plan :=
+  planPS d0 (peBelow d0 pe) .nil (cseScan .true 0 d0 t .nil)
+def aliasName (root : String) (l : Nat) : String := "q" +++ mangle root +++ "_" +++ Nat.toString l
+-- the locals for `root.2^(l+1)` … `root.2^(l+n)`
+def chainDecls (root : String) : Nat → Nat → Doc
+  | _, .zero => .t ""
+  | l, .succ n => .t ("V " +++ aliasName root (l + 1) +++ " = fld(" +++ (match l with
+      | .zero => root
+      | .succ _ => aliasName root l) +++ ", 1); ") ⧺ chainDecls root (l + 1) n
+-- a head's locals
+def emDeclsG (names : List String) (d : Nat) : EM → Doc
+  | .nil => .t ""
+  | .cons x k0 k rest => emDeclsG names d rest ⧺ chainDecls (nthName' names (d - 1 - x)) k0 (k - k0)
+def fldsC (base : Doc) : Nat → Doc
+  | .zero => base
+  | .succ n => .t "fld(" ⧺ fldsC base n ⧺ .t ", 1)"
+-- the C text of a path of projections from variable index `j` (`d`: the depth), from
+-- the longest prefix bound
+def projRun (pe : PE) (names : List String) (d j r : Nat) : Doc :=
+  let nm := nthName' names j;
+  let k := pMin r (peFind (d - 1 - j) pe);
+  match k with
+  | .zero => fldsC (.t nm) r
+  | .succ _ => fldsC (.t (aliasName nm k)) (r - k)
+def projText (pe : PE) (names : List String) (d : Nat) : ETm → Doc
+  | .proj i u => match run1 (.proj i u) with
+    | .at j r => projRun pe names d j r
+    | .no => .t "fld(" ⧺ projText pe names d u ⧺ .t ", " ⧺ Doc.nat i ⧺ .t ")"
+  | t => match run1 t with
+    | .at j r => projRun pe names d j r
+    | .no => .t "unreach()"
+-- a projection path from a variable (C text), when prefixes are bound
+def projHere (pe : PE) (names : List String) (t : ETm) : Option Doc := match pe with
+  | .nil => .none
+  | .cons _ _ _ => match pBase t with
+    | .var j =>
+      let d := lenL names;
+      match Nat.lt j d with
+      | .true => .some (projText pe names d t)
+      | .false => .none
+    | _ => .none
+-- a `let`'s locals for its variable (the plan of its region's head)
+def letAliases (pe : PE) (names : List String) (x : String) : Doc := match pe with
+  | .nil => .t ""
+  | .cons _ _ _ => chainDecls x 0 (peFind (lenL names) pe)
 mutual
 -- **Exercise 21.2.** The C expression of a term (`names`: the variables in scope).
 def cgE (st : CG) (names : List String) : ETm → CR
@@ -645,8 +808,10 @@ def cgE (st : CG) (names : List String) : ETm → CR
         | .false => cgApps st names (.t ("get_" +++ mangle g +++ "()")) args
       | _ => match cgE st names h with
         | .mk hc st1 => cgApps st1 names hc args
-  | .proj i t => match cgE st names t with
-    | .mk tc st1 => .mk (.t "fld(" ⧺ tc ⧺ .t ", " ⧺ Doc.nat i ⧺ .t ")") st1
+  | .proj i t => match projHere (CG.pe st) names (.proj i t) with
+    | .some pc => .mk pc st
+    | .none => match cgE st names t with
+      | .mk tc st1 => .mk (.t "fld(" ⧺ tc ⧺ .t ", " ⧺ Doc.nat i ⧺ .t ")") st1
   | .obj k fs => match fs with
     | .nil => .mk (.t "BOX(" ⧺ Doc.nat k ⧺ .t ")") st
     | .cons _ _ =>
@@ -660,7 +825,7 @@ def cgE (st : CG) (names : List String) : ETm → CR
   | .letE v b => match cgE st names v with
     | .mk vc st1 => match CG.fresh st1 "l" with
       | .mk x st2 => match cgE st2 (.cons x names) b with
-        | .mk bc st3 => .mk (.t ("({ V " +++ x +++ " = ") ⧺ vc ⧺ .t "; " ⧺ bc ⧺ .t "; })") st3
+        | .mk bc st3 => .mk (.t ("({ V " +++ x +++ " = ") ⧺ vc ⧺ .t "; " ⧺ letAliases (CG.pe st) names x ⧺ bc ⧺ .t "; })") st3
   | .case s bs => match cgE st names s with
     | .mk sc st1 => match CG.fresh st1 "s" with
       | .mk x st2 => match cgBranches st2 names 0 bs with
@@ -684,7 +849,7 @@ def cgE (st : CG) (names : List String) : ETm → CR
     match CG.fresh st "lam" with
     | .mk fname st1 =>
       let inner := List.append (paramNamesA nc k k) (capNamesA caps 0 (maxVar caps));
-      match cgE st1 inner body with
+      match cgHead st1 inner .nil body with
       | .mk bc st2 =>
         let st3 := CG.emit st2 (.t ("static V " +++ fname +++ "(V *a) { return ") ⧺ bc ⧺ .t "; }");
         match caps with
@@ -723,9 +888,16 @@ def cgTemps (st : CG) (names : List String) (i : Nat) : List ETm → CR
       | .mk rc st2 => .mk (.t ("V tc_" +++ Nat.toString i +++ " = ") ⧺ tc ⧺ .t "; " ⧺ rc) st2
 def cgBranches (st : CG) (names : List String) (k : Nat) : ETms → CR
   | .nil => .mk (.t "") st
-  | .cons b rest => match cgE st names b with
+  | .cons b rest => match cgHead st names (CG.pe st) b with
     | .mk bc st1 => match cgBranches st1 names (k + 1) rest with
       | .mk rc st2 => .mk (.t "case " ⧺ Doc.nat k ⧺ .t ": r_ = " ⧺ bc ⧺ .t "; break; " ⧺ rc) st2
+-- (15j) a region's head (`pe0`: the prefixes bound outside it): its prefixes bound, then
+-- its code
+def cgHead (st : CG) (names : List String) (pe0 : PE) (t : ETm) : CR := match csePlan pe0 (lenL names) t with
+  | .mk pe em => match cgE (CG.setPe st pe) names t with
+    | .mk c st1 => .mk (match em with
+        | .nil => c
+        | .cons _ _ _ _ => .t "({ " ⧺ emDeclsG names (lenL names) em ⧺ c ⧺ .t "; })") (CG.setPe st1 (CG.pe st))
 end
 
 
@@ -1109,6 +1281,15 @@ def lvMem (x : Nat) : List Nat → Bool
     | .false => match Nat.lt x y with
       | .true => lvMem x rest
       | .false => .false
+-- a head's locals under reference counting: only for variables still used or borrowed
+-- (the others may already be released)
+def emDeclsRC (live bor : List Nat) (names : List String) (d : Nat) : EM → Doc
+  | .nil => .t ""
+  | .cons x k0 k rest =>
+    let mine := chainDecls (nthName' names (d - 1 - x)) k0 (k - k0);
+    match Bool.or (lvMem x live) (lvMem x bor) with
+    | .true => emDeclsRC live bor names d rest ⧺ mine
+    | .false => emDeclsRC live bor names d rest
 def lvDel (x : Nat) : List Nat → List Nat
   | .nil => .nil
   | .cons y rest => match Nat.beq x y with
@@ -1399,11 +1580,11 @@ def rcE (re : RE) (st : CG) (names : List String) (d : Nat) (live : List Nat) (t
         let x := d - 1 - j;
         match CG.fresh st "t" with
         | .mk r st1 => match lvMem x (RE.bor re) with
-          | .true => .mk (.t ("V " +++ r +++ " = ") ⧺ projC (.t nm) t ⧺ .t ("; inc(" +++ r +++ "); ")) (.t r) live st1
+          | .true => .mk (.t ("V " +++ r +++ " = ") ⧺ projText (CG.pe st) names d t ⧺ .t ("; inc(" +++ r +++ "); ")) (.t r) live st1
           | .false => match lvMem x live with
-            | .true => .mk (.t ("V " +++ r +++ " = ") ⧺ projC (.t nm) t ⧺ .t ("; inc(" +++ r +++ "); ")) (.t r) (lvIns x live) st1
+            | .true => .mk (.t ("V " +++ r +++ " = ") ⧺ projText (CG.pe st) names d t ⧺ .t ("; inc(" +++ r +++ "); ")) (.t r) (lvIns x live) st1
             | .false => match takeC re st1 nm r x with
-              | .mk tc st2 => .mk (.t ("V " +++ r +++ " = ") ⧺ projC (.t nm) t ⧺ .t "; " ⧺ tc) (.t r) (lvIns x live) st2
+              | .mk tc st2 => .mk (.t ("V " +++ r +++ " = ") ⧺ projText (CG.pe st) names d t ⧺ .t "; " ⧺ tc) (.t r) (lvIns x live) st2
       | .false => .mk (.t "") (.t "BOX(0)") live st
     | root => match rcE re st names d live root with
       | .mk oc oa ol st1 => match CG.fresh st1 "t" with
@@ -1468,7 +1649,7 @@ def rcE (re : RE) (st : CG) (names : List String) (d : Nat) (live : List Nat) (t
             | .true =>
               let nm := nthName' names j;
               let isB := lvMem (d - 1 - j) (RE.bor re);
-              .mk (.t ("uint32_t " +++ k +++ " = tagof(") ⧺ projC (.t nm) s ⧺ .t ("); V " +++ r +++ "; switch (" +++ k +++ ") { ") ⧺ body) (.t r) (match isB with
+              .mk (.t ("uint32_t " +++ k +++ " = tagof(") ⧺ projText (CG.pe st) names d s ⧺ .t ("); V " +++ r +++ "; switch (" +++ k +++ ") { ") ⧺ body) (.t r) (match isB with
                   | .true => u
                   | .false => lvIns (d - 1 - j) u) st3
             | .false => .mk (.t ("V " +++ r +++ "; switch (0) { ") ⧺ body) (.t r) u st3
@@ -1490,11 +1671,18 @@ def rcE (re : RE) (st : CG) (names : List String) (d : Nat) (live : List Nat) (t
       | .nil => rcPrim re st names d live op as
     | .false => rcPrim re st names d live op as
   | .lam _ => rcLam re st names d live t .false
--- `let x := v` before the body's code `bc` (whose value is `ba`, which uses `bl`)
+-- (15j) a region's head (`pe0`: the prefixes bound outside it): its prefixes bound, then
+-- its code
+def rcHead (re : RE) (st : CG) (names : List String) (d : Nat) (live : List Nat) (pe0 : PE) (t : ETm) : RR :=
+  match csePlan pe0 d t with
+  | .mk pe em => match rcE re (CG.setPe st pe) names d live t with
+    | .mk c a l st1 => .mk (emDeclsRC l (RE.bor re) names d em ⧺ c) a l (CG.setPe st1 (CG.pe st))
+-- `let x := v` before the body's code `bc` (whose value is `ba`, which uses `bl`); if
+-- the body uses `x`, the prefixes of `x` its region's head planned (15j)
 def rcLet (re : RE) (st : CG) (names : List String) (d : Nat) (x : String) (v : ETm) (bc ba : Doc) (bl : List Nat) : RR :=
   match rcE re st names d (lvDel d bl) v with
   | .mk vc va vl st3 => .mk (vc ⧺ .t ("V " +++ x +++ " = ") ⧺ va ⧺ .t "; " ⧺ (match lvMem d bl with
-      | .true => .t ""
+      | .true => chainDecls x 0 (peFind d (CG.pe st))
       | .false => .t ("dec(" +++ x +++ "); ")) ⧺ bc) ba vl st3
 def rcPrim (re : RE) (st : CG) (names : List String) (d : Nat) (live : List Nat) (op : String) (as : ETms) : RR :=
   match strEq op "wiz.self" with
@@ -1523,7 +1711,7 @@ def rcLam (re : RE) (st : CG) (names : List String) (d : Nat) (live : List Nat) 
     match CG.fresh st "lam" with
     | .mk fname st1 =>
       let inner := List.append (paramNamesA nc k k) (capNamesA caps 0 (maxVar caps));
-      match rcE (RE.inner re) st1 inner d2 .nil body with
+      match rcHead (RE.inner re) st1 inner d2 .nil .nil body with
       | .mk bc ba bl st2 =>
         let st3 := CG.emit st2 (.t ("static V " +++ fname +++ "(V *a) { ") ⧺ entryDrops inner d2 bl (List.append (rangeL 0 k) (addK k caps)) ⧺
           bc ⧺ .t "return " ⧺ ba ⧺ .t "; }");
@@ -1588,7 +1776,7 @@ def rcBranches (re : RE) (st : CG) (names : List String) (d : Nat) (live : List 
   | .cons b rest => match rcBranches re st names d live rest with
     -- (each branch starts with no wish and keeps its own; the one from after the `case`
     -- is put back)
-    | .mk rbs u st1 => match rcE re (CG.setPend st1 .idle) names d live b with
+    | .mk rbs u st1 => match rcHead re (CG.setPend st1 .idle) names d live (CG.pe st1) b with
       | .mk bc ba bl st2 => .mk (.cons (.mk bc ba bl (CG.pend st2)) rbs) (lvUnion bl u) (CG.setPend st2 (CG.pend st1))
 end
 
@@ -1626,20 +1814,31 @@ inductive Erased where
 inductive EraseR where
   | ok (gs : List Erased)
   | err (msg : String)
-partial def eraseGlobals (sl : Bool) (all : Array Global) (seen : List String) (acc : List Erased) : Nat → EraseR
+-- (stage 21t) the implementation `attribute [implemented_by g] f` gives `f` (the latest)
+def implOf (n : String) : List Foreign → Option String
+  | .nil => .none
+  | .cons f rest => match f with
+    | .impl m g => match strEq m n with
+      | .true => .some g
+      | .false => implOf n rest
+    | _ => implOf n rest
+partial def eraseGlobals (sl : Bool) (ffi : List Foreign) (all : Array Global) (seen : List String) (acc : List Erased) : Nat → EraseR
   | .zero => .ok acc
   | .succ k => match Array.getD all k (.mk "?" .star .star .star .nil) with
     | .mk n ty v _ _ => match Bool.or (elemStr n seen) (isNative n) with
-      | .true => eraseGlobals sl all seen acc k
-      | .false => match v with
-        | .axiomC _ _ => eraseGlobals sl all (.cons n seen) acc k
+      | .true => eraseGlobals sl ffi all seen acc k
+      -- (an implemented definition's code is its implementation's)
+      | .false => match implOf n ffi with
+      | .some g => eraseGlobals sl ffi all (.cons n seen) (.cons (.mk n (.glob g)) acc) k
+      | .none => match v with
+        | .axiomC _ _ => eraseGlobals sl ffi all (.cons n seen) acc k
         | _ => match eraseCheck empty v (eval .nil ty) with
           | .err m => .err (n +++ ": " +++ m)
           | .ok e =>
             let e' := match sl with
               | .true => markLets e
               | .false => lazyLets .false e;
-            eraseGlobals sl all (.cons n seen) (.cons (.mk n e') acc) k
+            eraseGlobals sl ffi all (.cons n seen) (.cons (.mk n e') acc) k
 def arities : StrMap Nat → List Erased → StrMap Nat
   | ar, .nil => ar
   | ar, .cons (.mk n e) rest => arities (StrMap.insert ar (Str.ofString n) (lamsOf e)) rest
@@ -1665,14 +1864,14 @@ def genCode : CG → List Doc → List Doc → List Erased → Code
     let g := mangle n;
     let k := lamsOf e;
     match k with
-    | .zero => match cgE st .nil e with
+    | .zero => match cgHead st .nil .nil e with
       | .mk code st1 =>
         genCode st1 (.cons (.t ("V get_" +++ g +++ "(void);")) protos)
           (.cons (.t ("static V g_" +++ g +++ "; static int i_" +++ g +++ "; V get_" +++ g +++
             "(void) { if (!i_" +++ g +++ ") { g_" +++ g +++ " = ") ⧺ code ⧺ .t ("; i_" +++ g +++ " = 1; } return g_" +++ g +++ "; }")) defs) rest
     | .succ _ =>
       -- the parameters: `p0` the first, so the innermost (index 0) is `p(k-1)`
-      match cgE st (paramNames k k) (markSelf n k .nil .nil k (underLams k e)) with
+      match cgHead st (paramNames k k) .nil (markSelf n k .nil .nil k (underLams k e)) with
       | .mk code st1 =>
         let ps := paramDecls 0 k;
         genCode st1 (.cons (.t ("V d_" +++ g +++ "(" +++ ps +++ "); V get_" +++ g +++ "(void);")) protos)
@@ -1710,12 +1909,10 @@ def ffiCType (k : String) : String := match strEq k "f" with
   | .false => match strEq k "v" with
   | .true => "void"
   | .false => "uint64_t"
--- the C parameter types of a prototype (`e` and `v` are not passed)
-def ffiProtoParams : List String → List String
-  | .nil => .nil
-  | .cons k rest => match Bool.or (strEq k "e") (strEq k "v") with
-    | .true => ffiProtoParams rest
-    | .false => .cons (ffiCType k) (ffiProtoParams rest)
+-- the C type of a value Wiz gives C (a string is `malloc`ed: the caller frees it)
+def ffiCTypeOut (k : String) : String := match strEq k "s" with
+  | .true => "char *"
+  | .false => ffiCType k
 def commaSep : List String → String
   | .nil => ""
   | .cons x rest => match rest with
@@ -1730,13 +1927,86 @@ def ffiPrefix : List Char → List Char → Bool
 def strStarts (p s : String) : Bool := match p with
   | .mk ps => match s with
     | .mk cs => ffiPrefix ps cs
--- the marshalling of the parameters: the statements before the call, the C arguments,
--- and the statements after it
+-- (stage 21q) A callback's kind `k[<params>/<result>]` (`K[…]` owned by C, `!` before a
+-- result in `IO`), from the frontend: its signature.
+inductive CbSig where
+  | mk (owned : Bool) (params : List String) (res : String) (io : Bool)
+inductive CbPs where
+  | mk (params : List String) (rest : List Char)
+def cbParams : List Char → CbPs
+  | .nil => .mk .nil .nil
+  | .cons c rest => match Nat.beq (Char.code c) 47 with
+    | .true => .mk .nil rest
+    | .false => match cbParams rest with
+      | .mk ps r => .mk (.cons (String.mk (.cons c .nil)) ps) r
+def cbRes (owned : Bool) (ps : List String) : List Char → Option CbSig
+  | .nil => .none
+  | .cons x more => match Nat.beq (Char.code x) 33 with
+    | .true => (match more with
+      | .cons y _ => .some (.mk owned ps (String.mk (.cons y .nil)) .true)
+      | .nil => .none)
+    | .false => .some (.mk owned ps (String.mk (.cons x .nil)) .false)
+def cbOf (k : String) : Option CbSig := match k with
+  | .mk cs => match cs with
+    | .cons a (.cons b rest) => match Bool.and (Bool.or (Nat.beq (Char.code a) 107) (Nat.beq (Char.code a) 75)) (Nat.beq (Char.code b) 91) with
+      | .true => (match cbParams rest with
+        | .mk ps r => cbRes (Nat.beq (Char.code a) 75) ps r)
+      | .false => .none
+    | _ => .none
+-- the trampoline of a signature (as the Lean backends name it): C calls it with the
+-- context (the closure) first
+def cbName (c : CbSig) : String := match c with
+  | .mk _ ps r io => "wiz_cb_" +++ joinStrs ps +++ "_" +++ (match io with
+    | .true => "io_"
+    | .false => "") +++ r
+def ffiCTypes : List String → List String
+  | .nil => .nil
+  | .cons k rest => .cons (ffiCType k) (ffiCTypes rest)
+-- the C type of its function pointer
+def cbPtrType (c : CbSig) : String := match c with
+  | .mk _ ps r _ => ffiCTypeOut r +++ " (*)(" +++ commaSep (.cons "void *" (ffiCTypes ps)) +++ ")"
+-- (stage 21r) the `c_struct` of a kind `S:T`
+def kindStruct (ffi : List Foreign) (k : String) : Option Foreign := match dropPrefix (strChars "S:") (strChars k) with
+  | .some r => cstructOf ffi (String.mk r)
+  | .none => .none
+def structCType (f : Foreign) : String := match f with
+  | .cstruct _ c _ _ _ => c
+  | _ => "void"
+def structMangled (f : Foreign) : String := match f with
+  | .cstruct n _ _ _ _ => mangle n
+  | _ => ""
+-- the C type of an extern's kind (a struct's C type)
+def extCType (ffi : List Foreign) (k : String) : String := match kindStruct ffi k with
+  | .some f => structCType f
+  | .none => ffiCType k
+-- the C parameter types of a prototype (`e` and `v` are not passed; a callback is a
+-- function pointer and its context)
+def ffiProtoParams (ffi : List Foreign) : List String → List String
+  | .nil => .nil
+  | .cons k rest => match Bool.or (strEq k "e") (strEq k "v") with
+    | .true => ffiProtoParams ffi rest
+    | .false => match cbOf k with
+      | .some c => .cons (cbPtrType c) (.cons "void *" (ffiProtoParams ffi rest))
+      | .none => .cons (extCType ffi k) (ffiProtoParams ffi rest)
 inductive FfiIn where
   | mk (pre : String) (cargs : List String) (post : String)
-partial def ffiIn (i : Nat) : List String → FfiIn
+-- (stage 21q) a callback: its trampoline and the closure as the context; a borrowed one
+-- is released after the call, an owned one (`Callback`) is C's now. (21r) A struct by
+-- value: filled from the structure, which is released after the call.
+def ffiInMore (ffi : List Foreign) (k a c pre : String) (cargs : List String) (post : String) : FfiIn := match cbOf k with
+  | .some cb => .mk pre (.cons (cbName cb) (.cons ("(void *)" +++ a) cargs)) (match cb with
+    | .mk owned _ _ _ => match owned with
+      | .true => post
+      | .false => "rt_drop(" +++ a +++ "); " +++ post)
+  | .none => match kindStruct ffi k with
+    | .some f => .mk (structCType f +++ " " +++ c +++ "; wiz_sin_" +++ structMangled f +++ "(&" +++ c +++ ", " +++ a +++ "); " +++ pre) (.cons c cargs)
+        ("wiz_sfree_" +++ structMangled f +++ "(&" +++ c +++ "); rt_drop(" +++ a +++ "); " +++ post)
+    | .none => .mk ("uint64_t " +++ c +++ " = rt_in_nat(" +++ a +++ "); " +++ pre) (.cons c cargs) post
+-- the marshalling of the parameters: the statements before the call, the C arguments,
+-- and the statements after it
+partial def ffiIn (ffi : List Foreign) (i : Nat) : List String → FfiIn
   | .nil => .mk "" .nil ""
-  | .cons k rest => match ffiIn (i + 1) rest with
+  | .cons k rest => match ffiIn ffi (i + 1) rest with
     | .mk pre cargs post =>
       let a := "p" +++ Nat.toString i;
       let c := "c" +++ Nat.toString i;
@@ -1756,9 +2026,9 @@ partial def ffiIn (i : Nat) : List String → FfiIn
       | .true => .mk ("double " +++ c +++ " = rt_in_f64(" +++ a +++ "); " +++ pre) (.cons c cargs) post
       | .false => match strEq k "u" with
       | .true => .mk ("uint64_t " +++ c +++ " = rt_in_u64(" +++ a +++ "); " +++ pre) (.cons c cargs) post
-      | .false => .mk ("uint64_t " +++ c +++ " = rt_in_nat(" +++ a +++ "); " +++ pre) (.cons c cargs) post
+      | .false => ffiInMore ffi k a c pre cargs post
 -- the result, from the call
-def ffiOut (k fin call : String) : String := match strEq k "v" with
+def ffiOut (ffi : List Foreign) (k fin call : String) : String := match strEq k "v" with
   | .true => call +++ "; V r = BOX(0); "
   | .false => match strEq k "w" with
   | .true => "V r = " +++ call +++ "; "
@@ -1774,73 +2044,115 @@ def ffiOut (k fin call : String) : String := match strEq k "v" with
   | .true => "V r = rt_out_f64(" +++ call +++ "); "
   | .false => match strEq k "u" with
   | .true => "V r = rt_out_u64(" +++ call +++ "); "
-  | .false => "V r = rt_out_nat(" +++ call +++ "); "
+  | .false => match kindStruct ffi k with
+  | .some f => "V r = wiz_sout_" +++ structMangled f +++ "(" +++ call +++ "); "
+  | .none => "V r = rt_out_nat(" +++ call +++ "); "
 def elemS (x : String) : List String → Bool
   | .nil => .false
   | .cons y rest => Bool.or (strEq x y) (elemS x rest)
--- the headers to include (each once), and the prototypes
-partial def ffiDecls (seen : List String) : List Foreign → List Doc
+-- (stage 21r) A `c_struct`'s C side: its definition (without a header: `struct t { … };`
+-- or a `typedef`, from the fields) and the marshalling helpers, as `structHelpers` in
+-- `C.lean`: `wiz_sin_T(&c, v)` fills `c` from the structure `v` (borrowed: the payload
+-- `(tag, (f₀, (f₁, … ◾)))`; fields not named are zero), `wiz_sfree_T` frees the strings
+-- that made, and `wiz_sout_T(c)` builds a structure (strings copied, a pointer without a
+-- finalizer).
+def structFieldCType (ffi : List Foreign) (k : String) : String := match kindStruct ffi k with
+  | .some f => structCType f
+  | .none => ffiCType k
+def structFieldDecls (ffi : List Foreign) : List String → List String → String
+  | .cons f fs, .cons k ks => structFieldCType ffi k +++ " " +++ f +++ "; " +++ structFieldDecls ffi fs ks
+  | _, _ => ""
+def structDefinition (ffi : List Foreign) (ctype : String) (fs ks : List String) : String := match strStarts "struct " ctype with
+  | .true => ctype +++ " { " +++ structFieldDecls ffi fs ks +++ "};"
+  | .false => "typedef struct { " +++ structFieldDecls ffi fs ks +++ "} " +++ ctype +++ ";"
+-- the structure's field `i` (borrowed)
+def seconds : Nat → String → String
+  | .zero, e => e
+  | .succ k, e => seconds k ("fld(" +++ e +++ ", 1)")
+def fieldPath (i : Nat) : String := "fld(" +++ seconds i "fld(v, 1)" +++ ", 0)"
+def structIn (ffi : List Foreign) : Nat → List String → List String → String
+  | i, .cons f fs, .cons k ks =>
+    let x := fieldPath i;
+    let lhs := "c->" +++ f;
+    let dup := fun (conv : String) => "{ V t = " +++ x +++ "; rt_dup(t); " +++ lhs +++ " = " +++ conv +++ "(t); } ";
+    (match strEq k "n" with
+    | .true => lhs +++ " = rt_in_nat(" +++ x +++ "); "
+    | .false => match strEq k "p" with
+    | .true => lhs +++ " = rt_in_ptr(" +++ x +++ "); "
+    | .false => match strEq k "u" with
+    | .true => dup "rt_in_u64"
+    | .false => match strEq k "f" with
+    | .true => dup "rt_in_f64"
+    | .false => match strEq k "b" with
+    | .true => dup "rt_in_bool"
+    | .false => match strEq k "s" with
+    | .true => dup "rt_in_str"
+    | .false => match kindStruct ffi k with
+    | .some g => "wiz_sin_" +++ structMangled g +++ "(&" +++ lhs +++ ", " +++ x +++ "); "
+    | .none => "") +++ structIn ffi (i + 1) fs ks
+  | _, _, _ => ""
+def structFree (ffi : List Foreign) : List String → List String → String
+  | .cons f fs, .cons k ks => (match strEq k "s" with
+    | .true => "rt_free_cstr((char *)c->" +++ f +++ "); "
+    | .false => match kindStruct ffi k with
+    | .some g => "wiz_sfree_" +++ structMangled g +++ "(&c->" +++ f +++ "); "
+    | .none => "") +++ structFree ffi fs ks
+  | _, _ => ""
+def structOut (ffi : List Foreign) : Nat → List String → List String → String
+  | i, .cons f fs, .cons k ks =>
+    let x := "c." +++ f;
+    "fs[" +++ Nat.toString i +++ "] = " +++ (match strEq k "s" with
+    | .true => "rt_out_str(" +++ x +++ ")"
+    | .false => match strEq k "p" with
+    | .true => "rt_out_ptr((void *)" +++ x +++ ", NULL)"
+    | .false => match strEq k "b" with
+    | .true => "boolv(" +++ x +++ " != 0)"
+    | .false => match strEq k "f" with
+    | .true => "rt_out_f64(" +++ x +++ ")"
+    | .false => match strEq k "u" with
+    | .true => "rt_out_u64(" +++ x +++ ")"
+    | .false => match kindStruct ffi k with
+    | .some g => "wiz_sout_" +++ structMangled g +++ "(" +++ x +++ ")"
+    | .none => "rt_out_nat(" +++ x +++ ")") +++ "; " +++ structOut ffi (i + 1) fs ks
+  | _, _, _ => ""
+def structHelpers (ffi : List Foreign) (n ctype : String) (fs ks : List String) : List Doc :=
+  let m := mangle n;
+  let k := lenL fs;
+  .cons (.t ("static void wiz_sin_" +++ m +++ "(" +++ ctype +++ " *c, V v) { memset(c, 0, sizeof *c); " +++ structIn ffi 0 fs ks +++ "}"))
+    (.cons (.t ("static void wiz_sfree_" +++ m +++ "(" +++ ctype +++ " *c) { (void)c; " +++ structFree ffi fs ks +++ "}"))
+    (.cons (.t ("static V wiz_sout_" +++ m +++ "(" +++ ctype +++ " c) { V fs[" +++ Nat.toString k +++ "]; " +++ structOut ffi 0 fs ks +++
+      "V r = BOX(0); for (int i = " +++ Nat.toString (k - 1) +++ "; i >= 0; i--) r = pair(fs[i], r); return pair(BOX(0), r); }")) .nil))
+-- the headers to include (each once), the structs, and the prototypes
+partial def ffiDecls (ffi : List Foreign) (seen : List String) : List Foreign → List Doc
   | .nil => .nil
   | .cons f rest => match f with
-    | .ty _ _ => ffiDecls seen rest
-    | .link _ _ => ffiDecls seen rest
-    | .exported _ _ _ _ _ => ffiDecls seen rest
     | .fn _ cname header ps r _ _ => match strEq header "" with
       | .false => match elemS header seen with
-        | .true => ffiDecls seen rest
-        | .false => .cons (.t ("#include <" +++ header +++ ">")) (ffiDecls (.cons header seen) rest)
+        | .true => ffiDecls ffi seen rest
+        | .false => .cons (.t ("#include <" +++ header +++ ">")) (ffiDecls ffi (.cons header seen) rest)
       | .true => match Bool.or (strStarts "wiz_" cname) (elemS cname seen) with
-        | .true => ffiDecls seen rest
+        | .true => ffiDecls ffi seen rest
         | .false =>
-          let pts := ffiProtoParams ps;
-          .cons (.t ("extern " +++ ffiCType r +++ " " +++ cname +++ "(" +++ (match pts with
+          let pts := ffiProtoParams ffi ps;
+          .cons (.t ("extern " +++ extCType ffi r +++ " " +++ cname +++ "(" +++ (match pts with
             | .nil => "void"
-            | .cons _ _ => commaSep pts) +++ ");")) (ffiDecls (.cons cname seen) rest)
--- each foreign function's wrapper, `get_g` its curried closure (a constant computed
--- once, for arity 0)
-def ffiWrappers (rc : Bool) : List Foreign → List Doc
-  | .nil => .nil
-  | .cons f rest => match f with
-    | .ty _ _ => ffiWrappers rc rest
-    | .link _ _ => ffiWrappers rc rest
-    | .exported _ _ _ _ _ => ffiWrappers rc rest
-    | .fn n cname _ ps r io fin =>
-      let g := mangle n;
-      let k := ffiArity ps io;
-      let keep := match rc with
-        | .true => "rt_root(&c); } inc(c); "
-        | .false => "} ";
-      match ffiIn 0 ps with
-      | .mk pre cargs post =>
-        let body := pre +++ ffiOut r fin (cname +++ "(" +++ commaSep cargs +++ ")") +++ post;
-        let ret := match io with
-          | .true => "return prodv(r, p" +++ Nat.toString (k - 1) +++ "); "
-          | .false => "return r; ";
-        match k with
-        | .zero => .cons (.t ("V get_" +++ g +++ "(void) { static V c = 0; static int i = 0; if (!i) { i = 1; c = ({ " +++ body +++ "r; }); " +++
-            keep +++ "return c; }")) (ffiWrappers rc rest)
-        | .succ _ => .cons (.t ("V d_" +++ g +++ "(" +++ paramDecls 0 k +++ ") { " +++ body +++ ret +++ "} " +++
-            "static V w_" +++ g +++ "(V *a) { return d_" +++ g +++ "(" +++ argList 0 k +++ "); } " +++
-            "V get_" +++ g +++ "(void) { static V c = 0; if (!c) { c = native(w_" +++ g +++ ", " +++ Nat.toString k +++ "); " +++ keep +++ "return c; }"))
-          (ffiWrappers rc rest)
--- (stage 21o) The C files and libraries of `link_c`/`link_lib`, as lines at the top of the
--- C the compiler prints: the C file is one translation unit with the runtime, so the
--- files are compiled and linked by whoever compiles it (`cc out.c f.c -lm`; the tests
--- read these lines).
-def linkDocs : List Foreign → List Doc
-  | .nil => .nil
-  | .cons f rest => match f with
-    | .link p lib => .cons (.t ((match lib with
-        | .true => "// wiz-link-lib: "
-        | .false => "// wiz-link-c: ") +++ p)) (linkDocs rest)
-    | _ => linkDocs rest
--- (stage 21o) An `export`: a C function `cname` that converts its C arguments to Wiz
--- values (the reverse of an `extern`'s: `Nat`/`UInt64` from `uint64_t`, `Float64` from
--- `double`, `String` copied from a `const char *`, `Bool` from `int`, a foreign pointer
--- lent without a finalizer, a Wiz value as it is), applies the definition's closure (the
--- world last for an `IO` result, whose value is then the pair's first field: the payload
--- `(tag, (a, (w, ◾)))`), and converts
--- the result: a `String` is a `malloc`ed copy the caller frees, `Unit` is `void`.
+            | .cons _ _ => commaSep pts) +++ ");")) (ffiDecls ffi (.cons cname seen) rest)
+    | .cstruct n ctype header fs ks =>
+      let helpers := structHelpers ffi n ctype fs ks;
+      match strEq header "" with
+      | .true => .cons (.t (structDefinition ffi ctype fs ks)) (List.append helpers (ffiDecls ffi seen rest))
+      | .false => match elemS header seen with
+        | .true => List.append helpers (ffiDecls ffi seen rest)
+        | .false => .cons (.t ("#include <" +++ header +++ ">")) (List.append helpers (ffiDecls ffi (.cons header seen) rest))
+    | _ => ffiDecls ffi seen rest
+-- (stage 21q) A C function that applies the Wiz closure `f` (an owned value) to its C
+-- arguments `c0 …` of kinds `ps` (C values become Wiz values: `Nat`/`UInt64` from
+-- `uint64_t`, `Float64` from `double`, `String` copied from a `const char *`, `Bool` from
+-- `int`, a foreign pointer lent without a finalizer, a Wiz value as it is), the world
+-- last for an `IO` result (whose value is then the pair's first field, the payload
+-- `(tag, (a, (w, ◾)))`), and converts the result back (a `String` as a `malloc`ed
+-- `char *` the caller frees, `Unit` as `void`): the body of an export's wrapper and of
+-- a callback's trampoline.
 def exportArgs : Nat → List String → List String
   | _, .nil => .nil
   | i, .cons k rest =>
@@ -1874,32 +2186,109 @@ def exportResult (k : String) : String := match strEq k "v" with
   | .false => match strEq k "w" with
   | .true => "return r; "
   | .false => "return rt_in_nat(r); "
+def callIntoWiz (rc : Bool) (f : String) (ps : List String) (r : String) (io : Bool) : String :=
+  let args := List.append (exportArgs 0 ps) (match io with
+    | .true => .cons "BOX(0)" .nil
+    | .false => .nil);
+  let call := match args with
+    | .nil => f
+    | .cons _ _ => "apn(" +++ f +++ ", " +++ Nat.toString (lenL args) +++ ", (V[]){" +++ commaSep args +++ "})";
+  let res := match io with
+    | .true => "V pr = " +++ call +++ "; V r = fld(fld(pr, 1), 0); " +++ (match rc with
+      | .true => "inc(r); dec(pr); "
+      | .false => "")
+    | .false => "V r = " +++ call +++ "; ";
+  res +++ exportResult r
+-- (stage 21q) the trampolines, one per callback signature: the closure is the context,
+-- which C keeps (so the trampoline takes a reference of its own for the call)
+def cbKinds : List Foreign → List String
+  | .nil => .nil
+  | .cons f rest => match f with
+    | .fn _ _ _ ps _ _ _ => List.append ps (cbKinds rest)
+    | _ => cbKinds rest
+partial def cbDocs (rc : Bool) (seen : List String) : List String → List Doc
+  | .nil => .nil
+  | .cons k rest => match cbOf k with
+    | .none => cbDocs rc seen rest
+    | .some c => match elemS (cbName c) seen with
+      | .true => cbDocs rc seen rest
+      | .false => match c with
+        | .mk _ ps r io => .cons (.t ("static " +++ ffiCTypeOut r +++ " " +++ cbName c +++ "(" +++ commaSep (.cons "void *ctx" (exportParams 0 ps)) +++
+            ") { rt_dup((V)ctx); " +++ callIntoWiz rc "(V)ctx" ps r io +++ "}")) (cbDocs rc (.cons (cbName c) seen) rest)
+-- each foreign function's wrapper, `get_g` its curried closure (a constant computed
+-- once, for arity 0)
+def ffiWrappers (ffi : List Foreign) (rc : Bool) : List Foreign → List Doc
+  | .nil => .nil
+  | .cons f rest => match f with
+    | .fn n cname _ ps r io fin =>
+      let g := mangle n;
+      let k := ffiArity ps io;
+      let keep := match rc with
+        | .true => "rt_root(&c); } inc(c); "
+        | .false => "} ";
+      match ffiIn ffi 0 ps with
+      | .mk pre cargs post =>
+        let body := pre +++ ffiOut ffi r fin (cname +++ "(" +++ commaSep cargs +++ ")") +++ post;
+        let ret := match io with
+          | .true => "return prodv(r, p" +++ Nat.toString (k - 1) +++ "); "
+          | .false => "return r; ";
+        match k with
+        | .zero => .cons (.t ("V get_" +++ g +++ "(void) { static V c = 0; static int i = 0; if (!i) { i = 1; c = ({ " +++ body +++ "r; }); " +++
+            keep +++ "return c; }")) (ffiWrappers ffi rc rest)
+        | .succ _ => .cons (.t ("V d_" +++ g +++ "(" +++ paramDecls 0 k +++ ") { " +++ body +++ ret +++ "} " +++
+            "static V w_" +++ g +++ "(V *a) { return d_" +++ g +++ "(" +++ argList 0 k +++ "); } " +++
+            "V get_" +++ g +++ "(void) { static V c = 0; if (!c) { c = native(w_" +++ g +++ ", " +++ Nat.toString k +++ "); " +++ keep +++ "return c; }"))
+          (ffiWrappers ffi rc rest)
+    | _ => ffiWrappers ffi rc rest
+-- (stage 21o) The C files and libraries of `link_c`/`link_lib`, as lines at the top of the
+-- C the compiler prints: the C file is one translation unit with the runtime, so the
+-- files are compiled and linked by whoever compiles it (`cc out.c f.c -lm`; the tests
+-- read these lines).
+def linkDocs : List Foreign → List Doc
+  | .nil => .nil
+  | .cons f rest => match f with
+    | .link p lib => .cons (.t ((match lib with
+        | .true => "// wiz-link-lib: "
+        | .false => "// wiz-link-c: ") +++ p)) (linkDocs rest)
+    | _ => linkDocs rest
+-- (stage 21o) An `export`: a C function `cname` that applies the definition's closure
+-- (`callIntoWiz`). (21s) It starts the runtime if nothing has (a library has no `main`).
 def exportDocs (rc : Bool) : List Foreign → List Doc
   | .nil => .nil
   | .cons f rest => match f with
     | .exported n cname ps r io =>
-      let args := List.append (exportArgs 0 ps) (match io with
-        | .true => .cons "BOX(0)" .nil
-        | .false => .nil);
-      let call := match args with
-        | .nil => "get_" +++ mangle n +++ "()"
-        | .cons _ _ => "apn(get_" +++ mangle n +++ "(), " +++ Nat.toString (lenL args) +++ ", (V[]){" +++ commaSep args +++ "})";
-      let res := match io with
-        | .true => "V pr = " +++ call +++ "; V r = fld(fld(pr, 1), 0); " +++ (match rc with
-          | .true => "inc(r); dec(pr); "
-          | .false => "")
-        | .false => "V r = " +++ call +++ "; ";
       let ps' := exportParams 0 ps;
-      .cons (.t ((match strEq r "s" with
-        | .true => "char *"
-        | .false => ffiCType r) +++ " " +++ cname +++ "(" +++ (match ps' with
+      .cons (.t (ffiCTypeOut r +++ " " +++ cname +++ "(" +++ (match ps' with
         | .nil => "void"
-        | .cons _ _ => commaSep ps') +++ ") { " +++ res +++ exportResult r +++ "}")) (exportDocs rc rest)
+        | .cons _ _ => commaSep ps') +++ ") { rt_ensure(); " +++ callIntoWiz rc ("get_" +++ mangle n +++ "()") ps r io +++ "}")) (exportDocs rc rest)
     | _ => exportDocs rc rest
+-- (stage 21s) The header of a library's exports (`--header`), as `exportHeader` in
+-- `C.lean`: the handle functions and a prototype per export.
+def headerParams : Nat → List String → List String
+  | _, .nil => .nil
+  | i, .cons k rest => .cons ((match strEq k "w" with
+    | .true => "wiz_val"
+    | .false => ffiCType k) +++ " a" +++ Nat.toString i) (headerParams (i + 1) rest)
+def headerProtos : List Foreign → List Doc
+  | .nil => .nil
+  | .cons f rest => match f with
+    | .exported _ cname ps r _ =>
+      let ps' := headerParams 0 ps;
+      .cons (.t ((match strEq r "w" with
+        | .true => "wiz_val"
+        | .false => ffiCTypeOut r) +++ " " +++ cname +++ "(" +++ (match ps' with
+        | .nil => "void"
+        | .cons _ _ => commaSep ps') +++ ");")) (headerProtos rest)
+    | _ => headerProtos rest
+def headerDocs (ffi : List Foreign) : List Doc :=
+  .cons (.t "/* generated by wiz build --lib: the functions the Wiz program exports (stage 9g) */")
+  (.cons (.t "#include <stdint.h>") (.cons (.t "#ifndef WIZ_VAL_DEFINED") (.cons (.t "#define WIZ_VAL_DEFINED")
+  (.cons (.t "typedef uintptr_t wiz_val;") (.cons (.t "#endif") (.cons (.t "void wiz_release(void *v);")
+  (.cons (.t "void wiz_retain(void *v);") (.cons (.t "long wiz_live_objects(void);") (headerProtos (List.reverseOf ffi .nil))))))))))
 -- the C of a program's foreign functions (after the runtime)
 def ffiDocs (rc : Bool) (ffi : List Foreign) : List Doc :=
   let fs := List.reverseOf ffi .nil;
-  List.append (ffiDecls .nil fs) (ffiWrappers rc fs)
+  List.append (ffiDecls ffi .nil fs) (List.append (cbDocs rc .nil (cbKinds fs)) (ffiWrappers ffi rc fs))
 -- **Applications pushed into `case`s** (reference counting mode). A match is a method
 -- applied to the payload, and the method is chosen by a `case`: `(case s [bᵢ]) a⃗`
 -- built a closure for the chosen branch and applied it. With cheap arguments
@@ -1942,20 +2331,24 @@ def pushGlobals : List Erased → List Erased
 def decideGlobals : List Erased → List Erased
   | .nil => .nil
   | .cons (.mk n e) rest => .cons (.mk n (decideLets 0 e)) (decideGlobals rest)
+-- (stage 21s) the C `main`, unless the program is a library (`--lib`, `--no-main`)
+def mainDocs (lib : Bool) (m : String) : List Doc := match lib with
+  | .true => .nil
+  | .false => .cons (.t m) .nil
 -- the program's C text, one `Doc` per line
-def genProgram (gs : Globals) : List Doc := match gs with
-  | .mk all _ _ ffi => match eraseGlobals .false all .nil .nil (Array.size all) with
+def genProgram (lib : Bool) (gs : Globals) : List Doc := match gs with
+  | .mk all _ _ ffi => match eraseGlobals .false ffi all .nil .nil (Array.size all) with
     | .err m => .cons (.t ("#error " +++ m)) .nil
     | .ok es0 =>
       -- (applications pushed into `case`s, as under reference counting: a match is then
       -- no closure, and its recursive calls are in tail position)
       let es := pushGlobals es0;
-      match genCode (.mk .nil 0 (arities (ffiArities StrMap.empty ffi) es) .idle) .nil .nil es with
+      match genCode (.mk .nil 0 (arities (ffiArities StrMap.empty ffi) es) .idle .nil) .nil .nil es with
       | .mk protos defs st => match st with
-        | .mk fns _ _ _ =>
+        | .mk fns _ _ _ _ =>
           List.append (linkDocs (List.reverseOf ffi .nil)) (.cons (.t "#include \"rt.c\"") (List.append (ffiDocs .false ffi) (List.append protos
             (List.append (List.reverseOf fns .nil) (List.append defs (List.append (exportDocs .false (List.reverseOf ffi .nil))
-              (.cons (.t "int main(int argc, char **argv) { (void)argc; rt_start(argv); ap(get_main(), BOX(0)); rt_finishGC(); return 0; }") .nil)))))))
+              (mainDocs lib "int main(int argc, char **argv) { (void)argc; rt_start(argv); ap(get_main(), BOX(0)); rt_finishGC(); return 0; }")))))))
 
 -- **Constructors inlined** (reference counting mode): a global whose body, under its
 -- `λ`s, only builds an object from its parameters and constants (a constructor, as
@@ -2441,7 +2834,7 @@ def genCodeRC (sigs : StrMap (List Bool)) : CG → List Doc → List Doc → Lis
     let g := mangle n;
     let k := lamsOf e;
     match k with
-    | .zero => match rcE (.mk .nil sigs .nil) st .nil 0 .nil e with
+    | .zero => match rcHead (.mk .nil sigs .nil) st .nil 0 .nil .nil e with
       | .mk code atom _ st1 =>
         genCodeRC sigs st1 (.cons (.t ("V get_" +++ g +++ "(void);")) protos)
           (.cons (.t ("static V g_" +++ g +++ "; static int i_" +++ g +++ "; static V init_" +++ g +++ "(void) { ") ⧺ code ⧺
@@ -2453,7 +2846,7 @@ def genCodeRC (sigs : StrMap (List Bool)) : CG → List Doc → List Doc → Lis
       let sig := match StrMap.findD sigs (Str.ofString n) .nil with
         | .nil => allFalse k
         | sg => sg;
-      match rcE (.mk (borLevels 0 sig) sigs .nil) st names k .nil (markSelf n k sig (borLevels 0 sig) k (underLams k e)) with
+      match rcHead (.mk (borLevels 0 sig) sigs .nil) st names k .nil .nil (markSelf n k sig (borLevels 0 sig) k (underLams k e)) with
       | .mk code atom live st1 =>
         let ps := paramDecls 0 k;
         genCodeRC sigs st1 (.cons (.t ("V d_" +++ g +++ "(" +++ ps +++ "); V get_" +++ g +++ "(void);")) protos)
@@ -2461,8 +2854,8 @@ def genCodeRC (sigs : StrMap (List Bool)) : CG → List Doc → List Doc → Lis
             (.t ("static V w_" +++ g +++ "(V *a) { V r = d_" +++ g +++ "(" +++ argList 0 k +++ "); " +++ wrapDecs 0 sig +++ "return r; } " +++
              "V get_" +++ g +++ "(void) { static V c = 0; if (!c) { c = native(w_" +++ g +++ ", " +++ Nat.toString k +++
              "); rt_root(&c); } inc(c); return c; }")) defs)) rest
-def genProgramRC (borrow : Bool) (gs : Globals) : List Doc := match gs with
-  | .mk all _ _ ffi => match eraseGlobals .true all .nil .nil (Array.size all) with
+def genProgramRC (lib : Bool) (borrow : Bool) (gs : Globals) : List Doc := match gs with
+  | .mk all _ _ ffi => match eraseGlobals .true ffi all .nil .nil (Array.size all) with
     | .err m => .cons (.t ("#error " +++ m)) .nil
     | .ok es0 =>
       let es1 := pushGlobals es0;
@@ -2470,12 +2863,12 @@ def genProgramRC (borrow : Bool) (gs : Globals) : List Doc := match gs with
       let sigs : StrMap (List Bool) := match borrow with
         | .true => sigsFix (sigsInit StrMap.empty es) 0 es
         | .false => StrMap.empty;
-      match genCodeRC sigs (.mk .nil 0 (arities (ffiArities StrMap.empty ffi) es) .idle) .nil .nil es with
+      match genCodeRC sigs (.mk .nil 0 (arities (ffiArities StrMap.empty ffi) es) .idle .nil) .nil .nil es with
       | .mk protos defs st => match st with
-        | .mk fns _ _ _ =>
+        | .mk fns _ _ _ _ =>
           List.append (linkDocs (List.reverseOf ffi .nil)) (.cons (.t "#define WIZ_RC 1") (.cons (.t "#include \"rt.c\"") (List.append (ffiDocs .true ffi) (List.append protos
             (List.append (List.reverseOf fns .nil) (List.append defs (List.append (exportDocs .true (List.reverseOf ffi .nil))
-              (.cons (.t "int main(int argc, char **argv) { (void)argc; rt_start(argv); dec(ap(get_main(), BOX(0))); rt_finish(); return 0; }") .nil))))))))
+              (mainDocs lib "int main(int argc, char **argv) { (void)argc; rt_start(argv); dec(ap(get_main(), BOX(0))); rt_finish(); return 0; }"))))))))
 
 -- The backend a program asks for: reference counting if its first line is `-- wiz: rc`,
 -- else the garbage collector. (A command-line flag, once programs can read their
@@ -2491,21 +2884,28 @@ def wantsRC (text : String) : Bool := match text with
   | .mk cs => match "-- wiz: rc" with
     | .mk ps => charsPrefix ps cs
 -- (`-- wiz: rc-owned`: every parameter owned, no borrowing; for comparisons)
-def genProgramFor (text : String) (gs : Globals) : List Doc := match wantsRC text with
-  | .true => genProgramRC (match text with
+def genProgramFor (lib : Bool) (text : String) (gs : Globals) : List Doc := match wantsRC text with
+  | .true => genProgramRC lib (match text with
     | .mk cs => match "-- wiz: rc-owned" with
       | .mk ps => Bool.not (charsPrefix ps cs)) gs
-  | .false => genProgram gs
+  | .false => genProgram lib gs
 -- (stage 21k) the backend the command line asks for: `--rc` (reference counting),
 -- `--rc-owned` (every parameter owned, no borrowing) or `--gc`; without one, the first
--- line's pragma (`genProgramFor`, kept as a fallback for one release)
-def genProgramArgs (args : List String) (text : String) (gs : Globals) : List Doc := match elemStr "--rc-owned" args with
-  | .true => genProgramRC .false gs
+-- line's pragma (`genProgramFor`, kept as a fallback for one release). (Stage 21s)
+-- `--lib` or `--no-main`: the program without a C `main` (its exports, for C code to
+-- call); `--header`: instead of the C, the header of the exports (`wiz build --lib`'s
+-- `.h`).
+def genProgramArgs (args : List String) (text : String) (gs : Globals) : List Doc :=
+  let lib := Bool.or (elemStr "--lib" args) (elemStr "--no-main" args);
+  match elemStr "--header" args with
+  | .true => headerDocs (Globals.ffi gs)
+  | .false => match elemStr "--rc-owned" args with
+  | .true => genProgramRC lib .false gs
   | .false => match elemStr "--rc" args with
-    | .true => genProgramRC .true gs
+    | .true => genProgramRC lib .true gs
     | .false => match elemStr "--gc" args with
-      | .true => genProgram gs
-      | .false => genProgramFor text gs
+      | .true => genProgram lib gs
+      | .false => genProgramFor lib text gs
 
 -- printing a program: each line's pieces, then a newline
 def printDoc : Doc → IO Unit
@@ -2519,3 +2919,18 @@ def printDocs : List Doc → IO Unit
     printDoc d;
     IO.println "";
     printDocs rest
+
+-- (stage 21t) The `link_c` files that don't exist, each the error of `command.linkC`, in
+-- order. The frontend is pure, so the driver checks them before it prints the C (as the
+-- Lean command line resolves the paths before elaboration); a path is relative to the
+-- input's directory, the working directory. (`access` is 0 for a file that exists.)
+extern "access" (header := "unistd.h") cAccessFails : String → Nat → IO Bool
+def missingLinks : List Foreign → IO (List String)
+  | .nil => IO.pure .nil
+  | .cons f rest => IO.bind (missingLinks rest) (fun more => match f with
+    | .link p lib => (match lib with
+      | .true => IO.pure more
+      | .false => IO.bind (cAccessFails p 0) (fun bad => IO.pure (match bad with
+        | .true => List.cons (String.append "error: link_c: no file " (String.append p " (paths are relative to the .wiz file)")) more
+        | .false => more)))
+    | _ => IO.pure more)

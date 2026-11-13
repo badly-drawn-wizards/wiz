@@ -19,14 +19,13 @@ def orDefault {A : Type} [Inhabited A] : Option A → A
   | .none => Inhabited.default
 #eval orDefault (Option.none : Option Nat)
 
--- an output parameter: the result type is determined by the instance
-class HAdd (A B : Type) (C : outParam Type) where
-  hadd : A → B → C
+-- an output parameter: the result type is determined by the instance (`HAdd A B C` is
+-- the Prelude's class of `+`, whose result type `C` is an `outParam`, 7f)
 instance : HAdd Nat Bool Nat where
-  hadd := fun n b => match b with
+  hAdd := fun n b => match b with
     | .true => Nat.succ n
     | .false => n
-#eval HAdd.hadd (3 : Nat) Bool.true
+#eval (3 : Nat) + Bool.true
 
 -- `do` works for any monad
 instance : Monad Option where

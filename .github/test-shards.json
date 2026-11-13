@@ -1,8 +1,17 @@
 [
-  {"name": "selfhost", "split": 4, "heavy": true, "select": [
-    "=selfhost"
+  {"name": "selfhost", "split": 4, "heavy": true,
+   "inputs": ["selfhost/*", "lib/Prelude.wiz", "lib/IO.wiz", "lib/Std.wiz"],
+   "select": [
+    "=prop-kernels",
+    "=selfhost",
+    "=audit-kernels"
   ]},
-  {"name": "grail-selfhost", "heavy": true, "select": [
+  {"name": "hdl-verified", "heavy": true, "select": [
+    "=hdl-verified"
+  ]},
+  {"name": "grail-selfhost", "heavy": true,
+   "inputs": ["selfhost/*", "lib/Prelude.wiz", "lib/IO.wiz", "lib/Std.wiz", "lib/Grail.wiz"],
+   "select": [
     "=grail-selfhost"
   ]},
   {"name": "backends", "select": [
@@ -22,23 +31,26 @@
     "builtins",
     "classes",
     "deriving",
+    "=doc",
     "=feral",
     "=grail",
     "=grail-commands",
     "=grail-deps",
     "=grail-hygiene",
     "=grail-jobs",
-    "hdl",
+    "=hdl",
     "infoview",
     "language",
     "lsp",
     "macros",
     "modules",
     "=native",
+    "=natives",
     "=nvim",
     "optic",
     "phantom",
     "regions",
+    "=linear-case",
     "repr",
     "seplogic",
     "=sat",
@@ -49,13 +61,18 @@
     "=text",
     "toolchain",
     "tooling",
+    "tour",
     "=tower",
     "=tower-wiz",
     "trust",
     "vec",
     "word"
   ]},
-  {"name": "core", "select": [
+  {"name": "core",
+   "inputs": ["selfhost/Kernel.wiz", "examples/*", "lib/Prelude.wiz", "lib/IO.wiz", "lib/Std.wiz",
+              "lib/Eff.wiz", "lib/BitVec.wiz", "lib/Logic.wiz", "lib/Hdl/*"],
+   "select": [
+    "=audit",
     "check",
     "conv",
     "copatterns",
@@ -71,6 +88,7 @@
     "=meta",
     "observational",
     "parser",
+    "=prop",
     "quantity",
     "rig",
     "scaling",

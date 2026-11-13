@@ -11,7 +11,7 @@ in what is trusted (design and survey: `wiz-notes/smt.md`):
   trusted, as with Lean's `bv_decide` (which runs its checker compiled, trusting the
   compiler) or Coq's SMTCoq.
 
-## 28a: `smt` and `--trust-smt` ✅
+## 28a: `smt` and `--trust-smt`
 
     def trans (a b c : Nat) (h₁ : Nat.lt a b = .true) (h₂ : Nat.lt b c = .true) :
         Nat.lt a c = .true := by smt
@@ -70,7 +70,7 @@ jobs), so an acceptance is never replayed without the flag. `lib/` never uses `s
 
 **The self-hosted toolchain** has no `smt`: the request is the Lean host's.
 
-## 28b: `sat_decide`: certified, with LRAT ✅
+## 28b: `sat_decide`: certified, with LRAT
 
     import SatTactic
     def demorgan (a b : Bool) : Bool.not (Bool.and a b) = Bool.or (Bool.not a) (Bool.not b) := by sat_decide
@@ -115,11 +115,9 @@ unfolded: an 8-bit carry chain checks, a 16-bit one goes over 2 GB. The fix is t
 shared subterms (`let`s, or a circuit given as nodes, as the HDL builds them) as one node
 each. A stuck `a && b` is a `match`, not `Bool.and`, so it is an atom (write `Bool.and`).
 
-**Not yet**: bit vectors. Bit-blasting `UIntN w` operations into circuits is easy; the
-correctness proof needs lemmas such as `testBit (land a b) i = testBit a i && testBit b i`
-and the range invariant of `UIntN` (agent/seal-range), which the library does not have yet.
+**Not yet** (at 28b): bit vectors; 28d bit-blasts them, with the lemmas 28b expected.
 
-## 28c: sharing ✅
+## 28c: sharing
 
     def maj (a b c : Bool) : Bool := Bool.or (Bool.or (Bool.and a b) (Bool.and a c)) (Bool.and b c)
     def eq4 … : Bool.xor (Bool.xor a3 b3) (carry a2 b2 (carry a1 b1 …)) = Bool.xor … (maj b2 a2 (maj …)) := by sat_decide
@@ -143,3 +141,79 @@ clauses hold under `σ` itself). No axioms.
   the definition being elaborated and checked by the kernel like any other (it is not an
   axiom: `#print axioms` does not list it). The proof uses two, `σ` and the node list,
   instead of repeating them in every node's proof.
+* **`TacticM.assignLate`** (a new request): `assign` without the kernel's check of the
+  term at that moment. `assign` type-checks the term with the kernel and the declaration
+  is checked again at the end, so a big proof cost twice (on an 8-bit carry chain: 13 s
+  in `assign`, 14 s at the end); `sat_decide`'s proof is only checked at the end. An
+  ill-typed term is still refused, at the declaration.
+* **Where the time goes** (probes, not measurements): of the remaining check, about half
+  is the gates (`allHold`: each `refl` compared by conversion) and half the LRAT check run
+  by the kernel's evaluator over association lists. Running the check compiled
+  (`native_refl`'s evaluator) did not help: comparing the stated certificate with the
+  expected type costs as much as the check. Faster: a checker for the kernel's evaluator
+  (arrays or maps for the clause database).
+
+## 28d: `bv_decide`: words, bit-blasted (a fragment: bitwise, `+ -`, shifts, `<ᵤ ≤ᵤ`)
+
+    import BvDecide
+    def t (x y z : UIntN 8) : UIntN.land x (UIntN.lor y z) = UIntN.lor (UIntN.land x y) (UIntN.land x z) := by bv_decide
+
+An equation of words `UIntN w` / `BitVec w` (`w` a numeral) becomes 28c's circuit: bit `i`
+of a word expression `e` is the node whose value is `Bits.bit (UIntN.toNat e) i`, an
+operation's bit is a gate over its operands' bits, and **the node's proof is the
+operation's lemma** (`Bits.wland_bit x y i : bit (land x y) i = bit x i && bit y i`), which
+the kernel checks like any gate. Other words are inputs; closed words (numerals) are
+constants, their bits computed (`refl`). The output node is `Bits.eqUpTo (toNat lhs)
+(toNat rhs) w`, and `Bits.word_ext` turns it into `lhs = rhs` (two numbers below `2^w`
+with the same bits are equal; the range comes from 22l). No axioms: `#print axioms` lists
+only `UIntN`'s seal and its natives, as for any use of words.
+
+lib/BitBlast.wiz has the lemmas, all at any width: `n = 2 (half n) + odd n`, `Nat.div n 2
+= half n` and `Nat.isOdd n = odd n` (through `Nat.divGo`'s fuel), the bits of
+`Nat.bitwise` (so `land`, `lor`, `xor`), `land a b ≤ a` (Word's `land` keeps the smaller),
+and extensionality. `Bits.bit` itself runs on the native `Nat.isOdd`/`Nat.div`, so the bits
+of a numeral compute fast.
+
+**Arithmetic.** `x + y` is a ripple-carry adder: bit `i` of the sum is `a_i ^^ b_i ^^ c_i`,
+where the carry `c_i` is the node `Bits.carry i false A B` (`c_{i+1} = maj a_i b_i c_i`,
+`Bits.carry_step`, by `refl` on the numeral `i`), proved by `Bits.wadd_bit` from `(x + y)
+mod 2^w`'s low bits. `x - y` is `x + ~~~y + 1` (`Bits.wsub_bit`, carry in `true`, over
+`2^w - 1 - y`'s bits, `Bits.compl_bit`); `-x` is `0 - x`; `~~~x` is `Bits.wnot_bit`.
+Shifts by a numeral `k` move bits (`Bits.wshl_hi`/`wshr_in`) and fill with `false`
+(`wshl_lo`/`wshr_out`). Each lemma's side condition `i < w` is a closed comparison of
+numerals, which the kernel computes, so the tactic passes `Sat.trivial`.
+
+**Comparisons.** A goal may also be an equation of booleans (as for `sat_decide`) that
+compares words: `UIntN.lt/le` (`BitVec.ult/ule`) become a chain from the low bit up,
+`Bits.ltc c A B (i+1) = (¬a_i ∧ b_i) ∨ (a_i = b_i ∧ ltc c A B i)`, and
+`Bits.wlt_bits`/`wle_bits` (by induction on the width, through `n = 2 (half n) + odd n`)
+say the chain is `<` (`c = false`) or `≤` (`c = true`) of numbers below `2^w`. The
+comparisons become nodes first, and `sat_decide`'s reflection of the connectives finds them.
+
+    def c (x : UIntN 8) : UIntN.lt x (UIntN.add x (UIntN.ofNat 8 1)) = Bool.not (UIntN.le (UIntN.ofNat 8 255) x) := by bv_decide
+
+**Fragment**: `land/lor/xor/not/add/sub/neg`, `shiftLeft/shiftRight` by numerals,
+`lt/le`, under their `BitVec` names too, and closed words. Not yet: `*`, `/`, `%`, signed
+comparisons, shifts by a word. This is the whole claim: outside it an operation the tactic
+does not know is an uninterpreted word (or, in a Boolean goal, an atom), so the goal is
+proved only if it holds for every value of that word, and the counterexample shown names
+that reading (it need not be a real one). A numeral shift amount `k` may be any numeral,
+including `k ≥ w` (all bits `false`).
+
+**Only Boolean goals with a word variable.** A closed *Boolean* goal is not supported: a
+true one is already `True` when the tactic sees it (`rfl` closes it), and a false one's
+closed `Bool` values are constructor payloads (`('true, refl (), ())`), not `Bool.true`, so
+there is no equation of `Bool` to bit-blast. A closed *word* equation is fine (its
+numerals are bits, computed by `refl`).
+
+**Tests.** The group *smt* keeps the cases: bitwise goals, arithmetic and shifts at widths
+1, 3 and 4 (both the `UIntN` and the `BitVec` names, and the shift boundaries `k = 0`
+and `k = w`), and comparisons in Boolean goals; `#print axioms` checks that a proof rests
+only on `UIntN`'s seal and its natives, never on `smt`'s axiom or a `sorry`.
+
+**Kernel cost** (light probes, noise-level; distributivity of `&&&` over `|||`, three
+words, over the time to import the libraries): 4 bits ≈ 2 s, 8 bits ≈ 10 s, 16 bits ≈ 58 s.
+It grows faster than the circuit (3w inputs, ~5w gates): each kernel step costs
+~0.1–1 ms (wiz-notes/smt.md §10), so wide words are slow until the evaluator is faster.
+Arithmetic and comparisons add gates per bit (a carry or comparison chain), so the same
+width costs more than a bitwise goal.

@@ -1,10 +1,21 @@
 # Wiz documentation
 
+* [install.md](install.md): installing Wiz with tower or Nix, editor setup, a first
+  grail package, troubleshooting
+* [tour.md](tour.md): a tour of the language for people who know a little functional
+  programming
+* [stability.md](stability.md): what a release promises (0.1.z)
+* [release.md](release.md): making a release (checklist, tagging, smoke test)
+* [CHANGELOG.md](../CHANGELOG.md)
 * [building.md](building.md)
 * [ci-runner.md](ci-runner.md): a self-hosted runner for the heavy CI shards
 * [exercises.md](exercises.md): generating the exercise tree from this one
+* [hardware.md](hardware.md): hardware in Wiz, from a circuit to a proved temporal property
 * [CoreSpec.md](CoreSpec.md)
 * [Status.md](Status.md)
+* [dsls.md](dsls.md): the embedded languages (DSLs) in Wiz, and the conventions they follow
+* [error-codes.md](error-codes.md): the error codes and their quick fixes
+* [resources.md](resources.md): resources in Wiz: quantities, regions, optics, Feral and separation logic, with one running example
 * [ROADMAP.md](../ROADMAP.md)
 
 ## The stages
@@ -55,6 +66,7 @@ topic below, so the numbers are not in order.
 ### Numbers and libraries
 
 * [Stage 22: numbers for hardware and systems code](stages/22-numbers.md)
+* [Stage 29: native data structures](stages/29-natives.md): word arrays, word maps, interned strings
 * [Libraries](libraries.md)
 
 ### Verification

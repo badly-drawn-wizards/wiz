@@ -106,6 +106,7 @@ partial def term : Term R → Sx
   | .tt => .a "tt"
   | .empty l => node "empty" [level l]
   | .absurd m t => node "absurd" [term m, term t]
+  | .letUnit u b => node "letUnit" [term u, term b]
   | .eq A a b => node "eq" [term A, term a, term b]
   | .eqTy A B => node "eqTy" [term A, term B]
   | .refl A a => node "refl" [term A, term a]
@@ -133,7 +134,7 @@ partial def term : Term R → Sx
   | .szSuc s => node "szSuc" [term s]
   | .sizeLt s => node "sizeLt" [term s]
   | .sfix l I D v P f s i x => node "sfix" [level l, term I, term D, level v, term P, term f, term s, term i, term x]
-  | .scase l I D v P m s i x => node "scase" [level l, term I, term D, level v, term P, term m, term s, term i, term x]
+  | .scase l q I D v P m s i x => node "scase" [level l, term q, term I, term D, level v, term P, term m, term s, term i, term x]
   | .cocon x => node "cocon" [term x]
   | .scofix l I D A f s i a => node "scofix" [level l, term I, term D, term A, term f, term s, term i, term a]
   | .coit l I D S st i s => node "coit" [level l, term I, term D, term S, term st, term i, term s]
@@ -215,6 +216,7 @@ partial def dterm : Sx → Option (Term R)
     | "unit" => return .unit (← lv 1)
     | "empty" => return .empty (← lv 1)
     | "absurd" => return .absurd (← t 1) (← t 2)
+    | "letUnit" => return .letUnit (← t 1) (← t 2)
     | "eq" => return .eq (← t 1) (← t 2) (← t 3)
     | "eqTy" => return .eqTy (← t 1) (← t 2)
     | "refl" => return .refl (← t 1) (← t 2)
@@ -239,7 +241,7 @@ partial def dterm : Sx → Option (Term R)
     | "szSuc" => return .szSuc (← t 1)
     | "sizeLt" => return .sizeLt (← t 1)
     | "sfix" => return .sfix (← lv 1) (← t 2) (← t 3) (← lv 4) (← t 5) (← t 6) (← t 7) (← t 8) (← t 9)
-    | "scase" => return .scase (← lv 1) (← t 2) (← t 3) (← lv 4) (← t 5) (← t 6) (← t 7) (← t 8) (← t 9)
+    | "scase" => return .scase (← lv 1) (← t 2) (← t 3) (← t 4) (← lv 5) (← t 6) (← t 7) (← t 8) (← t 9) (← t 10)
     | "cocon" => return .cocon (← t 1)
     | "ulift" => return .ulift (← lv 1) (← t 2)
     | "up" => return .up (← t 1)
@@ -267,6 +269,8 @@ structure Effect (R : Type) where
   cCode : Array String := #[]
   infos : Array (Info R) := #[]
   sites : Array (Name × SourceInfo × String) := #[]
+  /-- (11s) what the declarations are, and their doc comments -/
+  docs : Array (Name × DeclDoc) := #[]
   /-- (13b) names made private, and structures made opaque, with their module -/
   privates : Array (Name × String) := #[]
   opaques : Array (Name × String) := #[]
@@ -291,6 +295,7 @@ def effectOf (s s' : CommandState R) : Effect R :=
     cCode := s'.cCode.extract s.cCode.size s'.cCode.size
     infos := s'.infos.extract s.infos.size s'.infos.size
     sites := newNames.filterMap fun n => (s'.declSites.get? n).map fun (i, m) => (n, i, m)
+    docs := newNames.filterMap fun n => (s'.declDocs.get? n).map fun d => (n, d)
     privates := newEntries s.globals.privates s'.globals.privates
     opaques := newEntries s.globals.opaques s'.globals.opaques }
 where
@@ -342,6 +347,7 @@ def Effect.apply (e : Effect R) (s : CommandState R) : CommandState R :=
            coinductives := s.coinductives ++ e.coinductives, foreignTypes := e.foreignTypes ++ s.foreignTypes,
            cCode := s.cCode ++ e.cCode, infos := s.infos ++ e.infos,
            declSites := e.sites.foldl (fun m (n, i, md) => m.insert n (i, md)) s.declSites,
+           declDocs := e.docs.foldl (fun m (n, d) => m.insert n d) s.declDocs,
            pristine := false }
 
 def info (i : SourceInfo) : Sx := list [nat i.start, nat i.stop]
@@ -397,6 +403,7 @@ def infoSx : Info R → Sx
     node "expansion" [info i, str k, handler, list (e.toList.map (str ·.reprint))]
   | .importMod i m => node "import" [info i, str m]
   | .inst i ns ty t => node "inst" [info i, names ns, term ty, term t]
+  | .fix i c d => node "fix" [info i, str c, list (d.map fun (k, vs) => list [str k, names vs])]
 
 def dInfo (x : Sx) : Option (Info R) := do
   let xs ← items? x
@@ -428,6 +435,11 @@ def dInfo (x : Sx) : Option (Info R) := do
     pure (.expansion (← dinfo (← a 1)) (← atom? (← a 2)) h e.head?)
   | "import" => pure (.importMod (← dinfo (← a 1)) (← atom? (← a 2)))
   | "inst" => pure (.inst (← dinfo (← a 1)) (← dnames (← a 2)) (← dterm (← a 3)) (← dterm (← a 4)))
+  | "fix" =>
+    let d ← (← items? (← a 3)).toList.mapM fun kv => do
+      let #[k, vs] ← items? kv | none
+      pure (← atom? k, ← dnames vs)
+    pure (.fix (← dinfo (← a 1)) (← atom? (← a 2)) d)
   | _ => none
 
 def Effect.toSx (e : Effect R) : Sx :=
@@ -448,10 +460,11 @@ def Effect.toSx (e : Effect R) : Sx :=
     list (e.infos.toList.map infoSx),
     list (e.sites.toList.map fun (n, i, m) => list [str n, info i, str m]),
     list (e.privates.toList.map fun (n, m) => list [str n, str m]),
-    list (e.opaques.toList.map fun (n, m) => list [str n, str m])]
+    list (e.opaques.toList.map fun (n, m) => list [str n, str m]),
+    list (e.docs.toList.map fun (n, d) => list [str n, str d.kind, list (d.doc.toList.map str), names d.parent.toList, nat d.start])]
 
 def Effect.ofSx? (x : Sx) : Option (Effect R) := do
-  let #[ds, ms, bs, as, cs, is, cos, fts, cc, hs, ss, ps, os] ← items? x | none
+  let #[ds, ms, bs, as, cs, is, cos, fts, cc, hs, ss, ps, os, dcs] ← items? x | none
   let decl (x : Sx) : Option (Decl R) := do
     let #[n, ps, ty, v, inl, im, w] ← items? x | none
     pure { name := ← atom? n, levelParams := ← (← items? ps).toList.mapM atom?, type := ← dterm ty,
@@ -491,12 +504,16 @@ def Effect.ofSx? (x : Sx) : Option (Effect R) := do
       let #[n, i, m] ← items? x | none
       pure (← atom? n, ← dinfo i, ← atom? m))
     privates := (← (← items? ps).mapM pair)
-    opaques := (← (← items? os).mapM pair) }
+    opaques := (← (← items? os).mapM pair)
+    docs := (← (← items? dcs).mapM fun x => do
+      let #[n, k, d, p, st] ← items? x | none
+      pure (← atom? n, { kind := ← atom? k, doc := (← (← items? d).toList.mapM atom?).head?,
+                         parent := (← dnames p).head?, start := ← (← atom? st).toNat? })) }
 
 /-- The cache's version: change it whenever the format or the elaborator's output changes.
 (The directory store also mixes in the binary's own hash, `binaryId`, so two builds of
 wiz never share entries; the salt is for invalidating by hand.) -/
-def salt : UInt64 := hash "wiz-cache-15-prf"  -- 15: proof markers (P2: declarations are stored marked); 14: a builtin key is registered once; 13: witnesses, assumed registrations, warnings; 12: private constructors, observations, fields (13b); 11: 22i, marked structure tails; 9: private names (13b); 8: Q4
+def salt : UInt64 := hash "wiz-cache-30-mutual-ctor-names-error-codes-scase-qty-letUnit"  -- 30: a mutual block's constructors are named per type, error codes, `Info.fix`, `scase` quantity (K1), `letUnit`; 20: proof markers (P2: declarations are stored marked); 15: doc comments and declaration kinds (11s); 14: a builtin key is registered once; 13: witnesses, assumed registrations, warnings; 12: private constructors, observations, fields (13b); 11: 22i, marked structure tails; 9: private names (13b); 8: Q4
 
 /-! ## Keys and atomic writes (stage 23c)
 
@@ -677,16 +694,16 @@ where
           -- what the rest of the file sees depends on the module's text, through its key
           key := mixHash key (← keyOf keys m)
           if stack.contains m then
-            s := { s with messages := s.messages.push { info := cmd.info, severity := .error, text := s!"import cycle through {m}" } }
+            s := { s with messages := s.messages.push { info := cmd.info, severity := .error, text := s!"import cycle through {m}", code := ErrorCode.importCycle } }
           else if !s.imported.contains m then
             match s.loader m with
-            | none => s := { s with messages := s.messages.push { info := cmd.info, severity := .error, text := s!"unknown module {m}" } }
+            | none => s := { s with messages := s.messages.push { info := cmd.info, severity := .error, text := s!"unknown module {m}", code := ErrorCode.unknownModule } }
             | some src =>
               let (inner, h) ← importModule keys base stack s m src
               hits := hits + h
               let errs := inner.messages.filter (·.severity == .error)
-              let msg : Msg := { info := cmd.info, severity := .error,
-                                 text := s!"module {m} has errors: {errs.toList.map (·.render src)}" }
+              let msg : Msg := { info := cmd.info, severity := .error, code := ErrorCode.moduleErrors,
+                                 text := importErrorsText m src errs }
               -- (a module's warnings, such as an unchecked `builtin`, are shown at the import)
               let warns := (inner.messages.filter (·.severity == .warning)).map fun w =>
                 ({ info := cmd.info, severity := .warning, text := s!"module {m}: {w.render src}" } : Msg)
@@ -700,6 +717,12 @@ where
                 let dup := (errs.find? (·.code == "duplicate-declaration")).map (·.text) |>.getD msg.text
                 s := { s with messages := s.messages.push { msg with text := dup, code := "duplicate-declaration" } ++ warns,
                               imported := m :: s.imported, pristine := false }
+                -- in a module, that is the end of it: its later commands were checked
+                -- (and their effects cached) with `m` imported, and replayed without it
+                -- they would refer to declarations that aren't there, or to the other
+                -- module's (the macro interpreter then ran a deriver of lib/Deriving.wiz
+                -- with lib/Text.wiz dropped, and panicked). The importer drops the module.
+                unless stack.isEmpty do break
               else
               s := { inner with messages := (if errs.isEmpty then s.messages else s.messages.push msg) ++ warns,
                                 module := s.module, infos := s.infos }

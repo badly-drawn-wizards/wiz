@@ -1,6 +1,6 @@
 # Stage 8: the backend
 
-## 8a: IR and Perceus reference counting ✅
+## 8a: IR and Perceus reference counting
 
 ```
 #ir twice          -- def twice x0 x1 :=  dup x0;  let x2 := ap x0 x1;  let x3 := ap x0 x2;  ret x3
@@ -26,7 +26,7 @@
 |-----|-------------------|------------------------------------------|
 | 8.1 | `Compiler/RC.lean`| `insertRC`: Perceus `dup`/`drop`        |
 
-## 8b: C ✅
+## 8b: C
 
 ```
 $ wiz run fact.wiz        # def main : Nat := fact 30
@@ -51,7 +51,7 @@ $ wiz run fact.wiz        # def main : Nat := fact 30
 |-----|--------------------|----------------------------------------|
 | 8.2 | `Compiler/C.lean`  | `body`: C statements for an IR body    |
 
-## 8c: reuse ✅
+## 8c: reuse
 
 `Compiler/Reuse.lean` pairs each `drop x` with a later allocation in the same block:
 `let w := reset x; …; let y := reuse w in ctor t args`. At runtime, if `x` was unique,
@@ -68,13 +68,17 @@ that builds an object reuses the token, and the others free it at once
 (`reuse w in ctor 0`, which needs no cell). The IR has no types, and a `Bool` returned
 by a function has no cell to give, so only variables known to be objects (projected
 from, or built) go across, outermost first; the local pass pairs what is left. A
-zipper's insertion loop then allocates nothing per level.
+zipper's insertion loop then allocates nothing per level. A drop that finds no
+allocation is remembered and not tried again further down the path: the answer could
+only be the same, and asking again (with the drop's parts each time) was exponential
+along a chain of projections, the shape of a wide structure's fields read by a
+bundle's `pack` (a 20-field bundle took two minutes).
 
 | #   | Where                 | What                                          |
 |-----|-----------------------|-----------------------------------------------|
 | 8.3 | `Compiler/Reuse.lean` | `insertReuse`: pair drops with allocations    |
 
-## 8d: LLVM ✅
+## 8d: LLVM
 
 `wiz build FILE -o OUT --llvm` and `wiz run FILE --llvm` go through textual LLVM IR
 (`Compiler/LLVM.lean`) and `llc` (`--llc X`). The runtime is the same C file,
@@ -86,7 +90,7 @@ Still to do in the backend: specialise the eliminators for known descriptions (f
 constructor objects instead of nested pairs, direct recursion instead of walking the
 description).
 
-## 8e: borrowed parameters and drop specialisation ✅
+## 8e: borrowed parameters and drop specialisation
 
 ```
 #ir len            -- def len @&x0 :=  case x0 of | 0 => … | 1 => let x2 := proj 1 x0;  let x3 := len x2; …

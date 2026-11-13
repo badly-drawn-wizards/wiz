@@ -1,4 +1,5 @@
 import Wiz.Core.Term
+import Wiz.Core.StructLayout
 import Wiz.Rig
 
 /-!
@@ -346,6 +347,46 @@ def effPrec (f : PPFormat) : Nat := match lastCatPrec f.p with
 def rawOf (f : PPFormat) (tok : String) : Option String :=
   f.raw.find? fun r => String.ofList ((r.toList.dropWhile (·.isWhitespace)).reverse.dropWhile (·.isWhitespace)).reverse == tok
 
+/-- (13p) `S.mk Δ a₁ … aₙ` read back as a structure update `{ s with fᵢ := aᵢ, … }`: some
+fields are the projections of one term `s` at their own components (`StructLayout`) and
+the others are not. `let x := e; S.mk …` (how `{ e with … }` elaborates when `e` is not a
+variable) is `{ e with … }` when `x` is only the subject; a field updated with an update
+of its own old value is a path (`{ s with a.b := v }`). -/
+partial def structUpdateView? (g : Globals R) (t : Term R) : Option (Term R × List (List Name × Term R)) := do
+  match t with
+  | .letE _ _ _ val body =>
+    let (s, fs) ← structUpdateView? g body
+    guard (s == .var 0 && fs.all fun (_, v) => !v.hasVar 0)
+    pure (val, fs.map fun (p, v) => (p, v.instantiateAt 0 val))
+  | _ =>
+    let (.const mk _, args) := Term.spine t | none
+    guard (mk.endsWith ".mk")
+    let L ← structLayoutWith? (fun _ => false) g (mk.dropEnd 3).toString
+    let n := L.fields.length
+    guard (n > 0 && args.length == L.nParams + n)
+    let fieldArgs := args.drop L.nParams
+    let rec unsnd : Nat → Term R → Option (Term R)
+      | 0, u => some u
+      | j + 1, .snd u => unsnd j u
+      | _, _ => none
+    -- the term whose projection field `i`'s argument is, if it is one
+    let subjectOf (i : Nat) (a : Term R) : Option (Term R) := do
+      let k ← L.fieldComp? i
+      if k + 1 == L.comps.length then unsnd k a
+      else match a with
+        | .fst u => unsnd k u
+        | _ => none
+    let subjs := fieldArgs.zipIdx.map fun (a, i) => subjectOf i a
+    let s ← subjs.findSome? id
+    let kept := subjs.map (· == some s)
+    guard (kept.any id && kept.any (!·))
+    let updates := (L.fields.zip (fieldArgs.zip kept)).filterMap fun (f, a, k) => if k then none else some (f, a)
+    pure (s, updates.flatMap fun (f, a) =>
+      let own := (L.fields.idxOf? f).bind L.fieldComp? |>.map (L.compTerm · s)
+      match structUpdateView? g a with
+      | some (s', fs') => if own == some s' then fs'.map fun (p, v) => (f :: p, v) else [([f], a)]
+      | none => [([f], a)])
+
 mutual
 
 /-- Print `t` at precedence `prec`. With `env`, applications print as notation (except at
@@ -374,6 +415,11 @@ partial def printNode (env : Option (Globals R)) (names : List Name) (tys : List
         | some s => fmt g s "term" prec
         | none => pure none : DM R (Option TT)).run #[]
       if let some tt := r then return tt
+    -- (13p) a structure update
+    if !noUnexp && g.pp.useNotation then
+      if let some (s, fs) := structUpdateView? g t then
+        let fields ← fs.mapM fun (p, v) => do pure (cat [txt (".".intercalate p ++ " := "), ← sub 0 v])
+        return cat [txt "{ ", ← sub 0 s, txt " with ", sep fields ", ", txt " }"]
   match t with
   | .var ix => pure (txt (names[ix]?.getD s!"#{ix}"))
   | .const n _ => pure (txt (Globals.privateBase n))
@@ -385,7 +431,9 @@ partial def printNode (env : Option (Globals R)) (names : List Name) (tys : List
   | .szSuc s => pure (cat [txt "↑", ← sub 1024 s])
   | .sfix _ _ _ _ P f s i x => app (txt "sfix") [P, f, s, i, x]
   | .cocon x => app (txt "cocon") [x]
-  | .scase _ _ _ _ P m s i x => app (txt "scase") [P, m, s, i, x]
+  | .scase _ q _ _ _ P m s i x =>
+    -- (K1) the quantity, unless it is the ordinary ω case
+    app (txt "scase") ((if isDefaultQ .default q then [] else [q]) ++ [P, m, s, i, x])
   | .scofix _ _ _ A f s i a => app (txt "scofix") [A, f, s, i, a]
   | .qlit r => pure (txt (QuantitySyntax.display r))
   | .sort l => pure (paren (prec > 1022 && !atomicSort l) (txt (showSort l)))
@@ -440,6 +488,7 @@ partial def printNode (env : Option (Globals R)) (names : List Name) (tys : List
     | some 1 => "Empty"
     | _ => s!"Empty.\{{l}}"))
   | .absurd _ u => pure (paren (prec > 1022) (cat [txt "absurd ", ← sub 1023 u]))
+  | .letUnit u b => pure (paren (prec > 0) (cat [txt "let () := ", ← sub 0 u, txt "; ", ← sub 0 b]))
   | .eq _ a b | .eqTy a b => pure (paren (prec > 50) (cat [← sub 51 a, txt " = ", ← sub 51 b]))
   | .refl _ a | .reflTy a => pure (paren (prec > 1022) (cat [txt "refl ", ← sub 1023 a]))
   | .cast _ _ e u => pure (paren (prec > 1022) (cat [txt "cast ", ← sub 1023 e, txt " ", ← sub 1023 u]))
@@ -463,7 +512,8 @@ partial def printNode (env : Option (Globals R)) (names : List Name) (tys : List
     -- `.c f₁ … fₙ`: the payload ends with the index equation and `()`
     let fields := (tuple rest #[]).toList
     let fields := fields.take (fields.length - 2)
-    let c := txt s!".{ls[i]?.getD s!"#{i}"}"
+    -- (a `mutual` block's tag `A.c` is written `.c`, `ctorShort`)
+    let c := txt s!".{ctorShort (ls[i]?.getD s!"#{i}")}"
     if fields.isEmpty then pure c else app c fields
   | .con x => app (txt "con") [x]
   | .ind _ _ _ _ P m i x => app (txt "ind") [P, m, i, x]
@@ -692,6 +742,12 @@ def Term.pretty (names : List Name := []) (t : Term R) (g : Option (Globals R) :
 def Term.ppIn (g : Globals R) (names : List Name) (t : Term R) : String := t.pretty names (some g)
 
 instance : ToString (Term R) := ⟨fun t => t.pretty []⟩
+
+/-- (24e) A goal's target as text after the goal's `⊢`: in parentheses when it shows a
+`⊢` of its own (a notation, such as separation logic's entailment), so that
+`⊢ (l ↦ 1 ⊢ l ↦ 2)` doesn't read as two turnstiles of one goal. -/
+def goalTarget (s : String) : String :=
+  if (s.splitOn "⊢").length > 1 then s!"({s})" else s
 
 /-- A printed term for a message, at most about `max` characters: a longer one keeps
 its beginning and its end, and says how much was left out. (A normal form can be huge:

@@ -1,4 +1,5 @@
 import HProp
+import Nat
 import Text
 -- Hoare triples over a model heap, with the frame rule (stage 24c).
 --
@@ -186,6 +187,22 @@ def wp.bind {V A B : Type} (c : Prog V A) (f : A → Prog V B) :
 
 -- `{P} c {Q}`
 def Triple {V A : Type} (P : HProp V) (c : Prog V A) (Q : A → HProp V) : Prop := P ⊢ wp c Q
+-- Notation (13o): `⦃P⦄ c ⦃r, Q⦄` is `Triple P c (fun r => Q)`, and `⦃P⦄ c ⦃Q⦄` takes the
+-- postcondition as a function. Triples print that way.
+-- (Both brackets are declared " ⦃" and "⦄ ": the printer takes an atom's spacing from its
+-- first declaration, and drops it at the ends of the notation.)
+syntax:max (name := tripleB) " ⦃" term "⦄ " term " ⦃" ident "," term "⦄ " : term
+syntax:max (name := tripleW) " ⦃" term "⦄ " term " ⦃" "_" "," term "⦄ " : term
+syntax:max (name := triple) " ⦃" term "⦄ " term " ⦃" term "⦄ " : term
+macro_rules
+  | `(term| ⦃$P⦄ $c ⦃$r, $Q⦄) => `(term| Triple $P $c (fun $r => $Q))
+macro_rules
+  | `(term| ⦃$P⦄ $c ⦃_, $Q⦄) => `(term| Triple $P $c (fun _ => $Q))
+macro_rules
+  | `(term| ⦃$P⦄ $c ⦃$Q⦄) => `(term| Triple $P $c $Q)
+app_unexpander Triple
+  | `(term| $f $P $c (fun _ => $Q)) => `(term| ⦃$P⦄ $c ⦃_, $Q⦄)
+  | `(term| $f $P $c (fun $r => $Q)) => `(term| ⦃$P⦄ $c ⦃$r, $Q⦄)
 
 -- consequence
 def Triple.conseq {V A : Type} {0 P P' : HProp V} {ω c : Prog V A} {0 Q Q' : A → HProp V}
@@ -299,14 +316,9 @@ def Option.substP {V : Type} (0 P : Option V → Prop) {a b : Option V} (e : a =
   @Eq.substProp (Option V) P a b e p
 
 
-def Nat.beq_eq : (a b : Nat) → Nat.beq a b = .true → a = b
-  | .zero, .zero, e => rfl
-  | .zero, .succ b, e => absurd e.1
-  | .succ a, .zero, e => absurd e.1
-  | .succ a, .succ b, e => Nat.beq_eq a b e
-def Nat.add_succ_r : (m n : Nat) → m + Nat.succ n = Nat.succ (m + n)
-  | .zero, n => rfl
-  | .succ m, n => Nat.add_succ_r m n
+-- (`Nat.beq_eq` is in lib/Nat.wiz)
+-- (`Nat.add_succ` from lib/Nat.wiz, under the name the proofs below use)
+def Nat.add_succ_r (m n : Nat) : m + Nat.succ n = Nat.succ (m + n) := Nat.add_succ m n
 -- a location above `n` is not `n`
 def Nat.beq_succ_add : (n m : Nat) → Nat.beq n (Nat.succ (m + n)) = .false
   | .zero, m => rfl

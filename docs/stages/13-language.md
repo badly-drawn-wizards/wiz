@@ -10,12 +10,16 @@ Writing the lexer and parser in Wiz showed what the language lacked:
   parser's core is a mutual block, with no fuel.
 * **Mutual inductive types.** `mutual inductive A … inductive B … end` becomes one
   family indexed by a tag type, `A_B : A_B.Tag → Type`, with `def A := A_B .A`.
-  Recursion over a family at a concrete index (`SyntaxF .false`) works.
+  Recursion over a family at a concrete index (`SyntaxF .false`) works. The constructors
+  are named per member, as for a single inductive type: `A.c`, `B.c` (two members may
+  share a constructor name), and `.c` picks the expected member's; `deriving C` on a
+  member derives `C` for the family (`Repr` shows `A.c …`). The family's name is
+  internal.
 * **`match` without an expected type**, **tuple patterns** `(a, b, c)`, and `x |> f`.
 * Keywords of tactic syntax (`first`, `exact` …) are no longer reserved words.
 * The prelude has `Nat.lt` (native at runtime), `Nat.le`, `Nat.max`, `Bool.and/or/not`.
 
-## 13a: named arguments ✅
+## 13a: named arguments
 
 ```
 class BitPack (A : Type) where
@@ -34,7 +38,7 @@ one fills its parameter; an explicit parameter before it with no argument is an 
 (Lean would abstract it). Unknown and repeated names are errors (`inferAppNamed`,
 `Elab/Term.lean`; test group `elabfix`).
 
-## 13b: private declarations and private constructors ✅
+## 13b: private declarations and private constructors
 
 ```
 private def secret : Nat := 42          -- visible only in this module
@@ -94,14 +98,14 @@ would still be accepted:
 | `refl X`, `cast e x`, `transp`, a tuple or look-alike against the type, `p.1` | closed (their types are unified in the elaborator's view) |
 | `exact`, `rfl` and other tactics that elaborate syntax; macros (they produce syntax) | closed (they go through the same rules) |
 | the tactic request `assign` with a term that still has holes | closed: such a term is kept in the tactic state and its type is inferred and compared with its goal at the end of the `by` block (it was a real bypass: `K x ?n : Look Nat` for a goal `Pos Nat`) |
-| a hole solved by unification: the solution is never type-checked by the elaborator | **OPEN, with a forgery**: `def sel {F : Pos Nat → Type} (p : Pos Nat) (w : F p) : Pos Nat := p` and `sel _ (G.mk x)` for `G : Look Nat → Type` solve `?F := G`, `?p := x`, and the kernel accepts `x : Look Nat` as a `Pos Nat` (test `elabfix`, "OPEN"; `/workspace/wiz-notes/structural-probes/priv/forge-unify-first-order.wiz`) |
+| a hole solved by unification: the solution is never type-checked by the elaborator | **OPEN, with a forgery**: `def sel {F : Pos Nat → Type} (p : Pos Nat) (w : F p) : Pos Nat := p` and `sel _ (G.mk x)` for `G : Look Nat → Type` solve `?F := G`, `?p := x`, and the kernel accepts `x : Look Nat` as a `Pos Nat` (test `elabfix`, "OPEN"; `wiz-notes/structural-probes/priv/forge-unify-first-order.wiz`) |
 | the self-hosted frontend (`selfhost/Frontend.wiz`) | open, tracked as a parity item: it parses `private` and ignores it |
 | `T.desc` of an inductive or coinductive type with private parts: `μ T.desc i` written out is the type with nothing hidden, and a raw `con` builds a value of it | closed: `T.desc` is private with the constructors and recursors (a structure has no description). Generic code over `Desc` in another module can't be pointed at such a type; it could not be applied to its values before either, since the type is opaque there. `deriving` reads the kernel's declarations, not the name, and is unaffected (a derived instance that matches on the type is refused as before) |
 | inside the declaring module | by design: there the look-alike is the same type |
 
 So privacy is **not sealed**: it holds against the rules listed as closed, not against
 every term the elaborator can produce. Closing it for good needs the kernel to tell a
-type from its look-alike (`/workspace/wiz-notes/structural-vs-nominal.md`, §6a).
+type from its look-alike (`wiz-notes/structural-vs-nominal.md`, §6a).
 
 **`wiz --strict-privacy`** (off by default; an experiment to measure). Every declaration
 of a module that sees a type opaque to it is checked a second time, by the kernel's
@@ -167,7 +171,7 @@ ignores them. The motivating use is the HDL's signals (`drafts/hdl/Signal.wiz`):
 code builds and observes them only through the library's combinators and `sample`
 (`drafts/hdl/rejected/observe_signal.wiz`). Tests: group `elabfix`.
 
-## 13c: `if`, `&&`, `||`, `!` in the Prelude ✅
+## 13c: `if`, `&&`, `||`, `!` in the Prelude
 
 ```
 import Prelude
@@ -191,7 +195,7 @@ The self-hosted frontend doesn't read `lib/Prelude.wiz`: it embeds its own prelu
 rewritten to a `match`). It has no `&&`, `||` or `!`, so `selfhost/*.wiz` don't use them.
 Tests: group `language`.
 
-## 13d: `Functor` and `Applicative` (`import Functor`) ✅
+## 13d: `Functor` and `Applicative` (`import Functor`)
 
 ```
 import Functor
@@ -218,7 +222,7 @@ because programs that import only the Prelude already define `List.map`, a class
 `Functor` and `Monad Option` instances of their own (`lib/Hdl/Core.wiz`, the tests).
 Tests: group `language`.
 
-## 13e: `∃ x, P`, `¬`, and ASCII spellings ✅
+## 13e: `∃ x, P`, `¬`, and ASCII spellings
 
 ```
 import Logic
@@ -242,7 +246,7 @@ for `∧`, `\/` for `∨`, `<->` for `↔`. `lib/Logic.wiz` and `lib/HProp.wiz` 
 lemmas with them (`hexists J h` is `∃ a : A, J a h`; `star` is
 `∃ h₁ h₂ : Heap V, StarAt …`). Tests: group `language`.
 
-## 13f: `let` with tuple patterns of any length ✅
+## 13f: `let` with tuple patterns of any length
 
 ```
 def f (p : Nat × Nat × Nat) : Nat := let (a, b, c) := p; a + b * c
@@ -258,7 +262,7 @@ with intermediate names (`tuple✝k`) that no program can mention (`letTupleToPa
 component of a linear tuple is bound once, which is how a tuple holding resources is taken
 apart now that linear pairs aren't projected. Tests: group `language`.
 
-## 13g: as-patterns `x@p` ✅
+## 13g: as-patterns `x@p`
 
 ```
 def last (A : Type) (d : A) : List A → A
@@ -300,7 +304,7 @@ whose pattern is a bare name (`x@y`, a second name for the same value) is not av
 `x@_` and `x@(y)` are. Tests: `language` ("as-patterns …"),
 `parser: terms`.
 
-## 13h: patterns on structures, `⟨…⟩` ✅
+## 13h: patterns on structures, `⟨…⟩`
 
 ```
 structure Stats where
@@ -362,7 +366,7 @@ there and can't be matched or taken apart ("its constructor is private to module
 Tests: `language` ("structure patterns …", "anonymous constructors …", "let with a
 structure pattern …"), `parser: terms`.
 
-## 13i: structure update `{ s with f := v }` ✅
+## 13i: structure update `{ s with f := v }`
 
 ```
 def bump (s : Stats) : Stats := { s with hits := Nat.succ s.hits }
@@ -387,7 +391,7 @@ refused for a structure that is opaque in the current module.
 Syntax: `term.structUpdate`, `"{" term "with" (ident ":=" term),+ "}"`. No new reserved
 word (`with` already is one). Tests: `language` ("structure update …"), `parser: terms`.
 
-## 13j: keyword scopes ✅
+## 13j: keyword scopes
 
 A keyword of a `term` or `command` rule is reserved in the whole file; a keyword of any
 other category is reserved nowhere (`"if"` there matches an identifier spelled `if`).
@@ -426,7 +430,7 @@ The design options are in the notes (`scoped-keywords.md`). The self-hosted pars
 interprets the built-in tables, which use no scope, and has no `syntax` command yet.
 Tests: `parser: commands and syntax`, `language`.
 
-## 13k: list literals ✅
+## 13k: list literals
 
 `[a, b, c]` is `List.cons a (List.cons b (List.cons c List.nil))` and `[]` is `List.nil`,
 in terms and in patterns:
@@ -457,7 +461,7 @@ expanded if a macro applies, so `[x, y]` becomes `List.cons x (List.cons y List.
 and a user notation whose expansion is a constructor application works in patterns too.
 Tests: group `language`.
 
-## 13l: `++` for lists and strings ✅
+## 13l: `++` for lists and strings
 
 `a ++ b` is `Append.append a b`, a method of the homogeneous class
 `class Append (A : Type) where append : A → A → A`, with instances for `List A`
@@ -468,7 +472,7 @@ the numeric classes also left for later. Other types get `++` by an instance.
 of `String.append`; the self-hosted prelude keeps `infixr " ++ " => List.append`.)
 Tests: group `language`.
 
-## 13m: local notation ✅
+## 13m: local notation
 
 A grammar command marked `local` stays in its module: modules that import it don't see
 the syntax.
@@ -501,7 +505,7 @@ self-hosted parser's generated tables have it too; the self-hosted frontend has 
 `syntax` command yet and doesn't elaborate it. Tests: groups `language`,
 `parser: commands and syntax`.
 
-## 13n: `rfl` at an equation that has computed ✅
+## 13n: `rfl` at an equation that has computed
 
 An equation at a Σ type computes as soon as it is formed: `a = b` becomes
 `(0 e : a.1 = b.1) × (cast (B a.1) (B b.1) ê a.2 = b.2)`. The elaborator's `rfl` used to
@@ -518,6 +522,17 @@ the optional exercise 4.16, done by recording the equation in its computed form.
 is used: `#print axioms` lists none for these proofs. An equation at a constructor
 (`List.cons x xs = List.cons x xs`) works the same way, through its payload's Σ.
 
+**Inside a `match` clause** the expected type is the motive, read back (`quote`) and
+evaluated at the pattern. The read-back spelled the computed Σ out, so the equation was
+lost and `rfl` failed there (cohesion-hardware's `step_cases`). Two changes fix this:
+* `vEq` now also puts an unforgeable mark in the closure (a global whose name can't be
+  written), so `eqSigmaSides?` recognises only its own Σs;
+* with `Globals.quoteEqs`, which the elaborator's `getGlobals` sets, `quote` reads a
+  marked Σ back as the equation `a = b`, and that evaluates to the same Σ again.
+
+The kernel and `#reduce` leave the flag off and still show the computed form. The
+elaborator's messages now print such a type as the equation.
+
 Nothing else changed. A Σ of field equations written by hand, with a cast at a type
 variable in it, is still not `rfl`. `rfl` never adds an axiom; whoever needs that
 equation writes `castRefl` themselves.
@@ -527,3 +542,169 @@ equation writes `castRefl` themselves.
 Before, they checked only because unsolved holes kept the equation from computing.
 Research note: `wiz-notes/structure-eta.md`. Tests: group `elabfix`, "rfl at an equation
 that has computed"; group `optic`.
+
+## 13o: DSL conventions
+
+The embedded languages follow one set of conventions (entering, scoping, symbols,
+printing, errors, docs, tests), collected in [docs/dsls.md](../dsls.md) with a table of
+the DSLs. This section's changes bring the libraries in line:
+
+* **Helper notation is local** (13m). `∷` (HoareTactics) and `+++`, `⊕`, `▸` (Feral)
+  are used only inside their modules; they were global, so every importer lost those
+  symbols and (with 11r) printed `List.cons`/`String.append` with them. (Hdl.Core's
+  `<+>` is the HDL libraries' shared operator — `Hdl.Prim`, `Hdl.Xdc`, `Hdl.Xilinx7`,
+  `Hdl.Sim` and the examples use it — so it stays public.)
+* **A reserved word says where it comes from.** An identifier position holding a keyword
+  of a `term` or `command` rule says so, with the notation (its atoms, `…` between them)
+  and the module that declared it: `def exists := 1` after `import Logic` is
+  `expected identifier ('exists' is a keyword: the notation `exists …, …` of module
+  Logic)` (`ParseError.explainKeywords`, `Wiz/Frontend/Parse.lean`; looked up only when
+  the error is reported, with the declaring modules of 11q). Built-in keywords say
+  `('def' is a keyword)`.
+* **A constructor pattern of another type** is an error that says so, at the pattern
+  (at the `match` when a macro wrote it): `if n then 1 else 2` at `n : Nat` was
+  "missing case for constructor zero" (the `.true`/`.false` match `if` expands to) and is
+  `the value matched has type Nat, which has no constructor .true (its constructors:
+  .zero, .succ); the condition of `if`, `&&` and `||` is a Bool`. Type-ascribing the
+  condition in the macro instead would lose the refinement of a variable condition in
+  the branches' types.
+
+Tests: groups `language`, `seplogic`. Audit and table: `wiz-notes/dsl-conventions.md`.
+
+## 13p: nested structure update `{ s with a.b := v }`, printed back
+
+```
+structure In where
+  x : Nat
+  y : Nat
+structure Out where
+  i : In
+  n : Nat
+def f (o : Out) : Out := { o with i.x := 10, n := 4 }   -- i := { o.i with x := 10 }
+def g (o : Out) : Out := { o with i.x := 5, i.y := 6 }  -- one update of `i`
+```
+
+A field path `a.b := v` in a structure update (13i) updates field `b` of the structure
+held in field `a`: it is `a := { s.a with b := v }`, the inner update over the
+projection of `s` (bound once, like `s`). Paths into the same field are grouped, so
+`i.x := 5, i.y := 6` is one inner update; paths nest to any depth (`o.i.y := 0`).
+A field updated both directly and through a path, or one path given twice, is
+"field 'i' is updated twice" ("field 'i.x' …"); a path through a field that is not a
+structure is "field 'n' is not a structure (its type is Nat), so its fields can't be
+updated"; an unknown field in a path names the inner structure ("In has no field 'z'").
+A field updated through a path keeps its type, so the dependent-field rule of 13i
+applies to it as to a kept field.
+
+Updates work for every structure, since all of them are Σ types read through
+`StructLayout`: with parameters, with dependent fields, and for bundles, structures
+over a representation `structure Tx (r : HwTy → Type) where line : r Bit; …`
+(`lib/Hdl/Core.wiz`): `{ s with line := v }` at `Tx r` keeps `r` abstract.
+
+**Hover and go to definition.** The field name of an update is recorded as a use of
+the projection `S.f`: a hover shows its type in the updated structure, and go to
+definition jumps to the declaration of the structure that has the field (where the
+projections are declared). A path is recorded as its last field
+(`i.y` as `In.y`).
+
+**Printed back.** The printer shows `S.mk Δ a₁ … aₙ` as `{ s with fᵢ := aᵢ, … }` when
+some fields are the projections of one term `s` at their own components and the others
+are not (with every field replaced it is just `S.mk a₁ … aₙ`), `let x := e; S.mk …` (an update of a non-variable `e`) as `{ e with … }`, and a
+field updated with an update of its own old value as a path, so the three forms above
+print as written. The layout moved to `Wiz/Core/StructLayout.lean` so that the printer
+can read it (`structLayoutWith?`; `Elab/Struct.lean`'s `structLayout?` is the same
+function). `set_option pp.notation false` (or `--pp-all`) prints `S.mk` as it is.
+
+Tests: `language` ("13p: …"), `lsp` ("13p–q: an updated field's hover and definition …").
+
+## 13q: numeral and literal patterns
+
+```
+def cls : Nat → Nat
+  | 0 => 10
+  | 1 => 11
+  | n+2 => n
+def sum : Nat → Nat
+  | 0 => 0
+  | n + 1 => n + 1 + sum n      -- structural: `n + 1` is `.succ n`
+def op (b : U8) : Nat := match b with
+  | 0x3F => 1
+  | 0 => 2
+  | _ => 3                      -- required: numerals don't cover U8
+```
+
+**At `Nat`** (the `builtin nat` type) a numeral pattern is its constructors, peeled one
+at a time as the match compiler splits (`natPatView`): `0` is `.zero`, `n` is
+`.succ (n - 1)`, and `p + k` (as `+` expands, `Add.add p k`, with a numeral `k`) is
+`.succ (p + (k - 1))`. So numeral patterns mix with constructor patterns, as-patterns
+and tuples, refine types like constructor patterns (`F : Nat → Type | 0 => Bool | _ =>
+Nat`), and `| n + 1 => … f n …` is structurally recursive. Recursion is still on the
+immediate predecessor only: `| n + 2 => f n` is "not structurally smaller" (the case
+tree splits twice, and only the first split has a hypothesis). The case tree grows with
+the numeral, so a numeral pattern at `Nat` is at most 256 ("the numeral pattern 300 is
+too large …; test with `Nat.beq` instead"). The self-hosted frontend already read
+numeral patterns this way (`patOf`, `selfhost/Frontend.wiz`).
+
+**At other types** a literal is an equality test. For a column of type `T` whose first
+row has a literal `l`, the column is compared with `T.beq x l`, where `T` is the first
+type in the chain of definitions the column's type unfolds through that has a `T.beq`
+(`BitVec 8`, then `UIntN 8`; `IntN w`; `String`, with `import Text`). The literal is
+elaborated at the column's type (numerals through `OfNat`, 7e). The test is a new
+`Bool` column in front of the column (`compileLitTest`): rows with `l` want `.true`
+(and `_` in the column), rows with another literal `.false` (keeping theirs for the next
+test), and catch-all rows `_`. The branches learn nothing about `x`. Literals don't
+cover a type, so the column needs a catch-all row: "a match on literals of type U8 needs
+a catch-all case (`_` or a variable) after them". In the same column only literals,
+`_` and variables are allowed; `n + k` is for `Nat` only; a literal on a data type
+without `T.beq` is "a literal pattern needs Nat, or a type T with literals and an
+equality test T.beq …". String literals are patterns by the same rule. A literal test
+can't be the split of a structural recursion (the first argument is split by its
+constructors).
+
+**Hexadecimal and binary numerals.** `0x3F` and `0b1010` are numerals everywhere (the
+tokenizer reads them as the decimal `num` token they denote, `Wiz/Parser/Token.lean`),
+so they need no change downstream; they print in decimal.
+
+Hover: a pattern variable under a numeral (`k` in `k + 1`) is a pattern variable like
+any other; a literal compared with `T.beq` is elaborated where it is written, so its
+`OfNat` instance shows in the hover as in a term. Tests: `language` ("13q: …"), `lsp`.
+
+**The self-hosted frontend** (`selfhost/Frontend.wiz`, `selfhost/Lex.wiz`) has all of
+13i, 13p and 13q, with the Lean frontend's verdicts and messages:
+- `selfhost/Lex.wiz` reads `0x3F` / `0b1010` as the decimal `num` token (`radixNum`); a
+  value from 2^63 on is read as 2^63, which the frontend rejects as it does the decimal
+  numeral (its numbers are 63-bit words).
+- Literal patterns: at `Nat` the numerals were already constructors (`patOf`); now a
+  numeral above 256, a string at `Nat`, `p + k` without a numeral `k`, and a literal on
+  a data type are the Lean frontend's errors (`litSplitErr`), and a literal in the first
+  row of a column of another type is the `T.beq` test (`litTest`, after
+  `compileLitTest`): `beqHead` finds `T` through the definitions the type unfolds
+  through, the column needs a catch-all row, and the new `Bool` column goes in front.
+  Numerals are `Nat` there (no `OfNat`), so in practice the literals are strings.
+- Structure update (`structUpdT`): `{ s with … }` is `let upd✝ := s; S.mk …`, a path
+  `a.b := v` an inner update of `S.a upd✝` (a sixth argument of the synthesized node
+  carries the path, for messages), checked against the type of `s`. A structure is
+  marked when declared (`Globals.markStruct`, an entry `structure S` among the
+  inductive types), so a one-constructor `inductive` is not one, as in Lean. The
+  self-hosted structures have no dependent fields, so the kept-field type check of 13i
+  has nothing to check.
+- There is no printer to read updates back: the self-hosted frontend prints kernel
+  terms (`show`).
+
+Tests: `selfhost` ("the self-hosted frontend: literal patterns …", "… structure update
+…"), each program checked by both frontends: the same values (`#eval` in one,
+`#reduce Nat.beq` in the other) and the same verdict for each declaration; the lexer
+agreement case has hex and binary numerals. The self-hosted sources use none of these,
+so the bootstrap is unaffected.
+
+## 13r: string escapes
+
+A string literal reads the escapes `\n`, `\t`, `\r`, `\0`, `\\`, `\"`, `\'`, `\xHH` (two
+hexadecimal digits) and `\u{H}` (one to six hexadecimal digits, a Unicode scalar value:
+at most `10FFFF` and not a surrogate), in both lexers (`readEscape` in
+`Wiz/Parser/Token.lean`, `readEscape` in `selfhost/Lex.wiz`, with the same messages).
+A bad escape is reported at its backslash ("2:22: error: unknown escape sequence \q"),
+not at the start of the literal, and an unterminated literal at its opening quote. A
+token that can't be read is the parse error's message by itself (`ParseError.lexical`),
+not "expected unknown escape sequence …". Strings print with Lean's escapes (`\x0d` for
+a carriage return). Tests: `language` ("string escapes …"); `selfhost` ("the lexer in
+Wiz agrees with the Lean lexer", whose input now has every escape and a bad one).
