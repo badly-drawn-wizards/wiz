@@ -44,7 +44,11 @@ after it).
 * **Code actions** (`Wiz/Actions.lean`): diagnostics carry a code and data; the server
   offers *did you mean* (edit distance ≤ 2 over locals and globals), *add missing cases*
   (`| .c x y => ?c` per missing constructor) and *add type ascription* to a `def` without
-  a type, with edits inline or through `codeAction/resolve`.
+  a type, with edits inline or through `codeAction/resolve`. The common errors have
+  stable codes (`Wiz/Core/ErrorCode.lean`, listed in [error-codes.md](../error-codes.md)),
+  and the quick fixes are keyed on them: also *did you mean* for fields, constructors and
+  imports, *add the missing import*, and `@f` / dropping the `@` when the argument count
+  is off by the implicit parameters.
 
 ```
 def k : Nat → Bool → Nat := by

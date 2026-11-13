@@ -13,6 +13,7 @@
 * [hardware.md](hardware.md): hardware in Wiz, from a circuit to a proved temporal property
 * [CoreSpec.md](CoreSpec.md)
 * [Status.md](Status.md)
+* [error-codes.md](error-codes.md): the error codes and their quick fixes
 * [resources.md](resources.md): resources in Wiz: quantities, regions, optics, Feral and separation logic, with one running example
 * [ROADMAP.md](../ROADMAP.md)
 
