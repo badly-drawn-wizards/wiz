@@ -139,9 +139,9 @@ structure Settings where
   -- directory overrides: (directory, spec)
   overrides : List (String × String)
 
-def Settings.empty : Settings := Settings.mk .none "auto" "github:badly-drawn-wizards/wiz"
-  "https://github.com/badly-drawn-wizards/wiz"
-  "https://github.com/badly-drawn-wizards/wiz/releases/download" "master" .true .nil .nil
+def Settings.empty : Settings := Settings.mk .none "auto" "github:wiz-pl/wiz"
+  "https://github.com/wiz-pl/wiz"
+  "https://github.com/wiz-pl/wiz/releases/download" "master" .true .nil .nil
 
 -- (no `{ s with … }` on master: one setter per field)
 def Settings.setDefault (s : Settings) (v : Option String) : Settings :=

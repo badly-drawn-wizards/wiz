@@ -2,8 +2,8 @@
 #
 # Runs on `master` (the integration branch, with the solutions in it) and on pull
 # requests into it: the full suite, split into shards (.github/test-shards.json). The
-# exercise tree is not a branch: the `exercises` job generates it with
-# scripts/mkexercises.py and checks that it builds.
+# exercise tree (scripts/mkexercises.py) is checked only when a release is tagged:
+# release.yml's `exercise tree` job, which must pass before anything is published.
 name: CI
 
 on:
@@ -24,16 +24,16 @@ on:
         type: boolean
         default: false
 
-# A newer push to a pull request supersedes its running check (saves minutes). Runs on
-# the branches themselves (push events) are never cancelled: pull requests are merged
-# on green without being up to date, so the run of each merge commit is what tells
-# which merge broke something. They get a group per commit, since a shared group with
-# cancel-in-progress off would still drop a queued run when a newer one arrives. A merge
-# queue entry has a ref of its own (gh-readonly-queue/master/pr-N-SHA) and is never
-# cancelled by this rule (the queue cancels it when the entry leaves the queue).
+# A newer push supersedes an older run of the same ref (saves runners): on a pull
+# request, and on master too, where merges come in quick succession and every run
+# tests everything merged so far (the newest run covers the older commits' changes;
+# nightly.yml then moves to the newest green commit; release.yml has its own rule). A
+# merge queue entry has a ref of its own (gh-readonly-queue/master/pr-N-SHA) and is
+# never cancelled by this rule (the queue cancels it when the entry leaves the queue);
+# a manual run has a group of its own.
 concurrency:
-  group: ci-${{ github.ref }}-${{ github.event_name == 'schedule' && 'fixpoint' || 'checks' }}${{ github.event_name == 'push' && format('-{0}', github.sha) || '' }}
-  cancel-in-progress: ${{ github.event_name != 'push' && github.event_name != 'merge_group' }}
+  group: ci-${{ github.ref }}-${{ github.event_name == 'schedule' && 'fixpoint' || 'checks' }}${{ github.event_name == 'workflow_dispatch' && format('-dispatch-{0}', github.run_id) || '' }}
+  cancel-in-progress: ${{ github.event_name != 'merge_group' }}
 
 permissions:
   contents: read
@@ -52,9 +52,38 @@ defaults:
     shell: nix develop --command bash -eo pipefail {0}
 
 jobs:
+  # Path filters: which jobs a pull request needs (scripts/ci.py changes; the shards'
+  # "inputs" in .github/test-shards.json). A docs-only PR builds and tests nothing; a PR
+  # touching only lib/ files no core test reads skips the core shard; the selfhost
+  # shards run for selfhost/ and the lib/ files it imports. Everything but a
+  # pull_request (pushes, the merge queue, manual runs) runs every job.
+  changes:
+    name: changes
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+      shards: ${{ steps.filter.outputs.shards }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 2 # a pull request's merge commit and its first parent (the base)
+      - name: What changed
+        id: filter
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = pull_request ]; then
+            git diff --name-only HEAD^1 HEAD | sed 's/^/  /'
+            python3 scripts/ci.py changes HEAD^1 HEAD >> "$GITHUB_OUTPUT"
+          else
+            python3 scripts/ci.py changes --all >> "$GITHUB_OUTPUT"
+          fi
+          cat "$GITHUB_OUTPUT"
+
   build:
     name: build
-    if: github.event_name != 'schedule'
+    needs: changes
+    if: github.event_name != 'schedule' && needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     outputs:
@@ -101,7 +130,8 @@ jobs:
         id: shards
         run: |
           # a shard with "split" becomes several, balanced by .github/test-timings.json
-          echo "matrix=$(python3 scripts/ci.py matrix)" >> "$GITHUB_OUTPUT"
+          # only the shards this change needs (all of them outside pull requests)
+          echo "matrix=$(python3 scripts/ci.py matrix --only '${{ needs.changes.outputs.shards }}')" >> "$GITHUB_OUTPUT"
           python3 scripts/ci.py plan
       - name: Lake tracks the embedded runtime (runtime/wiz.c)
         # editing wiz.c rebuilds what embeds it and nothing else (docs/building.md)
@@ -109,7 +139,8 @@ jobs:
 
   test:
     name: test (${{ matrix.shard.name }})
-    needs: build
+    needs: [changes, build]
+    if: needs.changes.outputs.shards != '[]'
     # A "heavy" shard (.github/test-shards.json) runs on the self-hosted runner whose
     # label is the repository variable WIZ_RUNNER_HEAVY (docs/ci-runner.md), when that is
     # set and the code is this repository's: a pull request from a fork never runs there
@@ -208,15 +239,18 @@ jobs:
           name: test-log-${{ matrix.shard.name }}
           path: logs/
           if-no-files-found: ignore
+          # always uploaded (the `CI result` job sums them up), but kept briefly
+          retention-days: 3
 
   # The Nix package (flake.nix: wiz and grail, wrapped with the toolchain), pushed to
   # Cachix when the token is there (pushes, and pull requests from this repository), so
-  # that `nix run github:badly-drawn-wizards/wiz` downloads it. It is a pure Nix build
+  # that `nix run github:wiz-pl/wiz` downloads it. It is a pure Nix build
   # without Lake's artifact cache, so it rebuilds every module when a .lean file changes;
   # the tests keep using Lake (incremental) and don't wait for it.
   package:
     name: nix package
-    if: github.event_name != 'schedule'
+    needs: changes
+    if: github.event_name != 'schedule' && needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -241,12 +275,51 @@ jobs:
           ./io | head -3
           nix run "$GITHUB_WORKSPACE#grail" -- 2>&1 | head -2
 
+  # (11s) The standard library's documentation (`wiz doc`, scroll), with the Wasm module
+  # that makes its signatures interactive, as the artifact `wiz-docs`: on master only (a
+  # push), kept 3 days (artifact storage). Not a required check (not in `result`);
+  # publishing it to GitHub Pages is a proposal (docs/stages/11-tooling.md, 11s).
+  docs:
+    name: docs (wiz doc --lib)
+    needs: build
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup
+        with:
+          cachix-name: ${{ env.CACHIX_NAME }}
+          cachix-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      - name: Restore the Lake build
+        uses: actions/cache/restore@v4
+        with:
+          path: .lake
+          key: lake-${{ runner.os }}${{ runner.arch != 'X64' && format('-{0}', runner.arch) || '' }}-${{ needs.build.outputs.lake-hash }}
+      - name: The Wasm module (web/build.sh)
+        run: |
+          lake build wiz
+          sh web/build.sh web/out
+      - name: wiz doc --lib
+        run: |
+          .lake/build/bin/wiz doc --lib -o doc-site --web web/out \
+            --source-url "https://github.com/${{ github.repository }}/blob/${{ github.sha }}/lib/"
+          ls doc-site | head -50
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wiz-docs
+          path: doc-site
+          retention-days: 3
+
   # One check for branch protection, and the whole suite's summary.
   result:
     name: CI result
-    needs: [build, test, exercises, package]
+    needs: [changes, build, test, package]
     if: always() && github.event_name != 'schedule'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write # deleting this pull request's big cache entries (below)
     steps:
       - uses: actions/checkout@v5
         with:
@@ -254,11 +327,13 @@ jobs:
             scripts
             .github
       - uses: actions/download-artifact@v5
+        if: needs.test.result != 'skipped' # no shard ran: nothing to sum up
         with:
           pattern: test-log-*
           path: logs
           merge-multiple: true
       - name: Summary
+        if: needs.test.result != 'skipped' # no shard ran: nothing to sum up
         shell: bash
         run: |
           shopt -s nullglob
@@ -268,16 +343,20 @@ jobs:
           mkdir -p timings
           cat logs/*.jsonl > timings/timings.jsonl 2>/dev/null || true
       - uses: actions/upload-artifact@v4
+        if: needs.test.result != 'skipped' # no shard ran: nothing to sum up
         with:
           name: test-timings
           path: timings/timings.jsonl
           if-no-files-found: ignore
+          # master's feed `scripts/ci.py baseline` (docs/building.md); others are short-lived
+          retention-days: ${{ github.event_name == 'push' && 7 || 2 }}
       # The shards stay balanced (docs/building.md, "Shard balance"): warn, never fail, when
       # the longest shard is over 1.5x the median, a split shard's cases are missing from
       # the baseline, or two parts build the same program. On master, a run whose tests all
       # passed and that drifted uploads the regenerated baseline (`test-timings-baseline`).
       - name: Shard balance
         id: balance
+        if: needs.test.result != 'skipped' # no shard ran: nothing to sum up
         continue-on-error: true
         shell: bash
         run: |
@@ -295,42 +374,43 @@ jobs:
         with:
           name: test-timings-baseline
           path: test-timings.json
+          retention-days: 7
+      # A pull request's (or merge queue entry's) Lake build is saved only to hand it to
+      # its test shards; once they're done it's dead weight that evicts master's entries
+      # from the 10 GB Actions cache (each is ~500 MB). The next push restores master's
+      # build and catches up. The small per-shard wiz-* entries stay. Not in a cancelled
+      # run (the newer run of this ref may be using them). Fork PRs get a read-only token:
+      # the step may fail, which is fine.
+      - name: Drop this ref's Lake caches
+        if: ${{ !cancelled() && github.event_name != 'push' && github.event_name != 'workflow_dispatch' }}
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh cache list -R "${{ github.repository }}" --ref "${{ github.ref }}" --limit 100 --json id,key,sizeInBytes \
+            --jq '.[] | select(.key | test("^(lake|exercises|elan)-")) | "\(.id) \(.sizeInBytes) \(.key)"' |
+          while read -r id size key; do
+            echo "deleting $key ($((size / 1000000)) MB)"
+            gh cache delete -R "${{ github.repository }}" "$id" || true
+          done
       - name: Verdict
         shell: bash
         run: |
-          echo "build: ${{ needs.build.result }}, test: ${{ needs.test.result }}, exercises: ${{ needs.exercises.result }}, package: ${{ needs.package.result }}"
-          for r in "${{ needs.build.result }}" "${{ needs.test.result }}" "${{ needs.exercises.result }}" "${{ needs.package.result }}"; do
-            [ "$r" = success ] || exit 1
-          done
-
-  # The exercise tree, generated from this one (docs/exercises.md): it must build. It runs
-  # beside the test shards, with its own Lake cache (most modules differ from this tree's).
-  exercises:
-    name: exercise tree
-    if: github.event_name != 'schedule'
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v5
-      - uses: ./.github/actions/setup
-        with:
-          cachix-name: ${{ env.CACHIX_NAME }}
-          cachix-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
-      - name: Generate the exercise tree
-        run: python3 scripts/mkexercises.py . "$RUNNER_TEMP/exercises"
-      - name: Cache its Lake build
-        uses: actions/cache@v4
-        with:
-          path: ${{ runner.temp }}/exercises/.lake
-          key: exercises-${{ runner.os }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-${{ hashFiles('lakefile.toml', '**/*.lean') }}
-          restore-keys: exercises-${{ runner.os }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-
-      - name: lake build (exercise tree)
-        env:
-          LAKE_CACHE_DIR: ${{ runner.temp }}/exercises/.lake/cache
-        run: |
-          # (the dev shell comes from this checkout's flake; the build runs in the copy)
-          cd "$RUNNER_TEMP/exercises"
-          lake build wiz grail tests
+          echo "changes: ${{ needs.changes.result }} (code: ${{ needs.changes.outputs.code }}, shards: ${{ needs.changes.outputs.shards }})"
+          echo "build: ${{ needs.build.result }}, test: ${{ needs.test.result }}, package: ${{ needs.package.result }}"
+          # the path filter must have run; a job it skipped is not a failure, but outside
+          # pull requests (and whenever the filter wants them) every job must succeed
+          [ "${{ needs.changes.result }}" = success ] || exit 1
+          code="${{ needs.changes.outputs.code }}"
+          want_tests=$([ "${{ needs.changes.outputs.shards }}" != "[]" ] && echo true || echo false)
+          check() { # NAME RESULT WANTED
+            if [ "$3" = true ]; then [ "$2" = success ] || { echo "$1: $2 (needed)"; exit 1; }
+            else [ "$2" = success ] || [ "$2" = skipped ] || { echo "$1: $2"; exit 1; }; fi
+          }
+          check build "${{ needs.build.result }}" "$code"
+          check test "${{ needs.test.result }}" "$want_tests"
+          check package "${{ needs.package.result }}" "$code"
 
   # Stage-1 C of the toolchain = stage-2 C (scripts/fixpoint.sh). Scheduled runs use the
   # default branch (master).

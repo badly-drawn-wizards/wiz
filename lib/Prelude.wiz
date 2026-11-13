@@ -241,8 +241,19 @@ instance : ShiftRight Nat := ShiftRight.mk Nat.shiftRight
 infixl:55 " ||| " => OrOp.or
 infixl:58 " ^^^ " => XorOp.xor
 infixl:60 " &&& " => AndOp.and
-infixl:75 " <<< " => ShiftLeft.shiftLeft
-infixl:75 " >>> " => ShiftRight.shiftRight
+-- The notation takes the amount at any type `B` (Lean's `HShiftLeft A B C`, the result
+-- type `C` an output): `ShiftLeft A` gives `HShiftLeft A Nat A`, and
+-- an HDL signal also shifts by a signal (H14 S4). A numeral amount is a `Nat` (the
+-- default type of a numeral).
+def outParam.{u} (A : Sort u) : Sort u := A
+class HShiftLeft (A B : Type) (C : outParam Type) where
+  hShiftLeft : A → B → C
+class HShiftRight (A B : Type) (C : outParam Type) where
+  hShiftRight : A → B → C
+instance {A : Type} [ShiftLeft A] : HShiftLeft A Nat A := HShiftLeft.mk ShiftLeft.shiftLeft
+instance {A : Type} [ShiftRight A] : HShiftRight A Nat A := HShiftRight.mk ShiftRight.shiftRight
+infixl:75 " <<< " => HShiftLeft.hShiftLeft
+infixl:75 " >>> " => HShiftRight.hShiftRight
 notation:max "~~~" a:max => Complement.complement a
 -- (end of the numeric classes)
 
@@ -455,9 +466,8 @@ def TacticM.assignLate (g : Nat) (e : Expr) : TacticM Unit := fun k => Tac.assig
 def TacticM.tryCatch (t : TacticM Unit) (h : String → TacticM Unit) : TacticM Unit :=
   fun k => Tac.catch (TacticM.run t) (fun e => TacticM.run (h e)) (k ())
 
--- Type classes (stage 7). `outParam` marks a class parameter that instance resolution
--- determines (it is the identity).
-def outParam.{u} (A : Sort u) : Sort u := A
+-- Type classes (stage 7). `outParam` (defined with the shift classes, above) marks a
+-- class parameter that instance resolution determines (it is the identity).
 
 class Monad (m : Type → Type) where
   pure : {A : Type} → A → m A
