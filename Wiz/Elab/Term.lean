@@ -2526,10 +2526,13 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
   -- a constructor pattern of another type would match nothing (and the cases it was meant
   -- for would be reported missing): say so where it is
   unless ctors.isEmpty do
+    -- a `mutual` block's tags are qualified (`Ev.s`), and the member's own constructors
+    -- are the ones of its type (the other members' have the same family)
+    let memberCtor (c : Name) : Bool := !c.contains '.' || memberTag g tys xty c
     for cl in clauses do
       if let (_, .ctor _ c' _) ← pview (cl.pats[k]!) then
         -- (`✝none`: #250's empty match names no constructor on purpose)
-        unless ctors.contains c' || c' == "✝none" do
+        unless ctors.any (fun c => ctorSelects c' c && memberCtor c) || c' == "✝none" do
           -- (a pattern a macro wrote, such as `if`'s `.true`, has no place of its own)
           let pi := (cl.pats[k]!).info
           let at_ := if pi.stop == 0 || pi.synthetic then ctx.info else pi
