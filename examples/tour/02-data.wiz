@@ -1,0 +1,40 @@
+-- The tour, section 2: inductive types and pattern matching (docs/tour.md).
+import Prelude
+
+inductive Shape where
+  | circle (r : Nat)
+  | rect (w h : Nat)
+
+-- `.circle` is `Shape.circle`: the type is known from the expected type
+def area : Shape → Nat
+  | .circle r => 3 * r * r
+  | .rect w h => w * h
+#eval area (.rect 3 4)
+
+-- a recursive type, with a type parameter
+inductive Tree (A : Type) where
+  | leaf
+  | node (l : Tree A) (x : A) (r : Tree A)
+
+def Tree.size {A : Type} : Tree A → Nat
+  | .leaf => 0
+  | .node l _ r => Tree.size l + 1 + Tree.size r
+
+def Tree.toList {A : Type} : Tree A → List A
+  | .leaf => []
+  | .node l x r => Tree.toList l ++ [x] ++ Tree.toList r
+
+def t : Tree Nat := .node (.node .leaf 1 .leaf) 2 (.node .leaf 3 .leaf)
+#eval Tree.size t
+#eval Tree.toList t
+
+-- `match` on several values at once, and nested patterns
+def zipWith {A B C : Type} (f : A → B → C) : List A → List B → List C
+  | .cons a as, .cons b bs => .cons (f a b) (zipWith f as bs)
+  | _, _ => .nil
+#eval zipWith (fun a b => a * b) [1, 2, 3] [4, 5, 6]
+
+def firstOr (d : Nat) (xs : List Nat) : Nat := match xs with
+  | .nil => d
+  | .cons x _ => x
+#eval firstOr 0 []

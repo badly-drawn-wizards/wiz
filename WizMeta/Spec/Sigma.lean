@@ -34,10 +34,17 @@ inductive Sigma : Rules
         Γ ⊢ .sigma q (some s) A B ≡ .sigma q (some s') A' B' ∶ .sort s⟩
   | fstCong {Γ : Ctx} {p p' A B : Tm} {s : Lvl} {q : Q} : Sigma ⟨[Γ ⊢ p ≡ p' ∶ .sigma q (some s) A B], Γ ⊢ .fst p ≡ .fst p' ∶ A⟩
   | sndCong {Γ : Ctx} {p p' A B : Tm} {s : Lvl} {q : Q} : Sigma ⟨[Γ ⊢ p ≡ p' ∶ .sigma q (some s) A B], Γ ⊢ .snd p ≡ .snd p' ∶ B.inst (.fst p)⟩
-  /-- an equation between pairs: the first components, and the second ones along a cast -/
-  | eq {Γ : Ctx} {A B a b : Tm} {s : Lvl} {q : Q} : s.NeverZero →
-      Sigma ⟨[Γ ⊢ .sigma q (some s) A B ∶ .sort s, Γ ⊢ a ∶ .sigma q (some s) A B, Γ ⊢ b ∶ .sigma q (some s) A B],
+  /-- an equation between pairs: the first components, and the second ones along a cast
+  whose proof transports along the first components' equation -/
+  | eq {Γ : Ctx} {A B a b : Tm} {s i : Lvl} {q : Q} : s.NeverZero → ¬ i.IsZero →
+      Sigma ⟨[Γ ⊢ .sigma q (some s) A B ∶ .sort s, Γ ⊢ A ∶ .sort i, Γ ⊢ a ∶ .sigma q (some s) A B, Γ ⊢ b ∶ .sigma q (some s) A B],
         Γ ⊢ .eq (.sigma q (some s) A B) a b ⟶ .eqSigma A B a b ∶ .sort 0⟩
+  /-- the same at a proof first component (PR #123, CoreSpec §8.2): `a.1 ≡ b.1` by
+  irrelevance, so the cast's proof is `reflTy (B a.1)`; the kernels do not form `transp`
+  along a proposition -/
+  | eqProof {Γ : Ctx} {A B a b : Tm} {s i : Lvl} {q : Q} : s.NeverZero → i.IsZero →
+      Sigma ⟨[Γ ⊢ .sigma q (some s) A B ∶ .sort s, Γ ⊢ A ∶ .sort i, Γ ⊢ a ∶ .sigma q (some s) A B, Γ ⊢ b ∶ .sigma q (some s) A B],
+        Γ ⊢ .eq (.sigma q (some s) A B) a b ⟶ .eqSigmaProof A B a b ∶ .sort 0⟩
   | eqTyApart {Γ : Ctx} {A₁ B₁ A₂ B₂ : Tm} {s₁ s₂ : Lvl} {q q' : Q} : s₁.NeverZero → s₂.NeverZero → q ≠ q' →
       Sigma ⟨[Γ ⊢ .sigma q (some s₁) A₁ B₁ ∶ .sort s₁, Γ ⊢ .sigma q' (some s₂) A₂ B₂ ∶ .sort s₂],
         Γ ⊢ .eqTy (.sigma q (some s₁) A₁ B₁) (.sigma q' (some s₂) A₂ B₂) ⟶ .False' ∶ .sort 0⟩

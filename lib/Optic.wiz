@@ -1,9 +1,11 @@
-import Prelude
+import Result
+import Logic
+
 /-!
 # Optic
 
-Optics for borrows (RD11): the target library of Feral's lowering of
-mutable borrows. See /workspace/wiz-notes/borrows-as-optics.md.
+Optics for borrows (RD11): the target library of Feral's lowering of mutable borrows.
+See /workspace/wiz-notes/borrows-as-optics.md.
 
 A Feral function that returns `&mut A` borrowed from a lender `S` lowers (Aeneas
 style) to a forward value and a backward closure: `S → Result (A × (A → S))`. That
@@ -12,11 +14,12 @@ place expression (fields, indices, variant payloads) it is a lawful partial lens
 This file names the pieces and states the laws. The representation stays the
 closure form, which is what reference counting with reuse wants.
 
-The pieces: `Result` (lowered code's result monad, with `Error`), `Store` (a borrowed
-value and how to put it back), `Lens` and `PLens` (total and partial places), `zoom`
-(run a `&mut` function on a sub-place), `Affine` (`Option<&mut A>`), `TraverseMut`
-(`iter_mut`), the lens laws (`Lens.Lawful`, `PLens.Lawful`, `Lens.Indep`) and proofs
-that composition keeps them (`Lens.comp_lawful`, `List.atL_lawful`).
+Main definitions: `Store` (a borrowed value and how to put it back), `Lens` and
+`PLens` (total and partial places), `zoom` (run a `&mut` function on a sub-place),
+`Affine` (`Option<&mut A>`), `TraverseMut` (`iter_mut`), the lens laws
+(`Lens.Lawful`, `PLens.Lawful`, `Lens.Indep`) and proofs that composition keeps them
+(`Lens.comp_lawful`, `List.atL_lawful`). `Result`, `Error` and their specification
+predicates are in lib/Result.wiz.
 
 ```
 import Optic
@@ -28,44 +31,7 @@ def p : Pair2 Nat Nat := Pair2.mk 1 2
 ```
 -/
 
-/-- Why lowered code failed (RD7): every panic (`panic!`, `unwrap` on `none`, overflow, an
-index out of bounds, division by zero) is an `Error`, carried by `Result.err`. -/
-inductive Error where
-  | panic (msg : String)
-  | overflow
-  | outOfBounds
-  | unwrapNone
-  | divZero
-
-/-- The result monad of lowered code: a value (`ok a`) or a panic (`err e`). -/
-inductive Result (A : Type) where
-  | ok (a : A)
-  | err (e : Error)
-
-/-- Sequence two results, stopping at the first error. Lowered code matches on results
-directly (no closures around owners); `bind` and the monad instance are for
-hand-written specs and Wiz code calling lowered code (RD16). -/
-def Result.bind {A B : Type} (x : Result A) (f : A → Result B) : Result B := match x with
-  | .ok a => f a
-  | .err e => .err e
-/-- Apply `f` to the value, if there is one. -/
-def Result.map {A B : Type} (f : A → B) (x : Result A) : Result B := match x with
-  | .ok a => .ok (f a)
-  | .err e => .err e
-/-- `Result` is a monad, so it has `do` notation. -/
-instance : Monad Result where
-  pure := fun a => Result.ok a
-  bind := Result.bind
-
-/-- `P` holds of the value, if there is one (a failure satisfies everything): "if it
-succeeds, then `P`". -/
-def Result.All {A : Type} (P : A → Prop) : Result A → Prop
-  | .ok a => P a
-  | .err _ => True
-/-- There is a value, and `P` holds of it (an `∃` without `∃`): "it succeeds, and `P`". -/
-def Result.Holds {A : Type} (P : A → Prop) : Result A → Prop
-  | .ok a => P a
-  | .err _ => False
+-- `Result`, `Error` and their specification predicates are in lib/Result.wiz.
 
 -- ## Store: a value and a way to put it back
 --
@@ -256,6 +222,28 @@ final value `fin`, the lender's final value is `put fin`. It holds by definition
 stated so that specs can cite it. -/
 def Store.final {A S : Type} (st : Store A S) (fin : A) : Store.put st fin = st.2 fin := rfl
 
+-- ## The frame rule, for values
+--
+-- A zoom through `l` can't change a place `n` independent of `l` (`Lens.Indep l n`): the
+-- value-level reading of separation logic's frame rule (`Triple.frame`, lib/Hoare.wiz) and
+-- of Feral's "a callee can't touch what it isn't lent". Stated for a successful call
+-- (`Result.All`); see docs/resources.md.
+
+/-- `zoom` of `r` into the place `n`, whose value is `y` whatever the input (the frame: `n`
+is unchanged). -/
+def zoom.frameAt {S X Y B : Type} (n : Lens S Y) (k : X → S) (y : Y) (hk : (x : X) → (n (k x)).1 = y) :
+    (r : Result (B × X)) →
+    Result.All (fun (p : B × S) => (n p.2).1 = y) (match r with
+      | .ok p => Result.ok (p.1, k p.2)
+      | .err e => Result.err e)
+  | .ok p => hk p.2
+  | .err e => ()
+/-- The frame rule for `zoom`: a place `n` independent of `l` is unchanged. -/
+def zoom.frame {S X Y B : Type} (l : Lens S X) (n : Lens S Y) (i : Lens.Indep l n)
+    (m : X → Result (B × X)) (s : S) :
+    Result.All (fun (p : B × S) => (n p.2).1 = (n s).1) (zoom l m s) :=
+  zoom.frameAt n (l s).2 (n s).1 (fun x => i.1 s x) (m (l s).1)
+
 -- ## Examples: lawful lenses
 --
 -- A structure field, and the head of a non-empty list. The front end would generate
@@ -303,35 +291,21 @@ def List.headL_lawful {A : Type} : PLens.Lawful (@List.headL A) :=
 -- ## Composition preserves lawfulness
 --
 -- A reborrow chain `&mut (*r).f.g` is a composite of field lenses, so its laws follow
--- from theirs. (Equational reasoning by transport; `congrArg` and `Eq.trans` are J.)
-
-/-- Equal arguments give equal results (J; the same as `Eq.congrArg` in lib/Logic.wiz). -/
-def Optic.congrArg {A B : Type} (f : A → B) {a b : A} (e : a = b) : f a = f b :=
-  transp (fun b _ => f a = f b) (refl (f a)) e
-/-- Equality is symmetric (as `Eq.symm`). -/
-def Optic.sym {A : Type} {a b : A} (e : a = b) : b = a :=
-  transp (fun b _ => b = a) (refl a) e
-/-- Transport a proof of `P a` along `a = b` into a proof of `P b`: an equation of
-propositions computes to `(0 _ : P → Q) × (Q → P)`, so the usable direction is the
-second field of `P b = P a`. -/
-def Optic.subst {A : Type} (P : A → Prop) {a b : A} (e : a = b) (pa : P a) : P b :=
-  (@Optic.congrArg A Prop P b a (Optic.sym e)).2 pa
-/-- Equality is transitive (as `Eq.trans`). -/
-def Optic.trans {A : Type} {a b c : A} (e₁ : a = b) (e₂ : b = c) : a = c :=
-  transp (fun c _ => a = c) e₁ e₂
+-- from theirs. (Equational reasoning with lib/Logic.wiz's `Eq.congrArg`, `Eq.trans`, `Eq.symm` and
+-- `Eq.substProp`.)
 
 /-- The composite of two lawful lenses is lawful: a reborrow chain `&mut (*r).f.g` is a
 composite of field lenses, so its laws follow from theirs. -/
 def Lens.comp_lawful {S A B : Type} (l : Lens S A) (m : Lens A B)
     (hl : Lens.Lawful l) (hm : Lens.Lawful m) : Lens.Lawful (Lens.comp l m) :=
-  (fun s => Optic.trans (Optic.congrArg (l s).2 (hm.1 (l s).1)) (hl.1 s),
-   fun s b => Optic.trans
-     (Optic.congrArg (fun x => (m x).1) (hl.2.1 s ((m (l s).1).2 b)))
+  (fun s => Eq.trans (Eq.congrArg (l s).2 (hm.1 (l s).1)) (hl.1 s),
+   fun s b => Eq.trans
+     (Eq.congrArg (fun x => (m x).1) (hl.2.1 s ((m (l s).1).2 b)))
      (hm.2.1 (l s).1 b),
-   fun s b c => Optic.trans
-     (Optic.congrArg (fun x => (l ((l s).2 ((m (l s).1).2 b))).2 ((m x).2 c)) (hl.2.1 s ((m (l s).1).2 b)))
-     (Optic.trans
-       (Optic.congrArg (l ((l s).2 ((m (l s).1).2 b))).2 (hm.2.2 (l s).1 b c))
+   fun s b c => Eq.trans
+     (Eq.congrArg (fun x => (l ((l s).2 ((m (l s).1).2 b))).2 ((m x).2 c)) (hl.2.1 s ((m (l s).1).2 b)))
+     (Eq.trans
+       (Eq.congrArg (l ((l s).2 ((m (l s).1).2 b))).2 (hm.2.2 (l s).1 b c))
        (hl.2.2 s ((m (l s).1).2 b) ((m (l s).1).2 c))))
 
 /-- GetPut for two independent places borrowed at once. (PutGet and PutPut hold too, by
@@ -339,18 +313,18 @@ def Lens.comp_lawful {S A B : Type} (l : Lens S A) (m : Lens A B)
 equation of pairs with its computed form; `Lens.pair_putGet` is PutGet.) -/
 def Lens.pair_getPut {S A B : Type} (l : Lens S A) (m : Lens S B) (hl : Lens.Lawful l) (hm : Lens.Lawful m) :
     Lens.GetPut (Lens.pair l m) := fun s =>
-  @Optic.subst S (fun (y : S) => (m y).2 (m s).1 = s) s ((l s).2 (l s).1) (Optic.sym (hl.1 s)) (hm.1 s)
+  @Eq.substProp S (fun (y : S) => (m y).2 (m s).1 = s) s ((l s).2 (l s).1) (Eq.symm (hl.1 s)) (hm.1 s)
 
 /-- Equality of a pair with a pair-valued variable, componentwise. The equation computes to
 `(e : a = p.1) × (cast B B _ b = p.2)` (the second component's type is cast along the
 first's equation, and `B` is a variable, so the cast is stuck): `castRefl` removes it. -/
 def Optic.pairEq {A B : Type} (a : A) (b : B) (p : A × B) (e₁ : a = p.1) (e₂ : b = p.2) : (a, b) = p :=
-  (e₁, Optic.trans (@castRefl B rfl b) e₂)
+  (e₁, Eq.trans (@castRefl B rfl b) e₂)
 /-- PutGet for two independent places borrowed at once, from the laws of each and `Indep`. -/
 def Lens.pair_putGet {S A B : Type} (l : Lens S A) (m : Lens S B) (hl : Lens.Lawful l) (hm : Lens.Lawful m)
     (hi : Lens.Indep l m) : Lens.PutGet (Lens.pair l m) := fun s ab =>
   Optic.pairEq ((l ((m ((l s).2 ab.1)).2 ab.2)).1) ((m ((m ((l s).2 ab.1)).2 ab.2)).1) ab
-    (Optic.trans (hi.2.1 ((l s).2 ab.1) ab.2) (hl.2.1 s ab.1))
+    (Eq.trans (hi.2.1 ((l s).2 ab.1) ab.2) (hl.2.1 s ab.1))
     (hm.2.1 ((l s).2 ab.1) ab.2)
 
 /-- `underR` preserves GetPut, case by case on the inner result. This and the lemmas below
@@ -359,7 +333,7 @@ constructor's argument): the composite's laws are the inner lens's. -/
 def Store.underR_gp {A B S : Type} (k : A → S) (a : A) (s : S) (hk : k a = s) : (r : Result (Store B A)) →
     Result.All (fun (st : Store B A) => st.2 st.1 = a) r →
     Result.All (fun (st : Store B S) => st.2 st.1 = s) (Store.underR k r)
-  | .ok st, h => Optic.trans (Optic.congrArg k h) hk
+  | .ok st, h => Eq.trans (Eq.congrArg k h) hk
   | .err e, h => ()
 /-- `underR` keeps the borrowed value: a successful get still sees `b`. -/
 def Store.underR_get {A B S : Type} (k : A → S) (b : B) : (r : Result (Store B A)) →
@@ -372,7 +346,7 @@ def Store.underR_pg1 {A B S : Type} (k : A → S) (m : PLens A B) (C : PLens S B
     (hC : (x : A) → @Store.underR A B S k (m x) = C (k x)) (st : Store B A) (b : B)
     (h : Result.Holds (fun (st' : Store B A) => st'.1 = b) (m (st.2 b))) :
     Result.Holds (fun (st' : Store B S) => st'.1 = b) (C (k (st.2 b))) :=
-  @Optic.subst (Result (Store B S)) (Result.Holds (fun (st' : Store B S) => st'.1 = b))
+  @Eq.substProp (Result (Store B S)) (Result.Holds (fun (st' : Store B S) => st'.1 = b))
     (Store.underR k (m (st.2 b))) (C (k (st.2 b))) (hC (st.2 b))
     (Store.underR_get k b (m (st.2 b)) h)
 /-- `underR` preserves PutGet. -/
@@ -388,14 +362,14 @@ def Store.underR_pg {A B S : Type} (k : A → S) (m : PLens A B) (C : PLens S B)
 def Store.underR_put {A B S : Type} (k : A → S) (b : B) (t : A) : (r : Result (Store B A)) →
     Result.Holds (fun (st : Store B A) => st.2 b = t) r →
     Result.Holds (fun (st : Store B S) => st.2 b = k t) (Store.underR k r)
-  | .ok st, h => Optic.congrArg k h
+  | .ok st, h => Eq.congrArg k h
   | .err e, h => h
 /-- One step of `Store.underR_pp`: PutPut through `underR`, for one store. -/
 def Store.underR_pp1 {A B S : Type} (k : A → S) (m : PLens A B) (C : PLens S B)
     (hC : (x : A) → @Store.underR A B S k (m x) = C (k x)) (st : Store B A) (a b : B)
     (h : Result.Holds (fun (st' : Store B A) => st'.2 b = st.2 b) (m (st.2 a))) :
     Result.Holds (fun (st' : Store B S) => st'.2 b = k (st.2 b)) (C (k (st.2 a))) :=
-  @Optic.subst (Result (Store B S)) (Result.Holds (fun (st' : Store B S) => st'.2 b = k (st.2 b)))
+  @Eq.substProp (Result (Store B S)) (Result.Holds (fun (st' : Store B S) => st'.2 b = k (st.2 b)))
     (Store.underR k (m (st.2 a))) (C (k (st.2 a))) (hC (st.2 a))
     (Store.underR_put k b (st.2 b) (m (st.2 a)) h)
 /-- `underR` preserves PutPut. -/

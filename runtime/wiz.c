@@ -1321,6 +1321,19 @@ WIZ_API int wiz_f64_lt(double a, double b) { return a < b; }
 WIZ_API const char *wiz_f64_show(double a) { static __thread char buf[64]; snprintf(buf, sizeof buf, "%.17g", a); return buf; }
 WIZ_API const char *wiz_nat_show(uint64_t a) { static __thread char buf[32]; snprintf(buf, sizeof buf, "%llu", (unsigned long long)a); return buf; }
 
+/* (P2) The step budget of a proof's read-back in the self-hosted toolchain (selfhost/Kernel.wiz,
+   `forceProof`; `Budget` in Wiz/Core/Term.lean is the Lean frontend's): a counter behind a
+   pure interface, as in Lean. `start` begins a budget of `steps` closure instantiations
+   (1: it did; 0: one is already running, the caller counts on it), `tick` takes one step
+   (1, or 0 once it ran out; always 1 when no budget runs), `end` stops it (1: it did not
+   run out). Only the read-back of a suspended proof starts one, so the kernel's own
+   evaluation never finds one running. (Per thread, like the read-back.) */
+static __thread int wiz_proof_on = 0;
+static __thread uint64_t wiz_proof_left = 0;
+WIZ_API int wiz_proof_start(uint64_t steps) { if (wiz_proof_on) return 0; wiz_proof_on = 1; wiz_proof_left = steps + 1; return 1; }
+WIZ_API int wiz_proof_tick(uint64_t x) { (void)x; if (!wiz_proof_on) return 1; if (wiz_proof_left <= 1) { wiz_proof_left = 0; return 0; } wiz_proof_left--; return 1; }
+WIZ_API int wiz_proof_end(uint64_t x) { (void)x; wiz_proof_on = 0; return wiz_proof_left > 0; }
+
 /* ---- system interfaces (stage 9h, lib/Sys.wiz): processes, environment, files ----
 
    POSIX calls, with errors as errno numbers. A call that returns a status gives 0 or
