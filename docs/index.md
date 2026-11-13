@@ -42,7 +42,7 @@ topic below, so the numbers are not in order.
 * [Stage 10: effects](stages/10-effects.md)
 * [Stage 25: concurrency](stages/25-concurrency.md)
 * [Stage 27: trusted evaluation (`native_refl`)](stages/27-trusted-evaluation.md)
-* [Stage 28: solvers (`smt`, `sat_decide`)](stages/28-solvers.md)
+* [Stage 28: solvers (`smt`, `sat_decide`, `sat_decide_native`, `bv_decide`)](stages/28-solvers.md)
 
 ### Self-hosting
 

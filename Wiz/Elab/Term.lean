@@ -3519,7 +3519,8 @@ partial def runTac (code : Code) (info : SourceInfo) (st : TacState R) (v : RVal
   let gl ← goalOf (fld 0)
   let lvl := gl.ctx.lvl
   if tag == TacTag.nativeDecide then
-    -- (28e) `X.satK.native✝ : e = .true`, decided by running `e` (as `native_refl` does)
+    -- (28e) `X.satK.native✝ : Sat.IsTrue e` (else `e = .true`), decided by running `e`
+    -- (as `native_refl` does)
     let s ← get
     unless s.smt.trustNative do
       throwAt info "native evaluation is not enabled: deciding by running compiled code is trusted, not checked by the kernel; run with --trust-native to allow it"

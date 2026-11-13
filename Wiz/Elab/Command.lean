@@ -2098,7 +2098,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
           "\n(native: an implementation that compiled code runs, trusted to agree with its definition)" else ""
         -- (27a) a `native_refl` axiom
         let note := note ++ if as.any (·.endsWith ".native✝") then
-          "\n(.native✝: an equation decided by running it (native_refl, --trust-native): trusted are erasure, the interpreter and the native implementations listed)" else ""
+          "\n(.native✝: a closed proposition decided by running it (native_refl, --trust-native, sat_decide_native): trusted are erasure, the interpreter and the native implementations listed)" else ""
         let note := note ++ if as.any (fun a => (a.splitOn ".smt✝").length > 1) then
           "\n(.smt✝N⟨solver⟩: a goal closed by an SMT solver (the smt tactic, --trust-smt): trusted are the solver named in the axiom, Wiz's translation to SMT-LIB (Wiz/Smt/Translate.lean) and the answer cache)" else ""
         report .info cmd.info s!"'{n}' depends on axioms: [{", ".intercalate as}]{note}"
