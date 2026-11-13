@@ -50,9 +50,9 @@ def posJson (src : String) (off : Nat) : String :=
   s!"\{\"line\":{l},\"character\":{c}}"
 
 /-- Open `src` as `file:///t.wiz`; returns the server and the messages it sent. -/
-def openDoc (src : String) (init : Lean.Json := req "{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"initialize\",\"params\":{}}") :
-    IO (LSP.Server × Array Lean.Json) := do
-  let (srv, _) := LSP.handle (← server) init
+def openDoc (src : String) (init : Lean.Json := req "{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"initialize\",\"params\":{}}")
+    (srv? : Option LSP.Server := none) : IO (LSP.Server × Array Lean.Json) := do
+  let (srv, _) := LSP.handle (← match srv? with | some s => pure s | none => server) init
   let msg := Lean.Json.mkObj [("jsonrpc", "2.0"), ("method", "textDocument/didOpen"),
     ("params", Lean.Json.mkObj [("textDocument", Lean.Json.mkObj [("uri", "file:///t.wiz"), ("version", (1 : Nat)), ("text", src)])])]
   pure (LSP.handle srv msg)
@@ -251,8 +251,8 @@ def titled (as : Array Lean.Json) (t : String) : Option Lean.Json :=
   as.find? fun a => LSP.getStr a ["title"] == t
 
 /-- The diagnostics' codes after opening `src`. -/
-def codes (src : String) : IO (List String) := do
-  let (_, out) ← openDoc src
+def codes (src : String) (srv? : Option LSP.Server := none) : IO (List String) := do
+  let (_, out) ← openDoc src (srv? := srv?)
   match LSP.get? out[0]! ["params", "diagnostics"] with
   | some (.arr ds) => pure (ds.toList.map fun d => LSP.getStr d ["code"])
   | _ => pure []
@@ -260,6 +260,27 @@ def codes (src : String) : IO (List String) := do
 def subtermInfo (srv : LSP.Server) (session ref : Nat) : LSP.Server × Lean.Json :=
   let (srv, out) := LSP.handle srv (req s!"\{\"jsonrpc\":\"2.0\",\"id\":11,\"method\":\"wiz/subtermInfo\",\"params\":\{\"textDocument\":\{\"uri\":\"file:///t.wiz\"},\"session\":{session},\"ref\":{ref}}}")
   (srv, (out[0]!.getObjVal? "result").toOption.getD ((out[0]!.getObjVal? "error").toOption.getD Lean.Json.null))
+
+/-- The completion items at an offset of the open document: (label, newText, detail),
+in the order given, and whether every item's edit starts at `start` (when given). -/
+def completions (srv : LSP.Server) (src : String) (off : Nat) : Array (String × String × String) :=
+  let (_, r) := ask srv "textDocument/completion" src off
+  match LSP.get? r ["items"] with
+  | some (.arr is) => is.map fun i => (LSP.getStr i ["label"], LSP.getStr i ["textEdit", "newText"], LSP.getStr i ["detail"])
+  | _ => #[]
+
+def labels (cs : Array (String × String × String)) : List String := cs.toList.map (·.1)
+
+/-- The source of the completion cases. -/
+def completionSrc : String :=
+  "import Prelude\nstructure Point where\n  px : Nat\n  py : Nat\n" ++
+  "def Point.norm (p : Point) : Nat := p.px\n" ++
+  "def foo (n : Nat) (pt : Point) : Nat := Nat.add n pt.\n" ++
+  "def bar (k : Nat) : Nat := Nat.ad\n" ++
+  "def baz (len : Nat) (lb : Bool) : Nat := l\n" ++
+  "def qux (m : Nat) : Nat := Nat.succ \n" ++
+  "def t (A : Type) : A → A := by\n  intro x\n  ex\n" ++
+  "de\n"
 
 /-- The body of the infoview socket case. -/
 def socketCase : IO Unit := do
@@ -548,6 +569,98 @@ def serverGroup : Group where
         let (srv, _) := LSP.handle srv (req "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didChange\",\"params\":{\"textDocument\":{\"uri\":\"file:///t.wiz\",\"version\":2},\"contentChanges\":[{\"text\":\"import Prelude\\n\"}]}}")
         let (_, r) := resolve srv
         check (has r "-32801") s!"stale resolve: {r.compress}" },
+    { name := "error codes: the common errors carry theirs", run := fun _ => do
+        let pre := "import Prelude\nstructure P where\n  count : Nat\n  total : Nat\ninductive Color where\n  | red\n  | green\n"
+        for (code, body) in [
+            ("no-such-field", "def f (p : P) : Nat := p.cuont\n"),
+            ("no-such-field", "def f (p : P) : P := { p with cuont := 1 }\n"),
+            ("unknown-constructor", "def c : Color := .gren\n"),
+            ("unknown-constructor", "def c (x : Color) : Nat := match x with\n  | .red => 0\n  | .gren => 1\n"),
+            ("missing-case", "def c (x : Color) : Nat := match x with\n  | .red => 0\n"),
+            ("type-mismatch", "def b : Nat := Bool.true\n"),
+            ("wrong-argument-count", "def g : Nat := Nat.succ 1 2\n"),
+            ("unsolved-hole", "def u : Nat := (fun (A : Type) => 0) _\n"),
+            ("unknown-identifier", "def i : Nat := nope\n"),
+            ("parse-error", "def := 1\n")] do
+          let cs ← codes (pre ++ body)
+          check (cs.contains code) s!"{code}: got {cs} for\n{body}"
+        let cs ← codes "import Prelud\n"
+        check (cs.contains "unknown-module") s!"unknown-module: got {cs}"
+        -- every code in `ErrorCode.all` has a row in docs/error-codes.md, and every row a code
+        let doc ← IO.FS.readFile "docs/error-codes.md"
+        let rows := (doc.splitOn "\n").filterMap fun l =>
+          if l.startsWith "| `" then some ((((l.drop 3).toString.splitOn "`").headD "")) else none
+        for c in ErrorCode.all do
+          check (rows.contains c) s!"docs/error-codes.md has no row for {c}"
+        for c in rows do
+          check (ErrorCode.all.contains c) s!"docs/error-codes.md lists {c}, which is not in ErrorCode.all" },
+    { name := "code action: did you mean (fields, namespace, constructors)", run := fun _ => do
+        let pre := "import Prelude\nstructure P where\n  count : Nat\n  total : Nat\ninductive Box where\n  | mk (n : Nat)\ndef Box.double : Box → Nat\n  | .mk n => n + n\ninductive Color where\n  | red\n  | green\n"
+        for (body, needle, title, fixed) in [
+            ("def f (p : P) : Nat := p.cuont\n", "p.cuont", "Did you mean 'count'?", "p.count\n"),
+            ("def f (b : Box) : Nat := b.duoble\n", "b.duoble", "Did you mean 'double'?", "b.double\n"),
+            ("def f (p : P) : P := { p with totl := 1 }\n", "totl", "Did you mean 'total'?", "{ p with total := 1 }\n"),
+            ("def c : Color := .gren\n", ".gren", "Did you mean 'green'?", ":= .green\n"),
+            ("def c (x : Color) : Nat := match x with\n  | .red => 0\n  | .gren => 1\n", "| .gren", "Did you mean 'green'?", "| .green => 1\n")] do
+          let src := pre ++ body
+          let (srv, out) ← openDoc src
+          check (has out[0]! s!"\"suggestions\":[\"{(title.splitOn "'").getD 1 ""}\"]") s!"data: {out[0]!.compress}"
+          let (_, as) := codeActions srv src (offAfter src needle (-1))
+          let some a := titled as title | throw (IO.userError s!"{body}: actions: {as.map (·.compress)}")
+          let src' := applyEdit src (LSP.get? a ["edit"]).get!
+          check (src'.endsWith fixed) s!"edited:\n{src'}"
+          checkEq ([] : List String) (← codes src') },
+    { name := "code action: did you mean (imports), add the missing import", run := fun _ => do
+        let extra := "import Prelude\ndef extraThing : Nat := 3\ninductive Shade where\n  | dark\n"
+        let srv ← server
+        let srv := { srv with libs := srv.libs.insert "Extra.Things" ("lib/Extra/Things.wiz", extra) }
+        -- a misspelt module
+        let src := "import Prelude\nimport Extra.Thing\ndef y : Nat := extraThing\n"
+        let (srv1, out) ← openDoc src (srv? := some srv)
+        check (has out[0]! "\"code\":\"unknown-module\"") s!"diagnostic: {out[0]!.compress}"
+        let (_, as) := codeActions srv1 src (offAfter src "Extra.Th")
+        let some a := titled as "Did you mean 'Extra.Things'?" | throw (IO.userError s!"actions: {as.map (·.compress)}")
+        let src' := applyEdit src (LSP.get? a ["edit"]).get!
+        checkEq "import Prelude\nimport Extra.Things\ndef y : Nat := extraThing\n" src'
+        checkEq ([] : List String) (← codes src' (srv? := some srv))
+        -- a name another module declares (also a constructor `T.c` of a type it declares)
+        for (use, needle) in [("extraThing", "extraThing"), ("Shade.dark", "Shade.dark")] do
+          let src := s!"import Prelude\ndef y := {use}\n"
+          let (srv1, _) ← openDoc src (srv? := some srv)
+          let (_, as) := codeActions srv1 src (offAfter src needle (-1))
+          let some a := titled as "Add `import Extra.Things`" | throw (IO.userError s!"{use}: actions: {as.map (·.compress)}")
+          let src' := applyEdit src (LSP.get? a ["edit"]).get!
+          checkEq s!"import Prelude\nimport Extra.Things\ndef y := {use}\n" src'
+          checkEq ([] : List String) (← codes src' (srv? := some srv))
+        -- not for a name no module declares
+        let src := "import Prelude\ndef y : Nat := extraThings\n"
+        let (srv1, _) ← openDoc src (srv? := some srv)
+        let (_, as) := codeActions srv1 src (offAfter src "extraThings" (-1))
+        check (!(as.any (has · "Add `import"))) s!"actions: {as.map (·.compress)}" },
+    { name := "code action: make implicit arguments explicit (@f) or inferred (drop the @)", run := fun _ => do
+        let pre := "import Prelude\ndef myId {A : Type} (x : A) : A := x\n"
+        let src := pre ++ "def v : Nat := myId Nat 1\n"
+        let (srv, out) ← openDoc src
+        check (has out[0]! "\"code\":\"wrong-argument-count\"") s!"diagnostic: {out[0]!.compress}"
+        let (_, as) := codeActions srv src (offAfter src "myId Nat" (-5))
+        let some a := titled as "Give the implicit arguments explicitly: @myId" | throw (IO.userError s!"actions: {as.map (·.compress)}")
+        let src' := applyEdit src (LSP.get? a ["edit"]).get!
+        checkEq (pre ++ "def v : Nat := @myId Nat 1\n") src'
+        checkEq ([] : List String) (← codes src')
+        -- the other way round
+        let src := pre ++ "def w : Nat := @myId 1\n"
+        let (srv, out) ← openDoc src
+        check (has out[0]! "\"severity\":1") s!"no error: {out[0]!.compress}"
+        let (_, as) := codeActions srv src (offAfter src "@myId 1" (-1))
+        let some a := titled as "Let the implicit arguments of myId be inferred: drop the @" | throw (IO.userError s!"actions: {as.map (·.compress)}")
+        let src' := applyEdit src (LSP.get? a ["edit"]).get!
+        checkEq (pre ++ "def w : Nat := myId 1\n") src'
+        checkEq ([] : List String) (← codes src')
+        -- not when the count is right
+        let src := pre ++ "def z : Nat := Nat.succ 1 2\n"
+        let (srv, _) ← openDoc src
+        let (_, as) := codeActions srv src (offAfter src "Nat.succ" (-1))
+        check (!(as.any (has · "implicit"))) s!"actions: {as.map (·.compress)}" },
     { name := "11q: go to definition and declaration of syntax, a macro use's hover", run := fun _ => do
         let src := "import Prelude\nsyntax (name := twice) \"twice\" term:max : term\nmacro_rules\n  | `(term| twice $x) => `(term| Nat.add $x $x)\ndef two : Nat := 2\ndef four : Nat := twice two\n"
         let (srv, _) ← openDoc src
@@ -587,7 +700,7 @@ def serverGroup : Group where
         let (srv, r) := ask srv "textDocument/hover" src (offAfter src "1 +" (-1))
         let md := LSP.getStr r ["contents", "value"]
         check ((md.splitOn "Add Nat").length > 1) s!"no instance in the hover:\n{md}"
-        check ((md.splitOn "expands to\n```wiz\nAdd.add 1 2").length > 1) s!"no expansion in the hover:\n{md}"
+        check ((md.splitOn "expands to\n```wiz\nHAdd.hAdd 1 2").length > 1) s!"no expansion in the hover:\n{md}"
         -- a category's name, where a rule uses it and in the rule's target
         for needle in ["\"greet\" greeting", ": greeting"] do
           let (_, r) := ask srv "textDocument/definition" src (offAfter src needle (-2))
@@ -651,8 +764,203 @@ def serverGroup : Group where
         checkEq ["pred 3 : Nat"] ((item r "message").map (LSP.getStr · ["text"]))
         -- an instance argument, at the notation that needed it; and the syntax
         let (_, r) := ask srv "wiz/interactiveInfo" src (offAfter src "2 *" (-1))
-        checkEq ["Mul Nat"] ((item r "instance").map fun i => flatten (LSP.get? i ["type"]).get!)
+        checkEq ["HMul Nat Nat Nat"] ((item r "instance").map fun i => flatten (LSP.get? i ["type"]).get!)
         check ((item r "syntax").length == 1 && (item r "expansion").length == 1) s!"syntax items: {r.compress}" },
+    { name := "signature help: the binders of the function being applied (11u)", run := fun _ => do
+        let src := "import Prelude\ndef a : Nat := Nat.add 1 \ndef b (xs : List Nat) : Nat := List.length \n" ++
+          "def c (f : Nat → Bool → Nat) : Nat := Nat.succ (f 2 \n"
+        let (srv, _) ← openDoc src
+        let (srv, r) := ask srv "textDocument/signatureHelp" src (offAfter src "Nat.add 1 ")
+        checkEq "Nat.add (_ : Nat) (_ : Nat) : Nat" (LSP.getStr ((LSP.get? r ["signatures"]).get!.getArrVal? 0 |>.toOption.get!) ["label"])
+        checkEq (1 : Nat) (LSP.getNat r ["activeParameter"])
+        let (srv, r) := ask srv "textDocument/signatureHelp" src (offAfter src "List.length ")
+        let sig := (LSP.get? r ["signatures"]).get!.getArrVal? 0 |>.toOption.get!
+        checkEq "List.length {A : Type} (_ : List A) : Nat" (LSP.getStr sig ["label"])
+        let some (.arr ps) := LSP.get? sig ["parameters"] | throw (IO.userError s!"{sig.compress}")
+        checkEq 1 ps.size
+        checkEq (0 : Nat) (LSP.getNat r ["activeParameter"])
+        -- inside parentheses, a local function
+        let (_, r) := ask srv "textDocument/signatureHelp" src (offAfter src "(f 2 ")
+        check (has r "Bool") s!"f: {r.compress}"
+        checkEq (1 : Nat) (LSP.getNat r ["activeParameter"]) },
+    { name := "inlay hints: the types of fun and let binders written without one", run := fun _ => do
+        let src := "import Prelude\ndef f : Nat → Nat := fun x => Nat.succ x\ndef g : Nat := let n := 2\n  Nat.add n n\n" ++
+          "def h : Nat → Bool → Nat := fun a b => a\ndef k : Nat → Nat := fun (y : Nat) => y\n"
+        let (srv, _) ← openDoc src
+        let (_, out) := LSP.handle srv (req s!"\{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"textDocument/inlayHint\",\"params\":\{\"textDocument\":\{\"uri\":\"file:///t.wiz\"},\"range\":\{\"start\":{posJson src 0},\"end\":{posJson src src.length}}}}")
+        let some (.arr hs) := LSP.get? out[0]! ["result"] | throw (IO.userError s!"{out[0]!.compress}")
+        let got := hs.toList.map fun h => (LSP.ofPos src (LSP.getNat h ["position", "line"]) (LSP.getNat h ["position", "character"]), LSP.getStr h ["label"])
+        checkEq [(offAfter src "fun x", " : Nat"), (offAfter src "let n", " : Nat"), (offAfter src "fun a", " : Nat"),
+                 (offAfter src "fun a b", " : Bool")] got },
+    { name := "semantic tokens: the keywords of declared syntax, a keyword-scoped DSL's inside it", run := fun _ => do
+        let src := "import Prelude\ndeclare_syntax_cat calc_e (keywords := calc_kw)\n" ++
+          "syntax (name := var) ident : calc_e\nsyntax (name := host) \"[\" term \"]\" : calc_e\n" ++
+          "syntax:20 (name := ifE) \"when\" calc_e \"yes\" calc_e:20 \"no\" calc_e:20 : calc_e\n" ++
+          "syntax (name := calc) \"run_calc\" calc_e \"done\" : term\n" ++
+          "macro_rules\n  | `(term| run_calc [ $t ] done) => `(term| $t)\n" ++
+          "macro_rules\n  | `(term| run_calc when $c yes $a no $b done) => `(term| match run_calc $c done with | .true => run_calc $a done | .false => run_calc $b done)\n" ++
+          "def no (yes : Nat) : Nat := yes\n" ++
+          "#eval run_calc when [Bool.true] yes [no 1] no [3] done\n" ++
+          "def k : Nat → Nat := by\n  intro n\n  exact n\n"
+        let (srv, _) ← openDoc src
+        let (_, out) := LSP.handle srv (req "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"textDocument/semanticTokens/full\",\"params\":{\"textDocument\":{\"uri\":\"file:///t.wiz\"}}}")
+        let some (.arr d) := LSP.get? out[0]! ["result", "data"] | throw (IO.userError s!"{out[0]!.compress}")
+        let d := d.toList.map fun j => j.getNat?.toOption.getD 0
+        -- decode: absolute (line, column, length)
+        let rec go : List Nat → Nat → Nat → List (Nat × Nat × Nat)
+          | dl :: dc :: len :: _ :: _ :: rest, l, c =>
+            let l' := l + dl
+            let c' := if dl == 0 then c + dc else dc
+            (l', c', len) :: go rest l' c'
+          | _, _, _ => []
+        let toks := go d 0 0
+        let line := 11
+        let text := (src.splitOn "\n")[line]!
+        let words := (toks.filter (·.1 == line)).map fun (_, c, len) => String.ofList ((text.toList.drop c).take len)
+        checkEq ["run_calc", "when", "yes", "no", "done"] words
+        -- `no` and `yes` outside the DSL are names
+        check (!(toks.any fun (l, _, _) => l == 10)) s!"line 10: {toks}"
+        -- a tactic name
+        check (toks.any fun (l, c, len) => l == 13 && c == 2 && len == 5) s!"intro: {toks}" },
+    { name := "completion: locals and expected type, globals, dot completion, tactics, commands", run := fun _ => do
+        let src := completionSrc
+        let (srv, _) ← openDoc src
+        -- `l`: the locals first (with their types), then the globals ending in `Nat`
+        let cs := completions srv src (offAfter src ":= l")
+        -- (the innermost first)
+        checkEq ["lb", "len"] ((labels cs).take 2)
+        checkEq ("len", "len", "Nat") cs[1]!
+        checkEq ["lb", "len", "let"] (labels cs)
+        -- no prefix: the locals, then the globals ending in the expected `Nat`, then the rest
+        let cs := labels (completions srv src (offAfter src "Nat.succ "))
+        checkEq "m" cs[0]!
+        let (i, j) := (cs.idxOf "List.length", cs.idxOf "Bool.true")
+        check (i < j && j < cs.length) s!"ranking: {cs}"
+        -- `pt.`: the fields and the functions taking a `Point` first (not `Point.mk`)
+        let cs := completions srv src (offAfter src "n pt.")
+        checkEq ["pt.px", "pt.py", "pt.norm"] (labels cs)
+        checkEq ("pt.px", "pt.px", "Nat") cs[0]!
+        -- `Nat.ad`: in a namespace
+        checkEq ["Nat.add"] (labels (completions srv src (offAfter src "Nat := Nat.ad" (k := 1))))
+        -- a tactic, and a command
+        checkEq ["exact"] (labels (completions srv src (offAfter src "  ex")))
+        let ts := labels (completions srv src (offAfter src "intro x\n  "))
+        for t in ["intro", "exact", "apply", "rfl"] do check (ts.contains t) s!"tactic {t}: {ts}"
+        check (!ts.contains "Nat.add") s!"globals at a tactic: {ts}"
+        checkEq ["declare_syntax_cat", "def", "deriving"] (labels (completions srv src (offAfter src "\nde")))
+        -- `import`
+        let src := "import Pre"
+        let (srv, _) ← openDoc src
+        checkEq ["Prelude"] (labels (completions srv src src.length))
+        -- the edit replaces the word: `Nat.ad` ↦ `Nat.add`
+        let src := completionSrc
+        let (srv, _) ← openDoc src
+        let (_, r) := ask srv "textDocument/completion" src (offAfter src "Nat := Nat.ad" (k := 1))
+        let some (.arr is) := LSP.get? r ["items"] | throw (IO.userError s!"{r.compress}")
+        let e := is[0]!
+        let st := LSP.ofPos src (LSP.getNat e ["textEdit", "range", "start", "line"]) (LSP.getNat e ["textEdit", "range", "start", "character"])
+        let edit : Actions.Edit := { start := st, stop := offAfter src "Nat := Nat.ad" (k := 1), text := LSP.getStr e ["textEdit", "newText"] }
+        let edited := Actions.apply src #[edit]
+        check ((edited.splitOn ":= Nat.add\ndef baz").length > 1) s!"edited:\n{edited}" },
+    { name := "completion: the keywords of a keyword-scoped DSL (13j)", run := fun _ => do
+        let src := "import Prelude\ndeclare_syntax_cat calc_e (keywords := calc_kw)\n" ++
+          "syntax (name := var) ident : calc_e\nsyntax (name := host) \"[\" term \"]\" : calc_e\n" ++
+          "syntax:20 (name := ifE) \"when\" calc_e \"yes\" calc_e:20 \"no\" calc_e:20 : calc_e\n" ++
+          "syntax (name := calc) \"run_calc\" calc_e \"done\" : term\n" ++
+          "#eval run_calc when [0] ye\n#eval run_calc wh\n"
+        let (srv, _) ← openDoc src
+        checkEq ["yes"] (labels (completions srv src (offAfter src "] ye")))
+        checkEq ["when"] (labels (completions srv src (offAfter src "run_calc wh"))) },
+    { name := "code action: fill a hole from its expected type", run := fun _ => do
+        let src := "import Prelude\nstructure Point where\n  px : Nat\n  py : Nat\n" ++
+          "inductive T where\n  | a\n  | b (t : T)\n  | c (x y : Nat)\n" ++
+          "def p : Point := _\ndef q (f : T → Nat) : Nat := f ?t\ndef r : Nat → Bool := ?f\n"
+        let (srv, _) ← openDoc src
+        let fill (srv : LSP.Server) (at_ : Nat) (title : String) : IO String := do
+          let (_, as) := codeActions srv src at_
+          let some a := titled as title | throw (IO.userError s!"no {title}: {as.map (·.compress)}")
+          pure (applyEdit src (LSP.get? a ["edit"]).get!)
+        let e ← fill srv (offAfter src "Point := _" (-1)) "Fill with an anonymous constructor"
+        check ((e.splitOn "def p : Point := ⟨?px, ?py⟩\n").length > 1) s!"edited:\n{e}"
+        -- an argument: in parentheses
+        let e ← fill srv (offAfter src "f ?t" (-1)) "Fill with '.c'"
+        check ((e.splitOn "f (.c ?x ?y)\n").length > 1) s!"edited:\n{e}"
+        let e ← fill srv (offAfter src "f ?t" (-1)) "Fill with '.a'"
+        check ((e.splitOn "f .a\n").length > 1) s!"edited:\n{e}"
+        let e ← fill srv (offAfter src ":= ?f" (-1)) "Fill with 'fun x => ?body'"
+        check ((e.splitOn ":= fun x => ?body\n").length > 1) s!"edited:\n{e}"
+        -- what the fillings leave is only holes
+        let (_, out) ← openDoc e
+        let some (.arr ds) := LSP.get? out[0]! ["params", "diagnostics"] | throw (IO.userError "no diagnostics")
+        for d in ds do
+          check ((LSP.getStr d ["message"]).startsWith "could not infer") s!"diagnostic: {d.compress}" },
+    { name := "references, document highlights and rename, across the package's modules (11y)", run := fun _ => do
+        let lib := "import Prelude\ndef helper (n : Nat) : Nat := Nat.succ n\ndef useHelper : Nat := helper 1\n"
+        let src := "import Prelude\nimport Lib\ndef double (n : Nat) : Nat := Nat.add n n\ndef four : Nat := double 2\n" ++
+          "def eight : Nat := double (double (helper 2))\n"
+        let srv0 ← server
+        let srv0 := { srv0 with libs := srv0.libs.insert "Lib" ("/pkg/Lib.wiz", lib) }
+        let (srv, _) := LSP.handle srv0 (req "{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"initialize\",\"params\":{}}")
+        let (srv, _) := LSP.handle srv (Lean.Json.mkObj [("jsonrpc", "2.0"), ("method", "textDocument/didOpen"),
+          ("params", Lean.Json.mkObj [("textDocument", Lean.Json.mkObj [("uri", "file:///t.wiz"), ("version", (1 : Nat)), ("text", src)])])])
+        let locs (r : Lean.Json) : List (String × Nat × Nat) := match r with
+          | .arr ls => ls.toList.map fun l => (LSP.getStr l ["uri"], LSP.getNat l ["range", "start", "line"], LSP.getNat l ["range", "start", "character"])
+          | _ => []
+        -- a global of this file: its declaration and its three uses
+        let (srv, r) := ask srv "textDocument/references" src (offAfter src "four : Nat := dou")
+        checkEq [("file:///t.wiz", 2, 4), ("file:///t.wiz", 3, 18), ("file:///t.wiz", 4, 19), ("file:///t.wiz", 4, 27)] (locs r)
+        -- a global of a package module: there too
+        let (srv, r) := ask srv "textDocument/references" src (offAfter src "(helper" (-2))
+        let sorted := (locs r).toArray.qsort fun a b => a.1 < b.1 || (a.1 == b.1 && (a.2.1 < b.2.1 || (a.2.1 == b.2.1 && a.2.2 < b.2.2)))
+        checkEq [("file:///pkg/Lib.wiz", 1, 4), ("file:///pkg/Lib.wiz", 2, 23), ("file:///t.wiz", 4, 35)] sorted.toList
+        -- a local: the binder and its uses
+        let (srv, r) := ask srv "textDocument/documentHighlight" src (offAfter src "Nat.add n" (-1))
+        let some (.arr hs) := some r | throw (IO.userError s!"{r.compress}")
+        checkEq 3 hs.size
+        -- the toolchain's library can't be renamed
+        let (srv, r) := ask srv "textDocument/prepareRename" src (offAfter src "Nat.ad")
+        check (has r "toolchain") s!"prepareRename: {r.compress}"
+        -- rename a global: every document, and the package module
+        let (srv', out) := LSP.handle srv (req s!"\{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"textDocument/rename\",\"params\":\{\"textDocument\":\{\"uri\":\"file:///t.wiz\"},\"position\":{posJson src (offAfter src "four : Nat := dou")},\"newName\":\"twice\"}}")
+        let some e := LSP.get? out[0]! ["result"] | throw (IO.userError s!"{out[0]!.compress}")
+        let src' := applyEdit src e
+        check ((src'.splitOn "double").length == 1) s!"renamed:\n{src'}"
+        checkEq ([] : List String) (← codes (src'.replace "import Lib\n" "" |>.replace "(helper 2)" "2"))
+        let (_, out) := LSP.handle srv' (req s!"\{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"textDocument/rename\",\"params\":\{\"textDocument\":\{\"uri\":\"file:///t.wiz\"},\"position\":{posJson src (offAfter src "(helper" (-2))},\"newName\":\"aid\"}}")
+        check (has out[0]! "file:///pkg/Lib.wiz") s!"rename in Lib: {out[0]!.compress}"
+        -- a local
+        let (_, out) := LSP.handle srv (req s!"\{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"textDocument/rename\",\"params\":\{\"textDocument\":\{\"uri\":\"file:///t.wiz\"},\"position\":{posJson src (offAfter src "Nat.add n" (-1))},\"newName\":\"m\"}}")
+        let src' := applyEdit src (LSP.get? out[0]! ["result"]).get!
+        check ((src'.splitOn "def double (m : Nat) : Nat := Nat.add m m\n").length > 1) s!"renamed:\n{src'}" },
+    { name := "document symbols, workspace symbols and folding ranges (11v)", run := fun _ => do
+        let src := "import Prelude\n/- a block\n   comment -/\nstructure Point where\n  px : Nat\n  py : Nat\n" ++
+          "def Point.norm (p : Point) : Nat := p.px\ndef k : Nat → Nat := by\n  intro n\n  exact n\n"
+        let (srv, _) ← openDoc src
+        let (srv, out) := LSP.handle srv (req "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"textDocument/documentSymbol\",\"params\":{\"textDocument\":{\"uri\":\"file:///t.wiz\"}}}")
+        let some (.arr syms) := LSP.get? out[0]! ["result"] | throw (IO.userError s!"{out[0]!.compress}")
+        checkEq ["Point", "Point.norm", "k"] (syms.toList.map (LSP.getStr · ["name"]))
+        checkEq (23 : Nat) (LSP.getNat syms[0]! ["kind"])
+        let kids := match LSP.get? syms[0]! ["children"] with
+          | some (.arr ks) => ks.toList.map (LSP.getStr · ["name"])
+          | _ => []
+        for f in ["Point.px", "Point.py"] do check (kids.contains f) s!"children: {kids}"
+        checkEq "Point → Nat" (LSP.getStr syms[1]! ["detail"])
+        checkEq (7 : Nat) (LSP.getNat syms[2]! ["range", "start", "line"])
+        -- workspace symbols: by a part of the name, ignoring case
+        let (srv, out) := LSP.handle srv (req "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"NORM\"}}")
+        let some (.arr ws) := LSP.get? out[0]! ["result"] | throw (IO.userError s!"{out[0]!.compress}")
+        -- (the open documents' own declarations first, then the libraries')
+        checkEq "Point.norm" (LSP.getStr ws[0]! ["name"])
+        checkEq "file:///t.wiz" (LSP.getStr ws[0]! ["location", "uri"])
+        check (ws.toList.any (LSP.getStr · ["name"] == "TacticM.normalize")) s!"{ws.map (·.compress)}"
+        let (_, out) := LSP.handle srv (req "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"workspace/symbol\",\"params\":{\"query\":\"Nat.add\"}}")
+        check (has out[0]! "lib/Prelude.wiz") s!"Nat.add in the Prelude: {out[0]!.compress}"
+        -- folding: the comment, the structure, the `by` block's definition
+        let (_, out) := LSP.handle srv (req "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"textDocument/foldingRange\",\"params\":{\"textDocument\":{\"uri\":\"file:///t.wiz\"}}}")
+        let some (.arr fs) := LSP.get? out[0]! ["result"] | throw (IO.userError s!"{out[0]!.compress}")
+        let rs := fs.toList.map fun f => (LSP.getNat f ["startLine"], LSP.getNat f ["endLine"], LSP.getStr f ["kind"])
+        for r in [(1, 2, "comment"), (3, 5, ""), (7, 9, "")] do
+          check (rs.contains r) s!"folding {r}: {rs}" },
     { name := "infoview socket: cursor notifications, requests answered on the socket", run := fun _ => do
         -- a watchdog: a broken server must fail the case, not hang the suite (and since
         -- the process would wait for it, the case ends with an explicit exit)
@@ -681,6 +989,50 @@ def serverGroup : Group where
         -- an unmasked frame from a client breaks the protocol
         WebSocket.sendText w "x"
         checkEq none (← WebSocket.recvText r' w') },
+    { name := "inside a feral block: hovers, go to definition and errors at the Feral source", run := fun _ => do
+        -- the server's library: Prelude, Feral and the runtime of lowered code
+        let mut libs := (← server).libs
+        -- plus whatever Optic/FeralCore import on this tree (Result, Logic, OpticDerive and
+        -- Deriving arrive with the cohesion stack); a module whose file is absent is skipped
+        for (m, p) in [("Optic", "lib/Optic.wiz"), ("Region", "lib/Region.wiz"), ("Text", "lib/Text.wiz"),
+                       ("Feral", "lib/Feral.wiz"), ("FeralCore", "drafts/feral/lib/FeralCore.wiz"),
+                       ("Result", "lib/Result.wiz"), ("Logic", "lib/Logic.wiz"),
+                       ("OpticDerive", "lib/OpticDerive.wiz"), ("Deriving", "lib/Deriving.wiz")] do
+          if ← System.FilePath.pathExists p then
+            libs := libs.insert m (p, ← IO.FS.readFile p)
+        let srv : LSP.Server := { (← server) with libs, trusted := ["Prelude", "Optic", "Region", "Text", "Feral"] }
+        let (srv, _) := LSP.handle srv (req "{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"initialize\",\"params\":{}}")
+        let src := "import FeralCore\nimport Feral\nferal\n  fn double (n : U64) : U64 := n + n\n" ++
+          "  fn f (x : U64) : U64 := {\n    let mut v := Vec.new;\n    v.push x;\n    double (v.len)\n  }\nend\n"
+        let msg := Lean.Json.mkObj [("jsonrpc", "2.0"), ("method", "textDocument/didOpen"),
+          ("params", Lean.Json.mkObj [("textDocument", Lean.Json.mkObj [("uri", "file:///t.wiz"), ("version", (1 : Nat)), ("text", src)])])]
+        let (srv, out) := LSP.handle srv msg
+        check (!has (Lean.Json.arr out) "\"severity\":1") s!"errors: {(Lean.Json.arr out).compress}"
+        -- the type first; then (for a node of Feral's grammar) its `syntax`
+        let hover (srv : LSP.Server) (off : Nat) (want : String) : IO Unit := do
+          let md := LSP.getStr (ask srv "textDocument/hover" src off).2 ["contents", "value"]
+          check (md.startsWith s!"```wiz\n{want}\n```") s!"expected {want}, got\n{md}"
+        hover srv (offAfter src "push x" (-1)) "x : U64"
+        hover srv (offAfter src "double (v" (-4)) "double : U64 → Result U64"
+        -- a call's value is named by the call (not by the lowering's local `v_…`)
+        hover srv (offAfter src "double (v" (-3)) "double (v.len) : U64"
+        -- go to definition: `fn double`, line 4
+        let (srv, r) := ask srv "textDocument/definition" src (offAfter src "double (v" (-4))
+        checkEq "file:///t.wiz" (LSP.getStr r ["uri"])
+        checkEq 3 (LSP.getNat r ["range", "start", "line"])
+        checkEq 2 (LSP.getNat r ["range", "start", "character"])
+        -- a type error of the lowering (unchecked) is at the expression, line 13 (not the item, line 8)
+        let bad ← IO.FS.readFile "drafts/feral/rejected/surface/E0499_two_mut.wiz"
+        let bad := bad.replace "\nferal\n" "\n#unchecked feral\n"
+        let msg := Lean.Json.mkObj [("jsonrpc", "2.0"), ("method", "textDocument/didChange"),
+          ("params", Lean.Json.mkObj [("textDocument", Lean.Json.mkObj [("uri", "file:///t.wiz"), ("version", (2 : Nat))]),
+            ("contentChanges", Lean.Json.arr #[Lean.Json.mkObj [("text", bad)]])])]
+        let (_, out) := LSP.handle srv msg
+        let diags := out.toList.flatMap fun j => match (j.getObjVal? "params" >>= (·.getObjVal? "diagnostics")).toOption with
+          | some (.arr ds) => ds.toList
+          | _ => []
+        check (diags.any fun d => LSP.getNat d ["range", "start", "line"] == 12 && has d "type mismatch")
+          s!"no type mismatch on line 13: {(Lean.Json.arr diags.toArray).compress}" },
     { name := "11w: the web infoview's files over HTTP on the WebSocket's port (fixed list, local origins)", run := fun _ => do
         let dir ← IO.FS.createTempDir
         IO.FS.writeFile (dir / "infoview.html") "<p>page</p>"

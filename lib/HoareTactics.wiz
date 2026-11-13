@@ -209,7 +209,7 @@ def Prog.next {V A : Type} : Prog V A → Prog V A
 -- goal again, so solved metavariables and β-redexes are taken care of by the elaborator.
 -- A tactic that fails says why and shows the goal it was looking at (`XT.failAt`).
 
-infixr:67 " ∷ " => List.cons
+local infixr:67 " ∷ " => List.cons
 
 def XT.c (n : String) : Expr := .const n
 def XT.mk (n : String) (args : List Expr) : Expr := Expr.mkApp (.const n) args

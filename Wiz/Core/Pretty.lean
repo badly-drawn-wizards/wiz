@@ -512,7 +512,8 @@ partial def printNode (env : Option (Globals R)) (names : List Name) (tys : List
     -- `.c f₁ … fₙ`: the payload ends with the index equation and `()`
     let fields := (tuple rest #[]).toList
     let fields := fields.take (fields.length - 2)
-    let c := txt s!".{ls[i]?.getD s!"#{i}"}"
+    -- (a `mutual` block's tag `A.c` is written `.c`, `ctorShort`)
+    let c := txt s!".{ctorShort (ls[i]?.getD s!"#{i}")}"
     if fields.isEmpty then pure c else app c fields
   | .con x => app (txt "con") [x]
   | .ind _ _ _ _ P m i x => app (txt "ind") [P, m, i, x]
@@ -524,6 +525,8 @@ partial def printNode (env : Option (Globals R)) (names : List Name) (tys : List
   -- Q4: the elaborator lifts small fields; `up`/`down` are invisible
   | .ulift _ A => app (txt "ULift") [A]
   | .up a | .down a => printNode env names tys prec a noUnexp
+  -- (P2) the proof marker is invisible too
+  | .prf _ a => printNode env names tys prec a noUnexp
   | .natOp op args => app (txt s!"<{op}>") args.toList
   | .transp _ _ P p _ e =>
     pure (paren (prec > 1022) (cat [txt "transp ", ← sub 1023 P, txt " ", ← sub 1023 p, txt " ", ← sub 1023 e]))
@@ -739,6 +742,12 @@ def Term.pretty (names : List Name := []) (t : Term R) (g : Option (Globals R) :
 def Term.ppIn (g : Globals R) (names : List Name) (t : Term R) : String := t.pretty names (some g)
 
 instance : ToString (Term R) := ⟨fun t => t.pretty []⟩
+
+/-- (24e) A goal's target as text after the goal's `⊢`: in parentheses when it shows a
+`⊢` of its own (a notation, such as separation logic's entailment), so that
+`⊢ (l ↦ 1 ⊢ l ↦ 2)` doesn't read as two turnstiles of one goal. -/
+def goalTarget (s : String) : String :=
+  if (s.splitOn "⊢").length > 1 then s!"({s})" else s
 
 /-- A printed term for a message, at most about `max` characters: a longer one keeps
 its beginning and its end, and says how much was left out. (A normal form can be huge:

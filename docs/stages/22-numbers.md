@@ -2,7 +2,7 @@
 
 Prerequisites shared by the HDL and Feral (decisions RD9, RD10/HD3).
 
-## 22a: division, powers and bits ✅
+## 22a: division, powers and bits
 
 The Prelude defines `Nat.div`, `Nat.mod`, `Nat.pow`, `Nat.land`, `Nat.lor`, `Nat.xor`,
 `Nat.shiftLeft`, `Nat.shiftRight`, `Nat.log2` (and `Nat.testBit`, `a / b`) by structural
@@ -14,7 +14,7 @@ natively (`def t : Nat.mod 300 256 = 44 := refl 44`), as do `#eval`, `#run`, C/L
 `Nat.mod n 0 = n` and `Nat.log2 0 = 0`. One table (`natNative?`, `Wiz/Core/Eval.lean`)
 serves the kernel and both interpreters.
 
-## 22b: `implemented_by` ✅
+## 22b: `implemented_by`
 
 `attribute [implemented_by g] f` gives a definition `f` a different implementation in
 compiled code: erasure (`compileReachable`) takes `g`'s code for `f`, while the kernel,
@@ -29,7 +29,7 @@ and return Wiz data types, passed as they are (marshalling kind `w`).
 Not yet: a *type* with a native representation (`Vec A` as an array, R0b), and the
 attribute in the self-hosted backend.
 
-## 22c: machine integers ✅
+## 22c: machine integers
 
 `import Word` (`lib/Word.wiz`): `UIntN w`, a w-bit unsigned integer, and `IntN w`, w-bit
 two's complement, both a number of bits below `2^w` (normalised by construction, so
@@ -58,7 +58,7 @@ arithmetic), `resize` (zero- or sign-extending, or truncating) and `toIntN`/`toU
   object holding a number (above `2^62`, a GMP number); unboxed words need the type-level
   `implemented_by` (22d).
 
-## 22d: native representations: unboxed words ✅
+## 22d: native representations: unboxed words
 
 `attribute [implemented_by mk get] T.mk` gives a type a **native representation** in
 compiled code. `T.mk` is a constructor with one runtime field (the others erased);
@@ -95,7 +95,7 @@ as the runtime number itself, possibly big). **A word is its bits**:
   boundaries, as Lean's `UInt64`): the next step, once a measurement says it pays.
 * **Self-hosted backend:** not yet (it runs the model; see the wishful note).
 
-## 22e: phantom parameters ✅
+## 22e: phantom parameters
 
 ```
 inductive UIntN (w : Nat) where
@@ -140,7 +140,7 @@ instead of `Unit`. That `Unit` is the end of the index type of an `inductive` or
 * A `def` alias (`def Mut (ρ : Region) (A : Type) : Type := A`) unfolds, so its
   parameters never count. Declare a `structure` instead.
 
-## 22f: the trusted base: witnesses and tracked registrations ✅
+## 22f: the trusted base: witnesses and tracked registrations
 
 Two ways to prove `False` without writing `axiom` are closed.
 
@@ -192,7 +192,7 @@ Two ways to prove `False` without writing `axiom` are closed.
   Tests: group *modules*, "trust is part of a module's cache key", "the toolchain's
   library is the first root …".
 
-## 22g: regions: borrow checking as typing ✅
+## 22g: regions: borrow checking as typing
 
 ```
 def longest {ρa ρb : Region} (0 h : Outlives ρa ρb) (x : Shr ρa U64) (y : Shr ρb U64) : Result (Shr ρb U64) :=
@@ -277,7 +277,7 @@ structurally and with no instance for `Σ (r : Region)` or `Π (r : Region)`. Ei
 the lowering only has to state each scope's result type (it does: the variables that
 live on after the borrow), and with the second it also has to request the instance.
 
-## 22h: one bit-vector family ✅
+## 22h: one bit-vector family
 
 `BitVec n` (`lib/BitVec.wiz`) and `UIntN n` (`lib/Word.wiz`) are one type:
 
@@ -311,7 +311,7 @@ def w (x : U32) : BitVec 32 := BitVec.add x (BitVec.ofNat 32 1)   -- no conversi
   a `structure` wrapper would instead need its own `implemented_by mk get` to avoid a box.
   (Since 22i a one-field `structure` is unboxed anyway.)
 
-## 22i: unboxed newtypes and `attribute [inline]` ✅
+## 22i: unboxed newtypes and `attribute [inline]`
 
 ```
 structure Uniq (ρ : Region) (A : Type) where
@@ -346,13 +346,25 @@ The region discipline of 22g used to cost at run time: every handle was a cell
   tail. `def first {A B : Type} (p : A × B) : A := p.1`, then `first (S.mk 5)`, reads
   field 0 of a number. So the default keeps pairs, and the unboxed layout is waiting for
   an encoding that carries it in something generic code also sees (a quantity:
-  `/workspace/wiz-notes/repr-shape.md`, option B). Group `repr`.
+  `wiz-notes/repr-shape.md`, option B). Group `repr`.
 * **`attribute [inline] f`** (`Inline.lean`) substitutes `f`'s erased body where `f` is
   applied to all its arguments, then simplifies: a redex `(λ x. b) a` becomes a `let`,
   and a `let` of a variable, of `◾`, or of a lambda used once (not under a lambda) is
   substituted, so a lambda argument lands in the head of an application and is reduced.
   `lib/Region.wiz` marks its scopes and `Uniq.set`/`Shr.weaken`. The kernel never sees
   the attribute; inlining a recursive definition stops after a few levels.
+
+* **Linear scopes (cohesion M4b).** Since `Uniq` is a linear one-constructor inductive,
+  a `match` on a handle is `T.casesOn1`, whose method takes the tag and then the fields.
+  Erasure now unfolds `casesOn1` and `casesOnA` calls as it does `casesOn`
+  (`unfoldCases?`), and `simpKnown` (`Inline.lean`, run on every definition) removes what
+  is left: a `case` on a known tag is its branch, `(case s bs) a` pushes `a` into the
+  branches, a redex is a `let`, and a lambda bound once is moved to its use (a
+  continuation such as `Uniq.end r (λ v. …)`). With `--unbox-structs`, a `Uniq.borrow`
+  scope around `push1` went from 15 objects and 8 lifted functions to 4 objects and none,
+  and two nested scopes from 29 and 23 to 6 and none (no scope: 3). What remains is the
+  handle's cell: `Uniq` is an inductive, which `--unbox-structs` doesn't unbox
+  (`/workspace/wiz-notes/linear-scope-cost.md`).
 
 Objects allocated on `#run`'s checked heap (`tests --allocs FILE ENTRY…`, a measuring
 mode of the test driver), before → after (the "unbox" columns are with `--unbox-structs`;
@@ -374,7 +386,7 @@ the same cells, by reuse); a recursive call through a scope's lambda is still no
 as structural (`05_bst` `insert` stays `partial`; wishful: reborrow-recursion has a
 design). The self-hosted toolchain doesn't have phantom tails at all yet.
 
-## 22j: Feral, the surface language ✅
+## 22j: Feral, the surface language
 
 ```
 import FeralCore
@@ -479,20 +491,37 @@ loops, `?`, `U64`, and functions that return borrows.
   `Syntax.sourceAt path text` (`Elab/ProcMacro.lean`, `pathInfo`): diagnostics at that
   node, and Wiz source parsed as commands and positioned there. Generated source that
   fails to check is reported at the node with its text.
+* **Positions inside generated source.** Generated text may mark which parts come from
+  which input node: U+E000 *path* U+E001 … U+E002 (`Elab/ProcMacro.lean`, `stripMarks`,
+  `locateMarked`). The command elaborator strips the marks (the text checked, shown by
+  `#lower` and in error reports is unchanged) and positions the parsed syntax: syntax
+  whose range is exactly a marked part gets the input node's range, syntax inside one
+  gets it as synthetic, the rest is synthetic at the item. Feral marks (`Fe.Out.at`) every
+  expression's value, the function a call names (operators too), `&`/`&mut` arguments,
+  and the names of functions, parameters, `let`s and named borrows. So inside a `feral`
+  block a hover shows the type of a variable, a call (its value, named by the call's
+  text, not by the lowering's `v_…`) or a `&mut` argument (its handle); go to definition
+  on a call goes to the `fn` item (what a generated command declares is declared at its
+  item); and a type error of the generated Wiz (say, of an `#unchecked` lowering) is at
+  the Feral expression it is about. Types are those of the lowering (`Uniq ρ (Vec U64)`,
+  `Result U64`); a method call on a variable (`r.push`) is one identifier, so it shows the
+  receiver.
 
 Specifications: a `spec f requires (P) ensures (Q)` item states `f.Spec`, a Wiz
 proposition over the arguments' values, `result`, `old x` and `final x` (an `&mut`
-argument's value when the borrow ends, its handed-back handle), with total correctness
-(`Result.Holds`), proved in Wiz; see [Resources in Wiz](../resources.md).
+argument's value when the borrow ends), with total correctness (`Result.Holds`), proved
+in Wiz. With linear handles a `&mut` argument enters as its value and the call runs
+inside the borrow scopes a caller would open, so the clauses are stated on the values the
+scopes hand back; see [Resources in Wiz](../resources.md).
 
 Limitations: the fragment (LOWERING.md §1a); loop invariants, `decreases` and `final result`
-(a returned borrow) in specs are not supported; `U64` and `Vec`
+(a returned borrow) in specs are not supported, nor (with linear handles) a spec for a
+function with an outlives bound or three or more `&mut` arguments; `U64` and `Vec`
 are the stand-ins of `drafts/feral/lib/FeralCore.wiz`; keywords such as `if` and `mut`
-are reserved in a file that imports `Feral`; errors inside generated code point at the
-whole item; one borrow error per function; stricter than rustc where a `&mut` would be
+are reserved only inside `feral … end` (13j), and only `feral` itself elsewhere; one borrow error per function; stricter than rustc where a `&mut` would be
 implicitly reborrowed at a shorter lifetime.
 
-## 22k: sealed types ✅
+## 22k: sealed types
 
 Types are structural (stage 4): two `inductive` declarations of the same shape are one
 type. For a type with a native representation (22d) that is wrong twice over: a
@@ -516,9 +545,9 @@ a type of its own:
 **The words.** `lib/Word.wiz` declares `sealed inductive UIntN` and `IntN` with
 `| private mk`: they are different types (`IntN.toUIntN`/`UIntN.toIntN` convert, natively
 the identity on the bits), so instance resolution needs no special rule to give `I32`
-signed and `U32` unsigned division (7e). Outside the module a word is built with `ofNat`
-or, by a caller that knows the value is below `2^w` but not `w` at runtime (`BitVec.mk`,
-used by `concat` and `ofVec`), with the unchecked `UIntN.ofBitsTrusted`.
+signed and `U32` unsigned division (7e). Outside the module a word is built with `ofNat`.
+(An unchecked builder for callers without the width at runtime, `UIntN.ofBitsTrusted`,
+was a hole of its own and is gone: 22l.)
 
 **Native representations are found by the seal.** `attribute [implemented_by mk get]
 T.mk` requires `sealed inductive T` and a private `T.mk` (an error otherwise). Erasure and readback look for a
@@ -552,3 +581,37 @@ Both frontends elaborate `sealed inductive` (the self-hosted one with the same a
 tail). Tests: groups `repr` (look-alikes, a native byte type in its own module
 interpreted and compiled, R5 and layer 1, the layer-3 refusals on hand-made kernel
 terms) and `selfhost` (the two frontends agree). Kernel rules: none, in either kernel.
+
+## 22l: words carry their range
+
+22k made the word constructors private so that `lib/Word.wiz` alone builds words and
+keeps `toNat < 2^w`, the invariant the natives rely on. But the module also exported an
+unchecked builder, `UIntN.ofBitsTrusted {0 w} (n : Nat) : UIntN w`, for `BitVec.concat`
+and `BitVec.ofVec`, whose width was erased: `UIntN.ofBitsTrusted 5 : UIntN 1` had
+`toNat = 5` in the kernel while compiled code computed on other bits
+(`wiz-notes/soundness-probes/a3-word-ofbitstrusted.wiz`), the out-of-range disagreement of
+R5 again, from any module.
+
+Now the invariant is a field: `| private mk (toNat : Nat) (0 isLt : Nat.lt toNat (2^w) =
+.true)`. The proof is erased, so a word is still just its bits at runtime (the native
+representation, 22d, counts runtime fields: still one), and `implemented_by` gives the
+native constructor the constructor's type (`UIntN.ofBits` takes the erased proof too).
+The kernel now checks the range of every word, so the module invariant of 22k is a
+theorem, available to users as `UIntN.toNat_lt` (and `IntN.toNat_lt`); `UIntN.ext`
+(same bits, same word: the proofs don't count) and `UIntN.cases1 : (x : UIntN 1) → x = 0
+∨ x = 1` follow.
+
+What the proofs cost, without a `Nat` lemma library: every word the module builds is
+either `ofNat` (reduced modulo `2^w`) or `below x b`, `x` clamped to a bound `b < 2^w`
+(`Word.min`, through the natively computed `Nat.lt`), with `x ≤ b` true in every use
+(`a / b`, `a % b`, `a &&& b` and `a >>> k` are at most `a`; `not a` and `ofNat`'s
+remainder at most `2^w - 1`), so the clamp never changes a value and the natives still
+agree with the definitions. Bitwise or and xor have no such bound from an argument, so
+`Word.lor_lt`/`Word.xor_lt` prove it bit by bit (halving both arguments, as
+`Nat.bitwise` does). `BitVec.concat` and `BitVec.ofVec` take their widths at runtime
+(`{ω m n}`; the HDL's `Hw.cat` already did) and go through `ofNat`, and `BitVec.mk` is
+`ofNat` with the width inferred. `IntN.min`/`IntN.max` are `ofNat` too (at width 0 they
+used to be out of range). The kernel compares erased fields like any other, so every word
+is built through one private constructor whose proof is canonical (`Word.canon`: for
+closed numbers it computes to `refl`), and two closed words with the same bits are equal
+by `rfl` however their range was proved. Groups `word`, `vec`.

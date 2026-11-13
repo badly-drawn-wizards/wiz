@@ -151,6 +151,17 @@ def hpure {V : Type} (P : Prop) : HProp V := fun h => P ∧ h = Heap.empty
 -- anything at all (SLF's `\GC`, the garbage collector's predicate)
 def htop {V : Type} : HProp V := fun h => True
 def hexists {V A : Type} (J : A → HProp V) : HProp V := fun h => ∃ a : A, J a h
+-- Notation (13o): `⌜P⌝` is `hpure P` (SLF's `\[P]`, Iris's `⌜P⌝`), `∃ʰ x, H` and
+-- `∃ʰ (x : A), H` are `hexists (fun x => H)` (SLF's `\exists`); both print that way.
+notation:max "⌜" P "⌝" => hpure P
+syntax:lead (name := hex) "∃ʰ " ident "," term : term
+syntax:lead (name := hexTyped) "∃ʰ " "(" ident ":" term ")" "," term : term
+macro_rules
+  | `(term| ∃ʰ $x, $b) => `(term| hexists (fun $x => $b))
+macro_rules
+  | `(term| ∃ʰ ($x : $A), $b) => `(term| hexists (fun ($x : $A) => $b))
+app_unexpander hexists
+  | `(term| $f (fun $x => $b)) => `(term| ∃ʰ $x, $b)
 def hforall {V A : Type} (J : A → HProp V) : HProp V := fun h => (a : A) → J a h
 -- the separating conjunction: the heap splits into two disjoint parts
 def StarAt {V : Type} (H₁ H₂ : HProp V) (h h₁ h₂ : Heap V) : Prop :=

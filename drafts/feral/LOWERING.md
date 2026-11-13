@@ -14,7 +14,7 @@ Files:
 
 | path | what | checks? |
 |---|---|---|
-| `lib/Optic.wiz` | `Result`/`Error` (RD7), `Store`, `Lens`, `PLens`, `Affine`, `zoom`, `TraverseMut`, laws, proofs | yes, tested (`lake test -- optic`) |
+| `lib/Result.wiz`, `lib/Optic.wiz` | `Result`/`Error` (RD7, lib/Result.wiz), `Store`, `Lens`, `PLens`, `Affine`, `zoom`, `TraverseMut`, laws, proofs | yes, tested (`lake test -- optic`) |
 | `lib/Region.wiz` | regions, `Outlives`, the handles `Shr`/`Uniq`/`Mut`/`MutOpt`/`Lent` (structures: the region is part of the type) and the borrow scopes | yes, tested (`lake test -- regions`) |
 | `drafts/feral/lib/FeralCore.wiz` | `Flow`, Nat-backed `U64` and List-backed `Vec` stand-ins | yes (stand-ins for agent/natives-ints and agent/vec-lib) |
 | `lib/Feral.wiz` | the front end: grammar, a checker whose types carry regions, the lowering | yes, tested (`lake test -- '=feral'`) |
@@ -104,7 +104,7 @@ end
 
 ## 2. Lowering rules
 
-Notation: `⟦e⟧` the lowering; `R A` is `Result A` (lib/Optic.wiz).
+Notation: `⟦e⟧` the lowering; `R A` is `Result A` (lib/Result.wiz).
 
 **L1. Items and generics.** `fn f {'a} {T : Type} [C T] (xs…) : Ret` ↦
 `def f {ρ : Region} {T : Type} [C T] (xs…) : R (…)`: region parameters first (implicit,
@@ -294,7 +294,11 @@ released (03, 08).
 P → Result.All (fun r => Q[result := …, old(x) := x, final(x) := …]) (f args)`; for a
 returned borrow `r : Mut ρ A S`, `*result` is `r.1`, `final(result)` is a universally
 quantified `fin`, and `final(v)` is `r.2 fin` (03: `get_mut.spec`, proved as
-`get_mut.spec_holds`). No prophecy axioms.
+`get_mut.spec_holds`). No prophecy axioms. With linear handles (M4b) the spec is
+stated on values: `f.Spec` takes each `&mut` argument's value, runs the call inside the
+caller's borrow scopes (`Uniq.borrow`/`borrowIn`), and `Result.Holds` states the clauses
+on the values the scopes hand back (`old(x)` is the argument, `final(x)` the lender's
+final value).
 
 **L19. Interop (RD16).** Wiz calls lowered functions as they are (`R`, handed-back
 tuples, backward closures); `Result.map`, `Result.show`, `Mut.release`, `MutOpt.over`

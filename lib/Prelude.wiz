@@ -75,8 +75,8 @@ inductive String where
   | mk (data : List Char)
 def String.append : String → String → String
   | .mk xs, .mk ys => .mk (List.append xs ys)
--- `x |> f` is `f x` (stage 13)
-def pipe {A B : Type} (a : A) (f : A → B) : B := f a
+-- `x |> f` is `f x` (stage 13), at any universe (proofs too: `h |> Eq.symm`)
+def pipe.{u, v} {A : Sort u} {B : Sort v} (a : A) (f : A → B) : B := f a
 infixl:10 " |> " => pipe
 
 -- Syntax trees, as one indexed family (descriptions have no nested inductives yet):
@@ -207,12 +207,57 @@ instance : Sub Nat := Sub.mk Nat.sub
 instance : Mul Nat := Mul.mk Nat.mul
 instance : Div Nat := Div.mk Nat.div
 instance : Mod Nat := Mod.mk Nat.mod
-instance {ω n : Nat} : OfNat Nat n := OfNat.mk n
-infixl:65 " + " => Add.add
-infixl:65 " - " => Sub.sub
-infixl:70 " * " => Mul.mul
-infixl:70 " / " => Div.div
-infixl:70 " % " => Mod.mod
+instance instOfNatNat {ω n : Nat} : OfNat Nat n := OfNat.mk n
+-- Heterogeneous operators (7f), as in Lean: `a + b` is `HAdd.hAdd a b` at an instance
+-- `HAdd A B C` (the result type `C` is an output), and the default instance `instHAdd`
+-- makes it `Add.add` when nothing else decides (`x + 1`: `HAdd A A A`). A numeral's type is
+-- decided by what it meets; one that meets nothing is a `Nat` (the default instance
+-- `instOfNatNat`, at a lower priority, so `instHAdd` decides first). The operators are
+-- `binop`s: a numeral operand takes the type of the other operand (`x + 1`, `1 + x` at
+-- `x : U8`) or of the result, without waiting for a default. `^` is not one: `x ^ 2` has a
+-- `Nat` exponent (`Pow A Nat`). At `Nat`, `a + b` unfolds to `Add.add a b` and on to
+-- `Nat.add a b`, so it computes natively, and compiled code is the native `nat.add`.
+def outParam.{u} (A : Sort u) : Sort u := A
+class HAdd (A B : Type) (C : outParam Type) where
+  hAdd : A → B → C
+class HSub (A B : Type) (C : outParam Type) where
+  hSub : A → B → C
+class HMul (A B : Type) (C : outParam Type) where
+  hMul : A → B → C
+class HDiv (A B : Type) (C : outParam Type) where
+  hDiv : A → B → C
+class HMod (A B : Type) (C : outParam Type) where
+  hMod : A → B → C
+class HPow (A B : Type) (C : outParam Type) where
+  hPow : A → B → C
+class Pow (A B : Type) where
+  pow : A → B → A
+instance instHAdd {A : Type} [Add A] : HAdd A A A := HAdd.mk Add.add
+instance instHSub {A : Type} [Sub A] : HSub A A A := HSub.mk Sub.sub
+instance instHMul {A : Type} [Mul A] : HMul A A A := HMul.mk Mul.mul
+instance instHDiv {A : Type} [Div A] : HDiv A A A := HDiv.mk Div.div
+instance instHMod {A : Type} [Mod A] : HMod A A A := HMod.mk Mod.mod
+instance instHPow {A B : Type} [Pow A B] : HPow A B A := HPow.mk Pow.pow
+instance instPowNat : Pow Nat Nat := Pow.mk Nat.pow
+attribute [default_instance] instHAdd
+attribute [default_instance] instHSub
+attribute [default_instance] instHMul
+attribute [default_instance] instHDiv
+attribute [default_instance] instHMod
+attribute [default_instance] instHPow
+attribute [default_instance 100] instOfNatNat
+attribute [binop] HAdd.hAdd
+attribute [binop] HSub.hSub
+attribute [binop] HMul.hMul
+attribute [binop] HDiv.hDiv
+attribute [binop] HMod.hMod
+infixl:65 " + " => HAdd.hAdd
+infixl:65 " - " => HSub.hSub
+infixl:70 " * " => HMul.hMul
+infixl:70 " / " => HDiv.hDiv
+infixl:70 " % " => HMod.hMod
+-- (`T^s` without spaces is a sized type, stage 12)
+infixr:75 " ^ " => HPow.hPow
 syntax:75 (name := neg) "-" term:75 : term
 macro_rules
   | `(term| - $x) => `(term| Neg.neg $x)
@@ -241,8 +286,18 @@ instance : ShiftRight Nat := ShiftRight.mk Nat.shiftRight
 infixl:55 " ||| " => OrOp.or
 infixl:58 " ^^^ " => XorOp.xor
 infixl:60 " &&& " => AndOp.and
-infixl:75 " <<< " => ShiftLeft.shiftLeft
-infixl:75 " >>> " => ShiftRight.shiftRight
+-- The notation takes the amount at any type `B` (Lean's `HShiftLeft A B C`, the result
+-- type `C` an output): `ShiftLeft A` gives `HShiftLeft A Nat A`, and
+-- an HDL signal also shifts by a signal (H14 S4). A numeral amount is a `Nat` (the
+-- default type of a numeral).
+class HShiftLeft (A B : Type) (C : outParam Type) where
+  hShiftLeft : A → B → C
+class HShiftRight (A B : Type) (C : outParam Type) where
+  hShiftRight : A → B → C
+instance {A : Type} [ShiftLeft A] : HShiftLeft A Nat A := HShiftLeft.mk ShiftLeft.shiftLeft
+instance {A : Type} [ShiftRight A] : HShiftRight A Nat A := HShiftRight.mk ShiftRight.shiftRight
+infixl:75 " <<< " => HShiftLeft.hShiftLeft
+infixl:75 " >>> " => HShiftRight.hShiftRight
 notation:max "~~~" a:max => Complement.complement a
 -- (end of the numeric classes)
 
@@ -317,6 +372,15 @@ inductive IndView where
   | mk (name : String) (levelParams : List String) (params : List ParamView)
        (indices : List ParamView) (ctors : List CtorView) (isStructure : Bool)
 
+-- (stage 28b) What the SAT solver said about a CNF (`Tac.satSolve`): a refutation as
+-- LRAT steps `(id, clause, hints)` (deletions dropped), a model (the literals that are
+-- true), or why there is no answer. Literals are numbers: `2 v` is variable `v`, `2 v + 1`
+-- its negation. Untrusted: `sat_decide` checks the refutation in the kernel.
+inductive SatAnswer where
+  | unsat (proof : List (Nat × List Nat × List Nat))
+  | sat (model : List Nat)
+  | error (msg : String)
+
 -- Requests to the elaborator, each with what to do with the answer: a free monad (its
 -- continuations are infinitary fields). The elaborator interprets them; the order of
 -- the constructors is fixed (`Elab/Tactic.lean`).
@@ -362,6 +426,21 @@ inductive Tac where
   -- is `n` a definition (something `unfold` can unfold: not a constructor, an axiom, …)?
   -- `none` if there is no constant `n`
   | isDefinition (n : String) (k : Option Bool → Tac)
+  -- solvers (stage 28b): ask the SAT solver about a CNF over variables `0 … nvars-1`
+  -- (untrusted: `sat_decide` checks the proof); look inside an equation (an opaque handle
+  -- `a = b` at `A`: `(A, a, b)`); (28a) close goal `g` on an SMT solver's word (trusted:
+  -- --trust-smt; it fails with a counterexample otherwise)
+  | satSolve (nvars : Nat) (clauses : List (List Nat)) (k : SatAnswer → Tac)
+  | eqView (g : Nat) (e : Expr) (k : Option (Expr × Expr × Expr) → Tac)
+  | smt (g : Nat) (next : Tac)
+  -- (28c) a definition `val : ty` in goal `g`'s context, added before the definition being
+  -- elaborated (checked by the kernel; not an axiom), and the term that uses it: a big
+  -- value a proof mentions many times is then one constant
+  | define (g : Nat) (ty : Expr) (val : Expr) (k : Expr → Tac)
+  -- (28c) `assign`, without the kernel's check of the term now: for a term that is only
+  -- checked by the kernel anyway, with the declaration (a big proof checked twice costs
+  -- twice). Errors in it then show at the end of the declaration.
+  | assignLate (g : Nat) (e : Expr) (next : Tac)
 
 -- The metaprogramming monad: requests in continuation-passing style, so `bind` is just
 -- composition. Macros and tactics both use it.
@@ -423,12 +502,16 @@ def TacticM.ctorInfo (n : String) : TacticM (Option (String × Nat × Nat)) := f
 -- or an axiom: for those `unfold` returns the term unchanged)? `none` if there is no
 -- constant `n`.
 def TacticM.isDefinition (n : String) : TacticM (Option Bool) := fun k => Tac.isDefinition n k
+def TacticM.smt (g : Nat) : TacticM Unit := fun k => Tac.smt g (k ())
+def TacticM.satSolve (nvars : Nat) (clauses : List (List Nat)) : TacticM SatAnswer := fun k => Tac.satSolve nvars clauses k
+def TacticM.eqView (g : Nat) (e : Expr) : TacticM (Option (Expr × Expr × Expr)) := fun k => Tac.eqView g e k
+def TacticM.define (g : Nat) (ty val : Expr) : TacticM Expr := fun k => Tac.define g ty val k
+def TacticM.assignLate (g : Nat) (e : Expr) : TacticM Unit := fun k => Tac.assignLate g e (k ())
 def TacticM.tryCatch (t : TacticM Unit) (h : String → TacticM Unit) : TacticM Unit :=
   fun k => Tac.catch (TacticM.run t) (fun e => TacticM.run (h e)) (k ())
 
--- Type classes (stage 7). `outParam` marks a class parameter that instance resolution
--- determines (it is the identity).
-def outParam.{u} (A : Sort u) : Sort u := A
+-- Type classes (stage 7). `outParam` (defined with the numeric classes, above) marks a
+-- class parameter that instance resolution determines (it is the identity).
 
 class Monad (m : Type → Type) where
   pure : {A : Type} → A → m A
@@ -684,6 +767,16 @@ def Tactic.trace : Tactic := fun stx => match Syntax.getArg (Syntax.getArg stx 1
   | _ => TacticM.pure ()
 attribute [tactic tactic.trace] Tactic.trace
 
+-- `smt` (stage 28a): close the goal by an SMT solver, trusted: only with --trust-smt,
+-- and the proof is an axiom `X.smt✝N` (the goal over its context) that `#print axioms`
+-- lists. A goal the solver refutes fails with the counterexample. lib/ never uses it.
+syntax (name := smt) "smt" : tactic
+def Tactic.smt : Tactic := fun _ => do
+  g ← TacticM.mainGoal;
+  TacticM.smt g;
+  TacticM.replaceMainGoal .nil
+attribute [tactic tactic.smt] Tactic.smt
+
 -- `trace_state`: the open goals, as an info message (as `trace`, at the tactic)
 def TacticM.ppGoals : List Nat → TacticM String
   | .nil => TacticM.pure "no goals"
@@ -920,7 +1013,13 @@ class Append (A : Type) where
   append : A → A → A
 instance {A : Type} : Append (List A) := Append.mk List.append
 instance : Append String := Append.mk String.append
-infixr:67 " ++ " => Append.append
+-- heterogeneous, as the numeric operators (7f): `HAppend A B C`, `HAppend A A A` by default
+class HAppend (A B : Type) (C : outParam Type) where
+  hAppend : A → B → C
+instance instHAppend {A : Type} [Append A] : HAppend A A A := HAppend.mk Append.append
+attribute [default_instance] instHAppend
+attribute [binop] HAppend.hAppend
+infixr:67 " ++ " => HAppend.hAppend
 -- `[a, b, c]` is `List.cons a (List.cons b (List.cons c List.nil))` and `[]` is
 -- `List.nil`, in terms and in patterns. Instance binders (`[Monad m] → …`) still parse:
 -- a dependent arrow is longer than a list literal followed by an arrow.

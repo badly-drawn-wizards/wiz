@@ -321,6 +321,8 @@ def elabInductive (cmd : Syntax) (levelParams : List Name) : ElabM R (List (Decl
   let mut ctorLevels : List (List (Option Level × Option Level)) := []
   for c in ctors do
     let cname := ((c.child "name").getId?).getD "_"
+    if names.contains cname then
+      throwAt (c.child "name").info s!"the constructor {cname} is declared twice in {T}" ErrorCode.duplicateConstructor
     let (ctxF, fs) ← elabTelescope ctxT ((c.child "binders").args.flatMap binderViews).toList
     let n := fs.size
     let target ← match (c.child "sig").args[1]? with
@@ -399,7 +401,7 @@ def elabInductive (cmd : Syntax) (levelParams : List Name) : ElabM R (List (Decl
     let payload := Term.pair tag
       (fieldVals.foldr .pair (.pair (.refl (I.lift n) (tupleWith (tailV.lift n) js')) .tt))
     let d : Decl R :=
-      { name := T ++ "." ++ cname, levelParams := levelParams,
+      { name := ctorConst T cname, levelParams := levelParams,
         type := pisTm implicitΔ (pisTm fsTy resTy),
         value := some (lamsTm ΔNames (lamsTm (fs.map (·.1)) (.con payload))), inline := true }
     ctorDecls := ctorDecls ++ [d]

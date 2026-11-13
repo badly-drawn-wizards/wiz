@@ -20,6 +20,30 @@ instance : Monad IO where
 instance : Monad1 IO where
   bind1 := IO.bind
 
+-- `IO1 A`: an action whose result is used once (cohesion M6 part 2), for actions that hand
+-- back a linear value (a token, a handle) in direct style instead of to a continuation.
+-- `IO A`'s result is unrestricted, so a linear value can't come out of it; this one's can.
+-- Additive: `IO` is unchanged, and unifying the two is a later design question
+-- (/workspace/wiz-notes/cohesion-resources.md §10). In `do1`, `x ⇐ e;` binds the
+-- result of an `IO1` action at quantity 1 and goes on in `IO` (`(x, y) ⇐ e;` takes a
+-- pair apart).
+def IO1 (A : Type) : Type := (1 w : World) → (1 _ : A) × World
+def IO1.pure {A : Type} (1 a : A) : IO1 A := fun w => (a, w)
+def IO1.bind {A B : Type} (1 x : IO1 A) (1 f : (1 a : A) → IO1 B) : IO1 B := fun w =>
+  let 1 (a, w') := x w; f a w'
+-- run an `IO1` action and go on in `IO` with its (linear) result
+def IO1.bindIO {A B : Type} (1 x : IO1 A) (1 f : (1 a : A) → IO B) : IO B := fun w =>
+  let 1 (a, w') := x w; f a w'
+-- an `IO` action as an `IO1` one (its result is unrestricted, so it may be used once)
+def IO.toIO1 {A : Type} (1 x : IO A) : IO1 A := fun w =>
+  let 1 (a, w') := x w; (a, w')
+syntax (name := bindL) ident "⇐" term ";" doSeq : doSeq
+syntax (name := bindLP) "(" ident "," ident ")" "⇐" term ";" doSeq : doSeq
+macro_rules
+  | `(term| do1 $x ⇐ $e; $rest) => `(term| IO1.bindIO $e (fun $x => do1 $rest))
+macro_rules
+  | `(term| do1 ($x, $y) ⇐ $e; $rest) => `(term| IO1.bindIO $e (fun p1_ => let 1 ($x, $y) := p1_; do1 $rest))
+
 -- Machine types: opaque to the kernel, native at runtime (through the FFI).
 axiom UInt64 : Type
 extern "wiz_u64_id" UInt64.ofNat : Nat → UInt64
@@ -55,7 +79,19 @@ instance : Sub Float64 := Sub.mk Float64.sub
 instance : Mul Float64 := Mul.mk Float64.mul
 instance : Div Float64 := Div.mk Float64.div
 
-extern "wiz_nat_show" Nat.toString : Nat → String
+-- (the foreign function takes a C integer: below 2^64)
+extern "wiz_nat_show" Nat.toStringSmall : Nat → String
+def Nat.zeros : Nat → List Char
+  | .zero => .nil
+  | .succ k => .cons (Char.mk 48) (Nat.zeros k)
+-- `s` with zeros in front, to 18 digits
+def Nat.pad18 (s : String) : String := match s with
+  | .mk cs => .mk (List.append (Nat.zeros (Nat.sub 18 (List.length cs))) cs)
+-- `n` in decimal, of any size: 18 digits at a time by the foreign function
+partial def Nat.toString (n : Nat) : String := match Nat.lt n 1000000000000000000 with
+  | .true => Nat.toStringSmall n
+  | .false => String.append (Nat.toString (Nat.div n 1000000000000000000))
+      (Nat.pad18 (Nat.toStringSmall (Nat.mod n 1000000000000000000)))
 
 -- Output.
 extern "wiz_io_println" IO.println : String → IO Unit

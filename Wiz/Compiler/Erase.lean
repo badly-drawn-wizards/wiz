@@ -316,6 +316,45 @@ def unboxedSigma (g : Globals R) (lvl : Nat) (ty : VTy R) : Bool :=
   | .sigma _ _ _ B _ => erasedFunTy g (Closure.inst g B (.var lvl)) (lvl + 1)
   | _ => false
 
+/-- (linear-case stage 2) Does a value of this type carry nothing at run time: `erasable`
+(the predicate erasure itself uses, so the two can't drift), `Unit`, or a `Σ` of such
+(a structure with only contentless fields), after `whnf` (so a named `def Tk := Unit`
+counts)? -/
+partial def contentless (ctx : Ctx R) (ty : VTy R) : Bool :=
+  erasable ctx ty ||
+  match whnf ty with
+  | .unit _ => true
+  | .sigma x _ A B _ => contentless ctx A && contentless (ctx.bind x [] A) (Closure.inst ctx.globals B (.var ctx.lvl))
+  | _ => false
+
+/-- (linear-case stage 2) Is the result of the function type `ty` (under its Πs)
+contentless, or is a prefix of it already erasable? `extern` and `implemented_by` refuse
+such a type: an effect behind it would be dropped by erasure. (`IO A` is a Π over the
+linear `World` into `A × World`, which is never contentless.) -/
+partial def resultContentless (g : Globals R) (ty : VTy R) : Bool :=
+  go { globals := g } ty 1000
+where
+  go (ctx : Ctx R) (ty : VTy R) : Nat → Bool
+    | 0 => false
+    | fuel + 1 =>
+      if contentless ctx ty then true else
+      match whnf ty with
+      | .pi x _ _ A B _ => go (ctx.bind x [] A) (Closure.inst ctx.globals B (.var ctx.lvl)) fuel
+      | _ => false
+
+/-- Is the result of the function type `ty` (under its Πs) a proposition? Then an
+`implemented_by` for it is allowed: the implementation is ordinary Wiz code, a proof,
+erased like the definition, so no effect can be lost (externs still refuse it). -/
+partial def resultProp (g : Globals R) (ty : VTy R) : Bool :=
+  go { globals := g } ty 1000
+where
+  go (ctx : Ctx R) (ty : VTy R) : Nat → Bool
+    | 0 => false
+    | fuel + 1 =>
+      match whnf ty with
+      | .pi x _ _ A B _ => go (ctx.bind x [] A) (Closure.inst ctx.globals B (.var ctx.lvl)) fuel
+      | ty => isProp ctx.globals ctx.tys ty
+
 /-- (linear-case stage 2, defence in depth) Is `t` an application of a foreign function
 (`extern`)? Its call is kept even where its type is erasable: an effect never hides in a
 value that erasure drops. (`extern` itself refuses a pure `Unit` result; this covers a
@@ -325,12 +364,14 @@ def externCall (g : Globals R) (t : Term R) : Bool :=
   | .const n _ => g.builtins.any fun (k, x) => x == n && k.startsWith "extern:"
   | _ => false
 
-/-- A call of a generated `T.casesOn`, unfolded and beta-reduced: as a function, its
+/-- A call of a generated `T.casesOn` (or `casesOn1`, `casesOnA`), unfolded and beta-reduced: as a function, its
 arguments (the branches) would all be computed before the call; unfolded, they sit in
 the branches of a `case` and only the one taken runs. -/
 def unfoldCases? (g : Globals R) (t : Term R) : Option (Term R) := do
   let (.const n us, args) := t.spine | none
-  unless n.endsWith ".casesOn" do none
+  -- (also the linear `T.casesOn1` and the additive `T.casesOnA`: a `match` on a linear
+  -- handle, `Uniq`, `Result1`, is otherwise a call with its branches as closures)
+  unless n.endsWith ".casesOn" || n.endsWith ".casesOn1" || n.endsWith ".casesOnA" do none
   let d ← g.find? n
   let v ← d.value
   -- the arguments are annotated with their types, so that the kernel can still infer
@@ -345,7 +386,8 @@ def unfoldCases? (g : Globals R) (t : Term R) : Option (Term R) := do
   let rec arity : Term R → Nat
     | .lam _ b => arity b + 1
     | _ => 0
-  let v := v.instLevels d.levelParams us
+  -- (P2: without the markers of the level-generic eliminator, which mark nothing here)
+  let v := (v.instLevels d.levelParams us).stripMarks
   let k := arity v
   if args.length < k then none
   let b ← beta v (d.type.instLevels d.levelParams us) (args.take k)
@@ -589,6 +631,8 @@ partial def eraseCheck (ctx : Ctx R) (t : Term R) (ty : VTy R) (inDesc : Bool :=
     return .erased
   -- (given) Q4: `ULift` has no runtime content: `up a` is `a`
   if let (.up a, .ulift _ A) := (t, whnf ty) then return ← eraseCheck ctx a A
+  -- (given) P2: a marked proof is erased; another marker is transparent
+  if let .prf l x := t then return ← (if l.isZero then pure .erased else eraseCheck ctx x ty)
   --<sol
   let g := ctx.globals
   match t, whnf ty with
@@ -683,6 +727,9 @@ partial def eraseCheck (ctx : Ctx R) (t : Term R) (ty : VTy R) (inDesc : Bool :=
   `sfix` becomes a `fix`, and `scase` applies its method to the payload. -/
 partial def eraseInfer (ctx : Ctx R) (t : Term R) (known : Option (VTy R) := none) (inDesc : Bool := false) :
     TCM (ETerm × VTy R) := do
+  -- (given) P2: a marker that is not a proof's is transparent
+  if let .prf l x := t then
+    if !l.isZero then return ← eraseInfer ctx x known inDesc
   -- (`known`: the type, when the caller has it. Otherwise `quickType`, which off the
   -- elimination spine asks the kernel's `infer`: that checks the whole term again, once
   -- per enclosing node, quadratic in the depth of a `match`'s tree of `split`s)
@@ -986,12 +1033,15 @@ where
 def eraseDecl (g : Globals R) (d : Decl R) : TCM ETerm := do
   -- the compiler's version (direct recursion), if the elaborator made one
   let some v := d.impl <|> d.value | return .prim .unreachable #[]
-  -- (the kernel has checked it, like the value: `checkImpl`, `addPartialImpl`)
+  -- (the kernel has checked it, like the value: `checkImpl`, `addPartialImpl`; it has
+  -- accepted the term: nothing to require of its markers, `proof`)
   -- (`module`: the declaration's own, for `nativeHome?`)
-  let ctx : Ctx R := { globals := { g with module := (g.declModule[d.name]?).getD "" } }
+  let ctx : Ctx R := { globals := { g with module := (g.declModule[d.name]?).getD "" }, proof := true }
   -- compiled equations (derived from the value, `deriveImpl`): the calls a nested split
   -- reverted go into its branches, and a constructor rebuilt from a branch's fields is the
-  -- scrutinee (`Push`), if the result checks (else the step before, else the impl as is)
+  -- scrutinee (`Push`), if the result type-checks (else the step before, else the impl as
+  -- is). Not checked to agree with the impl: equal by construction, trusted like erasure,
+  -- as is the substitution of call closures afterwards (`ETerm.inlineCalls`)
   let derived := g.pushCalls && d.impl.isSome && d.value.isSome && Push.mentions d.name v
   let v := if derived then
       let ok (t : Term R) : Bool := (check ctx t (ctx.eval d.type)) matches .ok _
@@ -1004,7 +1054,8 @@ def eraseDecl (g : Globals R) (d : Decl R) : TCM ETerm := do
   -- universe polymorphism has no runtime content, but `Sort 0` would make motives
   -- propositions (and everything erasable): erase the `Type` instance
   let us := d.levelParams.map fun _ => Level.succ .zero
-  let e ← eraseTop ctx (v.instLevels d.levelParams us) (ctx.eval (d.type.instLevels d.levelParams us)) (isNuDesc g d)
+  -- (P2: the markers of level-generic terms mark nothing at this instance)
+  let e ← eraseTop ctx (v.instLevels d.levelParams us).stripMarks (ctx.eval (d.type.instLevels d.levelParams us)) (isNuDesc g d)
   return if derived then e.inlineCalls d.name else e
 
 end Wiz

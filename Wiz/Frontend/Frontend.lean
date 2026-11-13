@@ -81,7 +81,12 @@ partial def isoKey (base : CommandState R) (m : Name) : Option UInt64 := do
   unless g.decls.isEmpty && g.privates.isEmpty && g.opaques.isEmpty && g.declModule.isEmpty do none
   let ppKeys (m : List Name) : List Name := m.mergeSort (fun a b => decide (a ≤ b))
   let settings := hash (base.termInfo, base.nextScope, g.eager, g.predicativeProp, toString (repr g.regularity),
-    toString (repr g.inertReg), g.builtins, g.unboxStructs, g.lazyProofs)
+    toString (repr g.inertReg), g.builtins, g.unboxStructs, g.lazyProofs,
+    -- (P2) the marker's requirement and the read-back budget decide what a module's
+    -- proofs elaborate to and what it reports
+    g.strictProofs, g.proofSteps, g.traceProofSteps,
+    -- (27a) and whether `native_refl` may run, and how far
+    base.trustNative, base.nativeFuel)
   let settings := mixHash settings (hash (g.assumed, g.quoteErasesProofs, g.pushCalls, g.strictPrivacy, g.module,
     g.pp.useNotation, ppKeys (g.pp.unexpanders.toList.map (·.1)), ppKeys (g.pp.formats.toList.map (·.1))))
   let (k, _) ← go [] m {}
@@ -229,11 +234,11 @@ where
       if cmd.isOfKind "command.import" then
         let m := ((cmd.getArg 1).getId?).getD "_"
         if s.imported.contains m then go' input base chars stop s memo else
-        let err (text : String) : CommandState R :=
-          { s with messages := s.messages.push { info := cmd.info, severity := .error, text } }
+        let err (text code : String) : CommandState R :=
+          { s with messages := s.messages.push { info := cmd.info, severity := .error, text, code } }
         match s.loader m, s.checked.get? m with
-        | none, _ => go' input base chars stop (err s!"unknown module {m}") memo
-        | some _, some none => go' input base chars stop (err s!"import cycle through {m}") memo
+        | none, _ => go' input base chars stop (err s!"unknown module {m}" ErrorCode.unknownModule) memo
+        | some _, some none => go' input base chars stop (err s!"import cycle through {m}" ErrorCode.importCycle) memo
         | some src, done =>
           let srcChars := src.toList.toArray
           -- in isolation (unless already done in this run)
@@ -264,8 +269,8 @@ where
           -- (a declaration this file already has is reported as it is, at the import)
           let msg : Msg := match errs.find? (·.code == "duplicate-declaration") with
             | some d => { info := cmd.info, severity := .error, text := d.text, code := d.code }
-            | none => { info := cmd.info, severity := .error,
-                        text := s!"module {m} has errors: {errs.toList.map (·.render src)}" }
+            | none => { info := cmd.info, severity := .error, code := ErrorCode.moduleErrors,
+                        text := importErrorsText m src errs }
           let msgs := if errs.isEmpty then s.messages else s.messages.push msg
           -- (a module's warnings, such as an unchecked `builtin`, are shown at the import)
           let msgs := msgs ++ (inner.messages.filter (·.severity == .warning)).map fun w =>
@@ -276,10 +281,12 @@ where
           go' input base chars stop { (inner.endModule s) with messages := msgs, module := s.module, infos } memo
       else go' input base chars stop (step chars cmd s) memo
     | .error e =>
+      -- (13o) a keyword where a name was expected: which notation, from which module
+      let e := e.explainKeywords s.tables (fun k => (s.kindSites[k]?).map (·.2))
       let msg := (e.render input).splitOn ": " |>.drop 1 |> ": ".intercalate
       go' input base chars (recoverPos chars (skipWs chars pos))
         { s with messages := s.messages.push { info := { start := e.pos, stop := e.pos },
-                                                severity := .error, text := msg } } memo
+                                                severity := .error, text := msg, code := ErrorCode.parseError } } memo
 
   /-- Elaborate one command, recording where the declarations it adds come from, and
   (11s) what they are and their doc comments. -/
@@ -289,7 +296,8 @@ where
     let s := if s.termInfo then { s with infos := s.infos ++ syntaxRefs s cmd } else s
     let s' := ((elabCommand cmd).run { s with pristine := false }).2
     let added := s'.globals.order.extract before s'.globals.order.size
-    { s' with declSites := added.foldl (fun m n => m.insert n (cmd.info, s.module)) s'.declSites,
+    -- (a command macro's located output may have placed them already: keep that)
+    { s' with declSites := added.foldl (fun m n => if m.contains n then m else m.insert n (cmd.info, s.module)) s'.declSites,
               declDocs := if added.isEmpty then s'.declDocs else declDocsOf chars cmd added s'.declDocs }
 
 end Wiz

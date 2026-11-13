@@ -166,3 +166,11 @@ def Bool.cases (b : Bool) : b = .true ∨ b = .false := match b with
 -- `.true = .false` computes to a Σ whose first component is `False`; `absurd` checks its
 -- argument erased, so it may project that (erased) field
 def Bool.trueNeFalse : ¬ Bool.true = Bool.false := fun e => absurd e.1
+/-- The left conjunct of a true `Bool.and`. -/
+def Bool.and_left : (a b : Bool) → Bool.and a b = .true → a = .true
+  | .true, _, _ => rfl
+  | .false, _, h => absurd h.1
+/-- The right conjunct of a true `Bool.and`. -/
+def Bool.and_right : (a b : Bool) → Bool.and a b = .true → b = .true
+  | .true, _, h => h
+  | .false, _, h => absurd h.1
