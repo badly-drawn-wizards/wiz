@@ -122,6 +122,11 @@ inductive Tm where
   | ulift (l : Nat) (A : Tm)
   | up (a : Tm)
   | down (t : Tm)
+  -- (P2) the proof marker (`Term.prf` in the Lean kernel): `prf l t : T` for `t : T`, where
+  -- `l` must be the sort of `T` (`infer` checks it). When `l` is `0`, `t` is a proof: `eval`
+  -- suspends it and never looks at it. Outside a proof, `infer` and `check` require every
+  -- term whose sort may be `0` to be marked or neutral-shaped ("the proof marker", below).
+  | prf (l : Lvl) (t : Tm)
 inductive Tms where
   | tnil
   | tcons (t : Tm) (rest : Tms)
@@ -196,9 +201,10 @@ inductive Head where
   | hrefl (A a : Val)
   | hreflTy (X : Val)
   | htransp (A a P p b e : Val)
-  -- (P2) a suspended proof: the term `t` in `env`, never evaluated by the kernel; `ty`
-  -- is its type
-  | hprf (ty : Unit → Val) (env : Env) (t : Tm)
+  -- (P2) a suspended proof: the term `t` in `env`, never evaluated by the kernel. It has
+  -- no type of its own: conversion never compares two proofs, and what follows an
+  -- `absurd` is typed by the motive
+  | hprf (env : Env) (t : Tm)
   | hconst (name : String) (params : List String) (levels : List Lvl) (value ty : Tm)
   | haxiom (name : String) (ty : Tm)
 end
@@ -403,6 +409,13 @@ def lvlClosed : Lvl → Option Nat
       | .none => .none
     | .none => .none
   | .lparam _ => .none
+-- is the level `0`? A closed level is computed (exact: after a constant's level parameters
+-- are instantiated its body's levels are closed); a symbolic one (while a declaration is
+-- checked, its parameters are symbolic) by `lvlEquiv`, which says no when it does not know.
+-- The proof marker `prf l` suspends its term exactly when this holds.
+def lvlIsZero (l : Lvl) : Bool := match lvlClosed l with
+  | .some n => Nat.beq n 0
+  | .none => lvlEquiv l (.lnum 0)
 def lvlShow : Lvl → String
   | .lnum n => Nat.toString n
   | .lparam n => n
@@ -481,6 +494,8 @@ def tmSubst (ps : List String) (ls : List Lvl) : Tm → Tm
   | .ulift l A => .ulift l (tmSubst ps ls A)
   | .up a => .up (tmSubst ps ls a)
   | .down t => .down (tmSubst ps ls t)
+  -- (the marker's level is substituted: `prf u t` is a suspended proof at `u := 0`)
+  | .prf l t => .prf (substLvl ps ls l) (tmSubst ps ls t)
   | t => t
 def tmsSubst (ps : List String) (ls : List Lvl) : Tms → Tms
   | .tnil => .tnil
@@ -656,6 +671,7 @@ def tmEq : Tm → Tm → Bool
   | .ulift l a, .ulift l' b => Bool.and (Nat.beq l l') (tmEq a b)
   | .up a, .up b => tmEq a b
   | .down a, .down b => tmEq a b
+  | .prf l a, .prf l' b => Bool.and (lvlEquiv l l') (tmEq a b)
   | .ind l a b v c d e f, .ind l' a' b' v' c' d' e' f' => Bool.and (Nat.beq l l') (Bool.and (Nat.beq v v')
       (Bool.and (tmEq a a') (Bool.and (tmEq b b') (Bool.and (tmEq c c') (Bool.and (tmEq d d') (Bool.and (tmEq e e') (tmEq f f')))))))
   | _, _ => .false
@@ -683,13 +699,17 @@ def interpTm (l : Nat) : Tm :=
   -- D'0 D1 I2
   let P : Tm := .lam (.pi (.pi (.var 2) tyL) (.pi (.var 3) tyL));
   -- i0 X1 j2 D3 I4
-  let mret := tLams 3 (.sigmaq .qz (.eq (.var 4) (.var 2) (.var 0)) (.unit l));
+  -- (the motive puts every method's result in `Sort (l+1)`: that is each `Σ`'s sort, and
+  -- the sort of the `hrec` field's `Π`. Written, because a cast at a `Π`/`Σ` whose sort is
+  -- not known is stuck, U5b)
+  let sL : Lvl := .lnum (l + 1);
+  let mret := tLams 3 (.sorted sL (.sigmaq .qz (.eq (.var 4) (.var 2) (.var 0)) (.unit l)));
   -- i0 X1 ih2 E3 S4 q5
-  let marg := tLams 6 (.sigma (.var 4) (tApps (.var 3) (args3 (.var 0) (.var 2) (.var 1))));
+  let marg := tLams 6 (.sorted sL (.sigma (.var 4) (tApps (.var 3) (args3 (.var 0) (.var 2) (.var 1)))));
   -- i0 X1 ih2 E3 j4 q5
-  let mrec := tLams 6 (.sigma (.app (.var 1) (.var 4)) (tApps (.var 3) (args2 (.var 2) (.var 1))));
+  let mrec := tLams 6 (.sorted sL (.sigma (.app (.var 1) (.var 4)) (tApps (.var 3) (args2 (.var 2) (.var 1)))));
   -- i0 X1 ih2 E3 j4 H5 q6
-  let mhrec := tLams 7 (.sigma (.pi (.var 5) (.app (.var 2) (.app (.var 5) (.var 0)))) (tApps (.var 3) (args2 (.var 2) (.var 1))));
+  let mhrec := tLams 7 (.sorted sL (.sigma (.sorted sL (.pi (.var 5) (.app (.var 2) (.app (.var 5) (.var 0))))) (tApps (.var 3) (args2 (.var 2) (.var 1)))));
   tLams 2 (.delim (l + 2) P mret marg mrec mhrec (.var 0))
 
 -- `Sort v` and the unit type in it, as terms
@@ -713,11 +733,16 @@ def allTm (l v : Nat) : Tm :=
   -- xs0 i1 P2 X3 ih4 E5 S6 q7
   let marg := tLams 8 (tApps (.var 4) (args5 (.fst (.var 0)) (.var 3) (.var 2) (.var 1) (.snd (.var 0))));
   -- xs0 i1 P2 X3 ih4 E5 j6 q7
-  let mrec := tLams 8 (.sigma (tApps (.var 2) (args2 (.var 6) (.fst (.var 0))))
-    (tApps (.var 5) (args4 (.var 4) (.var 3) (.var 2) (.snd (.var 1)))));
+  -- (each `Σ` with its sort, the motive's `Sort (max (l+1) v)`, and the `hrec` case's `Π`
+  -- with its, `Sort (imax (l+1) v)`, as in `Templates.lean`: a cast at a `Π`/`Σ` whose
+  -- sort is not known is stuck, U5b)
+  let sA : Lvl := .lnum (Nat.max (l + 1) v);
+  let mrec := tLams 8 (.sorted sA (.sigma (tApps (.var 2) (args2 (.var 6) (.fst (.var 0))))
+    (tApps (.var 5) (args4 (.var 4) (.var 3) (.var 2) (.snd (.var 1))))));
   -- xs0 i1 P2 X3 ih4 E5 j6 H7 q8
-  let mhrec := tLams 9 (.sigma (.pi (.var 7) (tApps (.var 3) (args2 (.app (.var 7) (.var 0)) (.app (.fst (.var 1)) (.var 0)))))
-    (tApps (.var 5) (args4 (.var 4) (.var 3) (.var 2) (.snd (.var 1)))));
+  let mhrec := tLams 9 (.sorted sA (.sigma (.sorted (.limax (.lnum (l + 1)) (.lnum v))
+      (.pi (.var 7) (tApps (.var 3) (args2 (.app (.var 7) (.var 0)) (.app (.fst (.var 1)) (.var 0))))))
+    (tApps (.var 5) (args4 (.var 4) (.var 3) (.var 2) (.snd (.var 1))))));
   tLams 2 (.delim (Nat.max (l + 2) (v + 1)) P mret marg mrec mhrec (.var 0))
 
 -- `fun I D X P f i xs => hyps …`: apply `f` to every recursive field
@@ -763,15 +788,85 @@ def sizePred (sz : Val) : Option Val := match whnf sz with
   | .vszInf => .some .vszInf
   | .vszSuc s => .some s
   | _ => .none
--- Regularity (`cast A A e t ↦ t` for any proof `e`) is off: with an impredicative `Prop`
--- and proof irrelevance it makes checking loop (D1, Abel–Coquand). `.true` restores
--- it, as `--regularity full` does in the Lean kernel.
+-- Regularity beyond the inert types (the D1 experiment): Cast-Refl at **every** type,
+-- [PLT25]'s rule, decided in the conversion checker only (`strippable`); the evaluator
+-- never fires it. Off: the published decidability proof covers Π, ℕ, ⊥, the impredicative
+-- `Prop` and ∃, not these data types. `.true` is `--regularity full` in the Lean kernel.
 def kernelRegularity : Bool := .false
+-- Regularity at inert types, the rule InReg_conv: `cast A B e t ≡ t` when `A` is inert and
+-- `A ≡ B`, decided by the conversion checker on the casts that stay stuck (`unCast` in
+-- `Conv.lean`; `--inert conv`, the default). `.false` leaves only the evaluator's fast
+-- path, `groundEqTy` (`--inert ground`).
+def kernelInertConv : Bool := .true
 -- (P2) proofs are never evaluated (`Globals.lazyProofs` in the Lean kernel): a proof
 -- position (`coe`'s equation, `subst`'s two proofs) is suspended (`Head.hprf`), and a cast
 -- between propositions is stuck. `.false` is the old behaviour (the evaluator runs
 -- proofs), kept for the transition.
 def kernelLazyProofs : Bool := .true
+
+-- (P2) **The step budget of a proof's read-back** (`Budget` in `Wiz/Core/Term.lean`, review
+-- F7). Reading a value back (`quoteM .true`: the elaborator's solutions, `#reduce`, its
+-- messages) evaluates a suspended proof, and a proof need not have a normal form. So that
+-- evaluation runs within a budget of steps, counted, not timed: a step is one
+-- instantiation of a closure (`instC`: a β-step, or going under a binder to read it
+-- back). The counter is the runtime's (as in Lean, a mutable cell behind a pure
+-- interface): `proofStart n` begins a budget of `n` steps (`.false`: one is running
+-- already, and this read-back counts on it), `proofTick` takes a step (`.false` once it
+-- ran out; `.true` whenever no budget runs, so the kernel's own evaluation, which starts
+-- none, is never affected), `proofEnd` stops it (`.false`: it ran out). The argument of
+-- `proofTick` and `proofEnd` is ignored: it is there so that a call is never a constant
+-- (and `proofEnd`'s orders it after the read-back it ends).
+extern "wiz_proof_start" proofStart : Nat → Bool
+extern "wiz_proof_tick" proofTick : Nat → Bool
+extern "wiz_proof_end" proofEnd : Nat → Bool
+-- the budget (Lean's `Budget.defaultSteps`)
+def proofSteps : Nat := 1000000
+-- what a proof reads back as when its budget ran out (Lean's `Budget.message`): a
+-- constant named by the message, which `infer` rejects with that message
+def proofStub : String := "‹a proof was not read back: it needs more than 1000000 evaluation steps (raise the bound with --proof-steps N)›"
+-- what a closure's instantiation is once the budget ran out (Lean's `outOfSteps`): stuck
+def outOfSteps : Val := .vne (.haxiom " out of steps" .star) .snil
+-- (a read-back's result, inspected: `proofEnd` is called after it is computed)
+def tmSeq (t : Tm) : Nat := match t with
+  | .prf _ _ => 0
+  | _ => 1
+
+-- (P2) a term read back as a proof: marked (once)
+def markTm (t : Tm) : Tm := match t with
+  | .prf _ _ => t
+  | _ => .prf (.lnum 0) t
+-- (P2) the eliminations of a proof up to its last `absurd` (all of them if there is none):
+-- the part that is a proof (`fromAbsurd`, below, is the rest)
+def toAbsurd : Spine → Spine
+  | .snil => .snil
+  | .sabsurd sp _ => sp
+  | .sapp sp _ => toAbsurd sp
+  | .sfst sp => toAbsurd sp
+  | .ssnd sp => toAbsurd sp
+  | .secase sp _ _ _ => toAbsurd sp
+  | .sdelim sp _ _ _ _ _ _ => toAbsurd sp
+  | .sind sp _ _ _ _ _ _ _ => toAbsurd sp
+  | .ssfix sp _ _ _ _ _ _ _ _ => toAbsurd sp
+  | .sscase sp _ _ _ _ _ _ _ _ => toAbsurd sp
+  | .sout sp => toAbsurd sp
+  | .sdown sp => toAbsurd sp
+-- (P2) is this head a proof (`proofHead` in `Eval.lean`)? A suspended proof, `refl`,
+-- `transp`, or a stuck cast between propositions.
+def proofHead : Head → Bool
+  | .hprf _ _ => .true
+  | .hrefl _ _ => .true
+  | .hreflTy _ => .true
+  | .htransp _ _ _ _ _ _ => .true
+  | .hcast A B _ _ => match propSort A with
+    | .some pa => match propSort B with
+      | .some pb => Bool.and pa pb
+      | .none => .false
+    | .none => .false
+  | .hvar _ => .false
+  | .heq _ _ _ => .false
+  | .heqTy _ _ => .false
+  | .hconst _ _ _ _ _ => .false
+  | .haxiom _ _ => .false
 
 -- **Exercise 14.1.** Evaluation, application and projections (`eval`, `vApp`, `vFst`,
 -- `vSnd` in `Eval.lean`).
@@ -808,83 +903,9 @@ def usesVar : Nat → Tm → Bool
   | i, .tag _ _ => .false
   | i, .size => .false
   | i, .szInf => .false
+  | i, .prf _ t => usesVar i t
   | _, _ => .true
 
--- `1 +` the largest level of a variable in a value (`0` if none). `sameVal` (regularity,
--- `vCastW`) quotes at this level, so that every variable gets its own index. A closure counts only
--- the entries of its environment that its body might mention (`usesVar`).
-mutual
-def lvlBound : Val → Nat
-  | .vsort _ => 0
-  | .vpi _ a env b _ => Nat.max (lvlBound a) (envBound 1 env b)
-  | .vlam env b => envBound 1 env b
-  | .vsigma _ a env b _ => Nat.max (lvlBound a) (envBound 1 env b)
-  | .vpair a b => Nat.max (lvlBound a) (lvlBound b)
-  | .vunit _ => 0
-  | .vtt => 0
-  | .vempty _ => 0
-  | .venum _ => 0
-  | .vtag _ _ => 0
-  | .vdesc _ I => lvlBound I
-  | .vdret i => lvlBound i
-  | .vdarg S E => Nat.max (lvlBound S) (lvlBound E)
-  | .vdrec j E => Nat.max (lvlBound j) (lvlBound E)
-  | .vdhrec H j E => Nat.max (lvlBound H) (Nat.max (lvlBound j) (lvlBound E))
-  | .vmu _ I D i sz => Nat.max (Nat.max (lvlBound I) (lvlBound D)) (Nat.max (lvlBound i) (lvlBound sz))
-  | .vsize => 0
-  | .vszInf => 0
-  | .vszSuc sz => lvlBound sz
-  | .vsizeLt sz => lvlBound sz
-  | .vcon x => lvlBound x
-  | .vnu _ I D i sz => Nat.max (Nat.max (lvlBound I) (lvlBound D)) (Nat.max (lvlBound i) (lvlBound sz))
-  | .vcocon x => lvlBound x
-  | .vscofix _ I D A f sz i a => Nat.max (Nat.max (Nat.max (lvlBound I) (lvlBound D)) (Nat.max (lvlBound A) (lvlBound f)))
-      (Nat.max (Nat.max (lvlBound sz) (lvlBound i)) (lvlBound a))
-  | .vcoit _ I D S st i s => Nat.max (Nat.max (Nat.max (lvlBound I) (lvlBound D)) (Nat.max (lvlBound S) (lvlBound st)))
-      (Nat.max (lvlBound i) (lvlBound s))
-  | .vglued h sp _ => Nat.max (headBound h) (spineBound sp)
-  | .vne h sp => Nat.max (headBound h) (spineBound sp)
-  | .vulift _ A => lvlBound A
-  | .vup a => lvlBound a
--- the entries of `env` (the first at index `i` of `b`) that `b` might mention
-def envBound : Nat → Env → Tm → Nat
-  | _, .nil, _ => 0
-  | i, .cons v rest, b => Nat.max (match usesVar i b with
-    | .true => lvlBound v
-    | .false => 0) (envBound (i + 1) rest b)
-def branchesBound : Env → Tms → Nat
-  | _, .tnil => 0
-  | env, .tcons b rest => Nat.max (envBound 0 env b) (branchesBound env rest)
-def headBound : Head → Nat
-  | .hvar x => x + 1
-  | .heq A a b => Nat.max (lvlBound A) (Nat.max (lvlBound a) (lvlBound b))
-  | .heqTy A B => Nat.max (lvlBound A) (lvlBound B)
-  | .hcast A B e t => Nat.max (Nat.max (lvlBound A) (lvlBound B)) (Nat.max (lvlBound e) (lvlBound t))
-  | .hrefl A a => Nat.max (lvlBound A) (lvlBound a)
-  | .hreflTy X => lvlBound X
-  | .htransp A a P p b e => Nat.max (Nat.max (lvlBound A) (lvlBound a))
-      (Nat.max (Nat.max (lvlBound P) (lvlBound p)) (Nat.max (lvlBound b) (lvlBound e)))
-  | .hconst _ _ _ _ _ => 0
-  | .haxiom _ _ => 0
-  | .hprf _ env t => envBound 0 env t
-def spineBound : Spine → Nat
-  | .snil => 0
-  | .sapp sp a => Nat.max (spineBound sp) (lvlBound a)
-  | .sfst sp => spineBound sp
-  | .ssnd sp => spineBound sp
-  | .secase sp env m bs => Nat.max (spineBound sp) (Nat.max (envBound 1 env m) (branchesBound env bs))
-  | .sabsurd sp m => Nat.max (spineBound sp) (lvlBound m)
-  | .sdelim sp _ P a b c d => Nat.max (spineBound sp)
-      (Nat.max (Nat.max (lvlBound P) (lvlBound a)) (Nat.max (Nat.max (lvlBound b) (lvlBound c)) (lvlBound d)))
-  | .sind sp _ I D _ P m i => Nat.max (spineBound sp)
-      (Nat.max (Nat.max (lvlBound I) (lvlBound D)) (Nat.max (lvlBound P) (Nat.max (lvlBound m) (lvlBound i))))
-  | .ssfix sp _ I D _ P f sz i => Nat.max (spineBound sp)
-      (Nat.max (Nat.max (lvlBound I) (lvlBound D)) (Nat.max (Nat.max (lvlBound P) (lvlBound f)) (Nat.max (lvlBound sz) (lvlBound i))))
-  | .sscase sp _ I D _ P m sz i => Nat.max (spineBound sp)
-      (Nat.max (Nat.max (lvlBound I) (lvlBound D)) (Nat.max (Nat.max (lvlBound P) (lvlBound m)) (Nat.max (lvlBound sz) (lvlBound i))))
-  | .sout sp => spineBound sp
-  | .sdown sp => spineBound sp
-end
 
 mutual
 def eval : Env → Tm → Val
@@ -924,7 +945,7 @@ def eval : Env → Tm → Val
   | env, .coe A B e t =>
     let vA := eval env A;
     let vB := eval env B;
-    vCast vA vB (suspend env e (memo (fun _ => vEqType vA vB))) (eval env t)
+    vCast vA vB (suspend env e) (eval env t)
   | env, .eqRefl A a => .vne (.hrefl (eval env A) (eval env a)) .snil
   | env, .tyRefl X => .vne (.hreflTy (eval env X)) .snil
   | env, .subst A a P p b e =>
@@ -932,8 +953,7 @@ def eval : Env → Tm → Val
     let va := eval env a;
     let vP := eval env P;
     let vb := eval env b;
-    .vne (.htransp vA va vP (suspend env p (memo (fun _ => vapp (vapp vP va) (.vne (.hrefl vA va) .snil)))) vb
-      (suspend env e (memo (fun _ => vEq vA va vb)))) .snil
+    .vne (.htransp vA va vP (suspend env p) vb (suspend env e)) .snil
   | env, .descr l I => .vdesc l (eval env I)
   | env, .dret i => .vdret (eval env i)
   | env, .darg S D => .vdarg (eval env S) (eval env D)
@@ -967,26 +987,52 @@ def eval : Env → Tm → Val
   | env, .ulift l A => .vulift l (eval env A)
   | env, .up a => .vup (eval env a)
   | env, .down t => vdown (eval env t)
+  -- (P2) a marked term whose sort is `0` is a proof: suspended, never looked into. (At
+  -- another level, or one that is still a parameter, it is an ordinary term.)
+  | env, .prf l t => match lvlIsZero l with
+    | .true => suspend env t
+    | .false => eval env t
   --|ex
   --| | _, _ => .vsort (.lnum 0)
   --sol>
--- (P2) a proof position: suspended, never evaluated (`suspend` in `Eval.lean`)
-def suspend (env : Env) (t : Tm) (ty : Unit → Val) : Val := match kernelLazyProofs with
-  | .true => .vne (.hprf ty env t) .snil
+-- (P2) a proof (a marked one, or a position the syntax marks): suspended, never evaluated
+-- (`suspend` in `Eval.lean`). A marker on a marker is one suspension.
+def suspend (env : Env) (t : Tm) : Val := match kernelLazyProofs with
+  | .true => match t with
+    | .prf _ t' => suspend env t'
+    | _ => .vne (.hprf env t) .snil
   | .false => eval env t
--- (P2) the eliminations of a proof, applied to its value (for reading it back)
+-- the eliminations of a spine, applied to a value (for reading a proof back, and for
+-- the argument of a cast that regularity removes: `stripCast`)
 def forceSp : Val → Spine → Val
   | v, .snil => v
   | v, .sapp sp a => vapp (forceSp v sp) a
   | v, .sfst sp => vfst (forceSp v sp)
   | v, .ssnd sp => vsnd (forceSp v sp)
   | v, .sdown sp => vdown (forceSp v sp)
+  -- (`absurd` on anything but a neutral cannot happen for a well-typed term, nothing
+  -- inhabiting an empty type; the answer then is a stuck value, never the value itself
+  -- passed off at the motive)
   | v, .sabsurd sp m => match whnf (forceSp v sp) with
     | .vne h sp' => .vne h (.sabsurd sp' m)
+    | _ => .vne (.haxiom " absurd on a value" .star) (.sabsurd .snil m)
+  -- (every elimination, by name: a default arm would drop one silently)
+  | v, .secase sp env m bs => match whnf (forceSp v sp) with
+    | .vtag _ i => eval env (tmsNth bs i)
+    | .vne h sp' => .vne h (.secase sp' env m bs)
     | w => w
-  | v, _ => v
+  | v, .sdelim sp k P a b c d => vDelim k P a b c d (forceSp v sp)
+  | v, .sind sp l I D k P m i => vInd l I D k P m i (forceSp v sp)
+  | v, .ssfix sp l I D k P f sz i => vSfix l I D k P f sz i (forceSp v sp)
+  | v, .sscase sp l I D k P m sz i => vScase l I D k P m sz i (forceSp v sp)
+  | v, .sout sp => vOut (forceSp v sp)
 -- (P2) the eliminations of a proof from its last `absurd` on (`.none`: there is none).
 -- Past an `absurd` the value need not be a proof (`exfalso M p : M`, for any `M`).
+-- (P2) a closure's instantiation: `body` with `a` for its variable, on the step budget of
+-- a proof's read-back when one runs (`proofTick`; always `eval` otherwise)
+def instC (env : Env) (a : Val) (body : Tm) : Val := match proofTick 0 with
+  | .true => eval (.cons a env) body
+  | .false => outOfSteps
 def fromAbsurd : Spine → Option Spine
   | .snil => .none
   | .sabsurd _ m => .some (.sabsurd .snil m)
@@ -1023,7 +1069,7 @@ def fromAbsurd : Spine → Option Spine
 def vapp : Val → Val → Val
   | .vglued h sp v, a => .vglued h (.sapp sp a) (memo (fun _ => vapp (v ()) a))  -- (given) glued stays glued
   --<sol
-  | .vlam env b, a => eval (.cons a env) b
+  | .vlam env b, a => instC env a b
   | .vne h sp, a => .vne h (.sapp sp a)
   | v, _ => v
   --|ex
@@ -1268,14 +1314,21 @@ def vCastP (A B e t : Val) : Val := match propSort A with
       | .none => vCastW A B e t
     | .false => vCastW A B e t
   | .none => vCastW A B e t
+-- (U5b) at a `Π`/`Σ` whose sort is not known, the equation `e` proves is stuck
+-- (`vEqTypeP`), so it is no pair to project: the cast is stuck exactly when the equation is
+def sortsKnown (s1 s2 : Option Lvl) : Bool := match sortProp s1 with
+  | .none => .false
+  | .some _ => match sortProp s2 with
+    | .none => .false
+    | .some _ => .true
 def vCastW : Val → Val → Val → Val → Val
-  | .vpi q1 a1 env1 b1 s1, .vpi q2 a2 env2 b2 s2, e, t => match qEq q1 q2 with
+  | .vpi q1 a1 env1 b1 s1, .vpi q2 a2 env2 b2 s2, e, t => match Bool.and (sortsKnown s1 s2) (qEq q1 q2) with
     | .false => .vne (.hcast (.vpi q1 a1 env1 b1 s1) (.vpi q2 a2 env2 b2 s2) e t) .snil
     | .true =>
       let c : Tm := .coe (.var 5) (.var 6) (.fst (.var 2)) (.var 0);
       .vlam (.cons t (.cons e (.cons (.vlam env2 b2) (.cons (.vlam env1 b1) (.cons a2 (.cons a1 .nil))))))
         (.coe (.app (.var 4) c) (.app (.var 3) (.var 0)) (.app (.snd (.var 2)) (.var 0)) (.app (.var 1) c))
-  | .vsigma q1 a1 env1 b1 s1, .vsigma q2 a2 env2 b2 s2, e, t => match qEq q1 q2 with
+  | .vsigma q1 a1 env1 b1 s1, .vsigma q2 a2 env2 b2 s2, e, t => match Bool.and (sortsKnown s1 s2) (qEq q1 q2) with
     | .false => .vne (.hcast (.vsigma q1 a1 env1 b1 s1) (.vsigma q2 a2 env2 b2 s2) e t) .snil
     | .true =>
       let t1 := vfst t;
@@ -1289,14 +1342,13 @@ def vCastW : Val → Val → Val → Val → Val
   | .venum k, .venum k', e, t => same k k' t (.vne (.hcast (.venum k) (.venum k') e t) .snil)
   -- (Q4) through `down` (a lifted proposition is cast by the equivalence, in `vCastP`)
   | .vulift l A, .vulift l' B, e, t => same l l' (.vup (vCast A B e (vdown t))) (.vne (.hcast (.vulift l A) (.vulift l' B) e t) .snil)
-  -- regularity at inert types (InReg, P1): equal ground inert types (`groundEqTy`, stable
-  -- under substitution); full regularity (off, `kernelRegularity`) by `sameVal`
+  -- regularity at inert types (InReg): the evaluator's fast path, equal ground inert types
+  -- (`groundEqTy`: invariant under conversion, stable under substitution, no conversion
+  -- needed). The rule itself is applied by conversion to the casts that stay stuck
   | A, B, e, t => castReg A B e t
-def castReg (A B e t : Val) : Val := match Bool.and kernelRegularity (sameVal A B) with
+def castReg (A B e t : Val) : Val := match groundEqTy 0 A B with
   | .true => t
-  | .false => match groundEqTy 0 A B with
-    | .true => t
-    | .false => vCastData A B e t
+  | .false => vCastData A B e t
 -- an inert type (`inertTy` in `Eval.lean`): first-order data, where a cast between equal
 -- types is the identity: `Enum`, `Unit`, `Σ`s of inert types, and `μ` types whose index
 -- type and fields are inert (no `Prop` fields, functions or neutral types)
@@ -1314,7 +1366,7 @@ def inertW (depth : Nat) : Val → Bool
   | .vsigma _ a env b s => match s with
     | .some l => match lvlNeverZero l with
       | .true => match inertTy (Nat.succ depth) a with
-        | .true => inertTy (Nat.succ depth) (eval (.cons (fresh (Nat.add 100000 depth)) env) b)
+        | .true => inertTy (Nat.succ depth) (eval (.cons (groundAtom (Nat.add 1000 depth)) env) b)
         | .false => .false
       | .false => .false
     | .none => .false
@@ -1344,11 +1396,6 @@ def inertTags (depth : Nat) (E : Val) (lifted : Bool) (k i : Nat) : Bool := matc
   | .true => match inertDesc depth (vapp E (upIf lifted (.vtag k i))) with
     | .true => inertTags depth E lifted k (Nat.succ i)
     | .false => .false
--- syntactic equality of values, quoted at a level above every variable in them
--- (`lvlBound`), so that different variables never quote alike
-def sameVal (a b : Val) : Bool :=
-  let l := Nat.max (lvlBound a) (lvlBound b);
-  tmEq (quoteM .false l a) (quoteM .false l b)
 -- Ground equality at inert types (`groundEqTy` in `Eval.lean`, P1): two inert types that
 -- are equal and have no free variable in a relevant position. Values are compared by
 -- their type (tags, constructors; `Unit` and propositions skipped; `Σ` by projections);
@@ -1584,9 +1631,9 @@ def quoteM (qm : Bool) : Nat → Val → Tm
       | .zero => .prop
       | .succ m => .univ m
     | .none => .sortL l
-  | l, .vpi q a env b s => sortedTm s (piTm q (quoteM qm l a) (quoteM qm (l + 1) (eval (.cons (fresh l) env) b)))
-  | l, .vlam env b => .lam (quoteM qm (l + 1) (eval (.cons (fresh l) env) b))
-  | l, .vsigma q a env b s => sortedTm s (sigmaTm q (quoteM qm l a) (quoteM qm (l + 1) (eval (.cons (fresh l) env) b)))
+  | l, .vpi q a env b s => sortedTm s (piTm q (quoteM qm l a) (quoteM qm (l + 1) (instC env (fresh l) b)))
+  | l, .vlam env b => .lam (quoteM qm (l + 1) (instC env (fresh l) b))
+  | l, .vsigma q a env b s => sortedTm s (sigmaTm q (quoteM qm l a) (quoteM qm (l + 1) (instC env (fresh l) b)))
   | l, .vpair a b => .pair (quoteM qm l a) (quoteM qm l b)
   | _, .vunit l => match l with
     | .zero => .ptrue
@@ -1618,12 +1665,28 @@ def quoteM (qm : Bool) : Nat → Val → Tm
   -- (P2) a suspended proof, with its eliminations: evaluated (`.true`), or `()`. Erased,
   -- the eliminations from the last `absurd` on are kept, on `()`: past an `absurd` the
   -- value need not be a proof, and two different values must not read back alike
-  | l, .vne (.hprf _ env t) sp => match qm with
-    | .true => quoteM qm l (forceSp (eval env t) sp)
+  | l, .vne (.hprf env t) sp => match qm with
+    -- (read back marked: in a relevant position `infer` requires the marker)
+    | .true => match fromAbsurd sp with
+      | .none => forceProof l env t sp
+      | .some r => quoteSpine qm l (forceProof l env t (toAbsurd sp)) r
     | .false => match fromAbsurd sp with
       | .none => .star
       | .some r => quoteSpine qm l .star r
-  | l, .vne h sp => quoteSpine qm l (quoteHead qm l h) sp
+  | l, .vne h sp => match Bool.and qm (Bool.and kernelLazyProofs (proofHead h)) with
+    -- (P2) the other proof heads (`refl`, `transp`, a stuck cast between propositions)
+    -- read back marked too, up to their last `absurd`
+    | .true => match fromAbsurd sp with
+      | .none => markTm (quoteSpine qm l (quoteHead qm l h) sp)
+      | .some r => quoteSpine qm l (markTm (quoteSpine qm l (quoteHead qm l h) (toAbsurd sp))) r
+    -- (erased, every proof head reads back as `()`, like a suspended proof: the same proof
+    -- can be a `refl` head in one value and a suspension in another, and two types that
+    -- differ only so must not compare as different)
+    | .false => match Bool.and (Bool.not qm) (Bool.and kernelLazyProofs (proofHead h)) with
+      | .true => (match fromAbsurd sp with
+        | .none => .star
+        | .some r => quoteSpine qm l .star r)
+      | .false => quoteSpine qm l (quoteHead qm l h) sp
   | l, .vglued h sp _ => quoteSpine qm l (quoteHead qm l h) sp
   | l, .vulift k A => .ulift k (quoteM qm l A)
   | l, .vup a => .up (quoteM qm l a)
@@ -1636,7 +1699,7 @@ def quoteSpine (qm : Bool) : Nat → Tm → Spine → Tm
   | l, h, .sfst sp => .fst (quoteSpine qm l h sp)
   | l, h, .ssnd sp => .snd (quoteSpine qm l h sp)
   | l, h, .secase sp env m bs =>
-    .ecase (quoteM qm (l + 1) (eval (.cons (fresh l) env) m)) (quoteSpine qm l h sp) (quoteBranches qm l env bs)
+    .ecase (quoteM qm (l + 1) (instC env (fresh l) m)) (quoteSpine qm l h sp) (quoteBranches qm l env bs)
   | l, h, .sabsurd sp m => .exfalso (quoteM qm l m) (quoteSpine qm l h sp)
   | l, h, .sdelim sp v P a b c d =>
     .delim v (quoteM qm l P) (quoteM qm l a) (quoteM qm l b) (quoteM qm l c) (quoteM qm l d) (quoteSpine qm l h sp)
@@ -1658,10 +1721,21 @@ def quoteHead (qm : Bool) : Nat → Head → Tm
   | l, .htransp A a P p b e => .subst (quoteM qm l A) (quoteM qm l a) (quoteM qm l P) (quoteM qm l p) (quoteM qm l b) (quoteM qm l e)
   | _, .hconst n ps ls v ty => .const n ps ls v ty
   | _, .haxiom n ty => .axiomC n ty
-  | l, .hprf _ env t => quoteM qm l (eval env t)  -- (not reached: `quoteM`'s case)
+  | l, .hprf env t => quoteM qm l (eval env t)  -- (not reached: `quoteM`'s case)
 def quoteBranches (qm : Bool) : Nat → Env → Tms → Tms
   | _, _, .tnil => .tnil
   | l, env, .tcons b rest => .tcons (quoteM qm l (eval env b)) (quoteBranches qm l env rest)
+-- (P2) a suspended proof `t` in `env`, with the eliminations `sp`, read back (`quoteM
+-- .true`): evaluated and read back marked, within the step budget (Lean's `quote` on a
+-- `.prf` head). A read-back inside another one counts on its budget; if the budget runs
+-- out, the proof reads back as the constant `proofStub`.
+def forceProof (l : Nat) (env : Env) (t : Tm) (sp : Spine) : Tm := match proofStart proofSteps with
+  | .false => markTm (quoteM .true l (forceSp (eval env t) sp))
+  | .true =>
+    let tm := markTm (quoteM .true l (forceSp (eval env t) sp));
+    match proofEnd (tmSeq tm) with
+    | .true => tm
+    | .false => markTm (.axiomC proofStub .star)
 end
 -- **Reading back** a value: suspended proofs are evaluated, so that the term is a normal
 -- form (which `infer` can check again). The kernel's own comparison of types (`sameVal`)
@@ -1769,6 +1843,7 @@ def show (names : List String) : Nat → Tm → String
   | l, .ulift k A => String.append (String.append (String.append "ULift" (Nat.toString k)) "(") (String.append (show names l A) ")")
   | l, .up a => show names l a
   | l, .down t => show names l t
+  | l, .prf _ t => show names l t
   | _, .tag _ i => String.append "#" (Nat.toString i)
   | l, .ecase m s bs => String.append (String.append (String.append "case(" (show names (l + 1) m))
       (String.append ", " (show names l s))) (String.append (showBranches names l bs) ")")
@@ -1782,27 +1857,51 @@ end
 -- the typing context: values of the variables, their types, the depth
 -- (and whether we are in an erased position: a type, a proof, an argument to a `0`
 -- binder, where erased fields may be projected)
+-- (P2) `pm` is the proof marker's mode: `0` relevant (a term whose sort may be `0` must be
+-- marked or neutral-shaped), `1` inside a proof (nothing is required), `2` the term is
+-- the one a marker wraps (exempt; relevant again below it)
 inductive TCtx where
-  | mk (env : Env) (types : Env) (lvl : Nat) (erased : Bool)
+  | mk (env : Env) (types : Env) (lvl : Nat) (erased : Bool) (pm : Nat)
 def TCtx.lvl : TCtx → Nat
-  | .mk _ _ l _ => l
+  | .mk _ _ l _ _ => l
 def TCtx.env : TCtx → Env
-  | .mk e _ _ _ => e
+  | .mk e _ _ _ _ => e
 def TCtx.types : TCtx → Env
-  | .mk _ t _ _ => t
+  | .mk _ t _ _ _ => t
 def TCtx.erased : TCtx → Bool
-  | .mk _ _ _ x => x
+  | .mk _ _ _ x _ => x
+def TCtx.pm : TCtx → Nat
+  | .mk _ _ _ _ m => m
 def TCtx.erase (c : TCtx) : TCtx := match c with
-  | .mk e t l _ => .mk e t l .true
+  | .mk e t l _ m => .mk e t l .true m
+-- (P2) inside a proof
+def TCtx.inProof (c : TCtx) : TCtx := match c with
+  | .mk e t l x m => match Nat.beq m 3 with
+    | .true => c
+    | .false => .mk e t l x 1
+-- (tests only) no marker requirement anywhere below, and proofs evaluated: the
+-- well-typedness pre-check of the differential tests, so that a term which needs markers
+-- inside a proof reaches the marking passes (review F2; `lazyProofs := false` in Lean)
+def TCtx.noMarkers (c : TCtx) : TCtx := match c with
+  | .mk e t l x _ => .mk e t l x 3
+-- (P2) at the term a marker wraps, and below it
+def TCtx.atMarked (c : TCtx) : TCtx := match c with
+  | .mk e t l x m => match m with
+    | .zero => .mk e t l x 2
+    | _ => c
+def TCtx.belowMarked (c : TCtx) : TCtx := match c with
+  | .mk e t l x m => match Nat.beq m 2 with
+    | .true => .mk e t l x 0
+    | .false => c
 def erasedIf (q : Q) (c : TCtx) : TCtx := match q with
   | .qz => TCtx.erase c
   | _ => c
 -- a new variable of type `ty`
 def TCtx.bind (c : TCtx) (ty : Val) : TCtx := match c with
-  | .mk e t l x => .mk (.cons (fresh l) e) (.cons ty t) (l + 1) x
+  | .mk e t l x m => .mk (.cons (fresh l) e) (.cons ty t) (l + 1) x m
 -- a new variable defined as `v`
 def TCtx.define (c : TCtx) (v ty : Val) : TCtx := match c with
-  | .mk e t l x => .mk (.cons v e) (.cons ty t) (l + 1) x
+  | .mk e t l x m => .mk (.cons v e) (.cons ty t) (l + 1) x m
 
 -- Usage (`Usage` in `Check.lean`): one quantity per variable, the innermost first.
 def qadd : Q → Q → Q
@@ -1930,8 +2029,55 @@ def headType : TCtx → Head → Val
   | _, .htransp _ _ P _ b e => vapp (vapp P b) e
   | _, .hconst _ ps ls _ ty => eval .nil (substIfAny ps ls ty)
   | _, .haxiom _ ty => eval .nil ty
-  | _, .hprf ty _ _ => ty ()
+  -- (a suspended proof has no type of its own; nothing asks for it: `typeOfNe` after an
+  -- `absurd` is the motive, and conversion does not walk the eliminations of a proof)
+  | _, .hprf _ _ => .vunit 0
 end
+
+-- (P2) a proof head that conversion never compares with another: a suspension, `refl`,
+-- `reflTy`, `transp` (not a cast: its being a proof depends on its types)
+def isProofHd : Head → Bool
+  | .hprf _ _ => .true
+  | .hrefl _ _ => .true
+  | .hreflTy _ => .true
+  | .htransp _ _ _ _ _ _ => .true
+  | .hcast _ _ _ _ => .false
+  | .hvar _ => .false
+  | .heq _ _ _ => .false
+  | .heqTy _ _ => .false
+  | .hconst _ _ _ _ _ => .false
+  | .haxiom _ _ => .false
+-- the eliminations a proof stays a proof under: applications, projections, `down`
+def proofSpine : Spine → Bool
+  | .snil => .true
+  | .sapp sp _ => proofSpine sp
+  | .sfst sp => proofSpine sp
+  | .ssnd sp => proofSpine sp
+  | .sdown sp => proofSpine sp
+  | .secase _ _ _ _ => .false
+  | .sabsurd _ _ => .false
+  | .sdelim _ _ _ _ _ _ _ => .false
+  | .sind _ _ _ _ _ _ _ _ => .false
+  | .ssfix _ _ _ _ _ _ _ _ _ => .false
+  | .sscase _ _ _ _ _ _ _ _ _ => .false
+  | .sout _ => .false
+-- (P2) is the neutral `h · sp` a proof of `False`? Either it starts at a proof head and has
+-- passed through no `absurd` (then it is a proof, and it is being given to an `absurd`),
+-- or its type says so.
+def falseNe (c : TCtx) (h : Head) (sp : Spine) : Bool := match (match fromAbsurd sp with
+    | .none => proofHead h
+    | .some _ => Bool.false) with
+  | .true => .true
+  | .false => match h with
+    -- (a suspended proof has no type of its own: only after an `absurd`)
+    | .hprf _ _ => (match fromAbsurd sp with
+      | .none => Bool.false
+      | .some _ => match whnf (typeOfNe c h sp) with
+        | .vempty l => Nat.beq l 0
+        | _ => .false)
+    | _ => match whnf (typeOfNe c h sp) with
+      | .vempty l => Nat.beq l 0
+      | _ => .false
 
 -- (without computing the whole sort: a Π type is a proposition when its codomain is,
 -- as `imax i j` is `0` exactly when `j` is; `conv` asks this at every step)
@@ -2163,38 +2309,40 @@ def conv : TCtx → Val → Val → Val → Bool
       -- (Q4) η: compare the contents
       | .vulift _ A => conv c A (vdown a) (vdown b)
       | .vsort _ => convTy c a b
+      -- (a canonical value against anything else goes to `convNe` too: the other side may
+      -- be a stuck cast that regularity removes)
       | .vdesc l I => match whnf a with
         | .vdret i => match whnf b with
           | .vdret j => conv c I i j
-          | _ => .false
+          | _ => convNe c a b
         | .vdarg S E => match whnf b with
           | .vdarg S' E' => Bool.and (convTy c S S') (conv c (.vpi .qw S (.cons I .nil) (.descr l (.var 1)) .none) E E')
-          | _ => .false
+          | _ => convNe c a b
         | .vdrec j E => match whnf b with
           | .vdrec j' E' => Bool.and (conv c I j j') (conv c (.vdesc l I) E E')
-          | _ => .false
+          | _ => convNe c a b
         | .vdhrec H j E => match whnf b with
           | .vdhrec H' j' E' => Bool.and (convTy c H H')
               (Bool.and (conv c (.vpi .qw H (.cons I .nil) (.var 1) .none) j j') (conv c (.vdesc l I) E E'))
-          | _ => .false
+          | _ => convNe c a b
         | _ => convNe c a b
       | .vmu l I D i _ => match whnf a with
         | .vcon x => match whnf b with
           | .vcon y => conv c (vInterp l I D (muFamily l I D) i) x y
-          | _ => .false
+          | _ => convNe c a b
         | _ => convNe c a b
       | .vnu l I D i _ => match whnf a with
         | .vcocon x => match whnf b with
           | .vcocon y => conv c (vInterp l I D (nuFamily l I D) i) x y
-          | _ => .false
+          | _ => convNe c a b
         | .vscofix _ _ _ A f _ j x => match whnf b with
           | .vscofix _ _ _ A' f' _ j' x' => Bool.and (conv c (coitStateTy l I) A A')
               (Bool.and (conv c (scofixFunTy l I D A) f f') (Bool.and (conv c I j j') (conv c (vapp A j) x x')))
-          | _ => .false
+          | _ => convNe c a b
         | .vcoit _ _ _ S st j x => match whnf b with
           | .vcoit _ _ _ S' st' j' x' => Bool.and (conv c (coitStateTy l I) S S')
               (Bool.and (conv c (coitStepTy l I D S) st st') (Bool.and (conv c I j j') (conv c (vapp S j) x x')))
-          | _ => .false
+          | _ => convNe c a b
         | _ => convNe c a b
       | _ => convNe c a b
   --|ex
@@ -2205,7 +2353,7 @@ def convTy (c : TCtx) (a b : Val) : Bool := match lazyDelta c a b with
   | .false => convTyW c (whnf a) (whnf b)
 -- two glued values with the same head: compare the spines (else they get unfolded)
 def lazyDelta : TCtx → Val → Val → Bool
-  | c, .vglued h sp _, .vglued h' sp' _ => Bool.and (convHead c h h') (convSpine c h sp sp')
+  | c, .vglued h sp _, .vglued h' sp' _ => convSpine c h h' sp sp'
   | _, _, _ => .false
 def convTyW : TCtx → Val → Val → Bool
   --<sol
@@ -2235,8 +2383,44 @@ def convNe (c : TCtx) (a b : Val) : Bool := match lazyDelta c a b with
 def convNeW : TCtx → Val → Val → Bool
   | _, .vtag _ i, .vtag _ j => Nat.beq i j
   | _, .vtt, .vtt => .true
-  | c, .vne x sp, .vne y sp' => Bool.and (convHead c x y) (convSpine c x sp sp')
+  -- **Regularity, decided by conversion** (InReg_conv; `unCast` in `Conv.lean`): a stuck
+  -- cast between convertible types (inert ones) is its argument, on either side, with the
+  -- eliminations of the neutral applied to it. The comparison goes on at the neutral's
+  -- type (`conv`: the argument may be canonical, or the type may have η).
+  | c, .vne x sp, .vne y sp' => match stripCast c x sp with
+    | .some a => conv c (typeOfNe c x sp) a (.vne y sp')
+    | .none => match stripCast c y sp' with
+      | .some b => conv c (typeOfNe c y sp') (.vne x sp) b
+      | .none => convSpine c x y sp sp'
+  | c, .vne x sp, b => match stripCast c x sp with
+    | .some a => conv c (typeOfNe c x sp) a b
+    | .none => .false
+  | c, a, .vne y sp' => match stripCast c y sp' with
+    | .some b => conv c (typeOfNe c y sp') a b
+    | .none => .false
   | _, _, _ => .false
+-- the argument of a stuck cast with the neutral's eliminations applied, when the rule
+-- applies: the two types are convertible, and one of them is inert (`inertTy` reads a
+-- `Σ`'s sort annotation, which is optional, so of two convertible types one can be inert
+-- and the other not) or regularity is on at every type (`kernelRegularity`). `convTy A B`
+-- compares two components of the neutral, as the congruence rule for two casts does, and
+-- each step removes one cast: it terminates. Every head is listed.
+def stripCast : TCtx → Head → Spine → Option Val
+  | c, .hcast A B _ t, sp => match Bool.or kernelRegularity
+      (Bool.and kernelInertConv (Bool.or (inertTy 0 A) (inertTy 0 B))) with
+    | .false => .none
+    | .true => match convTy c A B with
+      | .true => .some (forceSp t sp)
+      | .false => .none
+  | _, .hvar _, _ => .none
+  | _, .heq _ _ _, _ => .none
+  | _, .heqTy _ _, _ => .none
+  | _, .hrefl _ _, _ => .none
+  | _, .hreflTy _, _ => .none
+  | _, .htransp _ _ _ _ _ _, _ => .none
+  | _, .hprf _ _, _ => .none
+  | _, .hconst _ _ _ _ _, _ => .none
+  | _, .haxiom _ _, _ => .none
 -- the same head: the same variable, or equal components (proofs are all equal)
 def convHead : TCtx → Head → Head → Bool
   | _, .hvar x, .hvar y => Nat.beq x y
@@ -2245,22 +2429,40 @@ def convHead : TCtx → Head → Head → Bool
   | c, .heq A a b, .heq A' a' b' => Bool.and (convTy c A A') (Bool.and (conv c A a a') (conv c A b b'))
   | c, .heqTy A B, .heqTy A' B' => Bool.and (convTy c A A') (convTy c B B')
   | c, .hcast A B _ t, .hcast A' B' _ t' => Bool.and (convTy c A A') (Bool.and (convTy c B B') (conv c A t t'))
+  -- two proofs of one kind (the default arm below answers for any two: this lists them for
+  -- the lint, which wants every head compared with itself; their children are proofs)
   | _, .hrefl _ _, .hrefl _ _ => .true
   | _, .hreflTy _, .hreflTy _ => .true
   | _, .htransp _ _ _ _ _ _, .htransp _ _ _ _ _ _ => .true
-  | _, .hprf _ _ _, .hprf _ _ _ => .true
-  | _, _, _ => .false
--- the same head `x`: compare the eliminations, at their types
-def convSpine : TCtx → Head → Spine → Spine → Bool
-  | _, _, .snil, .snil => .true
-  | c, x, .sapp r a, .sapp r' b => Bool.and (convSpine c x r r') (match whnf (typeOfNe c x r) with
+  | _, .hprf _ _, .hprf _ _ => .true
+  -- any two proofs (a suspension, `refl`, `reflTy`, `transp`), whatever their kinds: the
+  -- same proof can be a `refl` head where its term was evaluated and a suspension where
+  -- it was read back and evaluated again. (`convSpine` then lets only applications,
+  -- projections and `down` follow: `proofSpine`.) As `convNe` in `Conv.lean`.
+  | _, x, y => match isProofHd x with
+    | .true => isProofHd y
+    | .false => .false
+-- the heads `x` and `y`, and the eliminations at their types (typed from `x`).
+-- (P2) **A proof under `absurd` is irrelevant**: if both sides are an `absurd` on a proof of
+-- `False`, only the motives (and what follows) are compared, not the proofs or their heads
+-- (a suspended proof on one side, a hypothesis on the other).
+def convSpine : TCtx → Head → Head → Spine → Spine → Bool
+  | c, x, y, .snil, .snil => convHead c x y
+  -- two proofs with only applications and projections after them (their type was not
+  -- seen to be a proposition, or `conv` would have answered): equal, nothing to compare
+  | c, x, y, sp, sp' => match Bool.and (Bool.and (isProofHd x) (isProofHd y)) (Bool.and (proofSpine sp) (proofSpine sp')) with
+    | .true => .true
+    | .false => convSpineW c x y sp sp'
+def convSpineW : TCtx → Head → Head → Spine → Spine → Bool
+  | c, x, y, .snil, .snil => convHead c x y
+  | c, x, y, .sapp r a, .sapp r' b => Bool.and (convSpine c x y r r') (match whnf (typeOfNe c x r) with
     | .vpi _ dom _ _ _ => conv c dom a b
     | _ => .false)
-  | c, x, .sfst r, .sfst r' => convSpine c x r r'
-  | c, x, .ssnd r, .ssnd r' => convSpine c x r r'
-  | c, x, .sout r, .sout r' => convSpine c x r r'
-  | c, x, .sdown r, .sdown r' => convSpine c x r r'
-  | c, x, .secase r e m bs, .secase r' e' m' bs' => Bool.and (convSpine c x r r')
+  | c, x, y, .sfst r, .sfst r' => convSpine c x y r r'
+  | c, x, y, .ssnd r, .ssnd r' => convSpine c x y r r'
+  | c, x, y, .sout r, .sout r' => convSpine c x y r r'
+  | c, x, y, .sdown r, .sdown r' => convSpine c x y r r'
+  | c, x, y, .secase r e m bs, .secase r' e' m' bs' => Bool.and (convSpine c x y r r')
       -- (the same branches over the same environment: nothing more to compare)
       (match Bool.and (Bool.and (tmEq m m') (tmsEq bs bs')) (fuelOk (envSame 2000 e e')) with
       | .true => .true
@@ -2269,25 +2471,27 @@ def convSpine : TCtx → Head → Spine → Spine → Bool
            (convTy (TCtx.bind c (.venum k)) (eval (.cons (fresh (TCtx.lvl c)) e) m) (eval (.cons (fresh (TCtx.lvl c)) e') m'))
            (convBranches c k e m e' bs bs' 0)
        | _ => .false)
-  | c, x, .sabsurd r m, .sabsurd r' m' => Bool.and (convSpine c x r r') (convTy c m m')
-  | c, x, .sdelim r v P a b d e, .sdelim r' v' P' a' b' d' e' => Bool.and (convSpine c x r r')
+  | c, x, y, .sabsurd r m, .sabsurd r' m' => match Bool.and (falseNe c x r) (falseNe c y r') with
+    | .true => convTy c m m'
+    | .false => Bool.and (convSpine c x y r r') (convTy c m m')
+  | c, x, y, .sdelim r v P a b d e, .sdelim r' v' P' a' b' d' e' => Bool.and (convSpine c x y r r')
       (match whnf (typeOfNe c x r) with
        | .vdesc l I => Bool.and (Nat.beq v v') (Bool.and (conv c (delimMotiveTy l v I) P P')
            (Bool.and (conv c (delimMret l I P) a a') (Bool.and (conv c (delimMarg l I P) b b')
              (Bool.and (conv c (delimMrec l I P) d d') (conv c (delimMhrec l I P) e e')))))
        | _ => .false)
-  | c, x, .ssfix r l I D v P f sz i, .ssfix r' l' I' D' v' P' f' sz' i' => Bool.and (convSpine c x r r')
+  | c, x, y, .ssfix r l I D v P f sz i, .ssfix r' l' I' D' v' P' f' sz' i' => Bool.and (convSpine c x y r r')
       (Bool.and (Bool.and (Nat.beq l l') (Nat.beq v v')) (Bool.and (convTy c I I') (Bool.and (conv c (.vdesc l I) D D')
         (Bool.and (conv c (indMotiveTy l v I D) P P') (Bool.and (conv c (sfixFunTy l I D P) f f')
           (Bool.and (sizeEq sz sz') (conv c I i i')))))))
-  | c, x, .sscase r l I D v P m sz i, .sscase r' l' I' D' v' P' m' sz' i' => Bool.and (convSpine c x r r')
+  | c, x, y, .sscase r l I D v P m sz i, .sscase r' l' I' D' v' P' m' sz' i' => Bool.and (convSpine c x y r r')
       (Bool.and (Bool.and (Nat.beq l l') (Nat.beq v v')) (Bool.and (convTy c I I') (Bool.and (conv c (.vdesc l I) D D')
         (Bool.and (conv c (indMotiveTy l v I D) P P') (Bool.and (conv c (scaseMethodTy l I D P sz) m m')
           (Bool.and (sizeEq sz sz') (conv c I i i')))))))
-  | c, x, .sind r l I D v P m i, .sind r' l' I' D' v' P' m' i' => Bool.and (convSpine c x r r')
+  | c, x, y, .sind r l I D v P m i, .sind r' l' I' D' v' P' m' i' => Bool.and (convSpine c x y r r')
       (Bool.and (Bool.and (Nat.beq l l') (Nat.beq v v')) (Bool.and (convTy c I I') (Bool.and (conv c (.vdesc l I) D D')
         (Bool.and (conv c (indMotiveTy l v I D) P P') (Bool.and (conv c (indMethodTy l v I D P) m m') (conv c I i i'))))))
-  | _, _, _, _ => .false
+  | _, _, _, _, _ => .false
 def convBranches : TCtx → Nat → Env → Tm → Env → Tms → Tms → Nat → Bool
   | _, _, _, _, _, .tnil, .tnil, _ => .true
   | c, k, e, m, e', .tcons b r, .tcons b' r', i =>
@@ -2329,15 +2533,113 @@ def subTy (c : TCtx) (A B : Val) : Bool := match whnf A with
   --sol>
 end
 
-def showVal (c : TCtx) (v : Val) : String := show .nil (TCtx.lvl c) (quote (TCtx.lvl c) v)
+-- (P2: an error message does not evaluate a suspended proof either; it reads back as `()`)
+def showVal (c : TCtx) (v : Val) : String := show .nil (TCtx.lvl c) (quoteM .false (TCtx.lvl c) v)
 
 -- **Exercise 14.3.** Bidirectional type checking with usage (`infer` and `check` in
 -- `Check.lean`): each answer comes with the usage of the variables (types and proofs
 -- count nothing); leaving a binder checks its variable's usage against its quantity.
 -- `check` returns the type it checked against.
+-- **The proof marker** (P2; "the proof marker" in `Check.lean`). `eval` has no types, so it
+-- cannot know that the value of a `let`, an argument or a field is a proof. The checker
+-- can: outside a proof (`TCtx.pm`), a term whose type is in a sort that may be `0` must be
+-- marked (`prf l t`, which `eval` suspends when `l` is `0`) or neutral-shaped (a variable,
+-- a constant or `()`, under applications, projections, `down` and ascriptions). Then every
+-- value built at a proposition is a neutral, `()` or a glued constant that unfolds to one,
+-- and the kernel never performs a β, projection or ι step inside a proof.
+def neutralShaped : Tm → Bool
+  | .var _ => .true
+  | .const _ _ _ _ _ => .true
+  | .axiomC _ _ => .true
+  | .star => .true
+  | .app _ _ => .true
+  | .fst _ => .true
+  | .snd _ => .true
+  | .down _ => .true
+  | .ann _ _ => .true
+  | .prf _ _ => .true
+  -- (the proofs that are stuck heads: evaluating one evaluates its relevant parts and
+  -- gives a neutral, with no step inside a proof)
+  | .eqRefl _ _ => .true
+  | .tyRefl _ => .true
+  | .subst _ _ _ _ _ _ => .true
+  | _ => .false
+-- the requirement on `t`, found at the type `ty`: `.none`, or the error
+def requireMarker (c : TCtx) (t : Tm) (ty : Val) : Option String := match TCtx.pm c with
+  | .zero => match Bool.and kernelLazyProofs (Bool.not (neutralShaped t)) with
+    | .false => .none
+    | .true => match sortOf c ty with
+      | .none => .some (String.append "internal error: cannot compute the sort of " (showVal c ty))
+      | .some l => match lvlNeverZero l with
+        | .true => .none
+        | .false => .some (String.append "unmarked proof: the kernel does not evaluate proofs, so a term of type "
+            (String.append (showVal c ty) " must be marked (prf)"))
+  | _ => .none
+-- a marker `prf l` at the type `ty`: `l` must be the sort of `ty`. The context for the
+-- marked term: inside a proof when `l` is `0`, else the same mode with the term exempt.
+inductive MarkR where
+  | ok (c : TCtx)
+  | err (m : String)
+def underMarker (c : TCtx) (l : Lvl) (ty : Val) : MarkR := match sortOf c ty with
+  | .none => .err (String.append "internal error: cannot compute the sort of " (showVal c ty))
+  | .some s => match lvlEquiv s l with
+    | .false => .err (String.append "prf marks a term at the wrong sort: its type is " (showVal c ty))
+    | .true => match lvlIsZero l with
+      | .true => .ok (TCtx.inProof c)
+      | .false => .ok (TCtx.atMarked c)
+
+-- **Mode by type, bind by type** (I-1; `Ctx.modeAt`, `Ctx.evalAt` in `Check.lean`). Inside a
+-- proof, a subterm whose type is not a proposition is a relevant term again: it can be
+-- evaluated (as the index of a type the checker computes), so the proofs in it must be
+-- marked. And where the checker needs the value of a term to bind a variable or to
+-- instantiate a type, inside a proof a proof is suspended, not evaluated. So the checker
+-- never evaluates a term that was checked in proof mode.
+def isProofTy (c : TCtx) (ty : Val) : Bool := match kernelLazyProofs with
+  | .false => .false
+  | .true => match sortOf c ty with
+    | .some l => lvlIsZero l
+    | .none => .false
+def TCtx.relevant (c : TCtx) : TCtx := match c with
+  | .mk e t l x m => match Nat.beq m 3 with
+    | .true => c
+    | .false => .mk e t l x 0
+def modeAt (c : TCtx) (ty : Val) : TCtx := match Nat.beq (TCtx.pm c) 1 with
+  | .false => c
+  | .true => match sortOf c ty with
+    | .some l => (match lvlIsZero l with
+      | .true => c
+      | .false => TCtx.relevant c)
+    | .none => c
+-- inside a proof, the mode for a part of a term that is a proof only if `isProof`
+def modeIf (c : TCtx) (isProof : Bool) : TCtx := match Nat.beq (TCtx.pm c) 1 with
+  | .false => c
+  | .true => match isProof with
+    | .true => c
+    | .false => TCtx.relevant c
+def evalAt (c : TCtx) (t : Tm) (ty : Val) : Val := match Bool.and (Nat.beq (TCtx.pm c) 1) (isProofTy c ty) with
+  | .true => suspend (TCtx.env c) t
+  | .false => eval (TCtx.env c) t
+
 mutual
-def infer : TCtx → Tm → TyRes
+-- (given) `infer`, with the proof marker's requirement
+def infer (c : TCtx) (t : Tm) : TyRes := match inferW (TCtx.belowMarked c) t with
+  | .ok ty u => match requireMarker c t ty with
+    -- (a proof uses nothing, as in `check`)
+    | .none => (match isPropTyU c ty with
+      | .true => .ok ty (uZeros (TCtx.lvl c))
+      | .false => .ok ty u)
+    | .some m => .err m
+  | r => r
+def inferW : TCtx → Tm → TyRes
   --<sol
+  -- (P2) a marked term: at level `0` it is inferred as a proof
+  | c, .prf l t => match infer (match lvlIsZero l with
+      | .true => TCtx.inProof c
+      | .false => TCtx.atMarked c) t with
+    | .ok ty u => match underMarker c l ty with
+      | .ok _ => .ok ty u
+      | .err m => .err m
+    | r => r
   | c, .var i => match Nat.lt i (TCtx.lvl c) with
     | .true => .ok (lookup (TCtx.types c) i) (uSingle (TCtx.lvl c) i)
     | .false => .err "internal error: a variable out of scope"
@@ -2358,11 +2660,13 @@ def infer : TCtx → Tm → TyRes
   | _, .lam _ => .err "cannot infer the type of a λ; add a type ascription"
   | c, .app f a => match infer c f with
     | .ok fty uf => match whnf fty with
-      | .vpi q dom env cod _ => match check (erasedIf q c) a dom with
+      -- (inside a proof: the application is a proof exactly when its function is; if it is
+      -- not, it can be evaluated, and its argument with it: checked as in relevant mode)
+      | .vpi q dom env cod _ => match check (erasedIf q (modeIf c (isProofTy c fty))) a dom with
         -- (the argument is evaluated only if the codomain mentions it: `List.cons x rest`
         -- nested n deep would evaluate the rest at every level)
         | .ok _ ua => .ok (eval (.cons (match usesVar 0 cod with
-            | .true => eval (TCtx.env c) a
+            | .true => evalAt c a dom
             | .false => .vtt) env) cod) (uAdd uf (uScale q ua))
         | r => r
       | ty => .err (String.append "not a function: its type is " (showVal c ty))
@@ -2380,7 +2684,7 @@ def infer : TCtx → Tm → TyRes
   -- at 1 can't be projected: this kernel has no `split`, so it can't be taken apart here)
   | c, .fst p => match infer c p with
     | .ok ty u => match whnf ty with
-      | .vsigma q a _ _ _ => match TCtx.erased c with
+      | .vsigma q a _ _ _ => match Bool.or (TCtx.erased c) (isPropTyU c ty) with
         | .true => .ok a u
         | .false => match qle .qo q with
           | .true => .ok a (uScale .qw u)
@@ -2390,8 +2694,8 @@ def infer : TCtx → Tm → TyRes
   | c, .snd p => match infer c p with
     | .ok ty u => match whnf ty with
       | .vsigma _ _ env b _ => match TCtx.erased c with
-        | .true => .ok (eval (.cons (vfst (eval (TCtx.env c) p)) env) b) u
-        | .false => .ok (eval (.cons (vfst (eval (TCtx.env c) p)) env) b) (uScale .qw u)
+        | .true => .ok (eval (.cons (vfst (evalAt c p ty)) env) b) u
+        | .false => .ok (eval (.cons (vfst (evalAt c p ty)) env) b) (uScale .qw u)
       | ty => .err (String.append "not a pair: its type is " (showVal c ty))
     | r => r
   | c, .unit n => .ok (.vsort (.lnum (n + 1))) (uZeros (TCtx.lvl c))
@@ -2400,7 +2704,9 @@ def infer : TCtx → Tm → TyRes
   | c, .pfalse => .ok (.vsort (.lnum 0)) (uZeros (TCtx.lvl c))
   | _, .star => .err "cannot infer the type of tt; add a type ascription"
   | c, .exfalso m t => match inferUniv c m with
-    | .ok _ _ => match infer (TCtx.erase c) t with
+    -- (inside a proof: if the motive is not a proposition the `absurd` is a relevant term,
+    -- which evaluates its argument: the argument is inferred as in relevant mode)
+    | .ok (.vsort lm) _ => match infer (modeIf (TCtx.erase c) (lvlIsZero lm)) t with
       | .ok ty _ => match whnf ty with
         | .vempty _ => .ok (eval (TCtx.env c) m) (uZeros (TCtx.lvl c))
         | ty => .err (String.append "not empty: " (showVal c ty))
@@ -2458,7 +2764,8 @@ def infer : TCtx → Tm → TyRes
         | .true =>
           let vA := eval (TCtx.env c) A;
           let vB := eval (TCtx.env c) B;
-          match check (TCtx.erase c) e (vEqType vA vB) with
+          -- (the equation is never evaluated: checked as a proof)
+          match check (TCtx.inProof (TCtx.erase c)) e (vEqType vA vB) with
           | .ok _ _ => match check c t vA with
             | .ok _ u => .ok vB u
             | r => r
@@ -2473,18 +2780,19 @@ def infer : TCtx → Tm → TyRes
       let vA := eval (TCtx.env c) A;
       match check c a vA with
       | .ok _ _ =>
-        let va := eval (TCtx.env c) a;
+        let va := evalAt c a vA;
         -- (b :0 A) → (_ :0 a = b) → Prop
         let motiveTy : Val := .vpi .qz vA (.cons va (.cons vA .nil)) (.piq .qz (.eq (.var 2) (.var 1) (.var 0)) .prop) .none;
         match check c P motiveTy with
         | .ok _ _ =>
           let vP := eval (TCtx.env c) P;
-          match check c p (vapp (vapp vP va) (.vne (.hrefl vA va) .snil)) with
+          -- (`p` and `e` are never evaluated: checked as proofs)
+          match check (TCtx.inProof c) p (vapp (vapp vP va) (.vne (.hrefl vA va) .snil)) with
           | .ok _ _ => match check c b vA with
             | .ok _ _ =>
-              let vb := eval (TCtx.env c) b;
-              match check c e (vEq vA va vb) with
-              | .ok _ _ => .ok (vapp (vapp vP vb) (eval (TCtx.env c) e)) (uZeros (TCtx.lvl c))
+              let vb := evalAt c b vA;
+              match check (TCtx.inProof c) e (vEq vA va vb) with
+              | .ok _ _ => .ok (vapp (vapp vP vb) (suspend (TCtx.env c) e)) (uZeros (TCtx.lvl c))
               | r => r
             | r => r
           | r => r
@@ -2666,7 +2974,11 @@ def infer : TCtx → Tm → TyRes
       | r => r
     | r => r
   | c, .const _ ps ls _ ty => .ok (eval .nil (substIfAny ps ls ty)) (uZeros (TCtx.lvl c))
-  | c, .axiomC _ ty => .ok (eval .nil ty) (uZeros (TCtx.lvl c))
+  -- (P2) a proof that was not read back (`forceProof`) is no constant: rejected, with the
+  -- message it is named by (Lean's kernel: an unbound global with that name)
+  | c, .axiomC n ty => match kStrEq n proofStub with
+    | .true => .err proofStub
+    | .false => .ok (eval .nil ty) (uZeros (TCtx.lvl c))
   | c, .ulift l A => match inferUniv c A with
     | .ok (.vsort k) _ => match lvlLe k (.lnum l) with
       | .true => .ok (.vsort (.lnum l)) (uZeros (TCtx.lvl c))
@@ -2695,14 +3007,25 @@ def letIn : TCtx → Q → Tm → Tm → Tm → TyRes
   | c, q, ty, v, b => match inferUniv c ty with
     | .ok _ _ =>
       let tyv := eval (TCtx.env c) ty;
+      match Bool.and (Nat.beq (TCtx.pm c) 1) (isProofTy c tyv) with
+      -- inside a proof, a `let`-bound proof: bound suspended, so the body's type is known
+      -- before the value is checked; if the `let` is not itself a proof it can be
+      -- evaluated, and its value with it: the value is then checked as in relevant mode
+      | .true => (match infer (TCtx.define c (suspend (TCtx.env c) v) tyv) b with
+        | .ok bty ub => (match check (erasedIf q (modeIf c (isProofTy c bty))) v tyv with
+          | .ok _ uv => (match popUsageAt c q tyv ub with
+            | .some ub' => .ok bty (uAdd (uScale q uv) ub')
+            | .none => .err "the let-bound variable's usage does not fit its quantity (used too often, or a variable at quantity 1 not used)")
+          | r => r)
+        | r => r)
       -- (a `let` at 0 never computes its value: an erased position)
-      match check (erasedIf q c) v tyv with
-      | .ok _ uv => match infer (TCtx.define c (eval (TCtx.env c) v) tyv) b with
-        | .ok bty ub => match popUsage q ub with
-          | .some ub' => .ok bty (uAdd (uScale q uv) ub')
-          | .none => .err "the let-bound variable's usage does not fit its quantity (used too often, or a variable at quantity 1 not used)"
+      | .false => match check (erasedIf q c) v tyv with
+        | .ok _ uv => match infer (TCtx.define c (eval (TCtx.env c) v) tyv) b with
+          | .ok bty ub => match popUsageAt c q tyv ub with
+            | .some ub' => .ok bty (uAdd (uScale q uv) ub')
+            | .none => .err "the let-bound variable's usage does not fit its quantity (used too often, or a variable at quantity 1 not used)"
+          | r => r
         | r => r
-      | r => r
     | r => r
 -- `let x :q ty := v; b` against a type: the body is checked against it too
 def checkLet : TCtx → Q → Tm → Tm → Tm → Val → TyRes
@@ -2711,22 +3034,65 @@ def checkLet : TCtx → Q → Tm → Tm → Tm → Val → TyRes
       let tyv := eval (TCtx.env c) ty;
       -- (a `let` at 0 never computes its value: an erased position)
       match check (erasedIf q c) v tyv with
-      | .ok _ uv => match check (TCtx.define c (eval (TCtx.env c) v) tyv) b T with
-        | .ok _ ub => match popUsage q ub with
+      | .ok _ uv => match check (TCtx.define c (evalAt c v tyv) tyv) b T with
+        | .ok _ ub => match popUsageAt c q tyv ub with
           | .some ub' => .ok T (uAdd (uScale q uv) ub')
           | .none => .err "the let-bound variable's usage does not fit its quantity (used too often, or a variable at quantity 1 not used)"
         | r => r
       | r => r
     | r => r
 -- (given) `check` matches on the type's shape (`whnf`), and answers with the type it got
-def check (c : TCtx) (t : Tm) (ty : Val) : TyRes := match checkW c t (whnf ty) with
-  | .ok _ u => .ok ty u
-  | r => r
+-- (and with the proof marker's requirement)
+def check (c0 : TCtx) (t : Tm) (ty : Val) : TyRes := match isPropTyU c0 ty with
+  -- a proof uses nothing: a term at a proposition is checked in an erased position, and its
+  -- usage is `0` (`check` in `Check.lean`)
+  | .true => (match checkE (TCtx.erase c0) t ty with
+    | .ok ty' _ => .ok ty' (uZeros (TCtx.lvl c0))
+    | r => r)
+  | .false => checkE c0 t ty
+def checkE (c0 : TCtx) (t : Tm) (ty : Val) : TyRes := match unknownSortInProof c0 t ty with
+  | .some m => .err m
+  | .none => checkM (modeAt c0 ty) t ty
+-- is this type a proposition (its sort computed, and `0`)? whatever the proof mode
+def isPropTyU (c : TCtx) (ty : Val) : Bool := match sortOf c ty with
+  | .some l => lvlIsZero l
+  | .none => .false
+-- leave a binder of quantity `q` and type `ty`: a binder whose type is a proposition takes
+-- any usage (its variable is a proof, erased and never run; `Ctx.popUsageAt`)
+def popUsageAt (c : TCtx) (q : Q) (ty : Val) (u : List Q) : Option (List Q) := match isPropTyU c ty with
+  | .true => (match u with
+    | .nil => .some .nil
+    | .cons _ rest => .some rest)
+  | .false => popUsage q u
+-- inside a proof, a sort that can't be computed is an error as in relevant mode
+-- (`requireMarker`), for a term the requirement would apply to (review F4)
+def unknownSortInProof (c : TCtx) (t : Tm) (ty : Val) : Option String := match Nat.beq (TCtx.pm c) 1 with
+  | .false => .none
+  | .true => match Bool.and kernelLazyProofs (Bool.not (neutralShaped t)) with
+    | .false => .none
+    | .true => match sortOf c ty with
+      | .none => .some (String.append "internal error: cannot compute the sort of " (showVal c ty))
+      | .some _ => .none
+-- (the mode is decided by the type: `modeAt`)
+def checkM (c : TCtx) (t : Tm) (ty : Val) : TyRes := match requireMarker c t ty with
+  | .some m => .err m
+  -- (the exemption of a marked term goes on to the body of a marked `λ`: `Sort (imax a l)`
+  -- is `0` exactly when `Sort l` is, so where the body's sort is `0` the whole `λ` is a
+  -- suspended proof, and the body is never evaluated)
+  | .none => match checkW (match t with
+      | .lam _ => c
+      | _ => TCtx.belowMarked c) t (whnf ty) with
+    | .ok _ u => .ok ty u
+    | r => r
 def checkW : TCtx → Tm → Val → TyRes
   --<sol
+  -- (P2) a marked term: the level must be the sort of the type
+  | c, .prf l t, ty => match underMarker c l ty with
+    | .ok c' => check c' t ty
+    | .err m => .err m
   | c, .lam b, .vpi q dom env cod _ =>
     match check (TCtx.bind c dom) b (eval (.cons (fresh (TCtx.lvl c)) env) cod) with
-    | .ok _ u => match popUsage q u with
+    | .ok _ u => match popUsageAt c q dom u with
       | .some u' => .ok (.vpi q dom env cod .none) u'
       | .none => .err "the bound variable's usage does not fit its quantity (used too often, or a variable at quantity 1 not used)"
     | r => r
@@ -2737,7 +3103,7 @@ def checkW : TCtx → Tm → Val → TyRes
     | .ok _ u => .ok (.vulift n A) u
     | r => r
   | c, .pair a b, .vsigma q ta env tb _ => match check (erasedIf q c) a ta with
-    | .ok _ ua => match check c b (eval (.cons (eval (TCtx.env c) a) env) tb) with
+    | .ok _ ua => match check c b (eval (.cons (evalAt c a ta) env) tb) with
       | .ok _ ub => .ok (.vsigma q ta env tb .none) (uAdd (uScale q ua) ub)
       | r => r
     | r => r
@@ -2784,7 +3150,7 @@ def checkW : TCtx → Tm → Val → TyRes
 -- (given) Otherwise: infer, and the type must be a subtype of the expected one. (A
 -- catch-all row is copied into every case the rows above it split off, so a long
 -- right-hand side here would be compiled hundreds of times: keep it a call.)
-def checkByInfer (c : TCtx) (t : Tm) (ty : Val) : TyRes := match infer c t with
+def checkByInfer (c : TCtx) (t : Tm) (ty : Val) : TyRes := match inferW c t with
   | .ok ty' u => match subTy c ty' ty with
     | .true => .ok ty u
     | .false => .err (String.append (String.append "type mismatch: expected " (showVal c ty))
@@ -2828,14 +3194,15 @@ def checkEqDomain : TCtx → Tm → TyRes
       | .false => .err "transp is for types in Type u, not propositions"
     | r => r
 def inferUniv : TCtx → Tm → TyRes
-  | c, t => match infer (TCtx.erase c) t with
+  -- (a type is a relevant term, also inside a proof: it is evaluated)
+  | c, t => match infer (TCtx.relevant (TCtx.erase c)) t with
     | .ok ty _ => match whnf ty with
       | .vsort l => .ok (.vsort l) (uZeros (TCtx.lvl c))
       | ty => .err (String.append "not a type: its type is " (showVal c ty))
     | r => r
 end
 
-def empty : TCtx := .mk .nil .nil 0 .false
+def empty : TCtx := .mk .nil .nil 0 .false 0
 
 -- check a declaration (`addDecl` in `Check.lean`): its type is a type and its value, if
 -- it has one, has that type. Its level parameters stay symbolic, so this checks it at
@@ -2860,3 +3227,396 @@ def typeOf (t : Tm) : String := match infer empty t with
 
 -- the normal form of a closed term
 def normalize (t : Tm) : String := show .nil 0 (quote 0 (eval .nil t))
+
+-- ---------------------------------------------------------------------------------------
+-- NOT PART OF THE KERNEL: nothing above uses what follows, and the kernel trusts none of it.
+-- **The marking pass** (P2; `Wiz/Elab/Mark.lean`), for the frontend and the tests. The kernel never evaluates a proof, and
+-- it makes that checkable: outside a proof, a term whose sort may be `0` must be marked
+-- (`prf l t`, `l` the sort of its type) or neutral-shaped (`requireMarker` in `Kernel.wiz`).
+-- This pass inserts the markers into a term, just before the kernel checks it. It is a
+-- typed traversal that mirrors `infer` and `check` without their checks: it only needs
+-- the type of each subterm, to see its sort. It is total (where it cannot compute a type
+-- it leaves the term alone, and the kernel reports the real error) and untrusted (a
+-- missing marker is the kernel's error "unmarked proof", a wrong one is rejected by the
+-- kernel's rule for `prf`). It does not go inside a proof, and it evaluates the terms it
+-- has already marked, so it never runs a proof either.
+inductive MR where
+  | mk (t : Tm) (ty : Option Val)
+def MR.tm : MR → Tm
+  | .mk t _ => t
+def MR.ty : MR → Option Val
+  | .mk _ ty => ty
+-- a computed type in weak head normal form (`()` when it is not known: no rule matches it)
+def knownW : Option Val → Val
+  | .some v => whnf v
+  | .none => .vtt
+-- does `t`, at the type `ty`, get a marker (and at which level), and is there anything to
+-- mark inside it? Nothing inside a proof (level `0`).
+inductive MD where
+  | mk (lvl : Option Lvl) (inside : Bool)
+def markDecide (c : TCtx) (t : Tm) (ty : Val) : MD := match neutralShaped t with
+  | .true => .mk .none .true
+  | .false => match sortOf c ty with
+    | .none => .mk .none .true
+    | .some l => match lvlNeverZero l with
+      | .true => .mk .none .true
+      | .false => .mk (.some l) (Bool.not (lvlIsZero l))
+def wrapWith : Option Lvl → Tm → Tm
+  | .some l, t => .prf l t
+  | .none, t => t
+def sortOfTy : Option Val → Option Lvl
+  | .some v => match whnf v with
+    | .vsort l => .some l
+    | _ => .none
+  | .none => .none
+mutual
+-- mark `t`, which is checked against `ty`
+-- (`TCtx.pm c = 2`: `t` is the body of a marked `λ`, which needs no marker of its own;
+-- `TCtx.pm c = 1`: `t` is inside a proof, where a proof needs no marker but a relevant
+-- subterm is marked as anywhere else: the mode is decided by the type, `modeAt`)
+def markCheck (c0 : TCtx) (t : Tm) (ty : Val) : Tm := match t with
+  -- a marker already in the term (read-back writes a proof back as `prf.{0} …`): kept, and
+  -- gone into as `underMarker` does, since the kernel checks a proof's relevant subterms
+  -- (review F1)
+  | .prf l t' => .prf l (markCheck (markUnder c0 l) t' ty)
+  | _ => markCheckM (modeAt c0 ty) t ty
+-- the context below a marker `prf.{l}` (`underMarker`)
+def markUnder (c : TCtx) (l : Lvl) : TCtx := match lvlIsZero l with
+  | .true => TCtx.inProof c
+  | .false => TCtx.atMarked c
+def markCheckM (c : TCtx) (t : Tm) (ty : Val) : Tm := match TCtx.pm c with
+  -- relevant mode: wrap if the sort may be `0`; inside a marker at `0` it is a proof
+  | .zero => (match markDecide c t ty with
+    | .mk w _ => wrapWith w (markCheckW (match w with
+        | .some l => (match lvlIsZero l with
+          | .true => TCtx.inProof c
+          | .false => (match t with
+            | .lam _ => TCtx.atMarked c
+            | _ => c))
+        | .none => c) t (whnf ty)))
+  | .succ n => match n with
+    -- inside a proof: nothing to wrap
+    | .zero => markCheckW c t (whnf ty)
+    -- the body of a marked `λ`: exempt, and so is the body of a `λ` below it
+    | .succ _ => match t with
+      | .lam _ => markCheckW c t (whnf ty)
+      | _ => markCheckW (TCtx.belowMarked c) t (whnf ty)
+def markCheckW : TCtx → Tm → Val → Tm
+  | c, .lam b, .vpi _ dom env cod _ => .lam (markCheck (TCtx.bind c dom) b (eval (.cons (fresh (TCtx.lvl c)) env) cod))
+  | c, .letE ty v b, T =>
+    let ty' := markTy c ty;
+    let tyv := eval (TCtx.env c) ty';
+    let v' := markCheck c v tyv;
+    .letE ty' v' (markCheck (TCtx.define c (evalAt c v' tyv) tyv) b T)
+  | c, .letq q ty v b, T =>
+    let ty' := markTy c ty;
+    let tyv := eval (TCtx.env c) ty';
+    let v' := markCheck c v tyv;
+    .letq q ty' v' (markCheck (TCtx.define c (evalAt c v' tyv) tyv) b T)
+  | _, .star, _ => .star
+  | c, .up a, .vulift _ A => .up (markCheck c a A)
+  | c, .pair a b, .vsigma _ ta env tb _ =>
+    let a' := markCheck c a ta;
+    .pair a' (markCheck c b (eval (.cons (evalAt c a' ta) env) tb))
+  | c, .dret i, .vdesc _ I => .dret (markCheck c i I)
+  | c, .darg S E, .vdesc l I =>
+    let S' := markTy c S;
+    .darg S' (markCheck c E (.vpi .qw (eval (TCtx.env c) S') (.cons I .nil) (.descr l (.var 1)) .none))
+  | c, .drec j E, .vdesc l I => .drec (markCheck c j I) (markCheck c E (.vdesc l I))
+  | c, .dhrec H j E, .vdesc l I =>
+    let H' := markTy c H;
+    .dhrec H' (markCheck c j (.vpi .qw (eval (TCtx.env c) H') (.cons I .nil) (.var 1) .none)) (markCheck c E (.vdesc l I))
+  | c, .con x, .vmu l I D i sz => match sizePred sz with
+    | .some sz' => .con (markCheck c x (vInterp l I D (muFamilyAt l I D sz') i))
+    | .none => .con x
+  | c, .cocon x, .vnu l I D i sz => match sizePred sz with
+    | .some sz' => .cocon (markCheck c x (vInterp l I D (nuFamilyAt l I D sz') i))
+    | .none => .cocon x
+  | _, t, .vsizeLt _ => t
+  | c, t, _ => MR.tm (markInferW c t)
+-- mark `t`, and compute its type (`.none`: it could not be computed)
+def markInfer (c : TCtx) (t : Tm) : MR := match t with
+  | .prf l t' => match markInferW (markUnder c l) t' with
+    | .mk t'' ty => .mk (.prf l t'') ty
+  | _ => match markInferW c t with
+    | .mk t' ty => match ty with
+      -- (inside a proof nothing is wrapped; the relevant subterms were marked on the way)
+      | .some tyv => (match Nat.beq (TCtx.pm c) 1 with
+        | .true => .mk t' ty
+        | .false => match markDecide c t tyv with
+          | .mk w _ => .mk (wrapWith w t') ty)
+      | .none => .mk t' .none
+-- mark a type (a relevant term, also inside a proof)
+def markTy (c : TCtx) (t : Tm) : Tm := MR.tm (markInfer (TCtx.relevant c) t)
+-- a Π (`isPi`) or Σ type
+def markFormer (c : TCtx) (a b : Tm) (isPi : Bool) (k : Tm → Tm → Tm) : MR :=
+  match markInfer c a with
+  | .mk a' ta => match markInfer (TCtx.bind c (eval (TCtx.env c) a')) b with
+    | .mk b' tb => .mk (k a' b') (match sortOfTy ta with
+      | .some i => (match sortOfTy tb with
+        | .some j => (match isPi with
+          | .true => .some (.vsort (.limax i j))
+          | .false => .some (.vsort (.lmax i j)))
+        | .none => .none)
+      | .none => .none)
+def markLetIn (c : TCtx) (ty v b : Tm) (k : Tm → Tm → Tm → Tm) : MR :=
+  let ty' := markTy c ty;
+  let tyv := eval (TCtx.env c) ty';
+  match Bool.and (Nat.beq (TCtx.pm c) 1) (isProofTy c tyv) with
+  -- (inside a proof, a `let`-bound proof: the body first, as in `letIn`)
+  | .true => (match markInfer (TCtx.define c (suspend (TCtx.env c) v) tyv) b with
+    | .mk b' tb => .mk (k ty' (markCheck (modeIf c (match tb with
+        | .some tbv => isProofTy c tbv
+        -- (the body's type unknown: marked as in relevant mode, as `Mark.lean` does;
+        -- over-marking is harmless, under-marking an "unmarked proof", review F3)
+        | .none => .false)) v tyv) b') tb)
+  | .false =>
+    let v' := markCheck c v tyv;
+    match markInfer (TCtx.define c (eval (TCtx.env c) v') tyv) b with
+    | .mk b' tb => .mk (k ty' v' b') tb
+def markBranches : TCtx → Nat → Tm → Tms → Nat → Tms
+  | _, _, _, .tnil, _ => .tnil
+  | c, k, m, .tcons b rest, i =>
+    .tcons (markCheck c b (eval (.cons (.vtag k i) (TCtx.env c)) m)) (markBranches c k m rest (i + 1))
+def markInferW : TCtx → Tm → MR
+  | c, .var i => .mk (.var i) (.some (lookup (TCtx.types c) i))
+  | _, .univ n => .mk (.univ n) (.some (.vsort (.lnum (n + 2))))
+  | _, .prop => .mk .prop (.some (.vsort (.lnum 1)))
+  | _, .sortL l => .mk (.sortL l) (.some (.vsort (.lsucc l)))
+  | c, .pi a b => markFormer c a b .true (fun a' b' => .pi a' b')
+  | c, .piq q a b => markFormer c a b .true (fun a' b' => .piq q a' b')
+  | c, .sigma a b => markFormer c a b .false (fun a' b' => .sigma a' b')
+  | c, .sigmaq q a b => markFormer c a b .false (fun a' b' => .sigmaq q a' b')
+  | c, .sorted l t => .mk (.sorted l (markTy c t)) (.some (.vsort l))
+  | c, .app f a => match markInfer c f with
+    | .mk f' tf => match knownW tf with
+      | .vpi _ dom env cod _ =>
+        -- (inside a proof, the argument of an application that is not a proof is marked
+        -- as in relevant mode)
+        let a' := markCheck (modeIf c (match tf with
+          | .some tfv => isProofTy c tfv
+          | .none => .true)) a dom;
+        .mk (.app f' a') (.some (eval (.cons (match usesVar 0 cod with
+          | .true => evalAt c a' dom
+          | .false => .vtt) env) cod))
+      | _ => .mk (.app f' a) .none
+  | c, .letE ty v b => markLetIn c ty v b (fun ty' v' b' => .letE ty' v' b')
+  | c, .letq q ty v b => markLetIn c ty v b (fun ty' v' b' => .letq q ty' v' b')
+  | c, .ann t ty =>
+    let ty' := markTy c ty;
+    let tyv := eval (TCtx.env c) ty';
+    .mk (.ann (markCheck c t tyv) ty') (.some tyv)
+  | c, .fst p => match markInfer c p with
+    | .mk p' tp => .mk (.fst p') (match knownW tp with
+      | .vsigma _ a _ _ _ => .some a
+      | _ => .none)
+  | c, .snd p => match markInfer c p with
+    | .mk p' tp => .mk (.snd p') (match knownW tp with
+      | .vsigma _ _ env b _ => .some (eval (.cons (vfst (evalAt c p' (match tp with
+          | .some tpv => tpv
+          | .none => .vunit 1))) env) b)
+      | _ => .none)
+  | _, .unit n => .mk (.unit n) (.some (.vsort (.lnum (n + 1))))
+  | _, .empty n => .mk (.empty n) (.some (.vsort (.lnum (n + 1))))
+  | _, .ptrue => .mk .ptrue (.some (.vsort (.lnum 0)))
+  | _, .pfalse => .mk .pfalse (.some (.vsort (.lnum 0)))
+  | c, .exfalso m t =>
+    let m' := markTy c m;
+    .mk (.exfalso m' (MR.tm (markInfer (modeIf c (isProofTy c (eval (TCtx.env c) m'))) t))) (.some (eval (TCtx.env c) m'))
+  | _, .enum k => .mk (.enum k) (.some (.vsort (.lnum 1)))
+  | _, .tag k i => .mk (.tag k i) (.some (.venum k))
+  | c, .ecase m sc bs => match markInfer c sc with
+    | .mk sc' ts => match knownW ts with
+      | .venum k =>
+        let m' := markTy (TCtx.bind c (.venum k)) m;
+        .mk (.ecase m' sc' (markBranches c k m' bs 0)) (.some (eval (.cons (eval (TCtx.env c) sc') (TCtx.env c)) m'))
+      | _ => .mk (.ecase m sc' bs) .none
+  | c, .eq A a b =>
+    let A' := markTy c A;
+    let vA := eval (TCtx.env c) A';
+    .mk (.eq A' (markCheck c a vA) (markCheck c b vA)) (.some (.vsort (.lnum 0)))
+  | c, .eqTy A B => .mk (.eqTy (markTy c A) (markTy c B)) (.some (.vsort (.lnum 0)))
+  | c, .eqRefl A a =>
+    let A' := markTy c A;
+    let vA := eval (TCtx.env c) A';
+    let a' := markCheck c a vA;
+    let va := eval (TCtx.env c) a';
+    .mk (.eqRefl A' a') (.some (vEq vA va va))
+  | c, .tyRefl X =>
+    let X' := markTy c X;
+    let vX := eval (TCtx.env c) X';
+    .mk (.tyRefl X') (.some (vEqType vX vX))
+  -- (the equation is never evaluated, but it is a proof, which may hold relevant subterms
+  -- the kernel evaluates (I-1): marked in proof mode, as `check` checks it)
+  | c, .coe A B e t =>
+    let A' := markTy c A;
+    let B' := markTy c B;
+    let vA := eval (TCtx.env c) A';
+    let vB := eval (TCtx.env c) B';
+    .mk (.coe A' B' (markCheck (TCtx.inProof c) e (vEqType vA vB)) (markCheck c t vA)) (.some vB)
+  -- (`p` and `e` are never evaluated, but they are proofs: marked in proof mode)
+  | c, .subst A a P p b e =>
+    let A' := markTy c A;
+    let vA := eval (TCtx.env c) A';
+    let a' := markCheck c a vA;
+    let va := evalAt c a' vA;
+    let motiveTy : Val := .vpi .qz vA (.cons va (.cons vA .nil)) (.piq .qz (.eq (.var 2) (.var 1) (.var 0)) .prop) .none;
+    let P' := markCheck c P motiveTy;
+    let vP := eval (TCtx.env c) P';
+    let p' := markCheck (TCtx.inProof c) p (vapp (vapp vP va) (.vne (.hrefl vA va) .snil));
+    let b' := markCheck c b vA;
+    let vb := evalAt c b' vA;
+    let e' := markCheck (TCtx.inProof c) e (vEq vA va vb);
+    .mk (.subst A' a' P' p' b' e')
+      (.some (vapp (vapp vP vb) (suspend (TCtx.env c) e')))
+  | c, .descr l I => .mk (.descr l (markTy c I)) (.some (.vsort (.lnum (l + 2))))
+  | c, .delim v P a b d e D => match markInfer c D with
+    | .mk D' tD => match knownW tD with
+      | .vdesc l I =>
+        let P' := markCheck c P (delimMotiveTy l v I);
+        let vP := eval (TCtx.env c) P';
+        .mk (.delim v P' (markCheck c a (delimMret l I vP)) (markCheck c b (delimMarg l I vP))
+            (markCheck c d (delimMrec l I vP)) (markCheck c e (delimMhrec l I vP)) D')
+          (.some (vapp vP (eval (TCtx.env c) D')))
+      | _ => .mk (.delim v P a b d e D') .none
+  | c, .mu l I D i =>
+    let I' := markTy c I;
+    let vI := eval (TCtx.env c) I';
+    .mk (.mu l I' (markCheck c D (.vdesc l vI)) (markCheck c i vI)) (.some (.vsort (.lnum (l + 1))))
+  | c, .mus l I D i sz =>
+    let I' := markTy c I;
+    let vI := eval (TCtx.env c) I';
+    .mk (.mus l I' (markCheck c D (.vdesc l vI)) (markCheck c i vI) sz) (.some (.vsort (.lnum (l + 1))))
+  | c, .nu l I D i sz =>
+    let I' := markTy c I;
+    let vI := eval (TCtx.env c) I';
+    .mk (.nu l I' (markCheck c D (.vdesc l vI)) (markCheck c i vI) sz) (.some (.vsort (.lnum (l + 1))))
+  | _, .size => .mk .size (.some (.vsort (.lnum 1)))
+  | _, .szInf => .mk .szInf (.some .vsize)
+  | _, .szSuc sz => .mk (.szSuc sz) (.some .vsize)
+  | _, .sizeLt sz => .mk (.sizeLt sz) (.some (.vsort (.lnum 1)))
+  | c, .ind l I D v P m i x =>
+    let I' := markTy c I;
+    let vI := eval (TCtx.env c) I';
+    let D' := markCheck c D (.vdesc l vI);
+    let vD := eval (TCtx.env c) D';
+    let P' := markCheck c P (indMotiveTy l v vI vD);
+    let vP := eval (TCtx.env c) P';
+    let m' := markCheck c m (indMethodTy l v vI vD vP);
+    let i' := markCheck c i vI;
+    let vi := eval (TCtx.env c) i';
+    let x' := markCheck c x (.vmu l vI vD vi .vszInf);
+    .mk (.ind l I' D' v P' m' i' x') (.some (vapp (vapp vP vi) (eval (TCtx.env c) x')))
+  | c, .sfix l I D v P f sz i x =>
+    let I' := markTy c I;
+    let vI := eval (TCtx.env c) I';
+    let D' := markCheck c D (.vdesc l vI);
+    let vD := eval (TCtx.env c) D';
+    let P' := markCheck c P (indMotiveTy l v vI vD);
+    let vP := eval (TCtx.env c) P';
+    let f' := markCheck c f (sfixFunTy l vI vD vP);
+    let i' := markCheck c i vI;
+    let vi := eval (TCtx.env c) i';
+    let x' := markCheck c x (.vmu l vI vD vi (eval (TCtx.env c) sz));
+    .mk (.sfix l I' D' v P' f' sz i' x') (.some (vapp (vapp vP vi) (eval (TCtx.env c) x')))
+  | c, .scase l I D v P m sz i x =>
+    let I' := markTy c I;
+    let vI := eval (TCtx.env c) I';
+    let D' := markCheck c D (.vdesc l vI);
+    let vD := eval (TCtx.env c) D';
+    let P' := markCheck c P (indMotiveTy l v vI vD);
+    let vP := eval (TCtx.env c) P';
+    let vs := eval (TCtx.env c) sz;
+    let m' := markCheck c m (scaseMethodTy l vI vD vP vs);
+    let i' := markCheck c i vI;
+    let vi := eval (TCtx.env c) i';
+    let x' := markCheck c x (.vmu l vI vD vi vs);
+    .mk (.scase l I' D' v P' m' sz i' x') (.some (vapp (vapp vP vi) (eval (TCtx.env c) x')))
+  | c, .out x => match markInfer c x with
+    | .mk x' tx => .mk (.out x') (match knownW tx with
+      | .vnu l I D i sz => (match sizePred sz with
+        | .some sz' => .some (vInterp l I D (nuFamilyAt l I D sz') i)
+        | .none => .none)
+      | _ => .none)
+  | c, .scofix l I D A f sz i a =>
+    let I' := markTy c I;
+    let vI := eval (TCtx.env c) I';
+    let D' := markCheck c D (.vdesc l vI);
+    let vD := eval (TCtx.env c) D';
+    let A' := markCheck c A (coitStateTy l vI);
+    let vA := eval (TCtx.env c) A';
+    let f' := markCheck c f (scofixFunTy l vI vD vA);
+    let i' := markCheck c i vI;
+    let vi := eval (TCtx.env c) i';
+    let a' := markCheck c a (vapp vA vi);
+    .mk (.scofix l I' D' A' f' sz i' a') (.some (.vnu l vI vD vi (eval (TCtx.env c) sz)))
+  | c, .coit l I D S st i x =>
+    let I' := markTy c I;
+    let vI := eval (TCtx.env c) I';
+    let D' := markCheck c D (.vdesc l vI);
+    let vD := eval (TCtx.env c) D';
+    let S' := markCheck c S (coitStateTy l vI);
+    let vS := eval (TCtx.env c) S';
+    let st' := markCheck c st (coitStepTy l vI vD vS);
+    let i' := markCheck c i vI;
+    let vi := eval (TCtx.env c) i';
+    let x' := markCheck c x (vapp vS vi);
+    .mk (.coit l I' D' S' st' i' x') (.some (.vnu l vI vD vi .vszInf))
+  | _, .const n ps ls v ty => .mk (.const n ps ls v ty) (.some (eval .nil (substIfAny ps ls ty)))
+  | _, .axiomC n ty => .mk (.axiomC n ty) (.some (eval .nil ty))
+  | c, .ulift l A => .mk (.ulift l (markTy c A)) (.some (.vsort (.lnum l)))
+  | c, .down t => match markInfer c t with
+    | .mk t' tt => .mk (.down t') (match knownW tt with
+      | .vulift _ A => .some A
+      | _ => .none)
+  -- checked only: no type to compute
+  | _, .lam b => .mk (.lam b) .none
+  | _, .pair a b => .mk (.pair a b) .none
+  | _, .star => .mk .star .none
+  | _, .up a => .mk (.up a) .none
+  | _, .dret i => .mk (.dret i) .none
+  | _, .darg S E => .mk (.darg S E) .none
+  | _, .drec j E => .mk (.drec j E) .none
+  | _, .dhrec H j E => .mk (.dhrec H j E) .none
+  | _, .con x => .mk (.con x) .none
+  | _, .cocon x => .mk (.cocon x) .none
+  | _, .prf l t => .mk (.prf l t) .none
+end
+-- a closed term with its proof markers, at the type `ty` (a term)
+def markClosed (v ty : Tm) : Tm := markCheck empty v (eval .nil ty)
+-- Check a closed term `v` at the type `ty` (a term), **marking it only when the kernel
+-- asks**: the marking pass is about as much work as the kernel's own check, and most
+-- definitions of a program need no marker. The term goes to the kernel as it is; if the
+-- answer is "unmarked proof", it is marked and checked again. `.good v'`: the term the
+-- kernel accepted.
+inductive Checked where
+  | good (v : Tm)
+  | bad (m : String)
+def kCharsPrefix : List Char → List Char → Bool
+  | .nil, _ => .true
+  | .cons a as, .cons b bs => Bool.and (Nat.beq (Char.code a) (Char.code b)) (kCharsPrefix as bs)
+  | _, _ => .false
+def isUnmarkedErr (m : String) : Bool := match "unmarked proof" with
+  | .mk x => match m with
+    | .mk y => kCharsPrefix x y
+-- a marker on the term itself, if it is a proof (its sort may be `0`) and not neutral-shaped
+def markTop (v ty : Tm) : Tm := match v with
+  | .prf _ _ => v
+  | _ => match markDecide empty v (eval .nil ty) with
+    | .mk w _ => wrapWith w v
+def checkMarking (v ty : Tm) : Checked := match check empty v (eval .nil ty) with
+  | .ok _ _ => .good v
+  | .err m => match isUnmarkedErr m with
+    | .false => .bad m
+    | .true =>
+      -- first a marker on the term itself only (enough for most proofs), then the pass
+      let v1 := markTop v ty;
+      match check empty v1 (eval .nil ty) with
+      | .ok _ _ => .good v1
+      | .err m1 => match isUnmarkedErr m1 with
+        | .false => .bad m1
+        | .true =>
+          let v' := markClosed v ty;
+          match check empty v' (eval .nil ty) with
+          | .ok _ _ => .good v'
+          | .err m' => .bad m'
