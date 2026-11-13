@@ -587,7 +587,7 @@ def group : Group where
         failsLib "def f : Nat := 1" "Nat is defined in the Prelude: add `import Prelude`" },
     { name := "messages: fields, patterns, constructors", run := fun _ => do
         failsLib "import Prelude\nstructure P where\n  x : Nat\n  y : Nat\ndef f (p : P) : Nat := p.z" "P has no field 'z' (its fields are x, y)"
-        failsLib "import Prelude\ndef f : Nat → Nat\n  | .zero => 0\n  | .succx n => n" "4:5: error: Nat has no constructor succx (its constructors are zero, succ)"
+        failsLib "import Prelude\ndef f : Nat → Nat\n  | .zero => 0\n  | .succx n => n" "4:5: error: the value matched has type Nat, which has no constructor .succx (its constructors: .zero, .succ)"
         failsLib "import Prelude\ndef f : Nat → Nat\n  | .zero => 0" "missing case for constructor succ: add an alternative for .succ n"
         failsLib "import Prelude\ninductive T where\n  | a\n  | a" "4:5: error: the constructor a is declared twice in T"
         failsLib "import Prelude\ninstance : Frob Nat where\n  x := 1" "unknown class 'Frob'" },
