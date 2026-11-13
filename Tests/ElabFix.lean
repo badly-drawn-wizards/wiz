@@ -521,6 +521,15 @@ def group : Group where
           "def t {i o : HwTy} (f : Comb i o) : (s : Nat) → (xs : List (HwTy.El i)) → Hdl.map (Comb.el f) xs = Hdl.map (Comb.el f) xs\n" ++
           "  | _, .nil => refl (@List.nil (HwTy.El o))\n" ++
           "  | s, .cons x xs => Hdl.consEq (f x) (t f s xs)\n") },
+    { name := "dotted names: the longest prefix that names something, then fields by the type's name (cohesion-hardware)", run := fun _ =>
+        -- `Q.origin.x` was the fields `origin.x` of `Q`; and `p.sum` for a structure `P`
+        -- found no field `sum` (generalised field notation only knew inductive types)
+        okLib ("import Prelude\nstructure P where\n  x : Nat\n  y : Nat\n" ++
+          "def P.sum (p : P) : Nat := Nat.add p.x p.y\ndef Q.origin : P := P.mk 1 2\n" ++
+          "def a : Nat := Q.origin.x\ndef b : Nat := Q.origin.sum\ndef c (p : P) : Nat := p.sum\n" ++
+          "#eval a\n#eval b\n#eval c (P.mk 3 4)") ["1", "3", "7"] },
+    { name := "dotted names through a derived definition: `Cnt.bundle.toEl` (cohesion-hardware)", run := fun _ =>
+        okLibs "import Hdl.Core\ndef B4 : HwTy := HwTy.bits 4\ndef Bit : HwTy := HwTy.bit\nstructure Cnt (r : HwTy → Type) where\n  count : r B4\n  up : r Bit\n  deriving Bundle\ndef z : Cnt HwTy.El := Cnt.mk (BitVec.ofNat 4 3) (BitVec.ofNat 1 1)\ndef e1 : HwTy.El Cnt.bundle.code := Bundle.toEl Cnt.bundle z\ndef e2 : HwTy.El Cnt.bundle.code := Cnt.bundle.toEl z\n" },
     { name := "an equation at a product type: η for projected holes, stale casts (cohesion-hardware)", run := fun _ =>
         -- `Eq.congrArg f e`/`fstEq e` with `e : f y = (y, y)`: the expected `?p = ?q` computes
         -- to `(?p.1 = ?q.1) × …` and `?q.1 =?= y` is solved by η (`?q := (?a, ?b)`); a cast

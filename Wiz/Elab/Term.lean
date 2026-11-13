@@ -357,6 +357,32 @@ private def isImplicitFun (stx : Syntax) : Bool :=
     | some b => b.isOfKind "binder.implicit"
     | none => false
 
+/-- `t.f` as `D.f t`, for a type `D a…` that is a glued definition (a structure, say)
+with a declaration `D.f` (or, if `D a…` unfolds to another glued definition `E b…`, by
+`E.f`, and so on): `D.f`'s implicits become holes and its first explicit argument is
+`t`. `none` if there is no such declaration. -/
+partial def fieldByTypeName? (ctx : LocalCtx R) (t : Term R) (ty : VTy R) (f : Name) :
+    ElabM R (Option (Term R × VTy R)) := do
+  let g ← getGlobals
+  let mut v ← forceMeta ty
+  for _ in [0:16] do
+    match v with
+    | .unfold n us _ next =>
+      let Df := g.resolve (n ++ "." ++ f)
+      if let some d := g.find? Df then
+        if let some m := g.privateTo? Df then
+          throwAt ctx.info s!"'{Globals.privateBase n}.{f}' is private to module {m}" "private"
+        let dus ← d.levelParams.mapM fun _ => freshLevelMeta
+        let fty : VTy R := eval g [] (d.type.instLevels d.levelParams dus)
+        let (tm, fty) ← insertImplicits ctx (.const Df dus) fty
+        let .pi _ _ _ dom cod _ ← force fty | return none
+        unifyAt ctx (.missing) dom ty
+        let _ := us
+        return some (Term.app tm t, ← instM cod (← evalIn ctx t))
+      v ← forceMeta next.get
+    | _ => return none
+  return none
+
 /-- **Exercise 4.9.** Field access by name: `t.f₁.f₂…`. Starting from `t : ty`, for
 each field name walk the Σ telescope of the (forced) type: if the current Σ's binder
 name is the field, project with `fst`; otherwise move on with `snd`, instantiating the
@@ -419,7 +445,12 @@ partial def elabFields (ctx : LocalCtx R) (t : Term R) (ty : VTy R) (fields : Li
         if x == f then pure (.fst t, A)
         else walk (.snd t) (← instM B (vFst (← evalIn ctx t)))
       | _ => noField
-    let (t, ty) ← walk t ty
+    let (t, ty) ← tryCatch (walk t ty) fun err => do
+      -- not a field: generalised field notation by the name of the type, `D.f t` for a
+      -- type `D a…` (a structure, or any definition, as the type is written: glued)
+      match ← fieldByTypeName? ctx t ty f with
+      | some r => pure r
+      | none => throw err
     elabFields ctx t ty rest
   --|ex
   --| sorry
@@ -3015,34 +3046,45 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
       -- field access: `p.x.y`
       match x.splitOn "." with
       | base :: f :: fs =>
-        -- `T.f` with `T` a type (or nothing at all) is a name, not a field access: say
-        -- that the name is unknown (`Nat.ad`), not that types have no field `ad`
+        -- the longest prefix that names something: `Tx.bundle.toEl` is the field `toEl` of
+        -- the global `Tx.bundle`, not the fields `bundle.toEl` of `Tx`
+        let parts := base :: f :: fs
         let g ← getGlobals
-        let isName := (lookupLocal ctx base).isNone &&
-          match g.find? (g.resolve base) with
-          | some d => endsInSort d.type
-          | none => !["Unit", "True", "Empty", "False", "Qty", "Size"].contains base &&
-                    !(g.privates.toList.any fun (n, m) => m != g.module && n == Globals.privateName m base)
-        if isName then
-          -- a field of a structure that has no projection function (an erased one)
-          if fs.isEmpty && (((structLayout? g (g.resolve base)).map (·.fields)).getD []).contains f then
-            throwAt ctx.info s!"unknown identifier '{x}': the field {f} of {base} has no projection function (an erased field has none; take the structure apart with `match` or `let ⟨…⟩`)"
-          pushInfo (.done (.unknownIdent ctx.info x ctx.names))
-          throwAt ctx.info s!"unknown identifier '{x}'" "unknown-identifier"
-        let (t, ty) ← infer ctx (.node stx.info "term.ident" #[.ident stx.info base])
-        -- (#266) `T.f` with `T` a global type (or type family, or function) and no field
-        -- `f`: a qualified name that doesn't exist (not imported, or its definition failed)
-        let qualified := (lookupLocal ctx base).isNone && match ← force ty with
-          | .sort _ | .pi .. => true
-          | _ => false
-        if qualified then
-          try elabFields ctx t ty (f :: fs)
-          catch e =>
-            if e.msg.startsWith "no field '" then
-              pushInfo (.done (.unknownIdent ctx.info x ctx.names))
-              throwAt ctx.info s!"unknown identifier '{x}'" "unknown-identifier"
-            else throw e
-        else elabFields ctx t ty (f :: fs)
+        let named (n : Name) : Bool := (lookupLocal ctx n).isSome || (g.find? (g.resolve n)).isSome
+        let k := ((List.range (parts.length - 1)).reverse.map (· + 1)).find? (fun k =>
+          named (".".intercalate (parts.take k))) |>.getD 1
+        if k > 1 then
+          let head := ".".intercalate (parts.take k)
+          let (t, ty) ← infer ctx (.node stx.info "term.ident" #[.ident stx.info head])
+          elabFields ctx t ty (parts.drop k)
+        else
+          -- `T.f` with `T` a type (or nothing at all) is a name, not a field access: say
+          -- that the name is unknown (`Nat.ad`), not that types have no field `ad`
+          let isName := (lookupLocal ctx base).isNone &&
+            match g.find? (g.resolve base) with
+            | some d => endsInSort d.type
+            | none => !["Unit", "True", "Empty", "False", "Qty", "Size"].contains base &&
+                      !(g.privates.toList.any fun (n, m) => m != g.module && n == Globals.privateName m base)
+          if isName then
+            -- a field of a structure that has no projection function (an erased one)
+            if fs.isEmpty && (((structLayout? g (g.resolve base)).map (·.fields)).getD []).contains f then
+              throwAt ctx.info s!"unknown identifier '{x}': the field {f} of {base} has no projection function (an erased field has none; take the structure apart with `match` or `let ⟨…⟩`)"
+            pushInfo (.done (.unknownIdent ctx.info x ctx.names))
+            throwAt ctx.info s!"unknown identifier '{x}'" "unknown-identifier"
+          let (t, ty) ← infer ctx (.node stx.info "term.ident" #[.ident stx.info base])
+          -- (#266) `T.f` with `T` a global type (or type family, or function) and no field
+          -- `f`: a qualified name that doesn't exist (not imported, or its definition failed)
+          let qualified := (lookupLocal ctx base).isNone && match ← force ty with
+            | .sort _ | .pi .. => true
+            | _ => false
+          if qualified then
+            try elabFields ctx t ty (f :: fs)
+            catch e =>
+              if e.msg.startsWith "no field '" then
+                pushInfo (.done (.unknownIdent ctx.info x ctx.names))
+                throwAt ctx.info s!"unknown identifier '{x}'" "unknown-identifier"
+              else throw e
+          else elabFields ctx t ty (f :: fs)
       | _ =>
         pushInfo (.done (.unknownIdent ctx.info x ctx.names))
         throwAt ctx.info s!"unknown identifier '{x}'" "unknown-identifier"
