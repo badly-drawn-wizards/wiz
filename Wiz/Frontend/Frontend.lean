@@ -234,11 +234,11 @@ where
       if cmd.isOfKind "command.import" then
         let m := ((cmd.getArg 1).getId?).getD "_"
         if s.imported.contains m then go' input base chars stop s memo else
-        let err (text : String) : CommandState R :=
-          { s with messages := s.messages.push { info := cmd.info, severity := .error, text } }
+        let err (text code : String) : CommandState R :=
+          { s with messages := s.messages.push { info := cmd.info, severity := .error, text, code } }
         match s.loader m, s.checked.get? m with
-        | none, _ => go' input base chars stop (err s!"unknown module {m}") memo
-        | some _, some none => go' input base chars stop (err s!"import cycle through {m}") memo
+        | none, _ => go' input base chars stop (err s!"unknown module {m}" ErrorCode.unknownModule) memo
+        | some _, some none => go' input base chars stop (err s!"import cycle through {m}" ErrorCode.importCycle) memo
         | some src, done =>
           let srcChars := src.toList.toArray
           -- in isolation (unless already done in this run)
@@ -269,7 +269,7 @@ where
           -- (a declaration this file already has is reported as it is, at the import)
           let msg : Msg := match errs.find? (·.code == "duplicate-declaration") with
             | some d => { info := cmd.info, severity := .error, text := d.text, code := d.code }
-            | none => { info := cmd.info, severity := .error,
+            | none => { info := cmd.info, severity := .error, code := ErrorCode.moduleErrors,
                         text := s!"module {m} has errors: {errs.toList.map (·.render src)}" }
           let msgs := if errs.isEmpty then s.messages else s.messages.push msg
           -- (a module's warnings, such as an unchecked `builtin`, are shown at the import)
@@ -284,7 +284,7 @@ where
       let msg := (e.render input).splitOn ": " |>.drop 1 |> ": ".intercalate
       go' input base chars (recoverPos chars (skipWs chars pos))
         { s with messages := s.messages.push { info := { start := e.pos, stop := e.pos },
-                                                severity := .error, text := msg } } memo
+                                                severity := .error, text := msg, code := ErrorCode.parseError } } memo
 
   /-- Elaborate one command, recording where the declarations it adds come from, and
   (11s) what they are and their doc comments. -/

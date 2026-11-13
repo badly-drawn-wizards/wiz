@@ -74,6 +74,9 @@ def isDefinition := 32
 -- (stage 28) solvers
 def satSolve := 33
 def eqView := 34
+def smt := 35
+def define := 36
+def assignLate := 37
 end TacTag
 
 structure Goal (R : Type) where

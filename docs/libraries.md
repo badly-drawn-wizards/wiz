@@ -278,7 +278,10 @@ array with an `initial` block, reads `m[addr]`, the writes in one `always` block
 write wins). yosys maps a memory whose read data (or address) goes through a register to
 iCE40 block RAM (`SB_RAM40_4K`): `examples/hdl-mem.wiz` (a 16×8 RAM with a registered read,
 a ROM; checked by Icarus and yosys in group `hdl` when they are on PATH). Small ROMs
-become LUTs, a 256-word one block RAM. What the netlist cannot express is listed in
+become LUTs, a 256-word one block RAM. For Xilinx 7-series (`synth_xilinx`) the same RAMs
+become RAMB18E1 or RAMB36E1 and `Hw.mul` a DSP48E1; a ROM of 4 Kbit or more is declared
+`(* rom_style = "block" *)`, without which synth_xilinx builds it of LUTs
+(`examples/hdl-arty.wiz`, below). What the netlist cannot express is listed in
 `Netlist.errors` and printed as `// error:` lines: a choice between two different
 memories, a memory in a port, a state memory replaced instead of written.
 ## H14 C2: lenses for structures and bundles (`lib/OpticDerive.wiz`, `lib/Hdl/Optic.wiz`)
@@ -414,6 +417,122 @@ Not done: a general bit-level round-trip lemma for bundles (above), `BitPack` fo
 inductive types with fields (a tag and the widest constructor's fields), `!` on signals,
 `match` on an enumeration signal (staged `match`, hdl-staging-research S3), asynchronous
 reset.
+
+## Xilinx 7-series pin constraints and the Arty A7 (`Hdl.Xdc`, `Hdl.Arty`)
+
+`lib/Hdl/Xdc.wiz` (`import Hdl.Xdc`) is `Pcf` for Xilinx: an `XBoard` is the clock's
+package pin and period (picoseconds), an I/O standard and a table of resources (`XPin.one
+port pin`, `XPin.bus port pins`, bit 0 first; `XPin.rename`, `XPin.take k`).
+`Xdc.emit n board` writes the XDC (`set_property -dict { PACKAGE_PIN … IOSTANDARD … }`
+per port bit, `create_clock` for `clk`) that Vivado and nextpnr-xilinx read; ports are
+looked up by name, so the table can list the whole board. `Xdc.check n board` lists the
+ports without a resource and those of another width.
+
+`lib/Hdl/Arty.wiz` (`import Hdl.Arty`) is the Digilent Arty A7 (Artix-7, CSG324): its pins
+from Digilent's master XDC (`clk` E3 at 100 MHz, `led` 4, `rgb` 12, `btn` 4, `sw` 4,
+`uart_rx` A9 and `uart_tx` D10 (FT2232 channel B), `ck_rst`, the Pmod headers `ja` … `jd`
+8 each; all LVCMOS33) as `Arty.board`, and its two devices, `Arty.Device.a35t`
+(xc7a35ticsg324-1L, the default) and `.a100t` (xc7a100tcsg324-1), with the part names
+Project X-Ray and nextpnr use. `examples/hdl-arty.wiz` (group `hdl`) checks the XDC and
+that synth_xilinx maps its RAMs, ROM and multiply to RAMB18E1, RAMB36E1 and DSP48E1. The
+flow from there to a bitstream (yosys, nextpnr-xilinx, fasm2frames, xc7frames2bit; the
+openXC7 toolchain from Nix) is a separate package, wiz-arty, as wiz-icestick-uart is for
+the iCEstick. Its four designs (blinky, UART hello and echo, and `squares` with a RAMB18E1
+and a DSP48E1) ran on an Arty A7-35T on 2026-11-12.
+
+**UART clock rates.** An FT2232 (the USB-UART of both boards) makes its baud rate from
+3 MHz with an integer divisor, so "115200" is 3 MHz / 26 = 115384.6 baud, 0.16 % fast. A
+design that relays at line rate with bounded buffering (an echo with one byte of
+buffer) must send at least as fast as the host sends. A divider rounded to the nominal
+rate makes the board slow, and it then drops a byte every few thousand in a long burst.
+That happened on the Arty with 100 MHz / 868 = 115207 baud: one byte in about 2200. The
+iCEstick's 12 MHz / 104 = 115384.6 baud equals the FT2232's rate exactly, which is why
+it never showed there. Compute the divider from the host's real rate and round it down
+(wiz-arty's `Ftdi.divisor` and `clocksPerBit`: 866 at 100 MHz).
+
+## H14 P1: vendor primitives (black boxes): `Hdl.Prim`, `Hdl.Xilinx7`
+
+A `Prim i o` (in `Hdl.Core`) declares a vendor cell: its Verilog module name, parameters
+(Verilog text; `PrimParam` and `Prim.decl` write them), one port name per leaf of `i` and
+of `o`, and optionally a behavioural model `HwTy.El i → HwTy.El o`. `Hw` has two more
+operations: `Hw.prim p x`, an instance, and `Hw.clock`, the implicit clock as a clock
+net. At the wire instance an instance is one netlist node (`NetOp.inst`, never
+hash-consed) with an `instOut` node per output leaf; `Verilog.emit` prints it as a module
+instance after the wires (`OSERDESE2 #(.DATA_WIDTH(8), …) u22 (.CLK(sys4x), .CLKDIV(clk),
+…)`). An instance none of whose outputs is used is dropped, like any unused node.
+
+Three kinds of leaf connect primitives only, marked by a `named` segment starting with
+`@` that port names skip: `HwTy.clock` (a clock net), `HwTy.pad n` (a package pin a
+buffer drives or reads) and `HwTy.inout n` (a bidirectional one, an `inout` port). A
+clock goes from a circuit's clock input, `Hw.clock` or a primitive's clock output to a
+primitive's clock port; a pad from a circuit's input to a buffer, or from a buffer to the
+circuit's output, which is then the buffer's port with no `assign`. The netlist checks
+this (`Netlist.kindErrors`, appended to `Netlist.errors`): a clock or pad used as data,
+data fed to a clock port, a pad on a data output.
+
+Registers stay on the one implicit clock. For more clocks a `Clocking` (`Hdl.Prim`)
+describes a top-level wrapper: `Verilog.emitTop n ck` prints the circuit as `NAME_core`
+and a module `NAME` whose clock primitive (a PLL, `X7.pll`) takes the board's `clk`, and
+drives the core's `clk` and its clock inputs through BUFGs. Logic in several clock
+domains (CDC) is not supported.
+
+Simulation: a primitive without a model is 0 at values and in `Netlist.simulate`.
+`Netlist.unmodelled`/`Circuit.unmodelled` name such instances, and
+`Circuit.runModelled`/`Netlist.simulateModelled` refuse to run a circuit with one.
+
+`Hdl.Xilinx7` (`X7.*`) declares the 7-series cells of a DDR3 PHY: OBUF, IBUF, IOBUF,
+OBUFDS, IOBUFDS, BUFG (with models), ODDR, OSERDESE2 (8:1 DDR with tristate),
+ISERDESE2 (NETWORKING 8:1 DDR, from an IDELAYE2), IDELAYE2 (VAR_LOAD, 200 MHz reference),
+IDELAYCTRL, and PLLE2_BASE as a `Clocking`. Tests (group `hdl`, examples/hdl-prim.wiz):
+the Verilog, refusal, buffer models and kind errors, and yosys synth_xilinx keeping every
+cell.
+## H14 V1: verified circuit optimisation (`lib/Hdl/Verified.wiz`)
+
+The OLED demo's arithmetic units (wiz-icestick-uart, branch oled-demo: `Sphere.wiz`,
+`Blobs.wiz`) are hand-optimised: no multiplier, no divider, one result bit a cycle.
+`lib/Hdl/Verified.wiz` copies them (the same `Hw` code, with the control multiplexers
+resolved for the phase each unit is in) and states each against its plain `Nat`
+definition, one input at a time (`Hv.sqOk`, `Hv.rtOk`, …); `allBelow p n = .true` decides
+it for every input of the domain, and `allBelow_sound` turns that into a `∀`.
+
+| unit | claim | inputs | checked by |
+|---|---|---|---|
+| shift-add squarers (Sphere, 5 cycles) | `acc = ax² + ay²` | all 2¹⁰ | kernel |
+| bit-serial root (Sphere, 5 cycles) | `h = ⌊√n⌋` | n ≤ 400 (its inputs) | kernel |
+| | | n < 1024 | native |
+| bit-serial root (Blobs, 7 cycles, 14 bits) | `h = ⌊√m⌋` | all 2¹³ | native |
+| Blobs stage A (squares, × 4, root) | `ρ = 2⌊√(4(ax² + ay²))⌋` | all 2¹⁰ | native |
+| smooth-min table | entry i = (4i)²/256 (i ≤ 16), else 0 | all 32 | kernel |
+| smooth-min correction by e = abs(d₂ − d₁) | g = max(64 − e, 0), c ≤ g²/256 < c + 2 | e < 64 | kernel |
+| | | all 2¹² | native |
+| smooth minimum (`sminK`) | `min(d₁, d₂) − c − 1`, c as above | d₁, d₂ ∈ [−64, 192) | native |
+| | | d₁, d₂ ∈ [−64, 960) (the march's) | native, on demand |
+| octagonal length (`norm2`), its 11/16 | 16t ≤ 11s < 16t + 38 | s < 2048 (a, c < 1024) | kernel |
+| | | all 2¹² | native |
+| octagonal length | n² ≤ a² + c² ≤ 1.21 (n + 2)² | a, c < 256 | native |
+| | | a, c < 1024 | native, on demand |
+
+Two structure lemmas tie the 24-bit units to the kernel-checked pieces by definition
+(`rfl`): `sminK_eq` (the smooth minimum is `smin12 − c(abs(d₂ − d₁)) − 1`) and `norm2_eq`
+(`max(max(a, c), t(a + c))`). The lower bound n² ≤ a² + c² is what makes the march safe
+(a step never passes through a surface).
+
+**Trust.** `examples/hdl-verified.wiz` is kernel-checked, nothing trusted.
+`examples/hdl-verified-native.wiz` uses `native_refl` (27a): with `--trust-native` only,
+one axiom per check (`#print axioms` lists it), trusting erasure and the interpreter.
+Both run in the test group *hdl-verified* (a heavy shard: minutes). The two 2²⁰-input
+checks (about ten minutes) are `examples/hdl-verified-full.wiz`, run on demand:
+`wiz check --trust-native examples/hdl-verified-full.wiz`.
+
+**What was hard (findings).** `sat_decide` (28b/28c, PRs #197/#208) was meant to do the word-level
+units, but: (F1) it is Boolean only, and nothing bit-blasts `UIntN`/`BitVec` (the bit
+library, #167, is one-bit; the Nat div/mod lemmas a bridge needs don't exist); (F2) `unfold`
+left a definition by cases on a numeral as a raw eliminator (PR #224); (F5) its
+certificate check costs about 0.3 s per LRAT step, so a 6-bit adder's commutativity
+takes about 40 s, and these units would need 10⁴ and more; (F3) exhaustive `rfl` is
+about 14 ms per case for eight word operations, so the kernel stops near 2¹² inputs.
+A computing reflection (`bit_decide`) is in drafts/hdl-verified/, for when the check is
+fast (compiled, or a faster kernel evaluator).
 
 ## H14 C4: bit-level reasoning (`lib/Hdl/Bits.wiz`)
 
@@ -630,3 +749,8 @@ def v (p q : Q) : (p + q) * (p + q) ≈ p * p + 2 * p * q + q * q :=
   integer identity and `q_ring!` is `int_ring!` on numerators and denominators. Use the
   congruences (`Q.add_congr`, `Q.le_congr`, …) to rewrite under `≈`.
 * `Vec.wiz` and `Hoare.wiz` import `Nat` for the lemmas they used to define themselves.
+## Native structures: word arrays, word maps, interned strings
+
+`lib/WordArray.wiz` (`U8Array`, `U32Array`, `U64Array`), `lib/WordMap.wiz` (`U64Map V`)
+and `lib/Intern.wiz` (`InternTable`, ids as `U32`): list models with laws, run natively
+in compiled code, updated in place when unique. See `docs/stages/29-natives.md`.

@@ -4,17 +4,71 @@ Automated solvers decide goals that are tedious to prove by hand: linear arithme
 conditions, Boolean identities, bit-vector facts. Wiz uses them in two ways, which differ
 in what is trusted (design and survey: `wiz-notes/smt.md`):
 
-* **`smt`** (28a, a separate PR) asks an SMT solver (Z3) and believes it: an axiom per
+* **`smt`** (28a) asks an SMT solver (Z3) and believes it: an axiom per
   use, behind a flag, as `native_refl` (stage 27) does for compiled evaluation;
 * **`sat_decide`** (28b) asks a SAT solver (CaDiCaL) for a *proof*, an LRAT certificate,
   which a checker written in Wiz and proved sound checks in the kernel: nothing new is
   trusted, as with Lean's `bv_decide` (which runs its checker compiled, trusting the
   compiler) or Coq's SMTCoq.
 
-## 28a: `smt` and `--trust-smt` (a separate PR)
+## 28a: `smt` and `--trust-smt`
 
-The trusted mode (an SMT solver's `unsat` as an axiom per use, behind a flag) is designed
-in `wiz-notes/smt.md` §3 and comes in its own PR, after review (`wiz-notes/smt-review.md`).
+    def trans (a b c : Nat) (h₁ : Nat.lt a b = .true) (h₂ : Nat.lt b c = .true) :
+        Nat.lt a c = .true := by smt
+    def nn (x : UIntN 8) : UIntN.not (UIntN.not x) = x := by smt
+
+`smt` is a tactic (lib/Prelude.wiz, over the request `Tac.smt`). It is accepted only
+
+* with **`--trust-smt`** (`wiz check/build/run/lsp`, grail), off by default, a flag
+  only (not a setting): "SMT solving is not enabled …" otherwise. `--smt-solver CMD`
+  (default `z3`) and `--solver-timeout MS` (default 10 000) choose the solver; all flags only, never settings
+  of a grail file;
+* in the body of a `def` (the axiom is named after it, and takes its universe
+  parameters).
+
+**How.** The host translates the goal and its context to SMT-LIB 2 (`Wiz/Smt/Translate.lean`),
+asserts the hypotheses and the negated goal, and runs the solver
+(`Wiz/Smt/Process.lean`: a process call behind an `opaque`, as the module cache does;
+answers are kept in `<cache>/smt` in a file named by the SHA-256 of the solver's identity
+and the query, which the entry stores and every read compares; only a definite `sat` or
+`unsat` is kept, never a timeout or a crash). `unsat`: the goal is closed by a new axiom
+**`X.smt✝N⟨z3 5.1.0⟩ : Π ctx, goal`** (the goal over its context, with erased binders,
+named after the definition, the use and the solver), applied to the context. `sat`: the
+tactic fails with the solver's model, in the user's names. The definition gets a warning;
+`#print axioms` lists the axiom, with a note, for it and everything that uses it.
+
+**Constructors by position.** A constant of a fragment's sort is read by its tag's
+*position* in the library type (`Bool` is `false | true`, `Nat` is `zero | succ`), never
+by its label: types are structural, so `inductive Flip | true | false` is convertible
+with `Bool` and `Flip.true` *is* `Bool.false`. Reading the label made `smt` prove
+`b = (Flip.true : Bool) → b = .true`, and from it `Empty` (smt-review B1; group *smt*
+keeps the case). Only names declared in lib/ (Prelude, Word, Logic, Int) are read as
+SMT operations or sorts.
+
+**The fragment.** Propositions (`→`, `¬`, `∧`, `∨`, `↔`, `True`, `False`, equations),
+`Bool` (`Bool.and/or/not/xor`, comparisons), `Nat` as integers `≥ 0` (`+ *`, `succ`,
+`pred`, `max`, truncated `-`, and `/`, `%` with Wiz's `x / 0 = 0`, `x % 0 = x`), and words
+`UIntN w` with a numeral width as `(_ BitVec w)` (arithmetic, bitwise operations, shifts and
+`testBit` by numerals, comparisons, `ofNat`, `toNat`). A subterm outside it becomes an
+*atom* (a fresh constant; equal terms are the same constant): sound, since a formula valid
+for an arbitrary value is valid for this one. Hypotheses outside it are dropped.
+
+**Words are bit vectors because they are in range.** Mapping `UIntN w` to `(_ BitVec w)`
+is sound only if every value is below `2^w`, where Word's definitions are the bit-vector
+operations. Since 22l the constructor carries that proof. Before it, the kernel's
+`UIntN 8` had values like `ofBitsTrusted 300`, on which `UIntN.not (UIntN.not x) = x`
+is false (the kernel refuted it), so the prototype required a range hypothesis per word.
+
+**What is trusted**: the solver (named in the axiom), the translation (one Lean file,
+reviewed), the process plumbing (only the exact answer `unsat` closes a goal) and the
+answer cache (named by a SHA-256 digest, each entry checked against the query it stores;
+the command and module cache keys include the solver's version). Not trusted: whatever
+built the goal (the axiom's statement is the goal itself, checked by the kernel as a
+type). The flag and the solver settings are in the cache keys (commands, modules, grail's
+jobs), so an acceptance is never replayed without the flag. `lib/` never uses `smt`
+(group *smt* greps it).
+
+**The self-hosted toolchain** has no `smt`: the request is the Lean host's.
 
 ## 28b: `sat_decide`: certified, with LRAT
 
@@ -48,7 +102,7 @@ in `wiz-notes/smt.md` §3 and comes in its own PR, after review (`wiz-notes/smt-
 **The solver.** Release tarballs ship CaDiCaL in `share/wiz/cc/bin/cadical` (the Lean
 toolchain's copy, which Lean ships for `bv_decide`; scripts/bundle-cc.sh), and a bundled
 toolchain uses it by default. A checkout finds `cadical` on PATH (the Nix dev shell has
-it). Z3 is not shipped (tens of MB, and `smt` is opt-in): the trusted mode's flag will find it.
+it). Z3 is not shipped (tens of MB, and `smt` is opt-in): `--smt-solver` finds it.
 
 **Trusted**: nothing new. The solver, the tactic, the DIMACS/LRAT plumbing can only make
 `sat_decide` fail. The kernel runs the checker, which is slow for big proofs (kernel
@@ -63,4 +117,69 @@ each. A stuck `a && b` is a `match`, not `Bool.and`, so it is an atom (write `Bo
 
 **Not yet**: bit vectors. Bit-blasting `UIntN w` operations into circuits is easy; the
 correctness proof needs lemmas such as `testBit (land a b) i = testBit a i && testBit b i`
-and the range invariant of `UIntN`, which the library does not have yet.
+and the range invariant of `UIntN` , which the library does not have yet.
+
+## 28c: sharing
+
+    def maj (a b c : Bool) : Bool := Bool.or (Bool.or (Bool.and a b) (Bool.and a c)) (Bool.and b c)
+    def eq4 … : Bool.xor (Bool.xor a3 b3) (carry a2 b2 (carry a1 b1 …)) = Bool.xor … (maj b2 a2 (maj …)) := by sat_decide
+
+28b's formulas are trees: `maj` uses its last argument twice, so a carry chain unfolded is
+exponential (a 16-bit one went over 2 GB). Now the goal becomes a **circuit of nodes**
+(`Sat.GNode`: a node number and a gate over other nodes), one per distinct subterm, and
+**a node's value is the goal's own subterm**: `σ v` is that subterm, so no formula is
+ever rebuilt. What the circuit claims is checked by the kernel, node by node:
+`Sat.allHold σ nodes` is the conjunction of `σ v = op (σ a) (σ b)`, each proved by `refl`
+at the subterm (`Sat.eqRefl`), which the kernel compares with its operands *folded* (both
+sides are the same subterms). Then `Sat.dag_sound`: an LRAT refutation of the gates'
+clauses and `¬ σ out` gives `σ out = .true`, with no Tseitin bookkeeping at all (the
+clauses hold under `σ` itself). No axioms.
+
+* **Head-only unfolding.** An application of a definition (`maj x y z`) is unfolded at
+  its head only: the definition applied to variables is unfolded (`TacticM.unfold` under
+  `fun`s) and the arguments put back (`TacticM.instantiate`), so they stay folded, and are
+  nodes already. A definition that does not unfold to a connective is an input.
+* **`TacticM.define`** (a new request): a definition in the goal's context, added before
+  the definition being elaborated and checked by the kernel like any other (it is not an
+  axiom: `#print axioms` does not list it). The proof uses two, `σ` and the node list,
+  instead of repeating them in every node's proof.
+* **`TacticM.assignLate`** (a new request): `assign` without the kernel's check of the
+  term at that moment. `assign` type-checks the term with the kernel and the declaration
+  is checked again at the end, so a big proof cost twice (on an 8-bit carry chain: 13 s
+  in `assign`, 14 s at the end); `sat_decide`'s proof is only checked at the end. An
+  ill-typed term is still refused, at the declaration.
+* **Where the time goes** (probes, not measurements): of the remaining check, about half
+  is the gates (`allHold`: each `refl` compared by conversion) and half the LRAT check run
+  by the kernel's evaluator over association lists. Running the check compiled
+  (`native_refl`'s evaluator) did not help: comparing the stated certificate with the
+  expected type costs as much as the check. Faster: a checker for the kernel's evaluator
+  (arrays or maps for the clause database).
+
+## 28d: `bv_decide`: words, bit-blasted (bitwise fragment)
+
+    import BvDecide
+    def t (x y z : UIntN 8) : UIntN.land x (UIntN.lor y z) = UIntN.lor (UIntN.land x y) (UIntN.land x z) := by bv_decide
+
+An equation of words `UIntN w` / `BitVec w` (`w` a numeral) becomes 28c's circuit: bit `i`
+of a word expression `e` is the node whose value is `Bits.bit (UIntN.toNat e) i`, an
+operation's bit is a gate over its operands' bits, and **the node's proof is the
+operation's lemma** (`Bits.wland_bit x y i : bit (land x y) i = bit x i && bit y i`), which
+the kernel checks like any gate. Other words are inputs; closed words (numerals) are
+constants, their bits computed (`refl`). The output node is `Bits.eqUpTo (toNat lhs)
+(toNat rhs) w`, and `Bits.word_ext` turns it into `lhs = rhs` (two numbers below `2^w`
+with the same bits are equal; the range comes from 22l). No axioms: `#print axioms` lists
+only `UIntN`'s seal and its natives, as for any use of words.
+
+lib/BitBlast.wiz has the lemmas, all at any width: `n = 2 (half n) + odd n`, `Nat.div n 2
+= half n` and `Nat.isOdd n = odd n` (through `Nat.divGo`'s fuel), the bits of
+`Nat.bitwise` (so `land`, `lor`, `xor`), `land a b ≤ a` (Word's `land` keeps the smaller),
+and extensionality. `Bits.bit` itself runs on the native `Nat.isOdd`/`Nat.div`, so the bits
+of a numeral compute fast.
+
+**Fragment**: `land/lor/xor` (`BitVec.and/or/xor`) and closed words. Not yet: `~~~`, `+`,
+`-`, shifts, `<ᵤ` (they need lemmas about `mod 2^w`, subtraction and carries).
+
+**Kernel cost** (light probes, noise-level; distributivity of `&&&` over `|||`, three
+words, over the time to import the libraries): 4 bits ≈ 2 s, 8 bits ≈ 10 s, 16 bits ≈ 58 s.
+It grows faster than the circuit (3w inputs, ~5w gates): each kernel step costs
+~0.1–1 ms (wiz-notes/smt.md §10), so wide words are slow until the evaluator is faster.
