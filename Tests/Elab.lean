@@ -7567,11 +7567,11 @@ def seplogicGroup : Group where
   name := "seplogic"
   exercise := "Stage 24"
   cases := [
-    { name := "13o: the libraries' helper notation stays in them (∷, ▸, +++, ⊕, <+>)", run := fun _ =>
+    { name := "13o: the libraries' helper notation stays in them (∷, ▸, +++, ⊕); Hdl's <+> is public", run := fun _ =>
         okLibs ("import HoareTactics\nimport Feral\nimport Hdl.Core\n" ++
           "def l : List Nat := List.cons 1 List.nil\ninfixr:65 \" ⊕ \" => Nat.add\ninfixr:65 \" ▸ \" => Nat.mul\n" ++
           "#check fun (s : List Nat) => List.cons 1 s\n#check fun (s t : String) => String.append s t")
-          ["fun s => List.cons Nat 1 s : List Nat → List Nat", "fun s t => String.append s t : String → String → String"] },
+          ["fun s => List.cons Nat 1 s : List Nat → List Nat", "fun s t => s <+> t : String → String → String"] },
     { name := "the connectives; propext and funext are definitional", run := fun _ => do
         okLibs ("import Logic\n" ++
           "def t1 (P Q : Prop) (h : P ∧ Q) : Q ∧ P := And.symm h\n" ++

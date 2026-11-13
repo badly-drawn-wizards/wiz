@@ -549,10 +549,11 @@ The embedded languages follow one set of conventions (entering, scoping, symbols
 printing, errors, docs, tests), collected in [docs/dsls.md](../dsls.md) with a table of
 the DSLs. This section's changes bring the libraries in line:
 
-* **Helper notation is local** (13m). `∷` (HoareTactics), `+++`, `⊕`, `▸` (Feral) and
-  `<+>` (Hdl.Core) are used only inside their modules; they were global, so every
-  importer lost those symbols and (with 11r) printed `List.cons`/`String.append` with
-  them.
+* **Helper notation is local** (13m). `∷` (HoareTactics) and `+++`, `⊕`, `▸` (Feral)
+  are used only inside their modules; they were global, so every importer lost those
+  symbols and (with 11r) printed `List.cons`/`String.append` with them. (Hdl.Core's
+  `<+>` is the HDL libraries' shared operator — `Hdl.Prim`, `Hdl.Xdc`, `Hdl.Xilinx7`,
+  `Hdl.Sim` and the examples use it — so it stays public.)
 * **A reserved word says where it comes from.** An identifier position holding a keyword
   of a `term` or `command` rule says so, with the notation (its atoms, `…` between them)
   and the module that declared it: `def exists := 1` after `import Logic` is
