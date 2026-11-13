@@ -1,11 +1,14 @@
 import Tower.Install
+import Wiz.Version
 
 /-!
 # tower's commands (stage 26c)
 
 Which toolchain runs in a directory (`tower show`): a `+SPEC` first argument of a shim,
 else, walking up from the directory, an override set for it (`tower override set`) or a
-`wiz-toolchain` file in it, else the default (`tower default`).
+`wiz-toolchain.local` or `wiz-toolchain` file in it (the local one first), else the
+default (`tower default`). `wiz-toolchain.local` is a developer's own, uncommitted
+override: a spec, or a path to a toolchain directory (relative to the file).
 
 The shims (`~/.tower/bin/wiz`, `…/grail`) are shell scripts: they ask tower for the
 toolchain's directory (`tower resolve`, which installs it on first use) and `exec` its
@@ -36,9 +39,12 @@ usage: tower [--home DIR] COMMAND
                                  gc-cflags, gc-ldflags)
   self shims                     write the shims in ~/.tower/bin
   self install                   copy tower to ~/.tower/bin and write the shims
+  --version                      print tower's version
 
 SPEC: nightly, stable, a tag, a branch, a commit, REF@COMMIT, or a linked name.
 A project names its toolchain in a file `wiz-toolchain` (one line: a SPEC).
+A `wiz-toolchain.local` next to it (not committed) overrides it: a SPEC, or a path
+(/…, ./…, ../…, ~/…) to a toolchain directory or a built checkout.
 "
 
 /-- The tools that get a shim. -/
@@ -49,6 +55,35 @@ def readToolchainFile (f : System.FilePath) : IO (Option String) := do
   let ls := (← IO.FS.readFile f).splitOn "\n" |>.map (·.trimAscii.toString)
   pure (ls.find? fun l => !l.isEmpty && !l.startsWith "#" && !l.startsWith "--")
 
+/-- Is a line of `wiz-toolchain.local` a path rather than a spec? (A bare `a/b` is a branch.) -/
+def isPathEntry (l : String) : Bool :=
+  l.startsWith "/" || l.startsWith "./" || l.startsWith "../" || l == "." || l == ".." || l.startsWith "~/"
+
+/-- A spec that is a toolchain directory: an absolute path. -/
+def isPathSpec (spec : String) : Bool := spec.startsWith "/"
+
+/-- Does `dir` hold a toolchain that `link` takes (a built checkout or a toolchain layout)? -/
+def isToolchainDir (dir : System.FilePath) : IO Bool := do
+  pure ((← (dir / ".lake/build/bin/wiz").pathExists) || (← (dir / "bin/wiz").pathExists))
+
+def notToolchain (dir : String) : String :=
+  s!"{dir} is not a toolchain: neither a built checkout (.lake/build/bin/wiz) nor a toolchain directory (bin/wiz)"
+
+/-- The spec in a `wiz-toolchain.local` file: a spec, or a path to a toolchain directory
+(relative to the file's directory, absolute, or under `~/`), as its real absolute path.
+A path that isn't a toolchain is an error that names the file. -/
+def readLocalFile (f : System.FilePath) : IO (Option String) := do
+  let some l ← readToolchainFile f | pure none
+  unless isPathEntry l do return some l
+  let p : System.FilePath ←
+    if l.startsWith "~/" then pure (System.FilePath.mk ((← IO.getEnv "HOME").getD "~") / (l.drop 2).toString)
+    else if l.startsWith "/" then pure l
+    else pure ((f.parent.getD ".") / l)
+  unless ← p.isDir do throw (IO.userError s!"{f}: {l}: no such directory")
+  let p ← IO.FS.realPath p
+  unless ← isToolchainDir p do throw (IO.userError s!"{f}: {notToolchain p.toString}")
+  pure (some p.toString)
+
 /-- The toolchain for `dir`, and why. -/
 partial def active (e : Env) (dir : System.FilePath) : IO (Option (String × String)) := do
   let s ← e.settings
@@ -56,6 +91,14 @@ partial def active (e : Env) (dir : System.FilePath) : IO (Option (String × Str
     if let some (_, spec) := s.overrides.find? (·.1 == d.toString) then
       return some (spec, s!"override for {d}")
     let f := d / "wiz-toolchain"
+    let lf := d / "wiz-toolchain.local"
+    if ← lf.pathExists then
+      if let some spec ← readLocalFile lf then
+        let base ← if ← f.pathExists then readToolchainFile f else pure none
+        let what := match base with
+          | some b => s!"wiz-toolchain names {b}"
+          | none => "no wiz-toolchain here"
+        return some (spec, s!"{lf} (local override: {what})")
     if ← f.pathExists then
       if let some spec ← readToolchainFile f then return some (spec, s!"{f}")
     match d.parent with
@@ -65,8 +108,27 @@ partial def active (e : Env) (dir : System.FilePath) : IO (Option (String × Str
   | some r => pure (some r)
   | none => pure (s.default.map (·, "the default toolchain"))
 
+/-- The toolchain for a directory (a path spec): a linked toolchain named by its path,
+linked on first use (`link`, with the settings' flags) and again when it points elsewhere. -/
+def ensurePath (e : Env) (spec : String) : IO (Except String System.FilePath) := do
+  let dir : System.FilePath := spec
+  unless ← dir.isDir do return .error s!"{spec}: no such directory"
+  let dir ← IO.FS.realPath dir
+  unless ← isToolchainDir dir do return .error (notToolchain dir.toString)
+  let d := e.tcDir dir.toString
+  let linked : IO Bool := do
+    match ← readInfo d with
+    | some i => pure (i.source == "link" && i.path == dir.toString && (← (d / "bin/wiz").pathExists))
+    | none => pure false
+  if ← linked then return .ok d
+  match ← link e dir.toString dir (← e.settings).flags with
+  | .ok d => note s!"linked {dir}"; pure (.ok d)
+  -- (another shim linked it at the same time)
+  | .error m => if ← linked then pure (.ok d) else pure (.error m)
+
 /-- The toolchain directory for a spec, installing it if allowed. -/
 def ensure (e : Env) (spec : String) (allowInstall : Bool) : IO (Except String System.FilePath) := do
+  if isPathSpec spec then return ← ensurePath e spec
   let d := e.tcDir spec
   if ← (d / "tower.info").pathExists then return .ok d
   unless allowInstall do return .error s!"toolchain {spec} is not installed (tower toolchain install {spec})"
@@ -131,7 +193,7 @@ def toolchainCmd (e : Env) : List String → IO UInt32
     pure status
   | ["list"] => do
     let s ← e.settings
-    let here := (← active e (← IO.currentDir)).map (·.1)
+    let here ← try pure ((← active e (← IO.currentDir)).map (·.1)) catch _ => pure none
     for n in ← e.installed do IO.println (← describe e n s here)
     pure 0
   | "link" :: args => do
@@ -165,7 +227,7 @@ def specHere (e : Env) (plus : Option String) : IO (Except String String) := do
   if let some p := plus then return .ok (p.drop 1).toString
   match ← active e (← IO.currentDir) with
   | some (spec, _) => pure (.ok spec)
-  | none => pure (.error "no toolchain here: no wiz-toolchain file, override or default (tower default nightly)")
+  | none => pure (.error "no toolchain here: no wiz-toolchain(.local) file, override or default (tower default nightly)")
 
 def update (e : Env) (names : List String) : IO UInt32 := do
   let s ← e.settings
@@ -242,9 +304,10 @@ def main (e : Env) (args : List String) : IO UInt32 := do
       match ← active e (← IO.currentDir) with
       | some (spec, why) =>
         let d := e.tcDir spec
-        let inst := if ← (d / "tower.info").pathExists then d.toString else "not installed"
+        let inst := if ← (d / "tower.info").pathExists then d.toString
+          else if isPathSpec spec then "not linked yet (linked on first use)" else "not installed"
         IO.println s!"{spec}\n  from {why}\n  {inst}"; pure 0
-      | none => fail "no toolchain here (no wiz-toolchain file, override or default)"
+      | none => fail "no toolchain here (no wiz-toolchain(.local) file, override or default)"
     | "resolve" :: rest => do
       let spec ← match ← specHere e rest.head? with
         | .ok s => pure s
@@ -280,6 +343,7 @@ def main (e : Env) (args : List String) : IO UInt32 := do
     | ["settings"] => do IO.print (← e.settings).render; pure 0
     | "self" :: rest => selfCmd e rest
     | ["--help"] | ["help"] | [] => do IO.print usage; pure 0
+    | ["--version"] => do IO.println s!"tower {Wiz.version}"; pure 0
     | _ => do IO.eprint usage; pure 2
   catch err => fail (toString err)
 

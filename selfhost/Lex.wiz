@@ -142,6 +142,45 @@ inductive Tok where
 inductive TokInfo where
   | mk (tok : Tok) (start stop : Nat)
 
+-- Hexadecimal and binary numerals (13q, as `readToken` in `Wiz/Parser/Token.lean`):
+-- `0x3F`, `0b1010` are the `num` token of the decimal digits they denote. The radix
+-- after `0` (`x`/`X` 16, `b`/`B` 2), and a digit's value (`r` if it isn't one)
+def radixOf (c : Nat) : Option Nat :=
+  match Bool.or (Nat.beq c 120) (Nat.beq c 88) with
+  | .true => .some 16
+  | .false => match Bool.or (Nat.beq c 98) (Nat.beq c 66) with
+    | .true => .some 2
+    | .false => .none
+def digitIn (r c : Nat) : Nat := match isDigit c with
+  | .true => match Nat.lt (c - 48) r with
+    | .true => c - 48
+    | .false => r
+  | .false => match Nat.beq r 16 with
+    | .true => match between c 97 102 with
+      | .true => c - 87
+      | .false => match between c 65 70 with
+        | .true => c - 55
+        | .false => r
+    | .false => r
+inductive NumTok where
+  | mk (digits : String) (stop : Nat)
+partial def radixEnd (r : Nat) (input : Array Nat) (j : Nat) : Nat := match Nat.lt (digitIn r (at input j)) r with
+  | .true => radixEnd r input (j + 1)
+  | .false => j
+-- the digits from `j` on, read in radix `r` onto `acc`; a value from 2^63 on is read
+-- as 2^63 (which the frontend rejects, as it does the decimal numeral: the numbers of
+-- the self-compiled lexer are 63-bit words)
+partial def radixNum (r : Nat) (input : Array Nat) (j acc : Nat) : NumTok :=
+  let d := digitIn r (at input j);
+  match Nat.lt d r with
+  | .false => .mk (Nat.toString acc) j
+  | .true => match Nat.lt (Nat.div (9223372036854775807 - d) r) acc with
+    | .true => .mk "9223372036854775808" (radixEnd r input (j + 1))
+    | .false => radixNum r input (j + 1) (acc * r + d)
+def decimalTok (input : Array Nat) (i : Nat) : TokInfo :=
+  let j := digitsEnd input i;
+  TokInfo.mk (Tok.num (String.mk (slice (j - i) input i))) i j
+
 -- the token at offset `i`, which must not be whitespace
 def readToken (tokens : List String) (input : Array Nat) (i : Nat) : TokInfo :=
   let c := at input i;
@@ -154,9 +193,13 @@ def readToken (tokens : List String) (input : Array Nat) (i : Nat) : TokInfo :=
     | .true => TokInfo.mk (Tok.atom (String.mk sym)) i (i + len sym)
     | .false => TokInfo.mk (Tok.ident (String.mk (slice (j - i) input i))) i j
   | .false => match isDigit c with
-    | .true =>
-      let j := digitsEnd input i;
-      TokInfo.mk (Tok.num (String.mk (slice (j - i) input i))) i j
+    | .true => match radixOf (at input (i + 1)) with
+      -- `0x3F`, `0b1010` (13q): read as the decimal numeral they denote
+      | .some r => match Bool.and (Nat.beq c 48) (Nat.lt (digitIn r (at input (i + 2))) r) with
+        | .true => match radixNum r input (i + 2) 0 with
+          | .mk n j => TokInfo.mk (Tok.num n) i j
+        | .false => decimalTok input i
+      | .none => decimalTok input i
     | .false => match Nat.beq c 34 with
       | .true => match readStr input (i + 1) .nil with
         | .ok s j => TokInfo.mk (Tok.str (String.mk s)) i j
