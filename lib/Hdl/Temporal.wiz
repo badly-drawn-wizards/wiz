@@ -207,8 +207,8 @@ def Mealy.refinesStut {S I O T : Type} (m : Mealy S I O) (s0 : S) (xs : Trace I)
 
 ------------------------------------------------------------------------------------
 -- Bounded checks by evaluation. `checkFrom` walks the run once (linear, unlike asking
--- `stateAt k` for each k); the `_spec` lemmas turn a `.true` (by `refl`, or by
--- `native_refl` when it is long) into a statement about the trace.
+-- `stateAt k` for each k); the `_spec` lemmas turn a `.true` (by `refl`, or by trusted
+-- compiled evaluation, stage 27a, when it is long) into a statement about the trace.
 
 def Mealy.checkFrom {S I O : Type} (m : Mealy S I O) (p : S → I → Bool) : Nat → S → Trace I → Bool
   | .zero, s, xs => .true

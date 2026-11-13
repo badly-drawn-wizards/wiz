@@ -475,9 +475,9 @@ a type of its own:
 **The words.** `lib/Word.wiz` declares `sealed inductive UIntN` and `IntN` with
 `| private mk`: they are different types (`IntN.toUIntN`/`UIntN.toIntN` convert, natively
 the identity on the bits), so instance resolution needs no special rule to give `I32`
-signed and `U32` unsigned division (7e). Outside the module a word is built with `ofNat`
-or, by a caller that knows the value is below `2^w` but not `w` at runtime (`BitVec.mk`,
-used by `concat` and `ofVec`), with the unchecked `UIntN.ofBitsTrusted`.
+signed and `U32` unsigned division (7e). Outside the module a word is built with `ofNat`.
+(An unchecked builder for callers without the width at runtime, `UIntN.ofBitsTrusted`,
+was a hole of its own and is gone: 22l.)
 
 **Native representations are found by the seal.** `attribute [implemented_by mk get]
 T.mk` requires `sealed inductive T` and a private `T.mk` (an error otherwise). Erasure and readback look for a
@@ -511,3 +511,37 @@ Both frontends elaborate `sealed inductive` (the self-hosted one with the same a
 tail). Tests: groups `repr` (look-alikes, a native byte type in its own module
 interpreted and compiled, R5 and layer 1, the layer-3 refusals on hand-made kernel
 terms) and `selfhost` (the two frontends agree). Kernel rules: none, in either kernel.
+
+## 22l: words carry their range ✅
+
+22k made the word constructors private so that `lib/Word.wiz` alone builds words and
+keeps `toNat < 2^w`, the invariant the natives rely on. But the module also exported an
+unchecked builder, `UIntN.ofBitsTrusted {0 w} (n : Nat) : UIntN w`, for `BitVec.concat`
+and `BitVec.ofVec`, whose width was erased: `UIntN.ofBitsTrusted 5 : UIntN 1` had
+`toNat = 5` in the kernel while compiled code computed on other bits
+(`wiz-notes/soundness-probes/a3-word-ofbitstrusted.wiz`), the out-of-range disagreement of
+R5 again, from any module.
+
+Now the invariant is a field: `| private mk (toNat : Nat) (0 isLt : Nat.lt toNat (2^w) =
+.true)`. The proof is erased, so a word is still just its bits at runtime (the native
+representation, 22d, counts runtime fields: still one), and `implemented_by` gives the
+native constructor the constructor's type (`UIntN.ofBits` takes the erased proof too).
+The kernel now checks the range of every word, so the module invariant of 22k is a
+theorem, available to users as `UIntN.toNat_lt` (and `IntN.toNat_lt`); `UIntN.ext`
+(same bits, same word: the proofs don't count) and `UIntN.cases1 : (x : UIntN 1) → x = 0
+∨ x = 1` follow.
+
+What the proofs cost, without a `Nat` lemma library: every word the module builds is
+either `ofNat` (reduced modulo `2^w`) or `below x b`, `x` clamped to a bound `b < 2^w`
+(`Word.min`, through the natively computed `Nat.lt`), with `x ≤ b` true in every use
+(`a / b`, `a % b`, `a &&& b` and `a >>> k` are at most `a`; `not a` and `ofNat`'s
+remainder at most `2^w - 1`), so the clamp never changes a value and the natives still
+agree with the definitions. Bitwise or and xor have no such bound from an argument, so
+`Word.lor_lt`/`Word.xor_lt` prove it bit by bit (halving both arguments, as
+`Nat.bitwise` does). `BitVec.concat` and `BitVec.ofVec` take their widths at runtime
+(`{ω m n}`; the HDL's `Hw.cat` already did) and go through `ofNat`, and `BitVec.mk` is
+`ofNat` with the width inferred. `IntN.min`/`IntN.max` are `ofNat` too (at width 0 they
+used to be out of range). The kernel compares erased fields like any other, so every word
+is built through one private constructor whose proof is canonical (`Word.canon`: for
+closed numbers it computes to `refl`), and two closed words with the same bits are equal
+by `rfl` however their range was proved. Groups `word`, `vec`.
