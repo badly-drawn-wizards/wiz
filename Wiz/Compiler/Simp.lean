@@ -32,9 +32,14 @@ these operations as pure.
 
 namespace Wiz.IR
 
+/-- The order of the keys of `SimpEnv.projs`. -/
+def compareProj (a b : Nat × Var) : Ordering :=
+  (compare a.2 b.2).then (compare a.1 b.1)
+
 /-- What is known about the variables in scope. Persistent trees, not hash maps: the
 branches of a `case` each extend the same environment, and a shared hash map is copied
 whole on insertion (quadratic memory in the nesting depth). -/
+
 structure SimpEnv where
   /-- renamings (a projection of a known constructor is its field) -/
   σ : Std.TreeMap Var Var := ∅
@@ -44,6 +49,9 @@ structure SimpEnv where
   lits : Std.TreeMap Var Nat := ∅
   /-- variables already tested by an enclosing `case`: the branch taken -/
   tags : Std.TreeMap Var Nat := ∅
+  /-- the projections already bound (field, object) ↦ variable, on the path from the
+  function's start: a projection computed again is renamed to the first one -/
+  projs : Std.TreeMap (Nat × Var) Var compareProj := ∅
   deriving Inhabited
 
 /-- Lazy objects (`coit`, `scofix`: tags from 1000) are overwritten when observed
@@ -128,10 +136,21 @@ partial def Body.simp (env : SimpEnv) : Body → Body
     match foldExpr env (env.renameE e) with
     | .inr y => Body.simp { env with σ := env.σ.insert x y } rest
     | .inl e =>
+      match e with
+      -- a projection already bound on the way here: the same field (stage 15j)
+      | .proj i y => match env.projs.get? (i, y) with
+        | some z => Body.simp { env with σ := env.σ.insert x z } rest
+        | none =>
+          .vdecl x e (Body.simp { env with defs := env.defs.insert x e, projs := env.projs.insert (i, y) x } rest)
+      | _ =>
       let lits := match e with
         | .lit n => env.lits.insert x n
         | _ => env.lits
-      .vdecl x e (Body.simp { env with defs := env.defs.insert x e, lits } rest)
+      -- (a lazy cell observed is overwritten: its fields read before are stale)
+      let projs := match e with
+        | .prim "lazySet" _ => ∅
+        | _ => env.projs
+      .vdecl x e (Body.simp { env with defs := env.defs.insert x e, lits, projs } rest)
   | .case x alts =>
     let x := env.r x
     match env.knownTag x with
