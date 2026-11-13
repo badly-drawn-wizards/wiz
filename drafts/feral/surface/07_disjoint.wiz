@@ -22,5 +22,5 @@ end
 
 def show (r : Result (Unit × Stats)) : Result (Nat × Nat) := Result.map (fun (r : Unit × Stats) => (r.2.hits.val, r.2.misses.val)) r
 def s12 : Stats := Stats.mk (U64.lit 1) (U64.lit 2)
-#eval show (Uniq.borrow Region.static s12 (fun ρ h s r => record r))
+#eval show (Uniq1.borrow Region.static s12 (fun ρ h s r => record r))
 -- .ok (12, 4)

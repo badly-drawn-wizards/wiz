@@ -447,9 +447,21 @@ loops, `?`, `U64`, and functions that return borrows.
   and `?`) leave scopes, joins and loops as `Flow` values inside `Result1`, with the
   handles beside them. Since M4b-3b, shared borrows (`&x`, and `&*r` of a handle, e.g.
   for `r.len`) and indexing (`v[i]`) work beside live handles. The scopes thread those
-  handles through (`Shr.borrowIn`, `Uniq1.shareIn`). Any other construct keeps the whole
-  block on the ω handles for now: `match`/`if let` through a `&mut`, `while let`, field
-  borrows, returned borrows. M4b-3c covers those.
+  handles through (`Shr.borrowIn`, `Uniq1.shareIn`).
+  Since M4b-3c, returned borrows are linear too. A function returning `&'a mut A` returns
+  a `Borrowed (Mut1 ρ A S) H`. Its `ok` hands over the borrow, a `Mut1` whose backward
+  function rebuilds the lender. Its `err` hands the lender's handle back (D8). With two
+  lenders (`pick`), the one not returned rides along in the backward function
+  (`Mut1.alongside`). `Option (&mut A)` is a `MutOpt1`. An error exit while a returned borrow
+  is live first releases it (`Mut1.release`/`Mut1.finish`) and hands back what it held, so
+  the error alternative is built from the environment at the exit. Cursors
+  (`let mut cur := r`, `while let … := cur`, `cur := left`) are `Mut1.whole`/`Mut1.comp`.
+  `match`/`if let` through a `&mut` is a `Uniq1.reborrow` whose body peeks the value. Its
+  alternatives rebuild the constructor with `Uniq1.write`. `let h := &mut s.f` takes the
+  fields out in a reborrow (L11). A field passed to a `&mut` parameter, `f (&mut s.f)`, is
+  a `Uniq1.zoom` with the field's lens `S.fL`; `zoomIn` threads other handles through.
+  Every surface program that uses `&mut` now lowers linearly. Not yet: two fields of one
+  struct in one call (`g (&mut s.a) (&mut s.b)`; the `let` form does it).
 * **Located output for command macros.** Runtime `Syntax` has no positions. A command
   macro now names a node of its input by **path** (child indices), and its output may
   contain `Syntax.errorAt path msg`, `Syntax.infoAt path msg` and

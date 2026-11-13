@@ -262,6 +262,17 @@ def Uniq1.reborrow {ρ : Region} {S B : Type} (1 r : Uniq1 ρ S)
       | .mk w => .ok b (Uniq1.mk w))
     | .err e r' => (match r' with
       | .mk w => .err e (Uniq1.mk w)))
+-- the same inside a scope that holds other handles `H`, threaded through and back
+def Uniq1.reborrowIn {ρ : Region} {S B H : Type} (1 r : Uniq1 ρ S) (1 outer : H)
+    (1 body : (0 ρ' : Region) → (0 h : Outlives ρ ρ') → (0 l : Lent ρ' S) → (1 o : H) → (1 r : Uniq1 ρ' S) →
+      Result1 B ((1 _ : H) × Uniq1 ρ' S)) :
+    Result1 B ((1 _ : H) × Uniq1 ρ S) :=
+  match r with
+  | .mk v => (match body ρ (Outlives.refl ρ) (Lent.mk ()) outer (Uniq1.mk v) with
+    | .ok b q => let 1 (o, r') := q; (match r' with
+      | .mk w => .ok b (o, Uniq1.mk w))
+    | .err e q => let 1 (o, r') := q; (match r' with
+      | .mk w => .err e (o, Uniq1.mk w)))
 -- `&*r`, a shared reborrow of a mutable one
 def Uniq1.share {ρ : Region} {S B : Type} (1 r : Uniq1 ρ S)
     (body : (0 ρ' : Region) → (0 h : Outlives ρ ρ') → Shr ρ' S → Result B) : Result1 B (Uniq1 ρ S) :=
@@ -293,6 +304,18 @@ def Uniq1.zoom {ρ : Region} {S X B : Type} (l : Lens S X) (1 r : Uniq1 ρ S)
       | .mk w => .ok b (Uniq1.mk (st.2 w)))
     | .err e r' => (match r' with
       | .mk w => .err e (Uniq1.mk (st.2 w))))
+-- the same inside a scope that holds other handles `H`, threaded through and back
+def Uniq1.zoomIn {ρ : Region} {S X B H : Type} (l : Lens S X) (1 r : Uniq1 ρ S) (1 outer : H)
+    (1 body : (0 ρ' : Region) → (0 h : Outlives ρ ρ') → (0 t : Lent ρ' S) → (1 o : H) → (1 x : Uniq1 ρ' X) →
+      Result1 B ((1 _ : H) × Uniq1 ρ' X)) :
+    Result1 B ((1 _ : H) × Uniq1 ρ S) :=
+  match r with
+  | .mk v => (let st := l v;
+    match body ρ (Outlives.refl ρ) (Lent.mk ()) outer (Uniq1.mk st.1) with
+    | .ok b q => let 1 (o, r') := q; (match r' with
+      | .mk w => .ok b (o, Uniq1.mk (st.2 w)))
+    | .err e q => let 1 (o, r') := q; (match r' with
+      | .mk w => .err e (o, Uniq1.mk (st.2 w))))
 -- a borrow of a pair is two borrows, live at once; they come back as a linear pair
 def Uniq1.both {ρ : Region} {A B C : Type} (1 p : Uniq1 ρ (A × B))
     (1 body : (0 ρ' : Region) → (0 h : Outlives ρ ρ') → (1 a : Uniq1 ρ' A) → (1 b : Uniq1 ρ' B) →
@@ -310,8 +333,101 @@ attribute [inline] Uniq1.write
 attribute [inline] Uniq1.borrow
 attribute [inline] Uniq1.borrowIn
 attribute [inline] Uniq1.reborrow
+attribute [inline] Uniq1.reborrowIn
 attribute [inline] Uniq1.share
 attribute [inline] Uniq1.shareIn
 attribute [inline] Shr.borrowIn
 attribute [inline] Uniq1.zoom
+attribute [inline] Uniq1.zoomIn
 attribute [inline] Uniq1.both
+
+-- ## Linear returned borrows (cohesion M4b-3c)
+--
+-- `Mut1 ρ A S` is a returned `&'a mut A` borrowed from a lender `S`, used at quantity 1:
+-- the borrow's value and the backward function that rebuilds the lender (`Store A S`,
+-- an ω field: the handle is what is linear). `MutOpt1` is `Option (&'a mut A)`: a borrow,
+-- or the lender's handle back. A function that returns a borrow returns a `Borrowed`:
+-- the borrow, or an error with the lender's handle back (D8).
+inductive Mut1 (ρ : Region) (A S : Type) where
+  | private mk (store : Store A S)
+inductive MutOpt1 (ρ : Region) (A S : Type) where
+  | some (1 m : Mut1 ρ A S)
+  | none (1 r : Uniq1 ρ S)
+inductive Borrowed (M H : Type) where
+  | ok (1 m : M)
+  | err (e : Error) (1 h : H)
+
+-- `&mut r.p` for a place with a (partial) lens
+def Mut1.ofLens {ρ : Region} {S A : Type} (1 r : Uniq1 ρ S) (l : Lens S A) : Mut1 ρ A S :=
+  match r with
+  | .mk v => Mut1.mk (l v)
+def Mut1.ofPLens {ρ : Region} {S A : Type} (1 r : Uniq1 ρ S) (l : PLens S A) : Borrowed (Mut1 ρ A S) (Uniq1 ρ S) :=
+  match r with
+  | .mk v => (match l v with
+    | .ok st => .ok (Mut1.mk st)
+    | .err e => .err e (Uniq1.mk v))
+-- the whole of `r` (a cursor's start)
+def Mut1.whole {ρ : Region} {S : Type} (1 r : Uniq1 ρ S) : Mut1 ρ S S :=
+  match r with
+  | .mk v => Mut1.mk (Lens.id v)
+-- `*m`, direct style: the value and the borrow back
+def Mut1.peek {ρ : Region} {A S : Type} (1 m : Mut1 ρ A S) : (a : A) × Mut1 ρ A S :=
+  match m with
+  | .mk st => (st.1, Mut1.mk st)
+-- `*m := a`
+def Mut1.set {ρ : Region} {A S : Type} (1 m : Mut1 ρ A S) (a : A) : Mut1 ρ A S :=
+  match m with
+  | .mk st => Mut1.mk (a, st.2)
+-- the borrow's last use: the lender's handle back, with the final value
+def Mut1.release {ρ : Region} {A S : Type} (1 m : Mut1 ρ A S) : Uniq1 ρ S :=
+  match m with
+  | .mk st => Uniq1.mk (Store.extract st)
+-- the lender, had the final value been `fin`
+def Mut1.close {ρ : Region} {A S : Type} (1 m : Mut1 ρ A S) (fin : A) : Uniq1 ρ S :=
+  match m with
+  | .mk st => Uniq1.mk (st.2 fin)
+-- a cursor moves down
+def Mut1.comp {ρ : Region} {A B S : Type} (1 m : Mut1 ρ A S) (k : A → Store B A) : Mut1 ρ B S :=
+  match m with
+  | .mk st => Mut1.mk (Store.comp st k)
+-- shorter region (covariant)
+def Mut1.weaken {ρ ρ' : Region} {A S : Type} (0 h : Outlives ρ ρ') (1 m : Mut1 ρ A S) : Mut1 ρ' A S :=
+  match m with
+  | .mk st => Mut1.mk st
+-- a `&mut` argument returned as it is: its final value, written back, gives the handle back
+def Mut1.ofUniq {ρ : Region} {A : Type} (1 r : Uniq1 ρ A) : Mut1 ρ A (Uniq1 ρ A) :=
+  match r with
+  | .mk v => Mut1.mk (v, fun (a : A) => Uniq1.mk a)
+-- what the backward function gives back, mapped
+def Mut1.mapBack {ρ : Region} {A S T : Type} (1 m : Mut1 ρ A S) (f : S → T) : Mut1 ρ A T :=
+  match m with
+  | .mk st => Mut1.mk (st.1, fun (x : A) => f (st.2 x))
+-- the borrow's last use, when its lender is not one place: whatever comes back
+def Mut1.finish {ρ : Region} {A S : Type} (1 m : Mut1 ρ A S) : S :=
+  match m with
+  | .mk st => Store.extract st
+-- `Option (&mut A)` from an affine optic on `r`
+def MutOpt1.ofAffine {ρ : Region} {A S : Type} (1 r : Uniq1 ρ S) (l : S → Affine A S) : MutOpt1 ρ A S :=
+  match r with
+  | .mk v => (match l v with
+    | .some a k => .some (Mut1.mk (a, k))
+    | .none s => .none (Uniq1.mk s))
+-- `if let .some x := o then *x := f *x`: the lender, updated or not
+def MutOpt1.over {ρ : Region} {A S : Type} (f : A → A) (1 o : MutOpt1 ρ A S) : Uniq1 ρ S :=
+  match o with
+  | .some m => (match m with
+    | .mk st => Uniq1.mk (st.2 (f st.1)))
+  | .none r => r
+-- a borrow of one lender that also holds another lender's handle `o` (a returned borrow
+-- that may come from either of two `&mut` arguments): the backward function gives back
+-- what `f` makes of both
+def Mut1.alongside {ρ ρ' : Region} {A S T R : Type} (1 m : Mut1 ρ A S) (1 o : Uniq1 ρ' T)
+    (f : S → Uniq1 ρ' T → R) : Mut1 ρ A R :=
+  match m with
+  | .mk st => (match o with
+    | .mk t => Mut1.mk (st.1, fun (a : A) => f (st.2 a) (Uniq1.mk t)))
+-- an optional borrow's last use: the lender's handle back either way
+def MutOpt1.release {ρ : Region} {A S : Type} (1 o : MutOpt1 ρ A S) : Uniq1 ρ S :=
+  match o with
+  | .some m => Mut1.release m
+  | .none r => r
