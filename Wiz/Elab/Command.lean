@@ -1912,16 +1912,18 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
           -- (21v) the additive case `T.casesOnA`, for a `match` whose branches share a
           -- linear variable (none for a type without constructors: its bundle would be
           -- a linear argument nothing uses)
+          -- (linear-case stage 2) and `T.casesOn1`, the case on a scrutinee held at 1
           unless ctors.isEmpty do
-            match mkRecursor g name ctors false (additive := true) with
-            | .error e => report .error cmd.info s!"could not generate the recursor: {e}"; return
-            | .ok d =>
-              recNames := recNames ++ [d.name]
-              match addDeclSorted g d with
-              | .ok g' => g := g'
-              | .error e =>
-                report .error cmd.info s!"kernel rejected {d.name}: {e}\n  {d.type.pretty}"
-                return
+            for linear in [false, true] do
+              match mkRecursor g name ctors false (additive := true) (linear := linear) with
+              | .error e => report .error cmd.info s!"could not generate the recursor: {e}"; return
+              | .ok d =>
+                recNames := recNames ++ [d.name]
+                match addDeclSorted g d with
+                | .ok g' => g := g'
+                | .error e =>
+                  report .error cmd.info s!"kernel rejected {d.name}: {e}\n  {d.type.pretty}"
+                  return
           -- (13b) `| private c`: the constructor is private to this module, and so are the
           -- recursors (their cases would hand out a private constructor's fields, and
           -- they are what a `match` compiles to); elsewhere `T` is opaque
@@ -2355,6 +2357,13 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
         | some ks, some rk =>
           if !io && ks.any (fun k => match k with | .callback _ c => c.io | _ => false) then
             report .error cmd.info "a foreign function that takes a callback in IO must be in IO itself"
+          -- (linear-case stage 2) side effects live in `IO` (the world), never in an
+          -- erasable or contentless result: a pure `… → Unit` call has nothing to keep, so
+          -- erasure may drop it (inside an erased position, an erased closure, a dead `let`)
+          else if resultContentless s.globals (eval s.globals [] ty) then
+            report .error cmd.info ("a foreign function's result must carry something at run time: this one returns " ++
+              "Unit, a proposition, a type or another value with no runtime content (outside IO), so compiled code " ++
+              "may drop the call. A pure extern returns data; an effect belongs in IO (`… → IO Unit`)")
           else
           let key : Name := s!"extern:{cname}:{String.join (ks.map (·.toKey))}:{rk.toKey}:{if io then "io" else "pure"}:{header}:{finOf res}"
           match addDeclSorted s.globals { name, type := ty, value := none } with
@@ -2552,6 +2561,11 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
       else if s.builtins.any (fun (k, x) => x == f && k != inlineKey && !k.startsWith RVal.exportPrefix) then
         report .error fStx.info s!"{f} is a builtin or foreign function: it already has an implementation"
       else if f == impl then report .error (cmd.getArg 3).info s!"{f} can't be implemented by itself"
+      -- (linear-case stage 2) as for `extern`: an implementation is where an effect could
+      -- hide, and a result of type Unit (or a type) carries nothing erasure must keep
+      -- (a proposition is allowed: the implementation is a proof, erased as well)
+      else if resultContentless s.globals (eval s.globals [] df.type) && !resultProp s.globals (eval s.globals [] df.type) then
+        report .error fStx.info s!"{f}'s result has no runtime content (Unit, a type, …): its implementation could only matter through an effect, which compiled code may drop; return IO or data instead"
       else if df.levelParams.length != di.levelParams.length then
         report .error (cmd.getArg 3).info
           s!"{impl} has {di.levelParams.length} universe parameters, {f} has {df.levelParams.length}"

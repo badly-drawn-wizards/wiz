@@ -1052,6 +1052,10 @@ where
       | _ => do let (t, ty) ← infer ctx stx; unifyAt ctx stx expected ty; pure t
     | "term.letPair" => elabLetPair ctx stx expected
     | "term.letTuple" => elabLetPair ctx (letTupleToPairs stx) expected
+    -- (linear-case stage 2) `let () := u; b`: consumes `u : Unit`
+    | "term.letUnit" => do
+      let u ← check ctx (stx.getArg 4) (.unit (.succ .zero))
+      return .letUnit u (← check ctx (stx.getArg 6) expected)
     | "term.match" => elabMatch ctx stx expected
     | "term.by" => elabBy ctx stx expected
     | "term.num" =>
@@ -1440,6 +1444,14 @@ partial def letTupleToPairs (stx : Syntax) : Syntax :=
     | _, _, e => e
   go 0 names (stx.getArg 10)
 
+/-- (linear-case stage 2) The literal quantities a `split` at `q` binds its components
+at, `q·p` and `q`, for a Σ whose first component is at `p` (when both are literals): a
+component taken at 1 is linear (`LocalCtx.bindQ`), so a `match` on it is `casesOn1`. -/
+partial def splitQtys (q : Term R) (p : Val R) : Option R × Option R :=
+  match q with
+  | .qlit r => (((Val.toPoly? p).bind (·.isConst?)).map (r * ·), some r)
+  | _ => (none, none)
+
 /-- `let q (x, y) := s; body`, check mode only (the motive is the expected type). -/
 partial def elabLetPair (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : ElabM R (Term R) := do
   let q ← elabQuantity ctx .default (stx.getArg 1).args[0]?
@@ -1447,10 +1459,11 @@ partial def elabLetPair (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : E
   let y := ((stx.getArg 5).getId?).getD "_"
   let (s, sty) ← infer ctx (stx.getArg 8)
   match ← force sty with
-  | .sigma _ _ A B _ =>
+  | .sigma _ p A B _ =>
     let g ← getGlobals
     let motive := quote g (ctx.lvl + 1) expected
-    let ctx₂ := (ctx.bind x A).bind y (← instM B (Val.var ctx.lvl))
+    let (qx, qy) := splitQtys q p
+    let ctx₂ := (ctx.bindQ x A qx).bindQ y (← instM B (Val.var ctx.lvl)) qy
     let body ← check ctx₂ (stx.getArg 10) expected
     pure (.split q s "z" motive x y body)
   | sty => throwAt (ctx.withInfo (stx.getArg 8)).info s!"let (x, y) := ... expects a pair, got {← showVal ctx sty}"
@@ -1468,17 +1481,18 @@ partial def splitChain (ctx : LocalCtx R) (q : Term R) (s : Term R) (sty : VTy R
     let t ← check (ctx.define x sty sv) body expected
     pure (.letE x q (quote g ctx.lvl sty) s t)
   | x :: rest =>
-    let .sigma _ _ A B _ ← force sty
+    let .sigma _ p A B _ ← force sty
       | throwAt ctx.info s!"internal error: expected a pair, got {← showVal ctx sty}"
     let motive := quote g (ctx.lvl + 1) expected
     let Bty ← instM B (Val.var ctx.lvl)
+    let (qx, qy) := splitQtys q p
     match rest with
     | [y] =>
-      let t ← check ((ctx.bind x A).bind y Bty) body expected
+      let t ← check ((ctx.bindQ x A qx).bindQ y Bty qy) body expected
       pure (.split q s "z" motive x y t)
     | _ =>
       let r : Name := "rest✝"
-      let t ← splitChain ((ctx.bind x A).bind r Bty) (q.lift 2) (.var 0) Bty rest body expected
+      let t ← splitChain ((ctx.bindQ x A qx).bind r Bty) (q.lift 2) (.var 0) Bty rest body expected
       pure (.split q s "z" motive x r t)
 
 /-- (13h) `let q pat := e; body` for a pattern `⟨p₁, …, pₙ⟩` or `(.mk p₁ … pₙ)` (any
@@ -1542,7 +1556,8 @@ partial def elabLetPat (ctx : LocalCtx R) (stx : Syntax) (expected : Option (VTy
         throwAt pat.info (s!"cannot take a value of the structure {S} apart at quantity {q.pretty ctx.names}: " ++
           s!"the Σ type of a structure ends in a component that is not a field (its marker tail), and this " ++
           s!"`let` would bind it at quantity {q.pretty ctx.names} and never use it. This is a limitation of " ++
-          "how structures are encoded today; take the structure at quantity ω, or use a tuple type for linear data")
+          "how structures are encoded today; take the structure at quantity ω, use a tuple type, or a one-constructor " ++
+          "`inductive` with fields at 1 (taken apart by `match`) for linear data")
       L.comps.mapM fun c => match c with
         | .field i => nameOf ps[i]!
         | .marker _ => pure "_"
@@ -2374,7 +2389,15 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
       | .ok (r, extra) => rhs := r; binds := binds ++ extra
       | .error e => throwAt cl.rhs.info e
     let mut ctx' := ctx
-    for (n, ty, val) in binds do ctx' := ctx'.define n ty val
+    for (n, ty, val) in binds do
+      -- (linear-case stage 2) a pattern variable naming a linear variable (a field taken
+      -- at 1) is linear too: a `match` on it is `casesOn1` again
+      let lin := match val with
+        | .neutral (.local l) #[] => ctx'.linearLvls.contains l
+        | _ => false
+      let lvl := ctx'.lvl
+      ctx' := ctx'.define n ty val
+      if lin then ctx' := { ctx' with linearLvls := lvl :: ctx'.linearLvls }
     -- (11q) the pattern variables, in the arm's context
     for v in views, x in vars, p in cl.pats do
       if let .var n := v then recordBinder ctx' p.info n (typeOf x)
@@ -2497,7 +2520,11 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
   -- (21v) with a variable bound at quantity 1 in scope: the additive case `T.casesOnA`,
   -- whose branches are alternatives, so that each may use the variable once (with
   -- `casesOn` the methods are separate ω arguments, and the uses add up)
-  let additive := !sized && !useRec && !ctx.linearLvls.isEmpty && (g.find? (T ++ ".casesOnA")).isSome
+  -- (linear-case stage 2) a scrutinee held at 1 (`linearLvls`): `T.casesOn1`, the
+  -- additive case at quantity 1, whose branches receive the fields at their declared
+  -- quantities (the kernel's `scase` at 1, K1)
+  let linear := !sized && !useRec && ctx.linearLvls.contains x && (g.find? (T ++ ".casesOn1")).isSome
+  let additive := linear || (!sized && !useRec && !ctx.linearLvls.isEmpty && (g.find? (T ++ ".casesOnA")).isSome)
   let nondep := !additive && modeA && !sized && nΞ > 0 && !((ξLvls ++ [x]).any fun l => G.hasVar (ctx.lvl - l - 1))
   let motive : Term R ←
     if nondep then pure G
@@ -2523,7 +2550,7 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
     | _ => false
   let some v := vG.orElse fun _ => if unknown then some (.succ .zero) else none
     | throwAt ctx.info "could not determine the universe of the match's type"
-  let elimName := T ++ (if additive then ".casesOnA" else if sized then ".scasesOn" else if useRec then ".rec" else ".casesOn") ++
+  let elimName := T ++ (if linear then ".casesOn1" else if additive then ".casesOnA" else if sized then ".scasesOn" else if useRec then ".rec" else ".casesOn") ++
     (if nondep then "N" else "")
   let some ed := g.find? elimName | throwAt ctx.info s!"{elimName} is missing"
   let elimHead : Term R := .const elimName (us ++ [v])
@@ -2578,8 +2605,9 @@ partial def compileMatch (ctx : LocalCtx R) (vars : List Lvl) (clauses : List (M
         ctx' := { ctx' with erasedLvls := ctx'.lvl :: ctx'.erasedLvls }
       mt ← instM B (Val.var ctx'.lvl)
       -- hidden: the patterns name the fields (`.ok items s1`), and a field's own name
-      -- (`s`) must not shadow a variable of the same name in the right-hand side
-      ctx' := ctx'.bind (n ++ "✝") A
+      -- (`s`) must not shadow a variable of the same name in the right-hand side.
+      -- A field the method takes at 1 is linear: a match on it is `casesOn1` again
+      ctx' := ctx'.bindQ (n ++ "✝") A ((Val.toPoly? fq).bind (·.isConst?))
     let mut ihLvls : Array Lvl := #[]
     for _ in [0:nRec] do
       let .pi _ _ _ A B _ ← force mt | throwAt ctx.info "internal error: hypothesis type"
@@ -2847,12 +2875,21 @@ partial def elabMatch (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : Ela
   -- zonk: solved metas in the expected type would otherwise hide its universe
   let mut goalTm ← zonk ctx.lvl (quote g ctx.lvl expected)
   let mut binders : Array (Name × Term R) := #[]
+  -- (linear-case stage 2) a scrutinee that uses a linear local is bound at 1 and taken
+  -- apart by `T.casesOn1`
+  let mut linearScruts : Array Bool := #[]
   for s in scruts do
     let (t, ty) ← infer ctx s
     ts := ts.push t
     -- (H14 S2) a signal as the condition of `if`: a multiplexer
     if scruts.size == 1 then
       if let some m ← ifMux? ctx alts t ty expected then return m
+    -- (only a data type with `T.casesOn1`, at size ∞: anything else would bind the
+    -- scrutinee at 1 and then take it apart at ω)
+    let hasCases1 := match ← force ty with
+      | .mu _ _ _ _ .szInf (some (T, _, _)) => (g.find? (T ++ ".casesOn1")).isSome
+      | _ => false
+    linearScruts := linearScruts.push (hasCases1 && ctx.linearLvls.any fun l => t.hasVar (ctx.lvl - l - 1))
     -- an inaccessible name, so the user's own `x` isn't shadowed
     binders := binders.push ("x✝", quote g ctx.lvl ty)
   -- abstract the scrutinees, last first
@@ -2870,7 +2907,7 @@ partial def elabMatch (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : Ela
     let vTy ← evalIn ctx' A
     absBinders := absBinders.push (n, A)
     lvls := lvls ++ [ctx'.lvl]
-    ctx' := ctx'.bind n vTy
+    ctx' := ctx'.bindQ n vTy (if linearScruts[i]! then some 1 else none)
   binders := absBinders
   goalTm := absGoal
   let goal ← evalIn ctx' goalTm
@@ -2878,7 +2915,8 @@ partial def elabMatch (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) : Ela
   let body ← compileMatch ctx' lvls clauses goal none true
   let lam := (binders.toList.map (·.1)).foldr .lam body
   -- (the `i`-th scrutinee's type is under the `i` binders before it)
-  let piTy := binders.toList.foldr (fun (n, A) acc => Term.pi n .default (.qlit QuantitySyntax.explicitDefault) A acc none) goalTm
+  let piTy := (binders.toList.zip linearScruts.toList).foldr (fun ((n, A), lin) acc =>
+    Term.pi n .default (.qlit (if lin then 1 else QuantitySyntax.explicitDefault)) A acc none) goalTm
   let piTy := ctx.sortType g piTy
   pure (ts.foldl .app (.ann lam piTy))
 
@@ -3135,6 +3173,10 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
     return (← check ctx stx ty, ty)
   | "term.letPair" | "term.letTuple" | "term.absurd" | "term.rfl" =>
     throwAt ctx.info "cannot infer the type of this expression; add a type ascription"
+  | "term.letUnit" => do
+    let u ← check ctx (stx.getArg 4) (.unit (.succ .zero))
+    let (b, ty) ← infer ctx (stx.getArg 6)
+    return (.letUnit u b, ty)
   | "term.nativeRefl" =>
     throwAt ctx.info "native_refl can only be the whole body of a definition, `def X : a = b := native_refl` (with --trust-native)"
   -- (13g–i) as-patterns, anonymous constructors, pattern `let`, structure update

@@ -594,8 +594,9 @@ def dataGroup : Group where
     { name := "unknown tag", run := fun _ =>
         fails (dataPrelude ++ "def bad : Nat := con ('three, (), ())") "not one of the tags" },
     { name := "an erased field drops a linear variable", run := fun _ =>
-        fails ("def BoxD : Desc Unit := Desc.arg 0 Unit (fun _ => Desc.ret ())\n" ++
-               "def box (1 u : Unit) : μ BoxD () := con (u, (), ())") "quantity" },
+        -- (a token, not `Unit`: an unused `Unit` is fine, K2a)
+        fails ("axiom Tok : Type\ndef BoxD : Desc Unit := Desc.arg 0 Tok (fun _ => Desc.ret ())\n" ++
+               "def box (1 u : Tok) : μ BoxD () := con (u, (), ())") "quantity" },
     { name := "a linear field keeps it", run := fun _ =>
         ok ("def BoxD : Desc Unit := Desc.arg 1 Unit (fun _ => Desc.ret ())\n" ++
             "def box (1 u : Unit) : μ BoxD () := con (u, (), ())") },
@@ -2702,6 +2703,8 @@ inductive MTm where
   | star
   | empty (n : Nat)
   | exfalso (m t : MTm)
+  /-- `let () := u; b`, the unit eliminator (linear-case stage 2) -/
+  | letUnit (u b : MTm)
   | enum (k : Nat)
   | tag (k i : Nat)
   | ecase (m s : MTm) (bs : List MTm)
@@ -2745,6 +2748,8 @@ inductive MTm where
   | scofix (l : Nat) (I D A f s i a : MTm)
   | coit (l : Nat) (I D S st i s : MTm)
   | scase (l : Nat) (I D : MTm) (v : Nat) (P m s i x : MTm)
+  /-- `scase` at a quantity (K1); `scase` is the one at ω -/
+  | scaseq (q : ZeroOneMany) (l : Nat) (I D : MTm) (v : Nat) (P m s i x : MTm)
   /-- a `Π`/`Σ` with its sort (level `l`) -/
   | sorted (l : Nat) (t : MTm)
   /-- `ULift A` in `Sort l` (Q4), its constructor and eliminator -/
@@ -2808,6 +2813,7 @@ partial def toWiz : MTm → String
   | star => ".star"
   | empty n => s!"(.empty {n})"
   | exfalso m t => s!"(.exfalso {m.toWiz} {t.toWiz})"
+  | letUnit u b => s!"(.letUnit {u.toWiz} {b.toWiz})"
   | enum k => s!"(.enum {k})"
   | tag k i => s!"(.tag {k} {i})"
   | ecase m s bs => s!"(.ecase {m.toWiz} {s.toWiz} {bs.foldr (fun b acc => s!"(.tcons {b.toWiz} {acc})") ".tnil"})"
@@ -2854,7 +2860,8 @@ partial def toWiz : MTm → String
   | cocon x => s!"(.cocon {x.toWiz})"
   | scofix l I D A f s i a => s!"(.scofix {l} {I.toWiz} {D.toWiz} {A.toWiz} {f.toWiz} {s.toWiz} {i.toWiz} {a.toWiz})"
   | coit l I D S st i s => s!"(.coit {l} {I.toWiz} {D.toWiz} {S.toWiz} {st.toWiz} {i.toWiz} {s.toWiz})"
-  | scase l I D v P m s i x => s!"(.scase {l} {I.toWiz} {D.toWiz} {v} {P.toWiz} {m.toWiz} {s.toWiz} {i.toWiz} {x.toWiz})"
+  | scaseq q l I D v P m s i x => s!"(.scase {l} {qWiz q} {I.toWiz} {D.toWiz} {v} {P.toWiz} {m.toWiz} {s.toWiz} {i.toWiz} {x.toWiz})"
+  | scase l I D v P m s i x => s!"(.scase {l} .qw {I.toWiz} {D.toWiz} {v} {P.toWiz} {m.toWiz} {s.toWiz} {i.toWiz} {x.toWiz})"
   | ulift l A => s!"(.ulift {l} {A.toWiz})"
   | up a => s!"(.up {a.toWiz})"
   | down t => s!"(.down {t.toWiz})"
@@ -2876,6 +2883,7 @@ partial def toTerm : MTm → Term ZeroOneMany
   | star => .tt
   | empty n => .empty (Level.ofNat (n + 1))
   | exfalso m t => .absurd m.toTerm t.toTerm
+  | letUnit u b => .letUnit u.toTerm b.toTerm
   | enum k => .enum (labels k)
   | tag k i => .tag (labels k) i
   | ecase m s bs => .ecase "z" m.toTerm s.toTerm (bs.map toTerm)
@@ -2918,7 +2926,8 @@ partial def toTerm : MTm → Term ZeroOneMany
   | cocon x => .cocon x.toTerm
   | scofix l I D A f s i a => .scofix (Level.ofNat l) I.toTerm D.toTerm A.toTerm f.toTerm s.toTerm i.toTerm a.toTerm
   | coit l I D S st i s => .coit (Level.ofNat l) I.toTerm D.toTerm S.toTerm st.toTerm i.toTerm s.toTerm
-  | scase l I D v P m s i x => .scase (Level.ofNat l) I.toTerm D.toTerm (Level.ofNat v) P.toTerm m.toTerm s.toTerm i.toTerm x.toTerm
+  | scaseq q l I D v P m s i x => .scase (Level.ofNat l) (.qlit q) I.toTerm D.toTerm (Level.ofNat v) P.toTerm m.toTerm s.toTerm i.toTerm x.toTerm
+  | scase l I D v P m s i x => .scase (Level.ofNat l) (.qlit .many) I.toTerm D.toTerm (Level.ofNat v) P.toTerm m.toTerm s.toTerm i.toTerm x.toTerm
   | ulift l A => .ulift (Level.ofNat l) A.toTerm
   | up a => .up a.toTerm
   | down t => .down t.toTerm
@@ -2949,6 +2958,7 @@ partial def ofTerm : Term ZeroOneMany → Option MTm
     | some 0 => some pfalse
     | _ => none
   | .absurd m t => return exfalso (← ofTerm m) (← ofTerm t)
+  | .letUnit u b => return letUnit (← ofTerm u) (← ofTerm b)
   | .enum ls => some (enum ls.length)
   | .tag ls i => some (tag ls.length i)
   | .ecase _ m s bs => return ecase (← ofTerm m) (← ofTerm s) (← bs.mapM ofTerm)
@@ -2972,7 +2982,8 @@ partial def ofTerm : Term ZeroOneMany → Option MTm
   | .scofix l I D A f s i a => return scofix (← l.toNat?) (← ofTerm I) (← ofTerm D) (← ofTerm A) (← ofTerm f) (← ofTerm s) (← ofTerm i) (← ofTerm a)
   | .coit l I D S st i s => return coit (← l.toNat?) (← ofTerm I) (← ofTerm D) (← ofTerm S) (← ofTerm st) (← ofTerm i) (← ofTerm s)
   | .sfix l I D v P f s i x => return sfix (← l.toNat?) (← ofTerm I) (← ofTerm D) (← v.toNat?) (← ofTerm P) (← ofTerm f) (← ofTerm s) (← ofTerm i) (← ofTerm x)
-  | .scase l I D v P m s i x => return scase (← l.toNat?) (← ofTerm I) (← ofTerm D) (← v.toNat?) (← ofTerm P) (← ofTerm m) (← ofTerm s) (← ofTerm i) (← ofTerm x)
+  | .scase l (.qlit .many) I D v P m s i x => return scase (← l.toNat?) (← ofTerm I) (← ofTerm D) (← v.toNat?) (← ofTerm P) (← ofTerm m) (← ofTerm s) (← ofTerm i) (← ofTerm x)
+  | .scase l (.qlit q) I D v P m s i x => return scaseq q (← l.toNat?) (← ofTerm I) (← ofTerm D) (← v.toNat?) (← ofTerm P) (← ofTerm m) (← ofTerm s) (← ofTerm i) (← ofTerm x)
   | .size => some size
   | .szInf => some szInf
   | .szSuc s => return szSuc (← ofTerm s)
@@ -3004,6 +3015,7 @@ partial def pretty (l : Nat) : MTm → String
   | star => "tt"
   | empty n => s!"Empty{n}"
   | exfalso m t => s!"absurd({pretty l m}, {pretty l t})"
+  | letUnit u b => s!"let () := {pretty l u}; {pretty l b}"
   | enum k => s!"Enum{k}"
   | tag _ i => s!"#{i}"
   | ecase m s bs => s!"case({pretty (l + 1) m}, {pretty l s}{String.join (bs.map fun b => ", " ++ pretty l b)})"
@@ -3038,6 +3050,7 @@ partial def pretty (l : Nat) : MTm → String
   | scofix _ _ _ A f s i a => s!"scofix({pretty l A}, {pretty l f}, {pretty l s}, {pretty l i}, {pretty l a})"
   | coit _ _ _ S st i s => s!"coit({pretty l S}, {pretty l st}, {pretty l i}, {pretty l s})"
   | sfix _ _ _ _ P f s i x => s!"sfix({pretty l P}, {pretty l f}, {pretty l s}, {pretty l i}, {pretty l x})"
+  | scaseq q _ _ _ _ P m s i x => s!"scase{q}({pretty l P}, {pretty l m}, {pretty l s}, {pretty l i}, {pretty l x})"
   | scase _ _ _ _ P m s i x => s!"scase({pretty l P}, {pretty l m}, {pretty l s}, {pretty l i}, {pretty l x})"
   | size => "Size"
   | szInf => "∞"
@@ -3220,7 +3233,7 @@ them uses no variable at all. -/
 def usageRule : List (MTm × Bool) :=
   let caseOn (q : ZeroOneMany) (bs : List MTm) :=
     ann (lam (lam (ecase (enum 2) (var 1) bs))) (pi (enum 2) (piq q (enum 2) (enum 2)))
-  [(ann (lam star) (piq .one (unit 0) (unit 0)), false),
+  [(ann (lam (tag 2 0)) (piq .one (enum 2) (enum 2)), false),
    (ann (lam star) (piq .many (unit 0) (unit 0)), true),
    (ann (lam star) (piq .zero (unit 0) (unit 0)), true),
    (ann (lam (lam (var 1))) (pi (enum 2) (piq .one (enum 2) (enum 2))), false),
@@ -3231,6 +3244,60 @@ def usageRule : List (MTm × Bool) :=
    (caseOn .one [var 0, var 0], true),
    (caseOn .one [tag 2 0, tag 2 1], false),
    (caseOn .many [var 0, tag 2 0], true)]
+
+/-- Linear-case stage 2, both kernels. **K1**: `scase` at a quantity `q` binds the payload
+at `q` and uses the scrutinee `q` times. At 1, `fun x => scase₁ … (fun j i xs => con xs) x`
+rebuilds a linear `Nat` (accepted, also for `x` at ω), a method that drops the payload or
+copies it (into a pair: an ω position) is rejected, and so is a linear `x` taken by the
+case at ω (the existing rule) or at 0 (unused). At 0 the scrutinee is erased: a method that
+ignores the payload is accepted for `x` at 0, one that reads it at run time (`xs.1`, the
+tag) is rejected. **No unused linear unit** (K2a was withdrawn): a linear `Unit`, or an erased
+function into `Unit`, left unused is rejected; `let () := u; b` consumes a `Unit` (once),
+and only a `Unit`: applied to a closure into `Unit` (linear-review's `stash`, which hides a
+linear `t` in `(0 e : A = Unit) → Unit`) it is rejected, as is dropping that closure. -/
+def linearCaseRule : List (MTm × Bool) :=
+  let rebuild := lams 3 (ann (con (var 0)) (mus 0 (unit 0) natD (var 1) (szSuc (var 2))))
+  let cs (q : ZeroOneMany) (P m : MTm) := scaseq q 0 (unit 0) natD 1 P m szInf star (var 0)
+  let natPair := sigma natTy natTy
+  [-- K1 at 1
+   (ann (lam (cs .one (lams 2 natTy) rebuild)) (piq .one natTy natTy), true),
+   (ann (lam (cs .one (lams 2 natTy) rebuild)) (piq .many natTy natTy), true),
+   (ann (lam (cs .one (lams 2 (enum 2)) (lams 3 (tag 2 0)))) (piq .one natTy (enum 2)), false),
+   (ann (lam (cs .one (lams 2 natPair)
+      (lams 3 (pair (ann (con (var 0)) natTy) (ann (con (var 0)) natTy))))) (piq .one natTy natPair), false),
+   (ann (lam (cs .one (lams 2 (enum 2)) (lams 3 (fst (var 0))))) (piq .one natTy (enum 2)), false),
+   (ann (lam (cs .many (lams 2 natTy) rebuild)) (piq .one natTy natTy), false),
+   (ann (lam (cs .zero (lams 2 (enum 2)) (lams 3 (tag 2 0)))) (piq .one natTy (enum 2)), false),
+   -- K1 at 0
+   (ann (lam (cs .zero (lams 2 (enum 2)) (lams 3 (tag 2 0)))) (piq .zero natTy (enum 2)), true),
+   (ann (lam (cs .zero (lams 2 (enum 2)) (lams 3 (fst (var 0))))) (piq .zero natTy (enum 2)), false),
+   (ann (lam (cs .zero (lams 2 (enum 2)) (lams 3 (fst (var 0))))) (piq .many natTy (enum 2)), false),
+   -- K1 at ω, as `scase`
+   (ann (lam (cs .many (lams 2 (enum 2)) (lams 3 (fst (var 0))))) (piq .many natTy (enum 2)), true),
+   -- no unit-shaped binder may go unused (K2a was withdrawn: linear-review's
+   -- counterexamples); a linear `Unit` is consumed by `let () := u; b`
+   (ann (lam star) (piq .one (unit 0) (unit 0)), false),
+   (ann (lam (tag 2 0)) (piq .one (unit 0) (enum 2)), false),
+   (letq .one (unit 0) star (tag 2 0), false),
+   (ann (lam (tag 2 0)) (piq .one (piq .zero (enum 2) (unit 0)) (enum 2)), false),
+   (ann (lam (letUnit (var 0) (tag 2 0))) (piq .one (unit 0) (enum 2)), true),
+   (ann (lam (letUnit (var 0) (letUnit (var 0) (tag 2 0)))) (piq .one (unit 0) (enum 2)), false),
+   (ann (lam (letUnit (var 0) (tag 2 0))) (piq .zero (unit 0) (enum 2)), false),
+   (letUnit star (tag 2 0), true),
+   -- the eliminator takes `Unit` only, never a function into it (a closure may hold a resource)
+   (ann (lam (letUnit (var 0) (tag 2 0))) (piq .one (piq .zero (enum 2) (unit 0)) (enum 2)), false),
+   (ann (lam (letUnit (var 0) (tag 2 0))) (piq .one (enum 1) (enum 2)), false),
+   -- linear-review's stash: `(1 t : A)` captured by a closure `(0 e : A = Unit) → Unit`, then
+   -- the closure dropped (rejected), or "eliminated" (rejected: not a `Unit`)
+   (ann (lam (lam (letq .one (piq .zero (eqTy (var 1) (unit 0)) (unit 0)) (lam (cast (var 2) (unit 0) (var 0) (var 1))) (tag 2 0))))
+     (pi (univ 0) (piq .one (var 0) (enum 2))), false),
+   (ann (lam (lam (letq .one (piq .zero (eqTy (var 1) (unit 0)) (unit 0)) (lam (cast (var 2) (unit 0) (var 0) (var 1)))
+       (letUnit (var 0) (tag 2 0)))))
+     (pi (univ 0) (piq .one (var 0) (enum 2))), false),
+   -- … and the closure passed to a binder that ignores it (leak4)
+   (ann (lam (lam (app (ann (lam (tag 2 0)) (piq .one (piq .zero (eqTy (var 1) (unit 0)) (unit 0)) (enum 2)))
+       (lam (cast (var 2) (unit 0) (var 0) (var 1))))))
+     (pi (univ 0) (piq .one (var 0) (enum 2))), false)]
 
 /-- The five eliminators that name the index type `I`, at level `l`, on the smallest
 descriptions (`ret i`, and `rec i (ret i)` for `ν`), in this order: `ind`, `sfix`,
@@ -3272,7 +3339,7 @@ def transpProp : List MTm :=
 /-- Terms the differential test always checks (well-typed ones the generator rarely
 builds whole), before the random ones. -/
 def samples : List MTm :=
-  propShapes ++ qtyApart ++ elimLevels ++ transpProp ++ sizeInf ++ sizeEq ++ sizeArgs ++ smallField ++ projRule.map (·.1) ++ elimRule.map (·.1) ++ usageRule.map (·.1) ++ [levelInEnv 0 0, levelInEnv 1 1, levelInEnv 0 1, levelInEnv 1 0,
+  propShapes ++ qtyApart ++ elimLevels ++ transpProp ++ sizeInf ++ sizeEq ++ sizeArgs ++ smallField ++ projRule.map (·.1) ++ elimRule.map (·.1) ++ usageRule.map (·.1) ++ linearCaseRule.map (·.1) ++ [levelInEnv 0 0, levelInEnv 1 1, levelInEnv 0 1, levelInEnv 1 0,
    natTy, natZero, natSucc natZero, natSucc (natSucc natZero), ann natD (desc 0 (unit 0)),
    eq natTy natZero (natSucc natZero), eq natTy (natSucc natZero) (natSucc natZero), refl natTy (natSucc natZero),
    delim 1 (lam (unit 0)) (lam star) (lams 4 star) (lams 4 star) (lams 5 star) (ann natD (desc 0 (unit 0))),
@@ -3697,10 +3764,10 @@ def termCtor : Term ZeroOneMany → String
   | .out _ => "out" | .size => "size" | .szInf => "szInf" | .szSuc _ => "szSuc" | .sizeLt _ => "sizeLt"
   | .sfix .. => "sfix" | .scase .. => "scase" | .cocon _ => "cocon" | .scofix .. => "scofix"
   | .coit .. => "coit" | .natLit _ => "natLit" | .natOp .. => "natOp" | .ulift .. => "ulift"
-  | .up _ => "up" | .down _ => "down" | .prf .. => "prf"
+  | .up _ => "up" | .down _ => "down" | .prf .. => "prf" | .letUnit .. => "letUnit"
 
 /-- How many constructors `Term` has (the arms of `termCtor`). -/
-def termCtorCount : Nat := 55
+def termCtorCount : Nat := 56
 
 /-- One term per constructor of `Term`, with `c` in every term position and `w` in every
 level position, and how many of each there are. -/
@@ -3715,9 +3782,9 @@ def termSamples (c : Term ZeroOneMany) (w : Level) : List (Term ZeroOneMany × N
    (.dhrec c c c c, 4, 0), (.delim w c c c c c c, 6, 1), (.mu w c c c c (some ("h", [w], [c])), 5, 2),
    (.con c, 1, 0), (.ind w c c w c c c c, 6, 2), (.nu w c c c c (some ("h", [w], [c])), 5, 2), (.out c, 1, 0),
    (.size, 0, 0), (.szInf, 0, 0), (.szSuc c, 1, 0), (.sizeLt c, 1, 0), (.sfix w c c w c c c c c, 7, 2),
-   (.scase w c c w c c c c c, 7, 2), (.cocon c, 1, 0), (.scofix w c c c c c c c, 7, 1), (.coit w c c c c c c, 6, 1),
+   (.scase w c c c w c c c c c, 8, 2), (.cocon c, 1, 0), (.scofix w c c c c c c c, 7, 1), (.coit w c c c c c c, 6, 1),
    (.natLit 3, 0, 0), (.natOp "nat.add" #[c, c], 2, 0), (.ulift w c, 1, 1), (.up c, 1, 0), (.down c, 1, 0),
-   (.prf w c, 1, 1)]
+   (.prf w c, 1, 1), (.letUnit c c, 2, 0)]
 
 /-- The globals of the differential test, in the Lean kernel. (A function, so that it
 is computed in the test, not when the module starts.) -/
@@ -4174,7 +4241,6 @@ def quantityDecls : List (String × Bool) := [
   ("def dup (ω x : Nat) : Nat := Nat.add x x\ndef ax2 (0 A : Type) (1 a : A) : A := a\n", true),
   ("def twice (1 x : Nat) (f : Nat → Nat → Nat) : Nat := f x x\n", false),
   ("def drop (1 x : Nat) : Nat := Nat.zero\n", false),
-  ("def m2 (1 x : Nat) : Nat := match x with\n  | .zero => 0\n  | .succ k => k\n", false),
   ("def imp {n : Nat} (x : Nat) : Nat := n\n", false),
   ("def er (0 x : Nat) : Nat := x\n", false),
   ("def bad2 (2 x : Nat) : Nat := x\n", false),
@@ -4189,8 +4255,12 @@ def quantityDecls : List (String × Bool) := [
 /-- (stage 21m) The pinned differences, `(declaration, Lean accepts, self-hosted accepts)`
 (docs/CoreSpec.md §15): the self-hosted kernel's descriptions have no quantities, so a
 constructor field written with one is an error there. (A linear variable used once in
-each branch of a `match` was one until 21v: `linearMatchDecls`.) -/
+each branch of a `match` was one until 21v: `linearMatchDecls`.) A `match` on a linear
+scrutinee (4h): the Lean frontend takes it apart with `T.casesOn1` (the case at 1, `Nat`'s
+ω field `k` comes out at `1·ω`), the self-hosted frontend's match is the case at ω, which
+uses the scrutinee ω times. -/
 def quantityDiffs : List (String × Bool × Bool) := [
+  ("def m2 (1 x : Nat) : Nat := match x with\n  | .zero => 0\n  | .succ k => k\n", true, false),
   ("structure P1 where\n  1 a : Nat\n", true, false),
   ("inductive V0 where\n  | mk (0 n : Nat)\n", true, false)]
 
@@ -4918,7 +4988,7 @@ def selfHostGroup : Group where
             throw (IO.userError s!"unexpected types {a}, {b}")
         | vs => throw (IO.userError s!"unexpected verdicts {vs}") },
     { name := "projections need an unrestricted pair; positions at 0 are erased; eliminators use their scrutinee ω times (R1; and both kernels agree on it below)", run := fun _ => do
-        for (t, ok) in MTm.projRule ++ MTm.elimRule ++ MTm.usageRule do
+        for (t, ok) in MTm.projRule ++ MTm.elimRule ++ MTm.usageRule ++ MTm.linearCaseRule do
           let v := leanVerdict t
           unless (v != "error") == ok do
             throw (IO.userError s!"expected {if ok then "accepted" else "rejected"}, got {v}: {MTm.pretty 0 t}") },
@@ -5642,7 +5712,8 @@ def languageGroup : Group where
           "def lin3 (1 p : Nat × Tok × Tok) : Unit × Unit :=\n  let 1 ⟨n, s, t⟩ := p\n  (Tok.close s, Tok.close t)\n")
           ["7", "7", "4", "2"] },
     -- the documented limitation (13h): the Σ of a structure ends in a marker tail that a
-    -- linear split leaves unused; when the encoding changes this becomes a positive test
+    -- linear split leaves unused (K2a, which would have allowed it, was withdrawn: the
+    -- tail's type has closure inhabitants that can hold a resource; linear-case stage 2)
     { name := "let 1 ⟨a, b⟩ := s on a structure: nested splits, rejected today for the leftover tail", run := fun _ => do
         failsLib ("import Prelude\nstructure Stats where\n  hits : Nat\n  misses : Nat\n" ++ "def lin (1 s : Stats) : Nat × Nat :=\n  let 1 ⟨h, m⟩ := s\n  (h, m)")
           "cannot take a value of the structure Stats apart at quantity 1"
@@ -8841,6 +8912,177 @@ def main : IO Unit := IO.bind (MVar.new (A := Nat)) (fun r =>
       IO.println (Nat.toString (a + sumN 2000 s))))))
 "
 
+/-- Linear-case stage 2 (K1: `scase` at a quantity, `T.casesOn1`; the unit eliminator
+`let () := u; b`): the M4 acceptance probes of `wiz-notes/cohesion-resources.md` §7, the
+negatives of the soundness argument (docs/CoreSpec.md §10.2, §10.2a): a linear variable is
+never used twice, nor dropped, an erased one never used at run time; and linear-review's
+counterexamples to the withdrawn K2a. -/
+def linearCaseHeader : String :=
+  "import Prelude\naxiom Tok : Type\naxiom use : (1 t : Tok) → Nat\n" ++
+  "inductive Res1 (A : Type) where\n  | ok (1 a : A)\n  | err (e : Nat) (1 back : A)\n"
+
+/-- At least one error, and the first mentions `fragment` (with every library importable):
+for programs whose later declarations use a rejected one. -/
+def rejectsLibs (input : String) (fragment : String) : IO Unit := do
+  let s := runFrontend (R := ZeroOneMany) input { trustedModule := Tests.libModule, loader := ← libLoader }
+  let errs := (s.messages.filter (·.severity == .error)).map fun m => m.render input
+  let some e := errs[0]? | throw (IO.userError "expected an error, got none")
+  unless (e.splitOn fragment).length > 1 do
+    throw (IO.userError s!"error does not mention '{fragment}':\n{e}")
+
+/-- linear-review's stash: a linear `t` hidden in a closure `(0 e : T = Unit) → Unit`. -/
+def stashDef : String :=
+  "def stash {T : Type} (1 t : T) : (0 e : T = Unit) → Unit := fun e => Eq.subst (fun (X : Type) => X) e t\n"
+
+/-- A lock in C, a non-recursive mutex: `c_acquire` locks it (a second `c_acquire` without
+a `c_release` in between would wait forever) and hands out a ticket number; `c_release`
+(in IO) unlocks and counts. `c_poly` is a polymorphic foreign function that counts its
+calls (for erasure's defence in depth). -/
+def relHelper : String := "#include <stdint.h>
+#include <pthread.h>
+typedef uintptr_t wiz_val;
+static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
+static uint64_t released = 0, next = 0, polys = 0;
+uint64_t c_acquire(void) { pthread_mutex_lock(&mu); return next++; }
+void c_release(uint64_t n) { (void)n; released++; pthread_mutex_unlock(&mu); }
+uint64_t c_count(void) { return released; }
+wiz_val c_poly(uint64_t n) { (void)n; polys++; return (wiz_val)1; }
+uint64_t c_polys(void) { return polys; }
+"
+
+/-- A linear ticket for `relHelper`'s lock: acquired and released in IO (side effects live
+in the world), released through `casesOn1`. -/
+def ticketHeader : String :=
+  "import IO\nextern \"c_acquire\" cAcquire : IO Nat\nextern \"c_release\" cRelease : Nat → IO Unit\n" ++
+  "extern \"c_count\" cCount : IO Nat\n" ++
+  "inductive Ticket where\n  | mk (n : Nat)\n" ++
+  "def Ticket.release (1 t : Ticket) : IO Unit := match t with\n  | .mk n => cRelease n\n" ++
+  "def withTicket {B : Type} (1 k : (1 t : Ticket) → IO B) : IO B :=\n  fun w => let 1 (n, w') := cAcquire w; k (Ticket.mk n) w'\n"
+
+def ticketSrc : String := ticketHeader ++
+  "def main : IO Unit :=\n  IO.bind (withTicket (fun t => IO.then1 (Ticket.release t) (IO.println \"first\")))\n" ++
+  "    (fun _ => IO.bind (withTicket (fun t => IO.then1 (Ticket.release t) (IO.println \"second\")))\n" ++
+  "      (fun _ => IO.bind cCount (fun c => IO.println (Nat.toString c))))\n"
+
+def linearCaseGroup : Group where
+  name := "linear-case"
+  exercise := "docs/CoreSpec.md §10.2 (K1), §10.2a (the unit eliminator)"
+  cases := [
+    { name := "a2: a linear field matched out of a linear scrutinee, handed back in both alternatives (D8)", run := fun _ =>
+        okLibs (linearCaseHeader ++ "def rebuild (1 r : Res1 Tok) : Res1 Tok := match r with\n  | .ok t => .ok t\n  | .err e t => .err e t\n") },
+    { name := "n1: the resource dropped in one alternative is rejected", run := fun _ =>
+        failsLibs (linearCaseHeader ++ "def drop (1 r : Res1 Tok) : Nat := match r with\n  | .ok t => 0\n  | .err e t => e\n") "quantity 1 but used 0" },
+    { name := "n2: the resource duplicated is rejected", run := fun _ =>
+        failsLibs (linearCaseHeader ++ "def dup (1 r : Res1 Tok) : Res1 Tok × Res1 Tok := match r with\n  | .ok t => (.ok t, .ok t)\n  | .err e t => (.err e t, .err e t)\n") "used ω" },
+    { name := "the scrutinee used again after a linear match is rejected", run := fun _ =>
+        failsLibs (linearCaseHeader ++ "def again (1 r : Res1 Tok) : Res1 Tok × Res1 Tok := (match r with\n  | .ok t => .ok t\n  | .err e t => .err e t, r)\n") "used ω" },
+    { name := "a field at 0 is erased in a linear match: used at run time rejected, in an erased position accepted", run := fun _ => do
+        let h := linearCaseHeader ++ "inductive R0 where\n  | mk (0 n : Nat) (1 t : Tok)\n"
+        failsLibs (h ++ "axiom use0 : (n : Nat) → (1 t : Tok) → Nat\ndef f (1 r : R0) : Nat := match r with\n  | .mk n t => use0 n t\n") "quantity 0 but used ω"
+        okLibs (h ++ "axiom use0 : (0 n : Nat) → (1 t : Tok) → Nat\ndef f (1 r : R0) : Nat := match r with\n  | .mk n t => use0 n t\n") },
+    { name := "a linear match on an indexed family (the index equation at 0, a cast)", run := fun _ =>
+        okLibs (linearCaseHeader ++ "inductive V : Nat → Type where\n  | nil : V .zero\n  | one (1 t : Tok) : V (.succ .zero)\n" ++
+          "def f {n : Nat} (1 v : V n) : Nat := match v with\n  | .nil => 0\n  | .one t => use t\n") },
+    { name := "nested linear matches: a linear field is matched again with casesOn1", run := fun _ =>
+        okLibs (linearCaseHeader ++ "def flat (1 r : Res1 (Res1 Tok)) : Res1 Tok := match r with\n" ++
+          "  | .ok s => (match s with\n    | .ok t => .ok t\n    | .err e t => .err e t)\n  | .err e s => (match s with\n    | .ok t => .err e t\n    | .err e' t => .err e' t)\n") },
+    { name := "a3: a borrow scope over a linear handle, a one-constructor inductive `H | mk (1 val : S)`", run := fun _ =>
+        okLibs ("import Region\ninductive Res1 (A : Type) where\n  | ok (1 a : A)\n  | err (e : Error) (1 back : A)\n" ++
+          "inductive H (ρ : Region) (S : Type) where\n  | mk (1 val : S)\n" ++
+          "def borrow1 {S B : Type} (0 σ : Region) (1 s : S)\n    (1 body : (0 ρ : Region) → (1 r : H ρ S) → Res1 ((ω b : B) × H ρ S)) : Res1 ((ω b : B) × S) :=\n" ++
+          "  match body σ (H.mk s) with\n  | .ok p => let 1 (b, r) := p; (match r with\n    | .mk v => .ok (b, v))\n" ++
+          "  | .err e p => let 1 (b, r) := p; (match r with\n    | .mk v => .err e (b, v))\n") },
+    { name := "a3 as a structure: an ω field holding a linear value is a usage error, and a linear structure has no destructuring form", run := fun _ => do
+        let pre (fld : String) := "import Region\ninductive Res1 (A : Type) where\n  | ok (1 a : A)\n  | err (e : Error) (1 back : A)\n" ++
+          s!"structure H (ρ : Region) (S : Type) where\n  {fld}\n" ++
+          "def borrow1 {S B : Type} (0 σ : Region) (1 s : S)\n    (1 body : (0 ρ : Region) → (1 r : H ρ S) → Res1 ((ω b : B) × H ρ S)) : Res1 ((ω b : B) × S) :=\n" ++
+          "  match body σ (H.mk s) with\n  | .ok p => let 1 (b, r) := p; let 1 ⟨v⟩ := r; .ok (b, v)\n  | .err e p => let 1 (b, r) := p; let 1 ⟨v⟩ := r; .err e (b, v)\n"
+        failsLibs (pre "val : S") "cannot take a value of the structure H apart at quantity 1"
+        failsLibs (pre "1 val : S") "cannot take a value of the structure H apart at quantity 1" },
+    { name := "a linear one-constructor type: a field dropped is rejected", run := fun _ =>
+        failsLibs (linearCaseHeader ++ "inductive G where\n  | mk (n : Nat) (1 t : Tok)\n" ++
+          "def g (1 x : G) : Nat := match x with\n  | .mk n t => n\n") "quantity 1 but used 0" },
+    { name := "a linear Unit must be consumed: unused is rejected, `let () := u` consumes it once", run := fun _ => do
+        failsLibs "import Prelude\ndef f (1 u : Unit) : Nat := 0\n" "used 0"
+        failsLibs "import Prelude\ndef g (1 k : (0 n : Nat) → Unit) : Nat := 0\n" "used 0"
+        okLibs "import Prelude\ndef f (1 u : Unit) : Nat := let () := u; 0\n"
+        failsLibs "import Prelude\ndef f (1 u : Unit) : Nat := let () := u; let () := u; 0\n" "used ω"
+        failsLibs "import Prelude\ndef f (0 u : Unit) : Nat := let () := u; 0\n" "quantity 0"
+        failsLibs "import Prelude\ndef f (1 k : (0 n : Nat) → Unit) : Nat := let () := k; 0\n" "mismatch" },
+    { name := "a token is not droppable, whether an axiom, a definition of Unit or a field-less structure", run := fun _ => do
+        failsLibs "import Prelude\naxiom Tok : Type\ndef drop (1 t : Tok) : Nat := 0\n" "used 0"
+        failsLibs "import Prelude\ndef Tok : Type := Unit\ndef drop (1 t : Tok) : Nat := 0\n" "used 0"
+        failsLibs "import Prelude\nstructure Tok where\ndef drop (1 t : Tok) : Nat := 0\n" "used 0" },
+    { name := "linear-review: a token hidden in a closure into Unit can't be dropped (leak1–4, 6)", run := fun _ => do
+        let h := linearCaseHeader
+        let subst := "fun e => Eq.subst (fun (X : Type) => X) e t"
+        failsLibs (h ++ s!"def drop (1 t : Tok) : Nat :=\n  let 1 g : (0 e : Tok = Unit) → Unit := {subst}\n  0\n") "used 0"
+        rejectsLibs (h ++ s!"def dropU (1 t : Tok) : Unit := let 1 g : (0 e : Tok = Unit) → Unit := {subst}; ()\n" ++
+          "def drop (1 t : Tok) : Nat := let 1 u : Unit := dropU t; 0\n") "used 0"
+        rejectsLibs (h ++ stashDef ++ "def drop (1 t : Tok) : Nat := let 1 g := stash t; 0\n") "used 0"
+        failsLibs (h ++ s!"def drop (1 t : Tok) : Nat := (fun (1 g : (0 e : Tok = Unit) → Unit) => 0) ({subst})\n") "used 0"
+        failsLibs (h ++ s!"def drop (1 t : Tok) : Nat :=\n  let 1 p : Nat × ((0 e : Tok = Unit) → Unit) := (0, {subst})\n  let 1 (n, g) := p\n  n\n") "used 0"
+        -- (n_closurefield) the closure as a linear constructor field, matched and dropped
+        failsLibs (h ++ "inductive C where\n  | mk (1 f : (0 e : Tok = Unit) → Unit)\n" ++
+          s!"def stash (1 t : Tok) : C := .mk ({subst})\n" ++ "def drop (1 c : C) : Nat := match c with\n  | .mk f => 0\n") "used 0"
+        -- and the closure can't be "consumed" by the unit eliminator: it is not a Unit
+        failsLibs (h ++ s!"def drop (1 t : Tok) : Nat :=\n  let 1 g : (0 e : Tok = Unit) → Unit := {subst}\n  let () := g; 0\n") "mismatch" },
+    { name := "linear-review: a unit-valued consumer's result must be consumed (leak5)", run := fun _ => do
+        let h := linearCaseHeader ++ "axiom useU : (1 t : Tok) → Unit\n"
+        failsLibs (h ++ "def drop (1 t : Tok) : Nat := (fun (1 u : Unit) => 0) (useU t)\n") "used 0"
+        okLibs (h ++ "def fin (1 t : Tok) : Nat := let () := useU t; 0\n") },
+    { name := "linear-review: a token stashed in a structure's tail can't be dropped (tail3)", run := fun _ => do
+        failsLibs (linearCaseHeader ++ "inductive PL (P : Prop) : Type where\n  | up (h : P)\n" ++
+          "def PL.down {P : Prop} (b : PL P) : P := match b with | .up h => h\n" ++
+          "structure S (A : Type) where\n  n : Nat\n" ++
+          "def mk (1 t : Tok) : S (PL (Tok = Unit)) := (0, fun b m => Eq.subst (fun (X : Type) => X) (PL.down b) t)\n" ++
+          "def drop (1 t : Tok) : Nat := let 1 ⟨n⟩ := mk t; n\n") "cannot take a value of the structure S apart" },
+    { name := "linear-review: a lock guard can't be forgotten (the deadlock repro is rejected)", run := fun _ =>
+        rejectsLibs ("import IO\nimport MVar\n" ++ stashDef ++
+          "def forget {T B : Type} (1 t : T) (1 k : IO B) : IO B := let 1 g := stash t; k\n" ++
+          "def main : IO Unit :=\n  IO.bind Lock.new (fun l =>\n" ++
+          "    IO.bind (Lock.acquire l (fun g => forget g (IO.println \"first acquire; guard forgotten\")))\n" ++
+          "      (fun _ => Lock.acquire l (fun g => Lock.release l g (IO.println \"second acquire\"))))\n") "variable g declared with quantity 1 but used 0" },
+    { name := "the linear match runs, compiled", run := fun _ =>
+        ioRun ("import IO\ninductive Res1 (A : Type) where\n  | ok (1 a : A)\n  | err (e : Nat) (1 back : A)\n" ++
+          "def get (1 r : Res1 Nat) : Nat := match r with\n  | .ok n => n\n  | .err e n => n\n" ++
+          "def main : IO Unit := do\n  IO.println (Nat.toString (get (.ok 3)));\n  IO.println (Nat.toString (get (.err 4 5)))\n") "3\n5\n" },
+    { name := "a linear lock ticket released in IO runs exactly once, compiled (C and LLVM)", run := fun _ =>
+        -- (if the release were skipped, the second `c_acquire` would wait forever; if it
+        -- ran twice, the count would be off)
+        ioRunC ticketSrc relHelper "first\nsecond\n2\n" },
+    { name := "side effects live in IO: an extern or implementation whose result has no runtime content is rejected", run := fun _ => do
+        -- linear-review's stashes of a pure Unit-valued release (t_stash2, t_stash, t_res)
+        -- start with the extern itself, which is now refused; so do the bypasses b1 (a
+        -- named unit) and b3 (a proposition), and an erased function into Unit. The check
+        -- is semantic (after whnf, erasure's own `erasable`)
+        let m := "must carry something at run time"
+        failsLibs "import IO\nextern \"c_release\" cRelease : Nat → Unit\n" m
+        failsLibs "import IO\nextern \"c_release\" cRelease : (1 n : Nat) → Unit\n" m
+        failsLibs "import IO\ndef Tk : Type := Unit\nextern \"c_release\" cRelease : Nat → Tk\n" m
+        failsLibs "import IO\ndef P : Prop := True\nextern \"c_release\" cRelease : Nat → P\n" m
+        failsLibs "import IO\nextern \"c_release\" cRelease : Nat → (0 k : Nat) → Unit\n" m
+        failsLibs ("import IO\ndef rel (n : Nat) : Unit := ()\ndef relImpl (n : Nat) : Unit := ()\n" ++
+          "attribute [implemented_by relImpl] rel\n") "has no runtime content"
+        failsLibs ("import IO\ndef Tk : Type := Unit\ndef rel (n : Nat) : Tk := ()\ndef relImpl (n : Nat) : Tk := ()\n" ++
+          "attribute [implemented_by relImpl] rel\n") "has no runtime content"
+        -- an implementation at a proposition is a proof, erased too: allowed (externs are not)
+        okLibs ("import IO\ndef pf (n : Nat) : n = n := refl n\ndef pfImpl (n : Nat) : n = n := refl n\n" ++
+          "attribute [implemented_by pfImpl] pf\n")
+        okLibs "import IO\nextern \"c_release\" cRelease : Nat → IO Unit\nextern \"c_sq\" cSq : Nat → Nat\n" },
+    { name := "linear-review's erased-position stashes: with the release in IO there is no Unit to hide it in", run := fun _ => do
+        -- (the same shapes, with the IO release: `t` must reach an IO action that is run;
+        -- hiding it in an erasable value is a quantity error, or leaves a World unconsumed)
+        let h := ticketHeader
+        failsLibs (h ++ "def hide (1 t : Ticket) : (0 k : Nat) → Unit := fun k => ()\n") "used 0"
+        failsLibs (h ++ "def hide (1 t : Ticket) : (0 k : Nat) → IO Unit := fun k => Ticket.release t\n" ++
+          "def drop (1 t : Ticket) : Nat := let 1 g := hide t; 0\n") "used 0" },
+    { name := "defence in depth: an extern call is kept where its type is erasable (C and LLVM)", run := fun _ =>
+        ioRunC ("import IO\nextern \"c_poly\" cPoly : {A : Type} → Nat → A\nextern \"c_polys\" cPolys : IO Nat\n" ++
+          "def main : IO Unit :=\n  let g : (0 k : Nat) → Unit := cPoly 5\n  IO.bind cPolys (fun c => IO.println (Nat.toString c))\n")
+          relHelper "1\n" }
+  ]
+
 /-- (15i) Closed definitions first used by several threads at once: each may build the
 table (the first to publish wins), and the memoised suspension inside the constant is
 forced under the lock. -/
@@ -9173,6 +9415,7 @@ def groups : List Group :=
   phantomGroup ::
   qtyGroup ::
   regionsGroup ::
+  linearCaseGroup ::
   reprGroup ::
   reuseGroup ::
   runGroup ::

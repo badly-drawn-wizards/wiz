@@ -45,6 +45,7 @@
     "optic",
     "phantom",
     "regions",
+    "=linear-case",
     "repr",
     "seplogic",
     "=sat",
