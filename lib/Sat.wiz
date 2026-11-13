@@ -7,8 +7,10 @@ a Tseitin translation proved sound, and the theorem that puts them together:
 
     Sat.decide_sound : IsTrue (Sat.checkAll f nodes cert) → ∀ σ, BForm.eval σ f = .true
 
-A SAT solver (CaDiCaL, untrusted) finds `cert`; the kernel runs the check (`refl`), so a
-proof made this way trusts nothing new. The tactic that drives it is `sat_decide`
+and its dag version (28c: one node per distinct subterm, `Sat.Gate`/`Sat.GNode`, closed by
+`Sat.dag_sound`/`Sat.dag_eq`), which the tactic uses. A SAT solver (CaDiCaL, untrusted)
+finds `cert`; the kernel runs the check (`refl`), so a proof made this way trusts nothing
+new. The tactic that drives it is `sat_decide`
 (lib/SatTactic.wiz). Design: wiz-notes/smt.md §4; docs/stages/28-solvers.md, 28b.
 -/
 
