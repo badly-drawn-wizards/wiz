@@ -477,7 +477,7 @@ Limitations: the fragment (LOWERING.md §1a); loop invariants, `decreases` and `
 (a returned borrow) in specs are not supported, nor (with linear handles) a spec for a
 function with an outlives bound or three or more `&mut` arguments; `U64` and `Vec`
 are the stand-ins of `drafts/feral/lib/FeralCore.wiz`; keywords such as `if` and `mut`
-are reserved in a file that imports `Feral`; one borrow error per function; stricter than rustc where a `&mut` would be
+are reserved only inside `feral … end` (13j), and only `feral` itself elsewhere; one borrow error per function; stricter than rustc where a `&mut` would be
 implicitly reborrowed at a shorter lifetime.
 
 ## 22k: sealed types

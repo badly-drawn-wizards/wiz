@@ -213,3 +213,32 @@ quantity 1 over a native heap (CS7b: lib/Ref.wiz, docs/libraries.md; adequacy ag
 model is argued in its header, not yet mechanised);
 then a scheduler semantics, CSL with resource invariants and PCM ghost state (CS10a).
 SteelCore's action trees with `Par` nodes are the model for where concurrency goes.
+
+## 24e: notation for specifications, and goals that print in it ✅
+
+```
+def Prog.read_spec (l v : Nat) : ⦃l ↦ v⦄ Prog.read l ⦃r, l ↦ v ⋆ ⌜r = v⌝⦄ := by xgo
+def MList' (p : Nat) : HProp Nat := ∃ʰ (n : Nat), p ↦ n ⋆ ⌜n = 0⌝
+```
+
+* `⌜P⌝` is `hpure P` (Iris's spelling; SLF writes `\[P]`), `∃ʰ x, H` and `∃ʰ (x : A), H`
+  are `hexists (fun x => H)`, in lib/HProp.wiz.
+* `⦃P⦄ c ⦃r, Q⦄` is `Triple P c (fun r => Q)`, `⦃P⦄ c ⦃_, Q⦄` ignores the result, and
+  `⦃P⦄ c ⦃Q⦄` takes the postcondition as a function, in lib/Hoare.wiz. `Triple P c Q` is
+  still the same term: the notation is only syntax (6a), and the lemmas keep their names.
+* All of it prints back (11r): `#check`, type mismatches, and now also **goals and
+  tactic messages**. `trace_state`, the goals of an x-tactic's failure ("xsimpl: stuck:
+  no atom on the left matches l ↦ 2"), `TacticM.ppExpr`, "unsolved goals" and "failed to
+  synthesize an instance" used the elaborator's printer without the notation table;
+  they use it now (`Elab.showTermM`, `Goal.show`, `Class.showType`), so an entailment goal
+  reads `⊢ (l ↦ 1 ⊢ l ↦ 2)` instead of `⊢ Entails Nat (pts Nat l 1) (pts Nat l 2)`.
+* **One turnstile per goal.** Entailment keeps `⊢` (SLF's and Iris's symbol, and the
+  library's source), so a goal whose target shows a `⊢` of its own prints the target in
+  parentheses (`goalTarget`, Core/Pretty.lean: `trace_state`, tactic messages, hovers and
+  the infoview, tags kept). Changing the goal marker would change every goal of every
+  file, and a second symbol for entailment would make the goals read differently from
+  the code.
+
+Not covered: implicit arguments outside notation still print (`Prog.read Nat l`, 11r's
+limitation), and `wp c Q` has no notation. Conventions: docs/dsls.md. Tests: group
+`seplogic`.

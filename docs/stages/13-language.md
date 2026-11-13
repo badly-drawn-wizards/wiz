@@ -10,7 +10,11 @@ Writing the lexer and parser in Wiz showed what the language lacked:
   parser's core is a mutual block, with no fuel.
 * **Mutual inductive types.** `mutual inductive A … inductive B … end` becomes one
   family indexed by a tag type, `A_B : A_B.Tag → Type`, with `def A := A_B .A`.
-  Recursion over a family at a concrete index (`SyntaxF .false`) works.
+  Recursion over a family at a concrete index (`SyntaxF .false`) works. The constructors
+  are named per member, as for a single inductive type: `A.c`, `B.c` (two members may
+  share a constructor name), and `.c` picks the expected member's; `deriving C` on a
+  member derives `C` for the family (`Repr` shows `A.c …`). The family's name is
+  internal.
 * **`match` without an expected type**, **tuple patterns** `(a, b, c)`, and `x |> f`.
 * Keywords of tactic syntax (`first`, `exact` …) are no longer reserved words.
 * The prelude has `Nat.lt` (native at runtime), `Nat.le`, `Nat.max`, `Bool.and/or/not`.
@@ -538,6 +542,34 @@ equation writes `castRefl` themselves.
 Before, they checked only because unsolved holes kept the equation from computing.
 Research note: `wiz-notes/structure-eta.md`. Tests: group `elabfix`, "rfl at an equation
 that has computed"; group `optic`.
+
+## 13o: DSL conventions
+
+The embedded languages follow one set of conventions (entering, scoping, symbols,
+printing, errors, docs, tests), collected in [docs/dsls.md](../dsls.md) with a table of
+the DSLs. This section's changes bring the libraries in line:
+
+* **Helper notation is local** (13m). `∷` (HoareTactics) and `+++`, `⊕`, `▸` (Feral)
+  are used only inside their modules; they were global, so every importer lost those
+  symbols and (with 11r) printed `List.cons`/`String.append` with them. (Hdl.Core's
+  `<+>` is the HDL libraries' shared operator — `Hdl.Prim`, `Hdl.Xdc`, `Hdl.Xilinx7`,
+  `Hdl.Sim` and the examples use it — so it stays public.)
+* **A reserved word says where it comes from.** An identifier position holding a keyword
+  of a `term` or `command` rule says so, with the notation (its atoms, `…` between them)
+  and the module that declared it: `def exists := 1` after `import Logic` is
+  `expected identifier ('exists' is a keyword: the notation `exists …, …` of module
+  Logic)` (`ParseError.explainKeywords`, `Wiz/Frontend/Parse.lean`; looked up only when
+  the error is reported, with the declaring modules of 11q). Built-in keywords say
+  `('def' is a keyword)`.
+* **A constructor pattern of another type** is an error that says so, at the pattern
+  (at the `match` when a macro wrote it): `if n then 1 else 2` at `n : Nat` was
+  "missing case for constructor zero" (the `.true`/`.false` match `if` expands to) and is
+  `the value matched has type Nat, which has no constructor .true (its constructors:
+  .zero, .succ); the condition of `if`, `&&` and `||` is a Bool`. Type-ascribing the
+  condition in the macro instead would lose the refinement of a variable condition in
+  the branches' types.
+
+Tests: groups `language`, `seplogic`. Audit and table: `wiz-notes/dsl-conventions.md`.
 
 ## 13p: nested structure update `{ s with a.b := v }`, printed back
 
