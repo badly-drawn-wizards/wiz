@@ -688,15 +688,45 @@ partial def rewriteRecCalls (g : Globals R) (rc : RecCtx) (binds : List (Name ×
           throw s!"recursive call of {rc.fn} must pass the parameter {p} unchanged"
       args := kept ++ args.extract rc.allParams.length args.size
     -- (#249) which columns the call passes: with `@f` all of them, else the explicit ones
+    let atF := isExplicitF (stx.getArg 0)
     let explicitCols : List Nat := (List.range rc.cols).filter fun i =>
-      isExplicitF (stx.getArg 0) || (rc.colExplicit[i]?.getD true)
-    let np := if args.size ≤ explicitCols.length then 0 else rc.params.length
+      atF || (rc.colExplicit[i]?.getD true)
+    let nExpl := explicitCols.length
+    -- (the old form passes every matched argument, with a `_` at the implicit ones)
+    let allGiven (given : Array Syntax) : Bool :=
+      given.size ≥ rc.cols &&
+        (rc.colExplicit.zip (given.extract 0 rc.cols).toList).all fun (e, a) =>
+          e || a.isOfKind "term.hole"
+    -- is the argument at `i` a recursive field (a variable with a hypothesis)?
+    let isFieldArg (i : Nat) : Bool := match args[i]? with
+      | some a => a.isOfKind "term.ident" && (match (a.getArg 0).getId? with
+          | some y => match binds.find? (·.1 == y) with
+            | some (_, _, .neutral (.local fl) #[]) => rc.ihs.any (·.1 == fl)
+            | _ => false
+          | none => false)
+      | none => false
+    -- a partial application `f n y` passes the parameters and only some of the matched
+    -- arguments: the parameters are there when they are the parameters' names and the
+    -- structural argument after them is a recursive field (`f k _ e` takes no parameter
+    -- there, it passes every column)
+    let isParamsAt0 : Bool := !rc.params.isEmpty && args.size > rc.params.length &&
+      (rc.params.zip (args.extract 0 rc.params.length).toList).all (fun (p, a) =>
+        a.isOfKind "term.ident" && (a.getArg 0).getId? == some p) &&
+      isFieldArg (rc.params.length + (explicitCols.idxOf? rc.pos).getD rc.pos)
+    let np := if isParamsAt0 then rc.params.length
+      else if args.size ≤ nExpl || (!atF && args.size ≤ rc.cols && allGiven args) then 0
+      else rc.params.length
     for p in rc.params.take np, i in [0:np] do
       let ok := match args[i]? with
         | some a => a.isOfKind "term.ident" && (a.getArg 0).getId? == some p
         | none => false
       unless ok do throw s!"recursive call of {rc.fn} must pass the parameter {p} unchanged"
-    let colArgs := args.extract np args.size
+    let given := args.extract np args.size
+    -- (the old form, all columns given: keep the explicit columns' arguments, then any
+    -- further arguments after the columns)
+    let colArgs := if !atF && given.size > nExpl && allGiven given then
+        (explicitCols.map (given[·]!)).toArray ++ given.extract rc.cols given.size
+      else given
     let some posE := explicitCols.idxOf? rc.pos
       | throw s!"recursive call of {rc.fn}: its structural argument is implicit; use @{rc.fn}"
     let some a := colArgs[posE]? | throw s!"recursive call of {rc.fn} without its structural argument"
