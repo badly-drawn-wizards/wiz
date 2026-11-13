@@ -1,3 +1,5 @@
+import Wiz.Smt.Process
+
 /-!
 # The toolchain record (stage 23a)
 
@@ -26,6 +28,15 @@ structure Toolchain where
   cacheDir : Option System.FilePath := none
   /-- module roots searched after the standard library -/
   searchPath : List System.FilePath := []
+  /-- (27a) `--trust-native`: `native_refl` may decide equations by running them -/
+  trustNative : Bool := false
+  /-- (27a) `--native-fuel N`: the interpreter steps one `native_refl` may take (none: the
+  default, `NativeRun.defaultFuel`) -/
+  nativeFuel : Option Nat := none
+  /-- (28b) `--sat-solver CMD` (default `cadical`, or the bundle's), `--solver-timeout MS`
+  (default 10000). Flags only: a grail file can't name a program for wiz to run. -/
+  satSolver : Option String := none
+  solverTimeout : Option Nat := none
   deriving Repr, Inhabited
 
 namespace Toolchain
@@ -51,13 +62,20 @@ def set (t : Toolchain) (key value : String) : Option Toolchain :=
   | "gc-ldflags" => some { t with gcLdflags := words value }
   | "cache" => some { t with cacheDir := some (System.FilePath.mk value) }
   | "root" => some { t with searchPath := t.searchPath ++ [System.FilePath.mk value] }
+  | "native-fuel" => value.toNat?.map fun n => { t with nativeFuel := some n }
   | _ => none
 
 /-- Take the toolchain flags out of the arguments: `--cc X`, `--cflags "…"`,
 `--ldflags "…"`, `--libs "…"`, `--gmp "…"`, `--llc X`, `--gc-cflags "…"`, `--gc-ldflags "…"`, `--cache DIR`,
-`--no-cache`, `-I DIR`. -/
+`--no-cache`, `-I DIR`, (27a) `--trust-native`, `--native-fuel N`, (28b) `--sat-solver CMD`,
+`--solver-timeout MS` (flags only, not settings of a grail file). -/
 partial def parseFlags (t : Toolchain) : List String → Toolchain × List String
   | "--no-cache" :: rest => parseFlags { t with cacheDir := none } rest
+  | "--trust-native" :: rest => parseFlags { t with trustNative := true } rest
+  | "--sat-solver" :: cmd :: rest => parseFlags { t with satSolver := some cmd } rest
+  | "--solver-timeout" :: ms :: rest => match ms.toNat? with
+    | some n => parseFlags { t with solverTimeout := some n } rest
+    | none => let (t, r) := parseFlags t rest; (t, "--solver-timeout" :: ms :: r)
   | "-I" :: dir :: rest => parseFlags { t with searchPath := t.searchPath ++ [System.FilePath.mk dir] } rest
   | flag :: v :: rest =>
     match (if flag.startsWith "--" then t.set (flag.drop 2).toString v else none) with
@@ -72,20 +90,32 @@ def toFlags (t : Toolchain) : List String :=
    "--libs", " ".intercalate t.libs, "--gmp", " ".intercalate t.gmp, "--llc", t.llc, "--gc-cflags", " ".intercalate t.gcCflags,
    "--gc-ldflags", " ".intercalate t.gcLdflags] ++
   (match t.cacheDir with | some d => ["--cache", d.toString] | none => ["--no-cache"]) ++
-  t.searchPath.flatMap fun d => ["-I", d.toString]
+  t.searchPath.flatMap (fun d => ["-I", d.toString]) ++
+  (if t.trustNative then ["--trust-native"] else []) ++
+  (match t.nativeFuel with | some n => ["--native-fuel", toString n] | none => []) ++
+  (match t.satSolver with | some c => ["--sat-solver", c] | none => []) ++
+  (match t.solverTimeout with | some n => ["--solver-timeout", toString n] | none => [])
+
+/-- (28) What the elaborator needs to reach solvers. -/
+def smt (t : Toolchain) : Smt.Config :=
+  { satSolver := t.satSolver.getD "cadical", timeoutMs := t.solverTimeout.getD 10000,
+    cacheDir := t.cacheDir.map toString }
 
 /-- (26f) The C toolchain a release tarball ships, `share/wiz/cc` (scripts/bundle-cc.sh):
 clang with a glibc 2.27 sysroot holding static GMP and the Boehm GC, and an `llc` that
 runs that clang on IR. Found beside the running binary (`<dir>/.lake/build/bin/wiz` with
 `<dir>/cc/bin/cc`, as `toolchainLib` finds `<dir>/lib`). When it is there it gives the
 defaults of `cc`, `llc` and `gc-ldflags`; flags, `grail.local.wiz` and tower's settings
-still replace any field. A checkout and the Nix package have no bundle: `t` unchanged. -/
+still replace any field. (28b) A bundled `cc/bin/cadical` is the default SAT solver.
+A checkout and the Nix package have no bundle: `t` unchanged. -/
 def withBundled (t : Toolchain) : IO Toolchain := do
   let exe ← IO.appPath
   let root := (((exe.parent.bind (·.parent)).bind (·.parent)).bind (·.parent)).getD "."
   let bin := root / "cc" / "bin"
   unless ← (bin / "cc").pathExists do return t
-  pure { t with cc := (bin / "cc").toString, llc := (bin / "llc").toString, gcLdflags := ["-lgc", "-lpthread"] }
+  -- (28b) and the SAT solver, when the bundle has it (a `--sat-solver` still wins)
+  let sat ← if t.satSolver.isNone && (← (bin / "cadical").pathExists) then pure (some (bin / "cadical").toString) else pure t.satSolver
+  pure { t with cc := (bin / "cc").toString, llc := (bin / "llc").toString, gcLdflags := ["-lgc", "-lpthread"], satSolver := sat }
 
 /-- `grail config`: one `key value` line per field. -/
 def render (t : Toolchain) : String :=

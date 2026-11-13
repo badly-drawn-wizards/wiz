@@ -340,6 +340,9 @@ def spine : Term R → Term R × List (Term R)
 
 /-- Instantiate universe level parameters `ps` with `us`. -/
 partial def instLevels (ps : List Name) (us : List Level) (t : Term R) : Term R :=
+  -- (no parameters: nothing to replace; the copy cost a traversal of the body at every
+  -- unfolding of a global, `wiz-notes/kernel-eval.md`)
+  if ps.isEmpty then t else
   Id.run <| t.mapChildrenM (fun l => pure (l.instParams ps us)) (fun _ c => pure (instLevels ps us c))
 
 /-- Does `var ix` occur free in `t`? (Trusted: `Ctx.instArg` in `Check.lean` skips
@@ -544,6 +547,12 @@ structure Globals (R : Type) where
   /-- (P2, internal) `quote` writes every suspended proof as `()` instead of evaluating
   it: set by the kernel's own comparisons (`sameVal`), which must not run proofs -/
   quoteErasesProofs : Bool := false
+  /-- (13n, elaborator) `quote` reads a Σ that `vEq` computed from an equation back as the
+  equation (`eqSigmaSides?`), so that a type that is read back and evaluated again (a
+  `match` clause's motive, `zonk`) still shows `rfl` the equation it came from. Set by the
+  elaborator's `getGlobals`; off in the kernel and for `#reduce` (which prints the
+  computed form) -/
+  quoteEqs : Bool := false
   /-- (P1) regularity at inert types: decided by conversion (`conv`) by default -/
   inertReg : InertReg := .conv
   /-- a compiler option, not read by the kernel (`--unbox-structs`, stage 22i): erasure
@@ -574,6 +583,12 @@ structure Globals (R : Type) where
   hidden : Std.HashMap Name (Decl R) := {}
   /-- the module being elaborated (`""`: the main file), for `privates` and `opaques` -/
   module : String := ""
+  /-- (kernel-eval, P3) a universe-polymorphic definition's value instantiated at the
+  levels most uses take (every parameter `0`, `1` or `2`: a `casesOn`'s motive in `Prop`,
+  `Type`, `Type 1`), computed once (a `Thunk`) instead of copied at every unfolding
+  (`Term.instLevels`). Built by `insert` from the value inserted with it; a pure function
+  of that value, so it can't change what unfolding gives (`instValue`). -/
+  instCache : Std.HashMap Name (List (List Level × Thunk (Term R))) := {}
   /-- (11r) how terms print as notation: unexpanders and the grammar (`Syntax/PPTable.lean`).
   The kernel ignores this. -/
   pp : PPTable := {}
@@ -594,6 +609,16 @@ def contains (g : Globals R) (n : Name) : Bool := g.decls.contains n
 def builtinKey? (g : Globals R) (n : Name) : Option Name :=
   (g.builtins.find? (·.2 == n)).map (·.1)
 
+/-- `instCache` with the entry of `d` (its value's instantiations, made when needed), or
+without one (no value, or no level parameters). -/
+def cacheInst (g : Globals R) (d : Decl R) : Std.HashMap Name (List (List Level × Thunk (Term R))) :=
+  let ofNat (k : Nat) : Level := (List.range k).foldl (fun l _ => .succ l) .zero
+  let inst : List (List Level × Thunk (Term R)) := match d.value with
+    | some v => if d.levelParams.isEmpty then [] else [0, 1, 2].map fun k =>
+        let us := d.levelParams.map fun _ => ofNat k
+        (us, Thunk.mk fun _ => v.instLevels d.levelParams us)
+    | none => []
+  if inst.isEmpty then g.instCache.erase d.name else g.instCache.insert d.name inst
 /-- A declaration's position in `order` (later declarations are higher); 0 if unknown. -/
 def height (g : Globals R) (n : Name) : Nat :=
   match g.heights[n]? with
@@ -605,9 +630,22 @@ def insert (g : Globals R) (d : Decl R) : Globals R :=
   { g with
     decls := g.decls.insert d.name d
     order := if g.decls.contains d.name then g.order else g.order.push d.name
+    instCache := g.cacheInst d
     heights := if g.decls.contains d.name then g.heights else g.heights.insert d.name g.order.size
     declModule := if g.module == "" || g.decls.contains d.name then g.declModule
       else g.declModule.insert d.name g.module }
+
+/-- The value `v` of the global `n` (its parameters `ps`) at the levels `us`:
+`v.instLevels ps us`, from `instCache` when `insert` computed it. (The cache is keyed by
+the name and built from the value `insert` stored; `decls` changes only through `insert`,
+by removing a value or a declaration, or by `renamePrivate`, which moves the entries along
+with the renamed declarations (`cacheInst`), so an entry belongs to the value found under its
+name.) -/
+def instValue (g : Globals R) (n : Name) (v : Term R) (ps : List Name) (us : List Level) : Term R :=
+  if ps.isEmpty then v else
+  match (g.instCache[n]?).bind fun es => es.find? (·.1 == us) with
+  | some (_, t) => t.get
+  | none => v.instLevels ps us
 
 /-- (13b) The environment as the elaborator sees it in `g.module`: a structure whose
 constructor is private to another module has no definition (it doesn't unfold), so
