@@ -294,7 +294,11 @@ released (03, 08).
 P → Result.All (fun r => Q[result := …, old(x) := x, final(x) := …]) (f args)`; for a
 returned borrow `r : Mut ρ A S`, `*result` is `r.1`, `final(result)` is a universally
 quantified `fin`, and `final(v)` is `r.2 fin` (03: `get_mut.spec`, proved as
-`get_mut.spec_holds`). No prophecy axioms.
+`get_mut.spec_holds`). No prophecy axioms. With linear handles (M4b) the spec is
+stated on values: `f.Spec` takes each `&mut` argument's value, runs the call inside the
+caller's borrow scopes (`Uniq.borrow`/`borrowIn`), and `Result.Holds` states the clauses
+on the values the scopes hand back (`old(x)` is the argument, `final(x)` the lender's
+final value).
 
 **L19. Interop (RD16).** Wiz calls lowered functions as they are (`R`, handed-back
 tuples, backward closures); `Result.map`, `Result.show`, `Mut.release`, `MutOpt.over`
