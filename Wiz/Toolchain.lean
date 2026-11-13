@@ -37,6 +37,10 @@ structure Toolchain where
   (default 10000). Flags only: a grail file can't name a program for wiz to run. -/
   satSolver : Option String := none
   solverTimeout : Option Nat := none
+  /-- (28a) `--trust-smt`: the `smt` tactic may close goals on an SMT solver's word;
+  `--smt-solver CMD` (default `z3`). Flags only. -/
+  trustSmt : Bool := false
+  smtSolver : Option String := none
   deriving Repr, Inhabited
 
 namespace Toolchain
@@ -68,11 +72,14 @@ def set (t : Toolchain) (key value : String) : Option Toolchain :=
 /-- Take the toolchain flags out of the arguments: `--cc X`, `--cflags "…"`,
 `--ldflags "…"`, `--libs "…"`, `--gmp "…"`, `--llc X`, `--gc-cflags "…"`, `--gc-ldflags "…"`, `--cache DIR`,
 `--no-cache`, `-I DIR`, (27a) `--trust-native`, `--native-fuel N`, (28b) `--sat-solver CMD`,
-`--solver-timeout MS` (flags only, not settings of a grail file). -/
+`--solver-timeout MS`, (28a) `--trust-smt`, `--smt-solver CMD` (flags only, not settings of a
+grail file). -/
 partial def parseFlags (t : Toolchain) : List String → Toolchain × List String
   | "--no-cache" :: rest => parseFlags { t with cacheDir := none } rest
   | "--trust-native" :: rest => parseFlags { t with trustNative := true } rest
   | "--sat-solver" :: cmd :: rest => parseFlags { t with satSolver := some cmd } rest
+  | "--trust-smt" :: rest => parseFlags { t with trustSmt := true } rest
+  | "--smt-solver" :: cmd :: rest => parseFlags { t with smtSolver := some cmd } rest
   | "--solver-timeout" :: ms :: rest => match ms.toNat? with
     | some n => parseFlags { t with solverTimeout := some n } rest
     | none => let (t, r) := parseFlags t rest; (t, "--solver-timeout" :: ms :: r)
@@ -94,11 +101,14 @@ def toFlags (t : Toolchain) : List String :=
   (if t.trustNative then ["--trust-native"] else []) ++
   (match t.nativeFuel with | some n => ["--native-fuel", toString n] | none => []) ++
   (match t.satSolver with | some c => ["--sat-solver", c] | none => []) ++
-  (match t.solverTimeout with | some n => ["--solver-timeout", toString n] | none => [])
+  (match t.solverTimeout with | some n => ["--solver-timeout", toString n] | none => []) ++
+  (if t.trustSmt then ["--trust-smt"] else []) ++
+  (match t.smtSolver with | some c => ["--smt-solver", c] | none => [])
 
 /-- (28) What the elaborator needs to reach solvers. -/
 def smt (t : Toolchain) : Smt.Config :=
-  { satSolver := t.satSolver.getD "cadical", timeoutMs := t.solverTimeout.getD 10000,
+  { trust := t.trustSmt, solver := t.smtSolver.getD "z3",
+    satSolver := t.satSolver.getD "cadical", timeoutMs := t.solverTimeout.getD 10000,
     cacheDir := t.cacheDir.map toString }
 
 /-- (26f) The C toolchain a release tarball ships, `share/wiz/cc` (scripts/bundle-cc.sh):

@@ -67,6 +67,9 @@ inductive Tm where
   | ptrue
   | pfalse
   | exfalso (motive t : Tm)
+  -- (linear-case stage 2) `let () := u; b`, the unit eliminator: consumes `u : Unit n`
+  -- (its usage counts), computes to `b` by η
+  | letUnit (u b : Tm)
   -- an enumeration of `k` tags, its `i`-th tag, and case analysis (the motive is
   -- under one binder, the scrutinee)
   | enum (k : Nat)
@@ -103,7 +106,9 @@ inductive Tm where
   | mus (l : Nat) (I D i s : Tm)
   -- sized recursion and case analysis on `x : μ^s D i` (stage 4f)
   | sfix (l : Nat) (I D : Tm) (v : Nat) (P f s i x : Tm)
-  | scase (l : Nat) (I D : Tm) (v : Nat) (P m s i x : Tm)
+  -- (K1) `scase` at a quantity: the method receives the payload at `q` (`.qw`: the
+  -- ordinary case; `.qo`: a linear value taken apart), the scrutinee is used `q` times
+  | scase (l : Nat) (q : Q) (I D : Tm) (v : Nat) (P m s i x : Tm)
   -- coinduction (stages 4d, 4f): `ν^s D i`, observation `out x : ⟦D⟧ (ν D) i`, a ν
   -- constructor, sized corecursion and coiteration (unfolding a state `s : S i` by `step`)
   | nu (l : Nat) (I D i s : Tm)
@@ -188,7 +193,7 @@ inductive Spine where
   | sdelim (sp : Spine) (v : Nat) (P mret marg mrec mhrec : Val)
   | sind (sp : Spine) (l : Nat) (I D : Val) (v : Nat) (P m i : Val)
   | ssfix (sp : Spine) (l : Nat) (I D : Val) (v : Nat) (P f s i : Val)
-  | sscase (sp : Spine) (l : Nat) (I D : Val) (v : Nat) (P m s i : Val)
+  | sscase (sp : Spine) (l : Nat) (q : Q) (I D : Val) (v : Nat) (P m s i : Val)
   | sout (sp : Spine)
   | sdown (sp : Spine)
 -- what a neutral is stuck on: a variable (by level), or an equality, cast or proof
@@ -458,6 +463,7 @@ def tmSubst (ps : List String) (ls : List Lvl) : Tm → Tm
   | .fst p => .fst (tmSubst ps ls p)
   | .snd p => .snd (tmSubst ps ls p)
   | .exfalso m t => .exfalso (tmSubst ps ls m) (tmSubst ps ls t)
+  | .letUnit u b => .letUnit (tmSubst ps ls u) (tmSubst ps ls b)
   | .ecase m sc bs => .ecase (tmSubst ps ls m) (tmSubst ps ls sc) (tmsSubst ps ls bs)
   | .eq A a b => .eq (tmSubst ps ls A) (tmSubst ps ls a) (tmSubst ps ls b)
   | .eqTy A B => .eqTy (tmSubst ps ls A) (tmSubst ps ls B)
@@ -478,7 +484,7 @@ def tmSubst (ps : List String) (ls : List Lvl) : Tm → Tm
   | .szSuc sz => .szSuc (tmSubst ps ls sz)
   | .sfix l I D v P f sz i x => .sfix l (tmSubst ps ls I) (tmSubst ps ls D) v (tmSubst ps ls P) (tmSubst ps ls f)
       (tmSubst ps ls sz) (tmSubst ps ls i) (tmSubst ps ls x)
-  | .scase l I D v P m sz i x => .scase l (tmSubst ps ls I) (tmSubst ps ls D) v (tmSubst ps ls P) (tmSubst ps ls m)
+  | .scase l q I D v P m sz i x => .scase l q (tmSubst ps ls I) (tmSubst ps ls D) v (tmSubst ps ls P) (tmSubst ps ls m)
       (tmSubst ps ls sz) (tmSubst ps ls i) (tmSubst ps ls x)
   | .sizeLt sz => .sizeLt (tmSubst ps ls sz)
   | .mus l I D i sz => .mus l (tmSubst ps ls I) (tmSubst ps ls D) (tmSubst ps ls i) (tmSubst ps ls sz)
@@ -629,6 +635,7 @@ def tmEq : Tm → Tm → Bool
   | .ptrue, .ptrue => .true
   | .pfalse, .pfalse => .true
   | .exfalso a b, .exfalso c d => Bool.and (tmEq a c) (tmEq b d)
+  | .letUnit a b, .letUnit c d => Bool.and (tmEq a c) (tmEq b d)
   | .enum k, .enum k' => Nat.beq k k'
   -- (the enumeration's size too: `valSame` compares it, and "the same term" must not
   -- depend on both sides having one type)
@@ -651,7 +658,7 @@ def tmEq : Tm → Tm → Bool
   | .con a, .con b => tmEq a b
   | .sfix l a b v c d e f g, .sfix l' a' b' v' c' d' e' f' g' => Bool.and (Bool.and (Nat.beq l l') (Nat.beq v v'))
       (Bool.and (tmEq a a') (Bool.and (tmEq b b') (Bool.and (tmEq c c') (Bool.and (tmEq d d') (Bool.and (tmEq e e') (Bool.and (tmEq f f') (tmEq g g')))))))
-  | .scase l a b v c d e f g, .scase l' a' b' v' c' d' e' f' g' => Bool.and (Bool.and (Nat.beq l l') (Nat.beq v v'))
+  | .scase l q a b v c d e f g, .scase l' q' a' b' v' c' d' e' f' g' => Bool.and (Bool.and (Bool.and (Nat.beq l l') (qEq q q')) (Nat.beq v v'))
       (Bool.and (tmEq a a') (Bool.and (tmEq b b') (Bool.and (tmEq c c') (Bool.and (tmEq d d') (Bool.and (tmEq e e') (Bool.and (tmEq f f') (tmEq g g')))))))
   | .size, .size => .true
   | .szInf, .szInf => .true
@@ -847,7 +854,7 @@ def toAbsurd : Spine → Spine
   | .sdelim sp _ _ _ _ _ _ => toAbsurd sp
   | .sind sp _ _ _ _ _ _ _ => toAbsurd sp
   | .ssfix sp _ _ _ _ _ _ _ _ => toAbsurd sp
-  | .sscase sp _ _ _ _ _ _ _ _ => toAbsurd sp
+  | .sscase sp _ _ _ _ _ _ _ _ _ => toAbsurd sp
   | .sout sp => toAbsurd sp
   | .sdown sp => toAbsurd sp
 -- (P2) is this head a proof (`proofHead` in `Eval.lean`)? A suspended proof, `refl`,
@@ -931,6 +938,7 @@ def eval : Env → Tm → Val
   | _, .empty n => .vempty (n + 1)
   | _, .ptrue => .vunit 0
   | _, .pfalse => .vempty 0
+  | env, .letUnit _ b => eval env b
   | env, .exfalso m t => match whnf (eval env t) with
     | .vne h sp => .vne h (.sabsurd sp (eval env m))
     | v => v
@@ -969,8 +977,8 @@ def eval : Env → Tm → Val
   | env, .sizeLt sz => .vsizeLt (eval env sz)
   | env, .sfix l I D v P f sz i x =>
     vSfix l (eval env I) (eval env D) v (eval env P) (eval env f) (eval env sz) (eval env i) (eval env x)
-  | env, .scase l I D v P m sz i x =>
-    vScase l (eval env I) (eval env D) v (eval env P) (eval env m) (eval env sz) (eval env i) (eval env x)
+  | env, .scase l q I D v P m sz i x =>
+    vScase l q (eval env I) (eval env D) v (eval env P) (eval env m) (eval env sz) (eval env i) (eval env x)
   | env, .con x => .vcon (eval env x)
   | env, .nu l I D i sz => .vnu l (eval env I) (eval env D) (eval env i) (eval env sz)
   | env, .out x => vOut (eval env x)
@@ -1024,7 +1032,7 @@ def forceSp : Val → Spine → Val
   | v, .sdelim sp k P a b c d => vDelim k P a b c d (forceSp v sp)
   | v, .sind sp l I D k P m i => vInd l I D k P m i (forceSp v sp)
   | v, .ssfix sp l I D k P f sz i => vSfix l I D k P f sz i (forceSp v sp)
-  | v, .sscase sp l I D k P m sz i => vScase l I D k P m sz i (forceSp v sp)
+  | v, .sscase sp l q I D k P m sz i => vScase l q I D k P m sz i (forceSp v sp)
   | v, .sout sp => vOut (forceSp v sp)
 -- (P2) the eliminations of a proof from its last `absurd` on (`.none`: there is none).
 -- Past an `absurd` the value need not be a proof (`exfalso M p : M`, for any `M`).
@@ -1057,8 +1065,8 @@ def fromAbsurd : Spine → Option Spine
   | .ssfix sp l I D v P f s i => match fromAbsurd sp with
     | .some r => .some (.ssfix r l I D v P f s i)
     | .none => .none
-  | .sscase sp l I D v P m s i => match fromAbsurd sp with
-    | .some r => .some (.sscase r l I D v P m s i)
+  | .sscase sp l q I D v P m s i => match fromAbsurd sp with
+    | .some r => .some (.sscase r l q I D v P m s i)
     | .none => .none
   | .sout sp => match fromAbsurd sp with
     | .some r => .some (.sout r)
@@ -1139,10 +1147,10 @@ def vSfix (l : Nat) (I D : Val) (v : Nat) (P f sz i x : Val) : Val := match whnf
     vapp (vapp (vapp (vapp f .vszInf) rec_) i) (.vcon xs)
   | .vne h sp => .vne h (.ssfix sp l I D v P f sz i)
   | x' => x'
--- sized case analysis (`vScase`): `m ∞ i xs`
-def vScase (l : Nat) (I D : Val) (v : Nat) (P m sz i x : Val) : Val := match whnf x with
+-- sized case analysis (`vScase`): `m ∞ i xs` (the quantity plays no part)
+def vScase (l : Nat) (q : Q) (I D : Val) (v : Nat) (P m sz i x : Val) : Val := match whnf x with
   | .vcon xs => vapp (vapp (vapp m .vszInf) i) xs
-  | .vne h sp => .vne h (.sscase sp l I D v P m sz i)
+  | .vne h sp => .vne h (.sscase sp l q I D v P m sz i)
   | x' => x'
 -- observation (`vOut`): run one step of an unfolding, re-wrapping the recursive fields
 def vOut (x : Val) : Val := match whnf x with
@@ -1707,8 +1715,8 @@ def quoteSpine (qm : Bool) : Nat → Tm → Spine → Tm
     .ind k (quoteM qm l I) (quoteM qm l D) v (quoteM qm l P) (quoteM qm l m) (quoteM qm l i) (quoteSpine qm l h sp)
   | l, h, .ssfix sp k I D v P f sz i =>
     .sfix k (quoteM qm l I) (quoteM qm l D) v (quoteM qm l P) (quoteM qm l f) (quoteM qm l sz) (quoteM qm l i) (quoteSpine qm l h sp)
-  | l, h, .sscase sp k I D v P m sz i =>
-    .scase k (quoteM qm l I) (quoteM qm l D) v (quoteM qm l P) (quoteM qm l m) (quoteM qm l sz) (quoteM qm l i) (quoteSpine qm l h sp)
+  | l, h, .sscase sp k q I D v P m sz i =>
+    .scase k q (quoteM qm l I) (quoteM qm l D) v (quoteM qm l P) (quoteM qm l m) (quoteM qm l sz) (quoteM qm l i) (quoteSpine qm l h sp)
   | l, h, .sout sp => .out (quoteSpine qm l h sp)
   | l, h, .sdown sp => .down (quoteSpine qm l h sp)
 def quoteHead (qm : Bool) : Nat → Head → Tm
@@ -1770,6 +1778,7 @@ def show (names : List String) : Nat → Tm → String
   | l, .letE t v b => String.append (String.append "let " (nameAt names l))
       (String.append (String.append " := " (show names l v)) (String.append "; " (show names (l + 1) b)))
   | l, .sorted _ t => show names l t
+  | l, .letUnit u b => String.append (String.append "let () := " (show names l u)) (String.append "; " (show names l b))
   | l, .ann t ty => String.append (String.append "(" (show names l t)) (String.append " : " (String.append (show names l ty) ")"))
   | l, .piq q a b => String.append (String.append (String.append "(" (nameAt names l))
       (String.append (showQ q) (show names l a))) (String.append ") → " (show names (l + 1) b))
@@ -1805,7 +1814,7 @@ def show (names : List String) : Nat → Tm → String
   | l, .con x => String.append (String.append "con(" (show names l x)) ")"
   | l, .sfix _ _ _ _ P f sz i x => String.append (String.append (String.append "sfix(" (show names l P)) (String.append ", " (show names l f)))
       (String.append (String.append ", " (show names l sz)) (String.append (String.append ", " (show names l i)) (String.append ", " (String.append (show names l x) ")"))))
-  | l, .scase _ _ _ _ P m sz i x => String.append (String.append (String.append "scase(" (show names l P)) (String.append ", " (show names l m)))
+  | l, .scase _ _ _ _ _ P m sz i x => String.append (String.append (String.append "scase(" (show names l P)) (String.append ", " (show names l m)))
       (String.append (String.append ", " (show names l sz)) (String.append (String.append ", " (show names l i)) (String.append ", " (String.append (show names l x) ")"))))
   | _, .size => "Size"
   | _, .szInf => "∞"
@@ -1984,7 +1993,7 @@ def typeOfNe : TCtx → Head → Spine → Val
   | _, h, .sdelim sp _ P _ _ _ _ => vapp P (.vne h sp)
   | _, h, .sind sp _ _ _ _ P _ i => vapp (vapp P i) (.vne h sp)
   | _, h, .ssfix sp _ _ _ _ P _ _ i => vapp (vapp P i) (.vne h sp)
-  | _, h, .sscase sp _ _ _ _ P _ _ i => vapp (vapp P i) (.vne h sp)
+  | _, h, .sscase sp _ _ _ _ _ P _ _ i => vapp (vapp P i) (.vne h sp)
   | c, x, .sout sp => match whnf (typeOfNe c x sp) with
     | .vnu l I D i sz => vInterp l I D (nuFamilyAt l I D (sizePredOrInf sz)) i
     | ty => ty
@@ -2059,7 +2068,7 @@ def proofSpine : Spine → Bool
   | .sdelim _ _ _ _ _ _ _ => .false
   | .sind _ _ _ _ _ _ _ _ => .false
   | .ssfix _ _ _ _ _ _ _ _ _ => .false
-  | .sscase _ _ _ _ _ _ _ _ _ => .false
+  | .sscase _ _ _ _ _ _ _ _ _ _ => .false
   | .sout _ => .false
 -- (P2) is the neutral `h · sp` a proof of `False`? Either it starts at a proof head and has
 -- passed through no `absurd` (then it is a proof, and it is being given to an `absurd`),
@@ -2183,10 +2192,11 @@ def sfixFunTy (l : Nat) (I D P : Val) : Val :=
     (.pi (.piq .qz (.sizeLt (.var 0))
         (.pi (.var 4) (.pi (.mus l (.var 5) (.var 4) (.var 0) (.var 1)) (tApps (.var 4) (args2 (.var 1) (.var 0))))))
       (.pi (.var 4) (.pi (.mus l (.var 5) (.var 4) (.var 0) (.var 2)) (tApps (.var 4) (args2 (.var 1) (.var 0)))))))
--- `m : (j :0 Size< s) → (i :0 I) → (xs : ⟦D⟧ (μ^j D) i) → P i (con xs)`
-def scaseMethodTy (l : Nat) (I D P sz : Val) : Val :=
+-- `m : (j :0 Size< s) → (i :0 I) → (xs :q ⟦D⟧ (μ^j D) i) → P i (con xs)` (K1: the payload
+-- at the case's quantity `q`)
+def scaseMethodTy (l : Nat) (q : Q) (I D P sz : Val) : Val :=
   eval (.cons sz (.cons P (.cons D (.cons I .nil)))) (.piq .qz (.sizeLt (.var 0)) (.piq .qz (.var 4)
-    (.pi (tApps (interpTm l) (args4 (.var 5) (.var 4) (.lam (.mus l (.var 6) (.var 5) (.var 0) (.var 2))) (.var 0)))
+    (.piq q (tApps (interpTm l) (args4 (.var 5) (.var 4) (.lam (.mus l (.var 6) (.var 5) (.var 0) (.var 2))) (.var 0)))
       (tApps (.var 4) (args2 (.var 1) (.con (.var 0)))))))
 
 -- `S : I → Type l`, the states of a coiteration (and `A`, the seeds of a corecursion)
@@ -2484,9 +2494,9 @@ def convSpineW : TCtx → Head → Head → Spine → Spine → Bool
       (Bool.and (Bool.and (Nat.beq l l') (Nat.beq v v')) (Bool.and (convTy c I I') (Bool.and (conv c (.vdesc l I) D D')
         (Bool.and (conv c (indMotiveTy l v I D) P P') (Bool.and (conv c (sfixFunTy l I D P) f f')
           (Bool.and (sizeEq sz sz') (conv c I i i')))))))
-  | c, x, y, .sscase r l I D v P m sz i, .sscase r' l' I' D' v' P' m' sz' i' => Bool.and (convSpine c x y r r')
-      (Bool.and (Bool.and (Nat.beq l l') (Nat.beq v v')) (Bool.and (convTy c I I') (Bool.and (conv c (.vdesc l I) D D')
-        (Bool.and (conv c (indMotiveTy l v I D) P P') (Bool.and (conv c (scaseMethodTy l I D P sz) m m')
+  | c, x, y, .sscase r l q I D v P m sz i, .sscase r' l' q' I' D' v' P' m' sz' i' => Bool.and (convSpine c x y r r')
+      (Bool.and (Bool.and (Bool.and (Nat.beq l l') (qEq q q')) (Nat.beq v v')) (Bool.and (convTy c I I') (Bool.and (conv c (.vdesc l I) D D')
+        (Bool.and (conv c (indMotiveTy l v I D) P P') (Bool.and (conv c (scaseMethodTy l q I D P sz) m m')
           (Bool.and (sizeEq sz sz') (conv c I i i')))))))
   | c, x, y, .sind r l I D v P m i, .sind r' l' I' D' v' P' m' i' => Bool.and (convSpine c x y r r')
       (Bool.and (Bool.and (Nat.beq l l') (Nat.beq v v')) (Bool.and (convTy c I I') (Bool.and (conv c (.vdesc l I) D D')
@@ -2703,6 +2713,13 @@ def inferW : TCtx → Tm → TyRes
   | c, .ptrue => .ok (.vsort (.lnum 0)) (uZeros (TCtx.lvl c))
   | c, .pfalse => .ok (.vsort (.lnum 0)) (uZeros (TCtx.lvl c))
   | _, .star => .err "cannot infer the type of tt; add a type ascription"
+  -- the unit eliminator: `u` must be of type `Unit` itself (not a function into it,
+  -- which may be a closure holding a resource); usage `U_u + U_b`
+  | c, .letUnit u b => match checkUnit c u with
+    | .ok _ uu => match infer c b with
+      | .ok bty ub => .ok bty (uAdd uu ub)
+      | r => r
+    | r => r
   | c, .exfalso m t => match inferUniv c m with
     -- (inside a proof: if the motive is not a proposition the `absurd` is a relevant term,
     -- which evaluates its argument: the argument is inferred as in relevant mode)
@@ -2843,7 +2860,9 @@ def inferW : TCtx → Tm → TyRes
         | r => r
       | r => r
     | r => r
-  | c, .scase l I D v P m sz i x => match checkIndexLevel c l I with
+  -- (K1) the case at `q`: the method runs once (its usage unscaled) and binds the payload
+  -- at `q`, so the scrutinee counts `q` times (at 0 it is an erased position)
+  | c, .scase l q I D v P m sz i x => match checkIndexLevel c l I with
     | .ok _ _ =>
       let vI := eval (TCtx.env c) I;
       match check c D (.vdesc l vI) with
@@ -2855,12 +2874,12 @@ def inferW : TCtx → Tm → TyRes
           match check (TCtx.erase c) sz .vsize with
           | .ok _ _ =>
             let vs := eval (TCtx.env c) sz;
-            match check c m (scaseMethodTy l vI vD vP vs) with
+            match check c m (scaseMethodTy l q vI vD vP vs) with
             | .ok _ um => match check c i vI with
               | .ok _ _ =>
                 let vi := eval (TCtx.env c) i;
-                match check c x (.vmu l vI vD vi vs) with
-                | .ok _ ux => .ok (vapp (vapp vP vi) (eval (TCtx.env c) x)) (uAdd um (uScale .qw ux))
+                match check (erasedIf q c) x (.vmu l vI vD vi vs) with
+                | .ok _ ux => .ok (vapp (vapp vP vi) (eval (TCtx.env c) x)) (uAdd um (uScale q ux))
                 | r => r
               | r => r
             | r => r
@@ -3084,6 +3103,14 @@ def checkM (c : TCtx) (t : Tm) (ty : Val) : TyRes := match requireMarker c t ty 
       | _ => TCtx.belowMarked c) t (whnf ty) with
     | .ok _ u => .ok ty u
     | r => r
+-- the scrutinee of `let () := u; b`: of type `Unit` itself (after `whnf`)
+def checkUnit (c : TCtx) (u : Tm) : TyRes := match u with
+  | .star => .ok (.vunit 1) (uZeros (TCtx.lvl c))
+  | _ => match infer c u with
+    | .ok ty uu => match whnf ty with
+      | .vunit n => .ok (.vunit n) uu
+      | ty' => .err (String.append "let () := u needs u of type Unit, not " (showVal c ty'))
+    | r => r
 def checkW : TCtx → Tm → Val → TyRes
   --<sol
   -- (P2) a marked term: the level must be the sort of the type
@@ -3099,6 +3126,11 @@ def checkW : TCtx → Tm → Val → TyRes
   | c, .letE ty v b, T => checkLet c .qw ty v b T
   | c, .letq q ty v b, T => checkLet c q ty v b T
   | c, .star, .vunit n => .ok (.vunit n) (uZeros (TCtx.lvl c))
+  | c, .letUnit u b, T => match checkUnit c u with
+    | .ok _ uu => match check c b T with
+      | .ok _ ub => .ok T (uAdd uu ub)
+      | r => r
+    | r => r
   | c, .up a, .vulift n A => match check c a A with
     | .ok _ u => .ok (.vulift n A) u
     | r => r
@@ -3402,6 +3434,10 @@ def markInferW : TCtx → Tm → MR
       | _ => .mk (.app f' a) .none
   | c, .letE ty v b => markLetIn c ty v b (fun ty' v' b' => .letE ty' v' b')
   | c, .letq q ty v b => markLetIn c ty v b (fun ty' v' b' => .letq q ty' v' b')
+  -- (linear-case stage 2) `let () := u; b`: the unit, then the body
+  | c, .letUnit u b => match markInfer c u with
+    | .mk u' _ => match markInfer c b with
+      | .mk b' tb => .mk (.letUnit u' b') tb
   | c, .ann t ty =>
     let ty' := markTy c ty;
     let tyv := eval (TCtx.env c) ty';
@@ -3519,7 +3555,7 @@ def markInferW : TCtx → Tm → MR
     let vi := eval (TCtx.env c) i';
     let x' := markCheck c x (.vmu l vI vD vi (eval (TCtx.env c) sz));
     .mk (.sfix l I' D' v P' f' sz i' x') (.some (vapp (vapp vP vi) (eval (TCtx.env c) x')))
-  | c, .scase l I D v P m sz i x =>
+  | c, .scase l q I D v P m sz i x =>
     let I' := markTy c I;
     let vI := eval (TCtx.env c) I';
     let D' := markCheck c D (.vdesc l vI);
@@ -3527,11 +3563,11 @@ def markInferW : TCtx → Tm → MR
     let P' := markCheck c P (indMotiveTy l v vI vD);
     let vP := eval (TCtx.env c) P';
     let vs := eval (TCtx.env c) sz;
-    let m' := markCheck c m (scaseMethodTy l vI vD vP vs);
+    let m' := markCheck c m (scaseMethodTy l q vI vD vP vs);
     let i' := markCheck c i vI;
     let vi := eval (TCtx.env c) i';
     let x' := markCheck c x (.vmu l vI vD vi vs);
-    .mk (.scase l I' D' v P' m' sz i' x') (.some (vapp (vapp vP vi) (eval (TCtx.env c) x')))
+    .mk (.scase l q I' D' v P' m' sz i' x') (.some (vapp (vapp vP vi) (eval (TCtx.env c) x')))
   | c, .out x => match markInfer c x with
     | .mk x' tx => .mk (.out x') (match knownW tx with
       | .vnu l I D i sz => (match sizePred sz with

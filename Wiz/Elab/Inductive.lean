@@ -322,7 +322,7 @@ def elabInductive (cmd : Syntax) (levelParams : List Name) : ElabM R (List (Decl
   for c in ctors do
     let cname := ((c.child "name").getId?).getD "_"
     if names.contains cname then
-      throwAt (c.child "name").info s!"the constructor {cname} is declared twice in {T}"
+      throwAt (c.child "name").info s!"the constructor {cname} is declared twice in {T}" ErrorCode.duplicateConstructor
     let (ctxF, fs) ← elabTelescope ctxT ((c.child "binders").args.flatMap binderViews).toList
     let n := fs.size
     let target ← match (c.child "sig").args[1]? with
