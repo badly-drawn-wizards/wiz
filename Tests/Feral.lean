@@ -174,6 +174,13 @@ def group : Group where
         checkEq "[.ok 5]" (toString (infosOf t))
         let l ← frontend (b.replace "\nferal\n" "\n#lower feral\n")
         check ((infosOf l).any (has · "Vec.push1 v i")) s!"{infosOf l}" },
+    { name := "linear mode (M4b-3a): `return` from inside a loop and a join hands the handles back", run := fun _ => do
+        let a := pre ++ "feral\n  -- add 1 up to n times, stopping early at 10\n  fn bump_to {'a} (x : &'a mut U64) (n : U64) : Bool := {\n    for i in 0 .. n do {\n      if 9 < *x then { return true } else { () };\n      *x := *x + 1\n    };\n    false\n  }\n  fn go (n : U64) : U64 × Bool := {\n    let mut a := 5;\n    let hit := bump_to (&mut a) n;\n    (a, hit)\n  }\nend\n#eval Result.map (fun (p : U64 × Bool) => (p.1.val, p.2)) (go (U64.lit 3))\n#eval Result.map (fun (p : U64 × Bool) => (p.1.val, p.2)) (go (U64.lit 20))\n"
+        let s ← frontend a
+        checkEq "[]" (toString (errorsOf s a))
+        checkEq "[.ok (8, .false), .ok (10, .true)]" (toString (infosOf s))
+        let l ← frontend (a.replace "\nferal\n" "\n#lower feral\n")
+        check ((infosOf l).any (has · "Result1 ((Flow Unit) Bool) (Uniq1 ρa U64)")) s!"{infosOf l}" },
     { name := "examples/resources.wiz: Feral's swap on heap cells, verified with the x-tactics through lib/HeapBorrow.wiz", run := fun _ => do
         let src ← IO.FS.readFile "examples/resources.wiz"
         let s ← frontend src

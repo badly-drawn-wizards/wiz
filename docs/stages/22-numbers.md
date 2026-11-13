@@ -443,9 +443,11 @@ loops, `?`, `U64`, and functions that return borrows.
   `&mut` twice (E0499) on the `#unchecked` lowering too.
   Since M4b-2, `for` and `while` loops are covered too: the loop function takes every
   handle it mentions at 1 and hands it back in `Result1`. So is `v.push x` on a `&mut`,
-  lowered to FeralCore's linear twin `Vec.push1`. Any other construct keeps the whole
-  block on the ω handles for now: `return`, `?`, `match`/`if let`, `while let`, other
-  methods, indexing, shared or field borrows, returned borrows. M4b-3 covers those.
+  lowered to FeralCore's linear twin `Vec.push1`. Since M4b-3a, early exits (`return`
+  and `?`) leave scopes, joins and loops as `Flow` values inside `Result1`, with the
+  handles beside them. Any other construct keeps the whole block on the ω handles for
+  now: `match`/`if let`, `while let`, other methods, indexing, shared or field borrows,
+  returned borrows. M4b-3b and M4b-3c cover those.
 * **Located output for command macros.** Runtime `Syntax` has no positions. A command
   macro now names a node of its input by **path** (child indices), and its output may
   contain `Syntax.errorAt path msg`, `Syntax.infoAt path msg` and
