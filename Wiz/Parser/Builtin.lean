@@ -124,6 +124,7 @@ def anonCtor : ParserDescr := seqs ["⟨", withoutPosition (sepBy term ","), "�
 | `term.unitVal`       | max  | "(" ")" |
 | `term.proj` (trailing) | max | t "." num |
 | `term.field` (trailing) | max | t "." ident (a Σ field, or `T.f t` for a nominal `T`) |
+| `term.letUnit`       | lead | "let" "(" ")" ":=" term [";"] term (the unit eliminator: consumes a `Unit`) |
 | `term.letPair`       | lead | "let" [quantity] "(" ident "," ident ")" ":=" term [";"] term |
 | `term.letTuple`      | lead | "let" [quantity] "(" ident "," ident "," [idents,+] ")" ":=" term [";"] term |
 | `term.absurd`        | lead | "absurd" term |
@@ -183,6 +184,9 @@ def termLeading : List LeadingParser := [
   { kind := "term.tuple", prec := maxPrec,
     p := seqs ["(", withoutPosition (seqs [term, ",", sepBy1 term ","]), ")"] },
   { kind := "term.unitVal", prec := maxPrec, p := seqs ["(", ")"] },
+  -- (linear-case stage 2) the unit eliminator `let () := u; b`
+  { kind := "term.letUnit", prec := leadPrec,
+    p := withPosition <| seqs ["let", "(", ")", ":=", term, optional ";", term] },
   { kind := "term.letPair", prec := leadPrec,
     p := withPosition <| seqs ["let", optional quantity, "(", ident, ",", ident, ")", ":=", term,
       optional ";", term] },
@@ -191,7 +195,7 @@ def termLeading : List LeadingParser := [
     p := withPosition <| seqs ["let", optional quantity, "(", ident, ",", ident, ",", sepBy1 ident ",", ")",
       ":=", term, optional ";", term] },
   { kind := "term.absurd", prec := leadPrec, p := seqs ["absurd", term maxPrec] },
-  { kind := "term.refl", prec := leadPrec, p := seqs ["refl", term maxPrec] },
+  { kind := "term.refl", prec := leadPrec, p := seqs [nonReserved "refl", term maxPrec] },
   { kind := "term.rfl", prec := maxPrec, p := "rfl" },
   -- (27a) only as the whole body of a definition (`Command.lean`), with `--trust-native`
   { kind := "term.nativeRefl", prec := maxPrec, p := "native_refl" },

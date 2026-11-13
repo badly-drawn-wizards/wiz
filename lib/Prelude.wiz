@@ -579,9 +579,19 @@ inductive Tac where
   | isDefinition (n : String) (k : Option Bool → Tac)
   -- solvers (stage 28b): ask the SAT solver about a CNF over variables `0 … nvars-1`
   -- (untrusted: `sat_decide` checks the proof); look inside an equation (an opaque handle
-  -- `a = b` at `A`: `(A, a, b)`)
+  -- `a = b` at `A`: `(A, a, b)`); (28a) close goal `g` on an SMT solver's word (trusted:
+  -- --trust-smt; it fails with a counterexample otherwise)
   | satSolve (nvars : Nat) (clauses : List (List Nat)) (k : SatAnswer → Tac)
   | eqView (g : Nat) (e : Expr) (k : Option (Expr × Expr × Expr) → Tac)
+  | smt (g : Nat) (next : Tac)
+  -- (28c) a definition `val : ty` in goal `g`'s context, added before the definition being
+  -- elaborated (checked by the kernel; not an axiom), and the term that uses it: a big
+  -- value a proof mentions many times is then one constant
+  | define (g : Nat) (ty : Expr) (val : Expr) (k : Expr → Tac)
+  -- (28c) `assign`, without the kernel's check of the term now: for a term that is only
+  -- checked by the kernel anyway, with the declaration (a big proof checked twice costs
+  -- twice). Errors in it then show at the end of the declaration.
+  | assignLate (g : Nat) (e : Expr) (next : Tac)
 
 /-- The metaprogramming monad: requests to the elaborator (`Tac`) in
 continuation-passing style, so `bind` is just composition. Macros (`MacroM`) and
@@ -677,11 +687,21 @@ def TacticM.ctorInfo (n : String) : TacticM (Option (String × Nat × Nat)) := f
 or an axiom: for those `unfold` returns the term unchanged)? `none` if there is no
 constant `n`. -/
 def TacticM.isDefinition (n : String) : TacticM (Option Bool) := fun k => Tac.isDefinition n k
+/-- Close goal `g` on an SMT solver's word (trusted: only with `--trust-smt`; the proof
+is an axiom, and a refuted goal fails with a counterexample). -/
+def TacticM.smt (g : Nat) : TacticM Unit := fun k => Tac.smt g (k ())
 /-- Ask the SAT solver about a CNF over variables `0 … nvars-1` (untrusted: `sat_decide`
 checks the proof). -/
 def TacticM.satSolve (nvars : Nat) (clauses : List (List Nat)) : TacticM SatAnswer := fun k => Tac.satSolve nvars clauses k
 /-- Look inside an equation (an opaque handle `a = b` at `A`): `(A, a, b)`. -/
 def TacticM.eqView (g : Nat) (e : Expr) : TacticM (Option (Expr × Expr × Expr)) := fun k => Tac.eqView g e k
+/-- Add the definition `val : ty` to goal `g`'s context (before the declaration being
+elaborated; checked by the kernel, not an axiom) and return the term that uses it. -/
+def TacticM.define (g : Nat) (ty val : Expr) : TacticM Expr := fun k => Tac.define g ty val k
+/-- `TacticM.assign` without the kernel's check of the term now: for a term the declaration
+checks anyway (a big proof otherwise checked twice); its errors show at the end of the
+declaration. -/
+def TacticM.assignLate (g : Nat) (e : Expr) : TacticM Unit := fun k => Tac.assignLate g e (k ())
 /-- Run `t`; if it fails, undo it and run `h` on the error message instead. -/
 def TacticM.tryCatch (t : TacticM Unit) (h : String → TacticM Unit) : TacticM Unit :=
   fun k => Tac.catch (TacticM.run t) (fun e => TacticM.run (h e)) (k ())
@@ -1012,6 +1032,20 @@ def Tactic.trace : Tactic := fun stx => match Syntax.getArg (Syntax.getArg stx 1
   | _ => TacticM.pure ()
 attribute [tactic tactic.trace] Tactic.trace
 
+-- `smt` (stage 28a): close the goal by an SMT solver, trusted: only with --trust-smt,
+-- and the proof is an axiom `X.smt✝N` (the goal over its context) that `#print axioms`
+-- lists. A goal the solver refutes fails with the counterexample. lib/ never uses it.
+syntax (name := smt) "smt" : tactic
+/-- `smt` (stage 28a): close the goal by an SMT solver. Trusted: only with `--trust-smt`,
+and the proof is an axiom (`#print axioms` lists it); a refuted goal fails with the
+counterexample. lib/ never uses it. -/
+def Tactic.smt : Tactic := fun _ => do
+  g ← TacticM.mainGoal;
+  TacticM.smt g;
+  TacticM.replaceMainGoal .nil
+attribute [tactic tactic.smt] Tactic.smt
+
+-- `trace_state`: the open goals, as an info message (as `trace`, at the tactic)
 /-- The goals, printed one after the other (for `trace_state`). -/
 def TacticM.ppGoals : List Nat → TacticM String
   | .nil => TacticM.pure "no goals"
