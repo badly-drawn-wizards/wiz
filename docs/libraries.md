@@ -235,9 +235,9 @@ def Uart.onlyThat_a5 :     -- the loopback reports byte 0xa5 and nothing else, f
   `P 0 … P (n-1)` gives `∀ k < n, P k`), `Bool.all`/`Bool.forall9` (a Boolean check of all
   2^9 inputs, `refl Bool.true`, holds at every input), `Bool.indP` (Bool elimination into
   `Prop`), and small Nat facts (`Nat.lt_succ_split`, `Nat.lt_to_succ`, `Nat.lt_self_succ`,
-  `Nat.eq_of_beq`). In lib/Hdl/Temporal.wiz: `BitVec.eqOfNat` (two words with equal
-  numbers are equal, when each evaluates to a word built from its number; `UIntN.ext`
-  once the words carry their range, #145).
+  `Nat.eq_of_beq`). Word equality from numbers is `UIntN.ext` (lib/Word.wiz): since
+  words carry their range (stage 22k), a word is not definitionally `BitVec.mk` of its
+  number, so the H14 T2 proofs call `UIntN.ext` directly.
 
 The examples: the UART transmitter's line is high whenever it is idle, at every cycle;
 the loopback delivers the byte sent within 45 cycles and reports no other, for ever
@@ -321,8 +321,9 @@ counter (the counter lemmas `Rx.incs` are already per value).
   `Loop.refinesOut`) plus the specification-level properties; the transmitter's line
   (one field) composes fine (`Tx.frame`).
 * Missing in the library, now in lib/Trace.wiz (see H14 T): `Mealy.simulatesInv`,
-  `Mealy.follows`, `Mealy.seq`, `Nat.All`, `Bool.forall9`, `Bool.indP`; and
-  `BitVec.eqOfNat` in lib/Hdl/Temporal.wiz.
+  `Mealy.follows`, `Mealy.seq`, `Nat.All`, `Bool.forall9`, `Bool.indP`. (Word equality
+  from numbers is `UIntN.ext`, lib/Word.wiz; the old `BitVec.eqOfNat` helper is gone:
+  its `rfl` premises do not hold once a word carries its range.)
 * The temporal vocabulary had no *rigid (local) variables* (SVA's `(go, v = data) |=> …`):
   `Tx.frameTL` quantifies the byte outside the formula. `TL.during` reads its formula at
   absolute times, so "bit m/4 at offset m" is written as an explicit `∀ m < 40`.

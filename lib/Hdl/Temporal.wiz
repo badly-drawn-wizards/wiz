@@ -203,16 +203,6 @@ def Mealy.refinesStut {S I O T : Type} (m : Mealy S I O) (s0 : S) (xs : Trace I)
   fun (t : Nat) => h (Mealy.stateAt m s0 xs t) (xs t) (hinv t)
 
 ------------------------------------------------------------------------------------
--- Words
-
--- Two words with equal numbers are equal, when each is (by evaluation) a word built from
--- its number: true of every word an operation computes (`hx`, `hy` by `rfl`). With the
--- words' range (stage 22l, PR #145) this is `UIntN.ext`.
-def BitVec.eqOfNat {0 n : Nat} (x y : BitVec n) (hx : x = BitVec.mk (BitVec.toNat x)) (hy : y = BitVec.mk (BitVec.toNat y))
-    (h : BitVec.toNat x = BitVec.toNat y) : x = y :=
-  Eq.trans hx (Eq.trans (Eq.congrArg (fun (k : Nat) => @BitVec.mk n k) h) (Eq.symm hy))
-
-------------------------------------------------------------------------------------
 -- Bounded checks by evaluation. `checkFrom` walks the run once (linear, unlike asking
 -- `stateAt k` for each k); the `_spec` lemmas turn a `.true` (by `refl`, or by trusted
 -- compiled evaluation, stage 27a, when it is long) into a statement about the trace.
