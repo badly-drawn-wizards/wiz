@@ -112,7 +112,7 @@ def group : Group where
         check (!(has ms "smt✝") && !(has ms "native✝")) s!"bv_decide used an axiom: {ms}"
         let ms ← msgs ("import BvDecide\ndef bad (x y : UIntN 4) : UIntN.land x y = UIntN.lor x y := by bv_decide\n")
         expect ms "the goal is false; a counterexample" },
-    { name := "bv_decide (28d): + - ~~~ neg and shifts, at widths 1, 3 and 4", run := fun _ => needs "cadical" do
+    { name := "bv_decide (28d): + - ~~~ neg and shifts, at widths 1, 3 and 4 (their BitVec names and the shift boundaries too)", run := fun _ => needs "cadical" do
         let ms ← msgs ("import BvDecide\nimport BitVec\n" ++
           "def a1 (x y : UIntN 4) : UIntN.add x y = UIntN.add y x := by bv_decide\n" ++
           "def a2 (x : UIntN 4) : UIntN.not (UIntN.not x) = x := by bv_decide\n" ++
@@ -123,10 +123,22 @@ def group : Group where
           "def a7 (x : UIntN 4) : UIntN.add x (UIntN.not x) = UIntN.ofNat 4 15 := by bv_decide\n" ++
           "def a8 (x y : UIntN 1) : UIntN.add x y = UIntN.xor x y := by bv_decide\n" ++
           "def a9 (x y : BitVec 4) : BitVec.sub x y = BitVec.add x (BitVec.neg y) := by bv_decide\n" ++
+          "def a10 (x : BitVec 4) : BitVec.not (BitVec.not x) = x := by bv_decide\n" ++
+          "def a11 (x : BitVec 4) : BitVec.shl x 0 = x := by bv_decide\n" ++
+          "def a12 (x : BitVec 4) : BitVec.shl x 4 = BitVec.zero 4 := by bv_decide\n" ++
+          "def a13 (x : BitVec 4) : BitVec.lshr x 4 = BitVec.zero 4 := by bv_decide\n" ++
+          "def a14 : UIntN.add (UIntN.ofNat 4 3) (UIntN.ofNat 4 5) = UIntN.ofNat 4 8 := by bv_decide\n" ++
           "#print axioms a3\n#print axioms Bits.wadd_bit\n#print axioms Bits.wsub_bit\n#print axioms Bits.wshr_out\n")
         noErrors ms
         check (!(has ms "smt✝") && !(has ms "native✝") && !(has ms "sorry")) s!"bv_decide used an axiom: {ms}"
-        expect ms "info: 'a3' depends on axioms: [native UIntN.add"
+        -- only Word's own natives (not the solver, not a new axiom):
+        expect ms "info: 'a3' depends on axioms:"
+        check (has ms "native UIntN.add := UIntN.addNative") s!"a3's proof does not rest on UIntN.add: {ms}"
+        check (has ms "native UIntN.sub := UIntN.subNative") s!"a3's proof does not rest on UIntN.sub: {ms}"
+        expect ms "info: 'Bits.wadd_bit' depends on axioms:"
+        check (has ms "native UIntN.add := UIntN.addNative") s!"wadd_bit's proof does not rest on UIntN.add: {ms}"
+        expect ms "info: 'Bits.wshr_out' depends on axioms:"
+        check (has ms "native UIntN.shiftRight := UIntN.shiftRightNative") s!"wshr_out's proof does not rest on UIntN.shiftRight: {ms}"
         let ms ← msgs ("import BvDecide\ndef bad (x y : UIntN 4) : UIntN.add x y = UIntN.sub x y := by bv_decide\n")
         expect ms "the goal is false; a counterexample" },
     { name := "bv_decide (28d): unsigned comparisons in boolean goals", run := fun _ => needs "cadical" do

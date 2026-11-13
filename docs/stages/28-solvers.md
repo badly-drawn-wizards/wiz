@@ -115,9 +115,7 @@ unfolded: an 8-bit carry chain checks, a 16-bit one goes over 2 GB. The fix is t
 shared subterms (`let`s, or a circuit given as nodes, as the HDL builds them) as one node
 each. A stuck `a && b` is a `match`, not `Bool.and`, so it is an atom (write `Bool.and`).
 
-**Not yet**: bit vectors. Bit-blasting `UIntN w` operations into circuits is easy; the
-correctness proof needs lemmas such as `testBit (land a b) i = testBit a i && testBit b i`
-and the range invariant of `UIntN` (agent/seal-range), which the library does not have yet.
+**Not yet** (at 28b): bit vectors; 28d bit-blasts them, with the lemmas 28b expected.
 
 ## 28c: sharing ✅
 
@@ -155,7 +153,7 @@ clauses hold under `σ` itself). No axioms.
   expected type costs as much as the check. Faster: a checker for the kernel's evaluator
   (arrays or maps for the clause database).
 
-## 28d: `bv_decide`: words, bit-blasted ✅
+## 28d: `bv_decide`: words, bit-blasted ✅ (a fragment: bitwise, `+ -`, shifts, `<ᵤ ≤ᵤ`)
 
     import BvDecide
     def t (x y z : UIntN 8) : UIntN.land x (UIntN.lor y z) = UIntN.lor (UIntN.land x y) (UIntN.land x z) := by bv_decide
@@ -196,9 +194,26 @@ comparisons become nodes first, and `sat_decide`'s reflection of the connectives
 
 **Fragment**: `land/lor/xor/not/add/sub/neg`, `shiftLeft/shiftRight` by numerals,
 `lt/le`, under their `BitVec` names too, and closed words. Not yet: `*`, `/`, `%`, signed
-comparisons, shifts by a word.
+comparisons, shifts by a word. This is the whole claim: outside it an operation the tactic
+does not know is an uninterpreted word (or, in a Boolean goal, an atom), so the goal is
+proved only if it holds for every value of that word, and the counterexample shown names
+that reading (it need not be a real one). A numeral shift amount `k` may be any numeral,
+including `k ≥ w` (all bits `false`).
+
+**Only Boolean goals with a word variable.** A closed *Boolean* goal is not supported: a
+true one is already `True` when the tactic sees it (`rfl` closes it), and a false one's
+closed `Bool` values are constructor payloads (`('true, refl (), ())`), not `Bool.true`, so
+there is no equation of `Bool` to bit-blast. A closed *word* equation is fine (its
+numerals are bits, computed by `refl`).
+
+**Tests.** The group *smt* keeps the cases: bitwise goals, arithmetic and shifts at widths
+1, 3 and 4 (both the `UIntN` and the `BitVec` names, and the shift boundaries `k = 0`
+and `k = w`), and comparisons in Boolean goals; `#print axioms` checks that a proof rests
+only on `UIntN`'s seal and its natives, never on `smt`'s axiom or a `sorry`.
 
 **Kernel cost** (light probes, noise-level; distributivity of `&&&` over `|||`, three
 words, over the time to import the libraries): 4 bits ≈ 2 s, 8 bits ≈ 10 s, 16 bits ≈ 58 s.
 It grows faster than the circuit (3w inputs, ~5w gates): each kernel step costs
 ~0.1–1 ms (wiz-notes/smt.md §10), so wide words are slow until the evaluator is faster.
+Arithmetic and comparisons add gates per bit (a carry or comparison chain), so the same
+width costs more than a bitwise goal.
