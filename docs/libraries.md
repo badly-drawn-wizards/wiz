@@ -256,6 +256,31 @@ per cycle, what temporal formulas are about), and `Circuit.run_take`:
 simulation prints is what a theorem about the trace says. The temporal logic (H14 T)
 builds on these.
 
+## H14 C3: memories (`HwTy.mem`) ✅
+
+The toy CPU's finding C1 (no memories: a ROM as a chain of multiplexers, RAM as
+flip-flops). A memory is a code, `HwTy.mem aw dw` (2^aw words of dw bits), and at values
+a function `BitVec aw → BitVec dw`, so reasoning about it is pointwise. `Hw.memRead m a`
+reads a word (combinationally); `Hw.memWrite m we a d` is the memory with word `a`
+replaced by `d` when `we` is high (a disabled write is the memory itself, so a value
+simulation's read costs the number of enabled writes so far, not the number of cycles).
+A memory that is part of a circuit's state takes the
+writes of its next value at the clock edge; a read of the written value in the same
+cycle sees the write (the netlist adds the bypass). `Hw.const (HwTy.mem aw dw) f` is a
+ROM. Lemmas: `HwTy.El.memRead_write_miss` (another address: the old word),
+`memRead_write_hit`, `memRead_write_off`. A reset leaves the contents alone
+(`HwTy.El.resetToAt`, as block RAM does; `Circuit.stepEl_withReset` states it), a clock
+enable gates the writes.
+
+In the netlist a memory is a `NetMem` (name, widths, initial contents, its writes in
+order) read by `memRead k` nodes; the simulator keeps its contents in a trie. Verilog: an
+array with an `initial` block, reads `m[addr]`, the writes in one `always` block (a later
+write wins). yosys maps a memory whose read data (or address) goes through a register to
+iCE40 block RAM (`SB_RAM40_4K`): `examples/hdl-mem.wiz` (a 16×8 RAM with a registered read,
+a ROM; checked by Icarus and yosys in group `hdl` when they are on PATH). Small ROMs
+become LUTs, a 256-word one block RAM. What the netlist cannot express is listed in
+`Netlist.errors` and printed as `// error:` lines: a choice between two different
+memories, a memory in a port, a state memory replaced instead of written.
 ## H14 C2: lenses for structures and bundles (`lib/OpticDerive.wiz`, `lib/Hdl/Optic.wiz`) ✅
 
 `deriving Lens` gives every field of a structure a lens (lib/Optic.wiz's `Lens S A`), its
@@ -287,7 +312,11 @@ faster (an allocation per node in its random-access list).
 meta-level work is done once, and the netlist is hash-consed), and the netlist is turned
 once into a flat program (a constructor per node with exactly its operands, constants
 written once, input ports and register outputs as slots) that runs over native arrays
-updated in place (`Array`, lib/Std.wiz).
+updated in place (`Array`, lib/Std.wiz). Memories (`NetMem`, H14 C3) are one flat native array (each
+memory's words from its base) plus a trie for addresses beyond a memory's range (as raw
+port values can give); `memRead` nodes read it during the cycle and the writes are applied
+at the clock edge in order (a later write wins), exactly as `Netlist.simulate` does (a read
+in the same cycle sees the old contents; the netlist's bypass nodes give the new word).
 
 * `Netlist.simFast n xs` computes exactly what `Netlist.simulate n xs` computes (the same
   formulas on the same numbers, node by node) for every well-formed netlist
@@ -434,6 +463,24 @@ about 14 ms per case for eight word operations, so the kernel stops near 2¹² i
 A computing reflection (`bit_decide`) is in drafts/hdl-verified/, for when the check is
 fast (compiled, or a faster kernel evaluator).
 
+## H14 C4: bit-level reasoning (`lib/Hdl/Bits.wiz`) ✅
+
+The toy CPU's finding C2: `rfl` reduces a multiplexer on a known select but not a gate on
+a symbolic bit (`Hw.and 0 x`), so a circuit had to be written with multiplexers for its
+proof to go through. `Bit.ind P h0 h1 x` (from the words' range, 22l: a one-bit word is 0
+or 1) splits a property of a bit into its two closed cases, `Bit.ind2`/`ind3` two or
+three bits; each case is then evaluation. Closed equations of bits are best closed with
+`Bit.eqv _ _ rfl` (by their numbers), since two equal words may carry different range
+proofs. The library proves the laws once: constants (`Bit.and_zero`, `or_one`, …),
+`not_not`, idempotence, complements, commutativity, associativity, De Morgan,
+distributivity; the multiplexer normal form (`Bit.and_mux`: `a & b = a ? b : 0`,
+`or_mux`, `not_mux`, `xor_mux`; `HwTy.El.mux_same`, `mux_not` at any type); and the
+Boolean bridge `Bit.toBool` (a homomorphism: `toBool_and/or/xor/not/mux`;
+`Bit.eq_of_toBool`), which turns an equation of bits into a Boolean goal for
+`sat_decide` (28b). Example: `examples/hdl-bits.wiz` (the CPU's stall signal written
+with gates, proved equal to its multiplexer form and, once the opcode is known, to
+`!txReady`, for every value of the status bits).
+
 ## Logic, heap predicates and Hoare triples ✅
 
 `lib/Logic.wiz` (`∧`, `∨`, `∃` with binder notation `∃ x : A, P`, `↔`, `¬`, ASCII
@@ -444,6 +491,18 @@ laws), `lib/Hoare.wiz` (`wp`, triples, the frame rule, adequacy for an interpret
 `lib/HoareExamples.wiz` (verified swap, list reversal, counter, list length, in-place map,
 freeing a list). See [stage 24](stages/24-separation-logic.md).
 
+`lib/EffHeap.wiz` connects the effects library ([stage 10](stages/10-effects.md)) to
+these heap programs. `Cell V l` is a state effect on the cell at location `l`, and
+`Eff.toProg` interprets a program over cells as a `Prog V` (with `interpret` and a
+`Handler` into `Prog`). Its specification is then `Triple P (Eff.toProg c) Q`, proved
+with the `x`-tactics. Separate cells commute without a `Commute` instance:
+`Commute (Cell V p) (Cell V q) (Prog V)` is false, because the two orders are different
+trees. `Cell.commute` proves instead that both orders meet the same specification from
+`(p ↦ x) ⋆ (q ↦ y)`, so a proof of whatever follows serves either order.
+The interpretation is a monad morphism: `Eff.toProg_bind` (running `c >>= f` is running
+`c`, then `f` of its answer; `Prog.bind_assoc` on the way), and `Triple.effBind` states
+it for specifications, so a verified `Eff` program is called with `xapp` by its
+specification instead of being stepped through again.
 `lib/HeapBorrow.wiz` is the bridge to Feral's functional model: a `&mut`/`&` borrow of a
 heap cell (`Prog.borrowMut`, `Prog.borrowMut2`, `Prog.borrowShr`: read the cell, run the
 value-level function, write the final value back), whose triples follow from the
@@ -476,6 +535,24 @@ token and are not covered; the handles stay ω values, so direct calls to lib/Sy
 owned handle are not checked either. Making the handles themselves linear (direct style,
 with lib/Sys.wiz and lib/Serial.wiz moved onto this module) waits for linear Σ fields
 (linear-case stage 2). Trusted: two natives (`wiz_handle_own`/`wiz_handle_disown`).
+
+**Direct style (`IO1`, cohesion M6 part 2).** `IO1 A` (lib/IO.wiz) is an action whose result
+is used once. In `do1`, `x ⇐ e;` binds an `IO1` result at quantity 1, and `(x, y) ⇐ e;` takes a
+pair apart, so an owned handle's token is threaded through straight-line code. The
+operations: `File.writeOwned`, `readLineOwned`, `readAllOwned` and `flushOwned`;
+`Fd.writeOwned` and `Fd.readOwned`; the generic `Handle.use1`. Each returns
+`(result, token)`. The releases are `File.closeOwned`, `Fd.closeOwned` and
+`Child.waitOwned`.
+
+```
+File.withOwned p "w" (fun f o => do1
+  (r1, o) ⇐ File.writeOwned f o "one\n";
+  (r2, o) ⇐ File.writeOwned f o "two\n";
+  File.closeOwned f o)
+```
+
+`IO` is unchanged and so is lib/Sys.wiz's ω API; only the owned variants are `IO1`.
+Acquisition stays in continuation style until linear `match` lands (linear-case stage 2).
 
 ## Functors and Booleans
 
@@ -515,9 +592,12 @@ instead of copies of their own (two modules declaring one name are an error at i
 
 ## Numbers: classes, integers, words ✅
 
-(Stage doc: docs/stages/07-type-classes.md, 7e.) The Prelude's `Add`, `Sub`, `Mul`,
+(Stage doc: docs/stages/07-type-classes.md, 7e and 7f.) The Prelude's `Add`, `Sub`, `Mul`,
 `Div`, `Mod`, `Neg` and `OfNat` give `+ - * / %`, prefix `-` and numerals at every
-numeric type:
+numeric type. The operators themselves are the heterogeneous classes `HAdd A B C` … (7f,
+as in Lean), which default to the homogeneous ones (`instHAdd [Add A] : HAdd A A A`), so a
+library gives an `Add` instance and gets `+`; it may also give a mixed one (`HMul Nat V V`).
+`x ^ k` is `HPow`, with `Pow Nat Nat`. A numeral that meets no type is a `Nat`.
 
 | type | where | numerals | operators |
 |------|-------|----------|-----------|
@@ -560,6 +640,7 @@ and doc comments; std's tests check one example of each.
 | `lib/IntRing.wiz` | `int_ring! lhs = rhs` at `Int`; the ring laws `Int.add_comm` … `Int.neg_mul`; the pair representation `Int.ofPair a b = a - b` |
 | `lib/IntOrder.wiz` | `Int.Le`/`Int.Lt` (`b - a` not negative) with `≤`/`<`; monotonicity, cancellation, `Int.abs` and the triangle inequality |
 | `lib/Rat.wiz` | `Q`: unreduced fractions with `≈`, an ordered field up to `≈` (`Q.inv`, `Q.mul_inv`, `Q.abs_add`, `Q.lt_ceil`); `q_ring! lhs ≈ rhs` |
+| `lib/RingTactic.wiz` | `by ring`: the three normalisers as a tactic that reads the goal |
 
 ```
 import Rat
@@ -578,9 +659,18 @@ def v (p q : Q) : (p + q) * (p + q) ≈ p * p + 2 * p * q + q * q :=
   expressions evaluate to the sides and that their normal forms agree (with a Boolean
   comparison: an `rfl` at a list type computes through OTT's Σ of equations and is much
   slower). Soundness is proved once (`NatExpr.eval_norm`, …), so no axiom is involved.
-* **They are term macros**, so the equation is written twice (statement and proof): a
-  term macro sees only its own syntax, and a tactic could not look inside an equation
-  goal (wiz-reals G1).
+* **`by ring`** (`lib/RingTactic.wiz`) reads the goal instead of repeating it: after
+  introducing its `∀`s, a goal `lhs = rhs` at `Nat` or `Int` (seen through
+  `TacticM.eqView`, stage 28b) or `lhs ≈ rhs` at `Q`. It reifies the *elaborated* sides
+  (`Add.add`/`HAdd.hAdd`, `Mul.mul`, `Sub.sub`, `Neg.neg`, `Nat.add` …, `OfNat.ofNat`,
+  literals, `Nat.succ`; atoms compared with `Expr.beq`, so `f x` and `f (x)` are one
+  atom), compares the normal forms itself (a false identity is an error naming both
+  sides) and closes the goal with `NatExpr.prove ρ e₁ e₂ Ring.trivial` (or `IntExpr`,
+  `QExpr`), which the kernel checks by computing. `def t (a b : Int) : (a - b) * (a + b)
+  = a * a - b * b := by ring`.
+* **The `!` forms are term macros**, so the equation is written twice (statement and
+  proof): a term macro sees only its own syntax. They remain for terms (`Eq.trans (…)
+  (int_ring! …)`), where no goal is at hand.
 * **`int_ring!` is bootstrapped.** Its soundness needs the ring laws of `Int`, proved by
   `int_pair_ring!`, which maps an integer identity through `Int.ofPair` to a `nat_ring!`
   identity (slower; use `int_ring!`).

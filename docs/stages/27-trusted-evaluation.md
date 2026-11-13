@@ -44,7 +44,10 @@ unchecked and may diverge), is an error.
 native implementations the computation can reach (`native f := g` for `implemented_by`,
 `builtin k := f` registered outside the library, axioms): `X`'s value mentions the
 `implemented_by` targets the run reached (erased `let`s), so their own dependencies are
-listed too. A use of `X` never evaluates anything again.
+listed too. A use of `X` never evaluates anything again. In general `#print axioms`
+follows what compiled code runs through every trusted step (t1-review L2): a whole
+`implemented_by` chain, and an implementation that is a partial definition through its
+body (and the bodies of the partial definitions that body runs).
 
 **What is trusted** (the kernel checks none of it): erasure and the rewrites on erased
 code, the interpreter (`NativeRun`) and Lean's natural numbers under the `builtin nat.*`
