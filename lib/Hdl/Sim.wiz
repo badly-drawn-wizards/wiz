@@ -23,10 +23,11 @@ so this is also the fast way to run a circuit's value simulation:
 `#eval` could run.
 
 Agreement: `Netlist.simFast n xs = Netlist.simulate n xs` for every netlist whose node
-arguments refer to earlier nodes and whose registers, memory reads and writes and ports
-refer to nodes and memories that exist (every netlist `Circuit.netlist` builds;
-`Netlist.wellFormed` checks it), and `Netlist.simFast` falls back to
-`Netlist.simulate` on any other. The `hdl` test group
+arguments refer to earlier nodes, whose registers, memory reads and writes and ports
+refer to nodes and memories that exist, and which has no vendor primitive (every netlist
+`Circuit.netlist` builds from code without primitives; `Netlist.wellFormed` checks it),
+and `Netlist.simFast` falls back to `Netlist.simulate` on any other (primitive
+instances included). The `hdl` test group
 checks both against `Circuit.run` cycle for cycle.
 -/
 

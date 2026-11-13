@@ -25,6 +25,10 @@ whose step is such code; its state is the registers.
 * **Memories**: `HwTy.mem aw dw`, `2^aw` words of `dw` bits, a function at values; read
   with `Hw.memRead` (combinational), written with `Hw.memWrite` (at the clock edge, when
   it is the state's next value). In Verilog an array, which yosys maps to block RAM.
+* **Primitives**: `Prim i o` (lib/Hdl/Prim.wiz) is a vendor cell, a black box printed as
+  its Verilog module; `Hw.prim` instantiates it. Their ports carry a kind (data, a clock
+  net, a pad, a bidirectional pad, marked by a `named` segment beginning with `@`); only
+  primitives' ports connect clock and pad leaves, and `Netlist.kindErrors` checks it.
 * **Bundles**: structures of signals (`structure Tx (r : HwTy → Type) where line : r Bit …`)
   are `Bundle`s: `deriving Bundle` gives their code and the conversions, and field access
   is the ordinary `s.line`.
@@ -396,7 +400,9 @@ class Hw (r : HwTy → Type) where
   memWrite : {ω aw dw : Nat} → r (HwTy.mem aw dw) → r HwTy.bit → r (HwTy.bits aw) → r (HwTy.bits dw) → r (HwTy.mem aw dw)
   -- primitive instances (vendor cells, `lib/Hdl/Prim.wiz`), and the implicit clock as a
   -- clock net for their clock ports
+  /-- `prim p x`: a primitive instance (a vendor cell, `lib/Hdl/Prim.wiz`) on `x`. -/
   prim : {ω i o : HwTy} → Prim i o → r i → r o
+  /-- The implicit clock, as a clock net for primitives' clock ports. -/
   clock : r HwTy.clock
 
 /-- Auto-share: the elaborator turns `let x := v; body` into `ShareLet.share v (fun x =>
@@ -684,10 +690,10 @@ structure NetPort where
   width : Nat
   node : Nat
 
-/-- A netlist: flat, widths concrete, one node per bit-vector operation. Node `k` is the
-`k`-th of `nodes` and its arguments refer to earlier nodes; `hints` are wire names
-(from `Hw.label`). `Circuit.netlist` makes one, `Netlist.simulate` runs it and
-`Verilog.emit` prints it. -/
+/-- A netlist: flat, widths concrete, one node per bit-vector operation (or primitive
+instance). Node `k` is the `k`-th of `nodes` and its arguments refer to earlier nodes;
+`hints` are wire names (from `Hw.label`). `Circuit.netlist` makes one, `Netlist.simulate`
+runs it and `Verilog.emit` prints it. -/
 structure Netlist where
   name : String
   nodes : List NetNode       -- node k is the k-th; arguments refer to earlier nodes
@@ -2505,8 +2511,9 @@ def Verilog.insts (cx : VCtx) (outs : HTrie (List (Nat × Nat))) : Nat → List 
 
 /-- A netlist as a Verilog-2005 module: one port per leaf (and `clk`), one `reg` per
 register (with its reset and enable), one `wire` per node that is neither a port, a
-register nor a constant. Names come from the netlist (ports, registers, `Hw.label`),
-made into unique identifiers.
+register nor a constant (a primitive's output is a wire its instance drives, a pad is a
+port), and one instance per primitive. Names come from the netlist (ports, registers,
+`Hw.label`), made into unique identifiers.
 
 ```
 IO.writeFile "blink.v" (Verilog.emit (Circuit.netlist "blink" blink))

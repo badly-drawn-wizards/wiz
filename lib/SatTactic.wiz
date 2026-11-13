@@ -8,16 +8,19 @@ it**. `import SatTactic`.
     def demorgan (a b : Bool) : Bool.not (Bool.and a b) = Bool.or (Bool.not a) (Bool.not b) := by sat_decide
 
 The goal (after introducing its `∀`s) is `e = .true` or `e₁ = e₂` at `Bool`, where `e`
-is built from `Bool.and/or/not/xor` and `.true/.false`; every other Bool subterm is an
-atom (a variable of the formula). The tactic
-1. reflects `e` as a formula `f : Sat.BForm` and the atoms as `σ := Sat.envOf [t₀, …]`;
-2. builds a circuit (one node per distinct subformula) and its CNF, with the output
-   negated (`Sat.fullCnf`);
+is built from `Bool.and/or/not/xor`, `Sat.boolEq` and `.true`/`.false`; every other Bool
+subterm is an atom (a variable of the formula), and an application of a definition that
+unfolds to one of those is unfolded at its head. The tactic
+1. reflects `e` into a dag of `Sat.Gate`s, one node per distinct subterm (28c: the
+   subterms are shared, so a big formula is checked once per node), with the atoms as
+   `σ := Sat.envOf [t₀, …]`;
+2. builds the dag's CNF, with the output negated (`Sat.dagFull`);
 3. asks the SAT solver (CaDiCaL, `--sat-solver`) for an LRAT refutation
-   (`TacticM.satSolve`; a model is shown as a counterexample);
-4. closes the goal with `Sat.decide_sound f nodes out proof Sat.trivial σ`. The kernel
-   checks `Sat.trivial : IsTrue (Sat.checkAll f nodes out proof)` by running the checker
-   and `BForm.eval σ f = .true` against the goal by conversion.
+   (`TacticM.satSolve`; a model is shown as a counterexample, its inputs printed);
+4. closes the goal with `Sat.dag_sound` (or `Sat.dag_eq` for an equation): it defines
+   `σ` and the node list, passes `Sat.trivial : IsTrue (Sat.checkAll …)` and a proof that
+   every gate holds (`SatT.holdsE`: `refl` at each node's own subterm, or a lemma, as in
+   lib/BitBlast.wiz, 28d), and the kernel checks both by conversion.
 Neither the solver, nor this tactic, nor the host's DIMACS/LRAT plumbing is trusted.
 The kernel runs the checker (slow for big proofs; kernel evaluation, wiz-notes/smt.md).
 -/
