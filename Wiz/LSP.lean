@@ -4,6 +4,7 @@ import Wiz.Rig.Instances
 import Wiz.Infoview
 import Wiz.Actions
 import Wiz.Signature
+import Wiz.Inlay
 import Wiz.Completion
 import Wiz.Refs
 import Wiz.Symbols
@@ -153,6 +154,7 @@ def capabilities : Json :=
     ("referencesProvider", true), ("renameProvider", Json.mkObj [("prepareProvider", true)]),
     ("completionProvider", Json.mkObj [("triggerCharacters", Json.arr #["."])]),
     ("signatureHelpProvider", Json.mkObj [("triggerCharacters", Json.arr #[" ", "("]), ("retriggerCharacters", Json.arr #[" "])]),
+    ("inlayHintProvider", true),
     ("documentSymbolProvider", true), ("workspaceSymbolProvider", true), ("foldingRangeProvider", true),
     ("codeActionProvider", Json.mkObj [("codeActionKinds", Json.arr #["quickfix", "refactor.rewrite"]),
                                        ("resolveProvider", true)]),
@@ -568,6 +570,12 @@ def handle (srv : Server) (msg : Json) : Server × Array Json := Id.run do
     ({ srv with docs := srv.docs.insert uri doc, sessions := session },
      #[diagnostics uri doc] ++ (if srv.elaboratedNotes then #[note] else #[]))
   | "textDocument/didClose" => ({ srv with docs := srv.docs.erase uri }, #[])
+  | "textDocument/inlayHint" =>
+    let some doc := srv.docs.get? uri | return (srv, #[reply (Json.arr #[])])
+    let pos (k : String) := ofPos doc.text (getNat msg ["params", "range", k, "line"]) (getNat msg ["params", "range", k, "character"])
+    let hs := (Inlay.hintsIn doc.state doc.text (pos "start") (pos "end")).map fun h =>
+      Json.mkObj [("position", toPos doc.text h.at_), ("label", Json.str h.label), ("kind", (1 : Nat))]
+    (srv, #[reply (Json.arr hs)])
   | "textDocument/references" | "textDocument/documentHighlight" | "textDocument/prepareRename" | "textDocument/rename" =>
     let some doc := srv.docs.get? uri | return (srv, #[reply Json.null])
     let off := ofPos doc.text (getNat msg ["params", "position", "line"]) (getNat msg ["params", "position", "character"])

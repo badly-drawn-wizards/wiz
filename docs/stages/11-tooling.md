@@ -460,6 +460,14 @@ def b (xs : List Nat) : Nat := List.length ‸    -- List.length {A : Type} [(_ 
 * wiz.nvim: `gO` (Neovim 0.11) lists the outline; `lsp.folding = true` folds with the
   server's ranges (`vim.lsp.foldexpr`).
 
+## 11x: inlay hints
+
+`textDocument/inlayHint` (`Wiz/Inlay.lean`) shows the type the elaborator gave a `fun`
+or `let` binder written without one, `fun x : Nat => …`, from the info tree's binders
+(`recordBinder`): a local identifier whose text is the binder's own name, with `fun`/`λ`
+(past the other binders of its group) or `let` before it and `=>`/`↦`/`:=` or another
+binder after it, not `:`. wiz.nvim: `lsp.inlay_hints = true` turns them on.
+
 ## 11y: references, highlights and rename
 
 `Wiz/Refs.lean`, from the info tree's identifiers (each records what it resolved to):
