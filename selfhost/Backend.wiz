@@ -414,26 +414,35 @@ def Doc.nat (n : Nat) : Doc := .t (Nat.toString n)
 -- arity of each global defined by `λ`s (called directly when applied to that many
 -- arguments: through curried closures, a call of `n` arguments made `n` closures, each
 -- copying the arguments before it), and (reference counting mode) a reuse token wanted
--- by an allocation not yet given one (`Wish`, see `rcE`)
+-- by an allocation not yet given one (`Wish`, see `rcE`), and the projection prefixes
+-- bound in the current scope (stage 15j, by level of their variable: `x.2`, …, `x.2^k`)
+-- (the prefixes bound, by level: `x.2`, …, `x.2^k`)
+inductive PE where
+  | nil
+  | cons (x k : Nat) (rest : PE)
 inductive Wish where
   | idle
   | want (w : String) (n : Nat)
 inductive CG where
-  | mk (fns : List Doc) (n : Nat) (ar : StrMap Nat) (pend : Wish)
+  | mk (fns : List Doc) (n : Nat) (ar : StrMap Nat) (pend : Wish) (pe : PE)
 inductive CR where
   | mk (code : Doc) (st : CG)
 inductive FR where
   | mk (name : String) (st : CG)
 def CG.fresh (st : CG) (base : String) : FR := match st with
-  | .mk fns n ar p => .mk (String.append base (Nat.toString n)) (.mk fns (n + 1) ar p)
+  | .mk fns n ar p pe => .mk (String.append base (Nat.toString n)) (.mk fns (n + 1) ar p pe)
 def CG.emit (st : CG) (f : Doc) : CG := match st with
-  | .mk fns n ar p => .mk (.cons f fns) n ar p
+  | .mk fns n ar p pe => .mk (.cons f fns) n ar p pe
 def CG.arity (st : CG) (g : String) : Nat := match st with
-  | .mk _ _ ar _ => StrMap.findD ar (Str.ofString g) 0
+  | .mk _ _ ar _ _ => StrMap.findD ar (Str.ofString g) 0
 def CG.pend (st : CG) : Wish := match st with
-  | .mk _ _ _ p => p
+  | .mk _ _ _ p _ => p
 def CG.setPend (st : CG) (p : Wish) : CG := match st with
-  | .mk fns n ar _ => .mk fns n ar p
+  | .mk fns n ar _ pe => .mk fns n ar p pe
+def CG.pe (st : CG) : PE := match st with
+  | .mk _ _ _ _ pe => pe
+def CG.setPe (st : CG) (pe : PE) : CG := match st with
+  | .mk fns n ar p _ => .mk fns n ar p pe
 -- an application's head and arguments
 inductive ESpine where
   | mk (head : ETm) (args : List ETm)
@@ -605,6 +614,164 @@ def codesC : List Nat → Doc
   | .cons n rest => match rest with
     | .nil => Doc.nat n
     | .cons _ _ => Doc.nat n ⧺ .t "," ⧺ codesC rest
+-- **Shared projection prefixes** (stage 15j). Field `k` of a structure (a right-nested
+-- chain of pairs) is read as `k` projections `.2` and a `.1`, so reading every field of
+-- a wide structure took n²/2 `fld`s. As the Lean compiler's simplifier shares the
+-- projections already bound, a region's head (a function's body, a `case` branch, a
+-- `λ`'s body) binds each prefix `x.2.2…` of a variable bound outside it that the region
+-- uses twice, once on its straight-line path (so it is evaluated there anyway), as C
+-- locals: `qx_1 = fld(x, 1)`, `qx_2 = fld(qx_1, 1)`, … A `let` does the same for its
+-- own variable, with the plan of its region's head. Uses then read from the longest
+-- prefix bound. Only `.2`s are shared: `fld(·, 1)` is total and never forces a
+-- hypothesis. Under reference counting the locals are borrowed from `x` (no `inc`):
+-- every use of one is still a use of `x`, so `x` lives as long, and nothing else
+-- changes.
+-- the uses of each variable (by level): the two longest prefixes and the longest on
+-- the straight-line path
+inductive PS where
+  | nil
+  | cons (x a1 a2 s1 : Nat) (rest : PS)
+-- the prefixes a head binds for variables bound outside it: `x`'s from `k0 + 1` to `k`
+inductive EM where
+  | nil
+  | cons (x k0 k : Nat) (rest : EM)
+inductive Plan where
+  | mk (pe : PE) (em : EM)
+-- a path's innermost run of `.2`s on a variable (its index, its length)
+inductive PRun where
+  | no
+  | at (j r : Nat)
+def pMin (a b : Nat) : Nat := match Nat.lt a b with
+  | .true => a
+  | .false => b
+def psAdd (x r : Nat) (s : Bool) : PS → PS
+  | .nil => .cons x r 0 (match s with
+    | .true => r
+    | .false => 0) .nil
+  | .cons y a1 a2 s1 rest => match Nat.beq x y with
+    | .true => .cons y (Nat.max a1 r) (match Nat.lt a1 r with
+        | .true => a1
+        | .false => Nat.max a2 r) (match s with
+        | .true => Nat.max s1 r
+        | .false => s1) rest
+    | .false => .cons y a1 a2 s1 (psAdd x r s rest)
+def run1 : ETm → PRun
+  | .var j => .at j 0
+  | .proj i t => match i with
+    | .zero => .no
+    | .succ z => match z with
+      | .zero => match run1 t with
+        | .at j r => .at j (r + 1)
+        | .no => .no
+      | .succ _ => .no
+  | _ => .no
+def innerRun : ETm → PRun
+  | .proj i u => match run1 (.proj i u) with
+    | .at j r => .at j r
+    | .no => innerRun u
+  | t => run1 t
+def pBase : ETm → ETm
+  | .proj _ t => pBase t
+  | t => t
+def peFind (x : Nat) : PE → Nat
+  | .nil => 0
+  | .cons y k rest => match Nat.beq x y with
+    | .true => k
+    | .false => peFind x rest
+def peSet (x k : Nat) : PE → PE
+  | .nil => .cons x k .nil
+  | .cons y k2 rest => match Nat.beq x y with
+    | .true => .cons y k rest
+    | .false => .cons y k2 (peSet x k rest)
+-- (the entries of levels from `d0`: variables of another region)
+def peBelow (d0 : Nat) : PE → PE
+  | .nil => .nil
+  | .cons y k rest => match Nat.lt y d0 with
+    | .true => .cons y k (peBelow d0 rest)
+    | .false => peBelow d0 rest
+-- the uses in `t` at depth `d`: on the straight-line path (`s`), or in a branch, where
+-- only the variables bound outside the branches (levels below `lim`) count; not under
+-- a `λ` (another function)
+mutual
+def cseScan (s : Bool) (lim d : Nat) (t : ETm) (acc : PS) : PS := match t with
+  | .proj i u => match innerRun (.proj i u) with
+    | .at j r => match Bool.and (Nat.lt 0 r) (Nat.lt j d) with
+      | .true => match Bool.or s (Nat.lt (d - 1 - j) lim) with
+        | .true => psAdd (d - 1 - j) r s acc
+        | .false => acc
+      | .false => acc
+    | .no => cseScan s lim d (pBase u) acc
+  | .letE v b => cseScan s lim (d + 1) b (cseScan s lim d v acc)
+  | .app f a => cseScan s lim d a (cseScan s lim d f acc)
+  | .obj _ fs => cseScanEs s lim d fs acc
+  | .prim _ as => cseScanEs s lim d as acc
+  | .case sc bs => cseScanEs .false (match s with
+      | .true => d
+      | .false => lim) d bs (cseScan s lim d sc acc)
+  | _ => acc
+def cseScanEs (s : Bool) (lim d : Nat) (ts : ETms) (acc : PS) : PS := match ts with
+  | .nil => acc
+  | .cons t rest => cseScanEs s lim d rest (cseScan s lim d t acc)
+end
+def planPS (d0 : Nat) : PE → EM → PS → Plan
+  | pe, em, .nil => .mk pe em
+  | pe, em, .cons x _ a2 s1 rest =>
+    let k := pMin a2 s1;
+    match Nat.lt 0 k with
+    | .false => planPS d0 pe em rest
+    | .true => match Nat.lt x d0 with
+      | .false => planPS d0 (peSet x k pe) em rest
+      | .true =>
+        let k0 := peFind x pe;
+        match Nat.lt k0 k with
+        | .true => planPS d0 (peSet x k pe) (.cons x k0 k em) rest
+        | .false => planPS d0 pe em rest
+-- the plan of a head at depth `d0` with body `t`, the prefixes bound outside being `pe`
+def csePlan (pe : PE) (d0 : Nat) (t : ETm) : Plan :=
+  planPS d0 (peBelow d0 pe) .nil (cseScan .true 0 d0 t .nil)
+def aliasName (root : String) (l : Nat) : String := "q" +++ mangle root +++ "_" +++ Nat.toString l
+-- the locals for `root.2^(l+1)` … `root.2^(l+n)`
+def chainDecls (root : String) : Nat → Nat → Doc
+  | _, .zero => .t ""
+  | l, .succ n => .t ("V " +++ aliasName root (l + 1) +++ " = fld(" +++ (match l with
+      | .zero => root
+      | .succ _ => aliasName root l) +++ ", 1); ") ⧺ chainDecls root (l + 1) n
+-- a head's locals
+def emDeclsG (names : List String) (d : Nat) : EM → Doc
+  | .nil => .t ""
+  | .cons x k0 k rest => emDeclsG names d rest ⧺ chainDecls (nthName' names (d - 1 - x)) k0 (k - k0)
+def fldsC (base : Doc) : Nat → Doc
+  | .zero => base
+  | .succ n => .t "fld(" ⧺ fldsC base n ⧺ .t ", 1)"
+-- the C text of a path of projections from variable index `j` (`d`: the depth), from
+-- the longest prefix bound
+def projRun (pe : PE) (names : List String) (d j r : Nat) : Doc :=
+  let nm := nthName' names j;
+  let k := pMin r (peFind (d - 1 - j) pe);
+  match k with
+  | .zero => fldsC (.t nm) r
+  | .succ _ => fldsC (.t (aliasName nm k)) (r - k)
+def projText (pe : PE) (names : List String) (d : Nat) : ETm → Doc
+  | .proj i u => match run1 (.proj i u) with
+    | .at j r => projRun pe names d j r
+    | .no => .t "fld(" ⧺ projText pe names d u ⧺ .t ", " ⧺ Doc.nat i ⧺ .t ")"
+  | t => match run1 t with
+    | .at j r => projRun pe names d j r
+    | .no => .t "unreach()"
+-- a projection path from a variable (C text), when prefixes are bound
+def projHere (pe : PE) (names : List String) (t : ETm) : Option Doc := match pe with
+  | .nil => .none
+  | .cons _ _ _ => match pBase t with
+    | .var j =>
+      let d := lenL names;
+      match Nat.lt j d with
+      | .true => .some (projText pe names d t)
+      | .false => .none
+    | _ => .none
+-- a `let`'s locals for its variable (the plan of its region's head)
+def letAliases (pe : PE) (names : List String) (x : String) : Doc := match pe with
+  | .nil => .t ""
+  | .cons _ _ _ => chainDecls x 0 (peFind (lenL names) pe)
 mutual
 -- **Exercise 21.2.** The C expression of a term (`names`: the variables in scope).
 def cgE (st : CG) (names : List String) : ETm → CR
@@ -633,8 +800,10 @@ def cgE (st : CG) (names : List String) : ETm → CR
         | .false => cgApps st names (.t ("get_" +++ mangle g +++ "()")) args
       | _ => match cgE st names h with
         | .mk hc st1 => cgApps st1 names hc args
-  | .proj i t => match cgE st names t with
-    | .mk tc st1 => .mk (.t "fld(" ⧺ tc ⧺ .t ", " ⧺ Doc.nat i ⧺ .t ")") st1
+  | .proj i t => match projHere (CG.pe st) names (.proj i t) with
+    | .some pc => .mk pc st
+    | .none => match cgE st names t with
+      | .mk tc st1 => .mk (.t "fld(" ⧺ tc ⧺ .t ", " ⧺ Doc.nat i ⧺ .t ")") st1
   | .obj k fs => match fs with
     | .nil => .mk (.t "BOX(" ⧺ Doc.nat k ⧺ .t ")") st
     | .cons _ _ =>
@@ -648,7 +817,7 @@ def cgE (st : CG) (names : List String) : ETm → CR
   | .letE v b => match cgE st names v with
     | .mk vc st1 => match CG.fresh st1 "l" with
       | .mk x st2 => match cgE st2 (.cons x names) b with
-        | .mk bc st3 => .mk (.t ("({ V " +++ x +++ " = ") ⧺ vc ⧺ .t "; " ⧺ bc ⧺ .t "; })") st3
+        | .mk bc st3 => .mk (.t ("({ V " +++ x +++ " = ") ⧺ vc ⧺ .t "; " ⧺ letAliases (CG.pe st) names x ⧺ bc ⧺ .t "; })") st3
   | .case s bs => match cgE st names s with
     | .mk sc st1 => match CG.fresh st1 "s" with
       | .mk x st2 => match cgBranches st2 names 0 bs with
@@ -672,7 +841,7 @@ def cgE (st : CG) (names : List String) : ETm → CR
     match CG.fresh st "lam" with
     | .mk fname st1 =>
       let inner := List.append (paramNamesA nc k k) (capNamesA caps 0 (maxVar caps));
-      match cgE st1 inner body with
+      match cgHead st1 inner .nil body with
       | .mk bc st2 =>
         let st3 := CG.emit st2 (.t ("static V " +++ fname +++ "(V *a) { return ") ⧺ bc ⧺ .t "; }");
         match caps with
@@ -711,9 +880,16 @@ def cgTemps (st : CG) (names : List String) (i : Nat) : List ETm → CR
       | .mk rc st2 => .mk (.t ("V tc_" +++ Nat.toString i +++ " = ") ⧺ tc ⧺ .t "; " ⧺ rc) st2
 def cgBranches (st : CG) (names : List String) (k : Nat) : ETms → CR
   | .nil => .mk (.t "") st
-  | .cons b rest => match cgE st names b with
+  | .cons b rest => match cgHead st names (CG.pe st) b with
     | .mk bc st1 => match cgBranches st1 names (k + 1) rest with
       | .mk rc st2 => .mk (.t "case " ⧺ Doc.nat k ⧺ .t ": r_ = " ⧺ bc ⧺ .t "; break; " ⧺ rc) st2
+-- (15j) a region's head (`pe0`: the prefixes bound outside it): its prefixes bound, then
+-- its code
+def cgHead (st : CG) (names : List String) (pe0 : PE) (t : ETm) : CR := match csePlan pe0 (lenL names) t with
+  | .mk pe em => match cgE (CG.setPe st pe) names t with
+    | .mk c st1 => .mk (match em with
+        | .nil => c
+        | .cons _ _ _ _ => .t "({ " ⧺ emDeclsG names (lenL names) em ⧺ c ⧺ .t "; })") (CG.setPe st1 (CG.pe st))
 end
 
 
@@ -1097,6 +1273,15 @@ def lvMem (x : Nat) : List Nat → Bool
     | .false => match Nat.lt x y with
       | .true => lvMem x rest
       | .false => .false
+-- a head's locals under reference counting: only for variables still used or borrowed
+-- (the others may already be released)
+def emDeclsRC (live bor : List Nat) (names : List String) (d : Nat) : EM → Doc
+  | .nil => .t ""
+  | .cons x k0 k rest =>
+    let mine := chainDecls (nthName' names (d - 1 - x)) k0 (k - k0);
+    match Bool.or (lvMem x live) (lvMem x bor) with
+    | .true => emDeclsRC live bor names d rest ⧺ mine
+    | .false => emDeclsRC live bor names d rest
 def lvDel (x : Nat) : List Nat → List Nat
   | .nil => .nil
   | .cons y rest => match Nat.beq x y with
@@ -1387,11 +1572,11 @@ def rcE (re : RE) (st : CG) (names : List String) (d : Nat) (live : List Nat) (t
         let x := d - 1 - j;
         match CG.fresh st "t" with
         | .mk r st1 => match lvMem x (RE.bor re) with
-          | .true => .mk (.t ("V " +++ r +++ " = ") ⧺ projC (.t nm) t ⧺ .t ("; inc(" +++ r +++ "); ")) (.t r) live st1
+          | .true => .mk (.t ("V " +++ r +++ " = ") ⧺ projText (CG.pe st) names d t ⧺ .t ("; inc(" +++ r +++ "); ")) (.t r) live st1
           | .false => match lvMem x live with
-            | .true => .mk (.t ("V " +++ r +++ " = ") ⧺ projC (.t nm) t ⧺ .t ("; inc(" +++ r +++ "); ")) (.t r) (lvIns x live) st1
+            | .true => .mk (.t ("V " +++ r +++ " = ") ⧺ projText (CG.pe st) names d t ⧺ .t ("; inc(" +++ r +++ "); ")) (.t r) (lvIns x live) st1
             | .false => match takeC re st1 nm r x with
-              | .mk tc st2 => .mk (.t ("V " +++ r +++ " = ") ⧺ projC (.t nm) t ⧺ .t "; " ⧺ tc) (.t r) (lvIns x live) st2
+              | .mk tc st2 => .mk (.t ("V " +++ r +++ " = ") ⧺ projText (CG.pe st) names d t ⧺ .t "; " ⧺ tc) (.t r) (lvIns x live) st2
       | .false => .mk (.t "") (.t "BOX(0)") live st
     | root => match rcE re st names d live root with
       | .mk oc oa ol st1 => match CG.fresh st1 "t" with
@@ -1456,7 +1641,7 @@ def rcE (re : RE) (st : CG) (names : List String) (d : Nat) (live : List Nat) (t
             | .true =>
               let nm := nthName' names j;
               let isB := lvMem (d - 1 - j) (RE.bor re);
-              .mk (.t ("uint32_t " +++ k +++ " = tagof(") ⧺ projC (.t nm) s ⧺ .t ("); V " +++ r +++ "; switch (" +++ k +++ ") { ") ⧺ body) (.t r) (match isB with
+              .mk (.t ("uint32_t " +++ k +++ " = tagof(") ⧺ projText (CG.pe st) names d s ⧺ .t ("); V " +++ r +++ "; switch (" +++ k +++ ") { ") ⧺ body) (.t r) (match isB with
                   | .true => u
                   | .false => lvIns (d - 1 - j) u) st3
             | .false => .mk (.t ("V " +++ r +++ "; switch (0) { ") ⧺ body) (.t r) u st3
@@ -1478,11 +1663,18 @@ def rcE (re : RE) (st : CG) (names : List String) (d : Nat) (live : List Nat) (t
       | .nil => rcPrim re st names d live op as
     | .false => rcPrim re st names d live op as
   | .lam _ => rcLam re st names d live t .false
--- `let x := v` before the body's code `bc` (whose value is `ba`, which uses `bl`)
+-- (15j) a region's head (`pe0`: the prefixes bound outside it): its prefixes bound, then
+-- its code
+def rcHead (re : RE) (st : CG) (names : List String) (d : Nat) (live : List Nat) (pe0 : PE) (t : ETm) : RR :=
+  match csePlan pe0 d t with
+  | .mk pe em => match rcE re (CG.setPe st pe) names d live t with
+    | .mk c a l st1 => .mk (emDeclsRC l (RE.bor re) names d em ⧺ c) a l (CG.setPe st1 (CG.pe st))
+-- `let x := v` before the body's code `bc` (whose value is `ba`, which uses `bl`); if
+-- the body uses `x`, the prefixes of `x` its region's head planned (15j)
 def rcLet (re : RE) (st : CG) (names : List String) (d : Nat) (x : String) (v : ETm) (bc ba : Doc) (bl : List Nat) : RR :=
   match rcE re st names d (lvDel d bl) v with
   | .mk vc va vl st3 => .mk (vc ⧺ .t ("V " +++ x +++ " = ") ⧺ va ⧺ .t "; " ⧺ (match lvMem d bl with
-      | .true => .t ""
+      | .true => chainDecls x 0 (peFind d (CG.pe st))
       | .false => .t ("dec(" +++ x +++ "); ")) ⧺ bc) ba vl st3
 def rcPrim (re : RE) (st : CG) (names : List String) (d : Nat) (live : List Nat) (op : String) (as : ETms) : RR :=
   match strEq op "wiz.self" with
@@ -1511,7 +1703,7 @@ def rcLam (re : RE) (st : CG) (names : List String) (d : Nat) (live : List Nat) 
     match CG.fresh st "lam" with
     | .mk fname st1 =>
       let inner := List.append (paramNamesA nc k k) (capNamesA caps 0 (maxVar caps));
-      match rcE (RE.inner re) st1 inner d2 .nil body with
+      match rcHead (RE.inner re) st1 inner d2 .nil .nil body with
       | .mk bc ba bl st2 =>
         let st3 := CG.emit st2 (.t ("static V " +++ fname +++ "(V *a) { ") ⧺ entryDrops inner d2 bl (List.append (rangeL 0 k) (addK k caps)) ⧺
           bc ⧺ .t "return " ⧺ ba ⧺ .t "; }");
@@ -1576,7 +1768,7 @@ def rcBranches (re : RE) (st : CG) (names : List String) (d : Nat) (live : List 
   | .cons b rest => match rcBranches re st names d live rest with
     -- (each branch starts with no wish and keeps its own; the one from after the `case`
     -- is put back)
-    | .mk rbs u st1 => match rcE re (CG.setPend st1 .idle) names d live b with
+    | .mk rbs u st1 => match rcHead re (CG.setPend st1 .idle) names d live (CG.pe st1) b with
       | .mk bc ba bl st2 => .mk (.cons (.mk bc ba bl (CG.pend st2)) rbs) (lvUnion bl u) (CG.setPend st2 (CG.pend st1))
 end
 
@@ -1664,14 +1856,14 @@ def genCode : CG → List Doc → List Doc → List Erased → Code
     let g := mangle n;
     let k := lamsOf e;
     match k with
-    | .zero => match cgE st .nil e with
+    | .zero => match cgHead st .nil .nil e with
       | .mk code st1 =>
         genCode st1 (.cons (.t ("V get_" +++ g +++ "(void);")) protos)
           (.cons (.t ("static V g_" +++ g +++ "; static int i_" +++ g +++ "; V get_" +++ g +++
             "(void) { if (!i_" +++ g +++ ") { g_" +++ g +++ " = ") ⧺ code ⧺ .t ("; i_" +++ g +++ " = 1; } return g_" +++ g +++ "; }")) defs) rest
     | .succ _ =>
       -- the parameters: `p0` the first, so the innermost (index 0) is `p(k-1)`
-      match cgE st (paramNames k k) (markSelf n k .nil .nil k (underLams k e)) with
+      match cgHead st (paramNames k k) .nil (markSelf n k .nil .nil k (underLams k e)) with
       | .mk code st1 =>
         let ps := paramDecls 0 k;
         genCode st1 (.cons (.t ("V d_" +++ g +++ "(" +++ ps +++ "); V get_" +++ g +++ "(void);")) protos)
@@ -2143,9 +2335,9 @@ def genProgram (lib : Bool) (gs : Globals) : List Doc := match gs with
       -- (applications pushed into `case`s, as under reference counting: a match is then
       -- no closure, and its recursive calls are in tail position)
       let es := pushGlobals es0;
-      match genCode (.mk .nil 0 (arities (ffiArities StrMap.empty ffi) es) .idle) .nil .nil es with
+      match genCode (.mk .nil 0 (arities (ffiArities StrMap.empty ffi) es) .idle .nil) .nil .nil es with
       | .mk protos defs st => match st with
-        | .mk fns _ _ _ =>
+        | .mk fns _ _ _ _ =>
           List.append (linkDocs (List.reverseOf ffi .nil)) (.cons (.t "#include \"rt.c\"") (List.append (ffiDocs .false ffi) (List.append protos
             (List.append (List.reverseOf fns .nil) (List.append defs (List.append (exportDocs .false (List.reverseOf ffi .nil))
               (mainDocs lib "int main(int argc, char **argv) { (void)argc; rt_start(argv); ap(get_main(), BOX(0)); rt_finishGC(); return 0; }")))))))
@@ -2634,7 +2826,7 @@ def genCodeRC (sigs : StrMap (List Bool)) : CG → List Doc → List Doc → Lis
     let g := mangle n;
     let k := lamsOf e;
     match k with
-    | .zero => match rcE (.mk .nil sigs .nil) st .nil 0 .nil e with
+    | .zero => match rcHead (.mk .nil sigs .nil) st .nil 0 .nil .nil e with
       | .mk code atom _ st1 =>
         genCodeRC sigs st1 (.cons (.t ("V get_" +++ g +++ "(void);")) protos)
           (.cons (.t ("static V g_" +++ g +++ "; static int i_" +++ g +++ "; static V init_" +++ g +++ "(void) { ") ⧺ code ⧺
@@ -2646,7 +2838,7 @@ def genCodeRC (sigs : StrMap (List Bool)) : CG → List Doc → List Doc → Lis
       let sig := match StrMap.findD sigs (Str.ofString n) .nil with
         | .nil => allFalse k
         | sg => sg;
-      match rcE (.mk (borLevels 0 sig) sigs .nil) st names k .nil (markSelf n k sig (borLevels 0 sig) k (underLams k e)) with
+      match rcHead (.mk (borLevels 0 sig) sigs .nil) st names k .nil .nil (markSelf n k sig (borLevels 0 sig) k (underLams k e)) with
       | .mk code atom live st1 =>
         let ps := paramDecls 0 k;
         genCodeRC sigs st1 (.cons (.t ("V d_" +++ g +++ "(" +++ ps +++ "); V get_" +++ g +++ "(void);")) protos)
@@ -2663,9 +2855,9 @@ def genProgramRC (lib : Bool) (borrow : Bool) (gs : Globals) : List Doc := match
       let sigs : StrMap (List Bool) := match borrow with
         | .true => sigsFix (sigsInit StrMap.empty es) 0 es
         | .false => StrMap.empty;
-      match genCodeRC sigs (.mk .nil 0 (arities (ffiArities StrMap.empty ffi) es) .idle) .nil .nil es with
+      match genCodeRC sigs (.mk .nil 0 (arities (ffiArities StrMap.empty ffi) es) .idle .nil) .nil .nil es with
       | .mk protos defs st => match st with
-        | .mk fns _ _ _ =>
+        | .mk fns _ _ _ _ =>
           List.append (linkDocs (List.reverseOf ffi .nil)) (.cons (.t "#define WIZ_RC 1") (.cons (.t "#include \"rt.c\"") (List.append (ffiDocs .true ffi) (List.append protos
             (List.append (List.reverseOf fns .nil) (List.append defs (List.append (exportDocs .true (List.reverseOf ffi .nil))
               (mainDocs lib "int main(int argc, char **argv) { (void)argc; rt_start(argv); dec(ap(get_main(), BOX(0))); rt_finish(); return 0; }"))))))))

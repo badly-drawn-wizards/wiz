@@ -804,6 +804,33 @@ def kernelInertConv : Bool := .true
 -- proofs), kept for the transition.
 def kernelLazyProofs : Bool := .true
 
+-- (P2) **The step budget of a proof's read-back** (`Budget` in `Wiz/Core/Term.lean`, review
+-- F7). Reading a value back (`quoteM .true`: the elaborator's solutions, `#reduce`, its
+-- messages) evaluates a suspended proof, and a proof need not have a normal form. So that
+-- evaluation runs within a budget of steps, counted, not timed: a step is one
+-- instantiation of a closure (`instC`: a β-step, or going under a binder to read it
+-- back). The counter is the runtime's (as in Lean, a mutable cell behind a pure
+-- interface): `proofStart n` begins a budget of `n` steps (`.false`: one is running
+-- already, and this read-back counts on it), `proofTick` takes a step (`.false` once it
+-- ran out; `.true` whenever no budget runs, so the kernel's own evaluation, which starts
+-- none, is never affected), `proofEnd` stops it (`.false`: it ran out). The argument of
+-- `proofTick` and `proofEnd` is ignored: it is there so that a call is never a constant
+-- (and `proofEnd`'s orders it after the read-back it ends).
+extern "wiz_proof_start" proofStart : Nat → Bool
+extern "wiz_proof_tick" proofTick : Nat → Bool
+extern "wiz_proof_end" proofEnd : Nat → Bool
+-- the budget (Lean's `Budget.defaultSteps`)
+def proofSteps : Nat := 1000000
+-- what a proof reads back as when its budget ran out (Lean's `Budget.message`): a
+-- constant named by the message, which `infer` rejects with that message
+def proofStub : String := "‹a proof was not read back: it needs more than 1000000 evaluation steps (raise the bound with --proof-steps N)›"
+-- what a closure's instantiation is once the budget ran out (Lean's `outOfSteps`): stuck
+def outOfSteps : Val := .vne (.haxiom " out of steps" .star) .snil
+-- (a read-back's result, inspected: `proofEnd` is called after it is computed)
+def tmSeq (t : Tm) : Nat := match t with
+  | .prf _ _ => 0
+  | _ => 1
+
 -- (P2) a term read back as a proof: marked (once)
 def markTm (t : Tm) : Tm := match t with
   | .prf _ _ => t
@@ -1001,6 +1028,11 @@ def forceSp : Val → Spine → Val
   | v, .sout sp => vOut (forceSp v sp)
 -- (P2) the eliminations of a proof from its last `absurd` on (`.none`: there is none).
 -- Past an `absurd` the value need not be a proof (`exfalso M p : M`, for any `M`).
+-- (P2) a closure's instantiation: `body` with `a` for its variable, on the step budget of
+-- a proof's read-back when one runs (`proofTick`; always `eval` otherwise)
+def instC (env : Env) (a : Val) (body : Tm) : Val := match proofTick 0 with
+  | .true => eval (.cons a env) body
+  | .false => outOfSteps
 def fromAbsurd : Spine → Option Spine
   | .snil => .none
   | .sabsurd _ m => .some (.sabsurd .snil m)
@@ -1037,7 +1069,7 @@ def fromAbsurd : Spine → Option Spine
 def vapp : Val → Val → Val
   | .vglued h sp v, a => .vglued h (.sapp sp a) (memo (fun _ => vapp (v ()) a))  -- (given) glued stays glued
   --<sol
-  | .vlam env b, a => eval (.cons a env) b
+  | .vlam env b, a => instC env a b
   | .vne h sp, a => .vne h (.sapp sp a)
   | v, _ => v
   --|ex
@@ -1599,9 +1631,9 @@ def quoteM (qm : Bool) : Nat → Val → Tm
       | .zero => .prop
       | .succ m => .univ m
     | .none => .sortL l
-  | l, .vpi q a env b s => sortedTm s (piTm q (quoteM qm l a) (quoteM qm (l + 1) (eval (.cons (fresh l) env) b)))
-  | l, .vlam env b => .lam (quoteM qm (l + 1) (eval (.cons (fresh l) env) b))
-  | l, .vsigma q a env b s => sortedTm s (sigmaTm q (quoteM qm l a) (quoteM qm (l + 1) (eval (.cons (fresh l) env) b)))
+  | l, .vpi q a env b s => sortedTm s (piTm q (quoteM qm l a) (quoteM qm (l + 1) (instC env (fresh l) b)))
+  | l, .vlam env b => .lam (quoteM qm (l + 1) (instC env (fresh l) b))
+  | l, .vsigma q a env b s => sortedTm s (sigmaTm q (quoteM qm l a) (quoteM qm (l + 1) (instC env (fresh l) b)))
   | l, .vpair a b => .pair (quoteM qm l a) (quoteM qm l b)
   | _, .vunit l => match l with
     | .zero => .ptrue
@@ -1636,8 +1668,8 @@ def quoteM (qm : Bool) : Nat → Val → Tm
   | l, .vne (.hprf env t) sp => match qm with
     -- (read back marked: in a relevant position `infer` requires the marker)
     | .true => match fromAbsurd sp with
-      | .none => markTm (quoteM qm l (forceSp (eval env t) sp))
-      | .some r => quoteSpine qm l (markTm (quoteM qm l (forceSp (eval env t) (toAbsurd sp)))) r
+      | .none => forceProof l env t sp
+      | .some r => quoteSpine qm l (forceProof l env t (toAbsurd sp)) r
     | .false => match fromAbsurd sp with
       | .none => .star
       | .some r => quoteSpine qm l .star r
@@ -1667,7 +1699,7 @@ def quoteSpine (qm : Bool) : Nat → Tm → Spine → Tm
   | l, h, .sfst sp => .fst (quoteSpine qm l h sp)
   | l, h, .ssnd sp => .snd (quoteSpine qm l h sp)
   | l, h, .secase sp env m bs =>
-    .ecase (quoteM qm (l + 1) (eval (.cons (fresh l) env) m)) (quoteSpine qm l h sp) (quoteBranches qm l env bs)
+    .ecase (quoteM qm (l + 1) (instC env (fresh l) m)) (quoteSpine qm l h sp) (quoteBranches qm l env bs)
   | l, h, .sabsurd sp m => .exfalso (quoteM qm l m) (quoteSpine qm l h sp)
   | l, h, .sdelim sp v P a b c d =>
     .delim v (quoteM qm l P) (quoteM qm l a) (quoteM qm l b) (quoteM qm l c) (quoteM qm l d) (quoteSpine qm l h sp)
@@ -1693,6 +1725,17 @@ def quoteHead (qm : Bool) : Nat → Head → Tm
 def quoteBranches (qm : Bool) : Nat → Env → Tms → Tms
   | _, _, .tnil => .tnil
   | l, env, .tcons b rest => .tcons (quoteM qm l (eval env b)) (quoteBranches qm l env rest)
+-- (P2) a suspended proof `t` in `env`, with the eliminations `sp`, read back (`quoteM
+-- .true`): evaluated and read back marked, within the step budget (Lean's `quote` on a
+-- `.prf` head). A read-back inside another one counts on its budget; if the budget runs
+-- out, the proof reads back as the constant `proofStub`.
+def forceProof (l : Nat) (env : Env) (t : Tm) (sp : Spine) : Tm := match proofStart proofSteps with
+  | .false => markTm (quoteM .true l (forceSp (eval env t) sp))
+  | .true =>
+    let tm := markTm (quoteM .true l (forceSp (eval env t) sp));
+    match proofEnd (tmSeq tm) with
+    | .true => tm
+    | .false => markTm (.axiomC proofStub .star)
 end
 -- **Reading back** a value: suspended proofs are evaluated, so that the term is a normal
 -- form (which `infer` can check again). The kernel's own comparison of types (`sameVal`)
@@ -2931,7 +2974,11 @@ def inferW : TCtx → Tm → TyRes
       | r => r
     | r => r
   | c, .const _ ps ls _ ty => .ok (eval .nil (substIfAny ps ls ty)) (uZeros (TCtx.lvl c))
-  | c, .axiomC _ ty => .ok (eval .nil ty) (uZeros (TCtx.lvl c))
+  -- (P2) a proof that was not read back (`forceProof`) is no constant: rejected, with the
+  -- message it is named by (Lean's kernel: an unbound global with that name)
+  | c, .axiomC n ty => match kStrEq n proofStub with
+    | .true => .err proofStub
+    | .false => .ok (eval .nil ty) (uZeros (TCtx.lvl c))
   | c, .ulift l A => match inferUniv c A with
     | .ok (.vsort k) _ => match lvlLe k (.lnum l) with
       | .true => .ok (.vsort (.lnum l)) (uZeros (TCtx.lvl c))
