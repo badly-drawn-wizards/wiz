@@ -267,6 +267,8 @@ partial def eval (g : Globals R) (env : Env R) : Term R → Val R
   | .tt => .tt
   | .empty l => .empty l
   | .absurd m t => vAbsurd (eval g env m) (eval g env t)
+  -- (η for Unit: `u` is `()`, so the eliminator is its body)
+  | .letUnit _ b => eval g env b
   | .eq A a b => vEq g (eval g env A) (eval g env a) (eval g env b)
   | .eqTy A B => vEqType g (eval g env A) (eval g env B)
   | .cast A B e t =>
@@ -309,8 +311,8 @@ partial def eval (g : Globals R) (env : Env R) : Term R → Val R
     vSfix g l (eval g env I) (eval g env D) v (eval g env P) (eval g env f) (eval g env s)
       (eval g env i) (eval g env x)
   | .cocon x => .cocon (eval g env x)
-  | .scase l I D v P m s i x =>
-    vScase g l (eval g env I) (eval g env D) v (eval g env P) (eval g env m) (eval g env s)
+  | .scase l q I D v P m s i x =>
+    vScase g l (eval g env q) (eval g env I) (eval g env D) v (eval g env P) (eval g env m) (eval g env s)
       (eval g env i) (eval g env x)
   | .scofix l I D A f s i a =>
     .scofix l (eval g env I) (eval g env D) (eval g env A) (eval g env f) (eval g env s)
@@ -375,7 +377,7 @@ partial def eval (g : Globals R) (env : Env R) : Term R → Val R
   --| -- Exercise 4.22: the sized primitives (vSfix, and cocon/scofix are values)
   --| | .sfix l I D v P f s i x => sorry
   --| | .cocon x => sorry
-  --| | .scase l I D v P m s i x => sorry
+  --| | .scase l q I D v P m s i x => sorry
   --| | .scofix l I D A f s i a => sorry
   --sol>
 
@@ -646,13 +648,13 @@ partial def vSfix (g : Globals R) (l : Level) (I D : Val R) (v : Level) (P f s i
   --sol>
 
 /-- **Exercise 4.22b.** Sized case analysis: `scase P m s i (con xs) ↦ m ∞ i xs` (the
-size of the fields is irrelevant at runtime). -/
-partial def vScase (g : Globals R) (l : Level) (I D : Val R) (v : Level) (P m s i x : Val R) : Val R :=
+size of the fields is irrelevant at runtime, and so is the case's quantity `q`). -/
+partial def vScase (g : Globals R) (l : Level) (q I D : Val R) (v : Level) (P m s i x : Val R) : Val R :=
   let x := vNatView g (whnf x)
   --<sol
   match x with
   | .con xs => [.szInf, i, xs].foldl (vApp g) m
-  | .neutral h sp => .neutral h (sp.push (.scase l I D v P m s i))
+  | .neutral h sp => .neutral h (sp.push (.scase l q I D v P m s i))
   | _ => panic! "vScase: ill-typed"
   --|ex
   --| sorry
@@ -1282,8 +1284,8 @@ partial def quote (g : Globals R) (l : Lvl) : Val R → Term R
       | .ind lv I D v P m i => .ind lv (quote g l I) (quote g l D) v (quote g l P) (quote g l m) (quote g l i) acc
       | .out => .out acc
       | .down => .down acc
-      | .scase lv I D v P m s i =>
-        .scase lv (quote g l I) (quote g l D) v (quote g l P) (quote g l m) (quote g l s) (quote g l i) acc
+      | .scase lv q I D v P m s i =>
+        .scase lv (quote g l q) (quote g l I) (quote g l D) v (quote g l P) (quote g l m) (quote g l s) (quote g l i) acc
       | .sfix lv I D v P f s i =>
         .sfix lv (quote g l I) (quote g l D) v (quote g l P) (quote g l f) (quote g l s) (quote g l i) acc
     -- (P2) a proof head (a suspended proof, `refl`, `transp`, a stuck cast between
@@ -1378,7 +1380,7 @@ partial def vElims (g : Globals R) (v : Val R) (sp : Array (Elim R)) : Val R :=
     | .out => vOut g v
     | .down => vDown v
     | .sfix l I D lv P f s i => vSfix g l I D lv P f s i v
-    | .scase l I D lv P m s i => vScase g l I D lv P m s i v
+    | .scase l q I D lv P m s i => vScase g l q I D lv P m s i v
 
 end
 
