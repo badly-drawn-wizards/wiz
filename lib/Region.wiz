@@ -269,6 +269,19 @@ def Uniq1.share {ρ : Region} {S B : Type} (1 r : Uniq1 ρ S)
   | .mk v => (match body ρ (Outlives.refl ρ) (Shr.mk v) with
     | .ok b => .ok b (Uniq1.mk v)
     | .err e => .err e (Uniq1.mk v))
+-- the same inside a scope that holds handles `H`, threaded through and back
+def Uniq1.shareIn {ρ : Region} {S B H : Type} (1 r : Uniq1 ρ S) (1 outer : H)
+    (1 body : (0 ρ' : Region) → (0 h : Outlives ρ ρ') → (1 o : H) → Shr ρ' S → Result1 B H) :
+    Result1 B ((1 _ : H) × Uniq1 ρ S) :=
+  match r with
+  | .mk v => (match body ρ (Outlives.refl ρ) outer (Shr.mk v) with
+    | .ok b o => .ok b (o, Uniq1.mk v)
+    | .err e o => .err e (o, Uniq1.mk v))
+-- `let r := &s` inside a scope that holds handles `H` (linear mode): they are threaded
+-- through the shared borrow's body and come back with its result
+def Shr.borrowIn {S B H : Type} (0 σ : Region) (s : S) (1 outer : H)
+    (1 body : (0 ρ : Region) → (0 h : Outlives σ ρ) → (1 o : H) → Shr ρ S → Result1 B H) : Result1 B H :=
+  body σ (Outlives.refl σ) outer (Shr.mk s)
 -- `&mut r.p` for a place with a lens
 def Uniq1.zoom {ρ : Region} {S X B : Type} (l : Lens S X) (1 r : Uniq1 ρ S)
     (1 body : (0 ρ' : Region) → (0 h : Outlives ρ ρ') → (0 t : Lent ρ' S) → (1 x : Uniq1 ρ' X) → Result1 B (Uniq1 ρ' X)) :
@@ -298,5 +311,7 @@ attribute [inline] Uniq1.borrow
 attribute [inline] Uniq1.borrowIn
 attribute [inline] Uniq1.reborrow
 attribute [inline] Uniq1.share
+attribute [inline] Uniq1.shareIn
+attribute [inline] Shr.borrowIn
 attribute [inline] Uniq1.zoom
 attribute [inline] Uniq1.both
