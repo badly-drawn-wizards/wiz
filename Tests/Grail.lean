@@ -61,6 +61,24 @@ def modulesGroup : Group where
         let ms ← Module.loadAll ["lib", dir]
         check (Cache.moduleKey (loaderOf ms) (fun _ => none) 0 "Other" != Cache.moduleKey (loaderOf ms) (fun _ => none) 1 "Other")
           "the toolchain is not in the key" },
+    { name := "the isolated-module key has the proof marker's options (strictProofs, proofSteps, traceProofSteps)", run := fun _ => do
+        -- a module elaborated in isolation is kept per process under `isoKey`: a module kept
+        -- under one setting must not be replayed under another
+        let loader : Name → Option String := fun n => if n == "M" then some "def x : Unit := ()\n" else none
+        let base (g : Globals ZeroOneMany) : CommandState ZeroOneMany := { loader, globals := g }
+        let g0 : Globals ZeroOneMany := {}
+        let k0 := isoKey (base g0) "M"
+        check k0.isSome "the module has no isolated key"
+        checkEq k0 (isoKey (base g0) "M")
+        for (what, g) in [("strictProofs", { g0 with strictProofs := true }),
+                          ("proofSteps", { g0 with proofSteps := g0.proofSteps + 1 }),
+                          ("traceProofSteps", { g0 with traceProofSteps := true })] do
+          check (isoKey (base g) "M" != k0) s!"{what} is not in the isolated-module key"
+          -- and on a warm cache (`M` kept under the defaults) the other setting elaborates
+          -- `M` itself, with the same result here
+          let s0 := runFrontend (R := ZeroOneMany) "import M\n" (base g0)
+          let s1 := runFrontend (R := ZeroOneMany) "import M\n" (base g)
+          check (s0.messages.isEmpty && s1.messages.isEmpty) s!"{what}: importing M reports {s1.messages.toList.map (·.text)}" },
     { name := "a module is cached once, for every file that imports it", run := fun _ => do
         let dir ← mkTree libFiles
         let cache ← IO.FS.createTempDir
@@ -215,6 +233,33 @@ def modulesGroup : Group where
         for (how, s) in ← paths src do
           check (s.messages.any fun m => (m.text.splitOn "'helper' is private to module P.A").length > 1)
             s!"{how}: {s.messages.toList.map (·.text)}" },
+    { name := "private types are per module too: two modules' private Color, Pt, Sz, Sig coexist (13b)", run := fun _ => do
+        let dir ← mkTree [("Q/A.wiz", "import Prelude\nimport Deriving\nprivate inductive Color where\n  | red\n  | blue\n  deriving Repr, BEq\nprivate structure Pt where\n  x : Nat\n  y : Nat\nprivate class Sz (A : Type) where\n  size : A → Nat\ninstance : Sz Color := Sz.mk (fun c => match c with\n  | .red => 1\n  | Color.blue => 2)\nprivate def Color.code (c : Color) : Nat := Sz.size c\nprivate def Pt.sum (p : Pt) : Nat := Nat.add p.x p.y\nprivate coinductive Sig where\n  head : Nat\n  tail : Sig\nprivate def Sig.const (n : Nat) : Sig\n  | .head => n\n  | .tail => Sig.const n\nprivate def pick : Color → Pt\n  | .red => Pt.mk 1 2\n  | Color.blue => Pt.mk 3 4\nprivate def useDot (c : Color) (p : Pt) (s : Sig) : Nat := Nat.add c.code (Nat.add (Pt.sum p) s.tail.head)\ndef fa : Nat := useDot Color.blue (pick Color.blue) (Sig.const 100)\ndef ra : String := Repr.repr Color.red\ndef qa : Bool := BEq.beq Color.red Color.blue\ndef favA : Color := Color.red\n"), ("Q/B.wiz", "import Prelude\nimport Deriving\nprivate inductive Color where\n  | red\n  | blue\n  deriving Repr, BEq\nprivate structure Pt where\n  x : Nat\n  y : Nat\nprivate class Sz (A : Type) where\n  size : A → Nat\ninstance : Sz Color := Sz.mk (fun c => match c with\n  | .red => 10\n  | Color.blue => 20)\nprivate def Color.code (c : Color) : Nat := Sz.size c\nprivate def Pt.sum (p : Pt) : Nat := Nat.add p.x p.y\nprivate coinductive Sig where\n  head : Nat\n  tail : Sig\nprivate def Sig.const (n : Nat) : Sig\n  | .head => n\n  | .tail => Sig.const n\nprivate def pick : Color → Pt\n  | .red => Pt.mk 1 2\n  | Color.blue => Pt.mk 30 40\nprivate def useDot (c : Color) (p : Pt) (s : Sig) : Nat := Nat.add c.code (Nat.add (Pt.sum p) s.tail.head)\ndef fb : Nat := useDot Color.blue (pick Color.blue) (Sig.const 1000)\ndef rb : String := Repr.repr Color.blue\n")]
+        let ms ← Module.loadAll ["lib", dir]
+        let init : CommandState ZeroOneMany := { trustedModule := Tests.libModule, loader := loaderOf ms }
+        let cache ← IO.FS.createTempDir
+        let paths (src : String) : IO (List (String × CommandState ZeroOneMany)) := do
+          let cold := (← Cache.elaborateCached cache src init 0).1
+          let warm := (← Cache.elaborateCached cache src init 0).1
+          pure [("cold cache", cold), ("warm cache", warm), ("no cache", ← Cache.elaborateUncached src init),
+                ("runFrontend", runFrontend src init), ("Query", (Query.elaborate {} src { init with termInfo := true }).1)]
+        -- (the importer may have a `Color` of its own)
+        let src := "import Q.A\nimport Q.B\n#eval fa\n#eval fb\n#eval ra\n#eval rb\n#eval qa\ninductive Color where\n  | green\n#check Color.green\n"
+        for (how, s) in ← paths src do
+          checkEq (how, "[3:1: info: 109, 4:1: info: 1090, 5:1: info: \"Color.red\", 6:1: info: \"Color.blue\", 7:1: info: .false, 10:1: info: Color.green : Color]")
+            (how, toString (s.messages.toList.map (·.render src)))
+        -- still private: elsewhere the names are unknown, with the module named
+        for (bad, what) in [("def x := Color.red", "'Color.red'"), ("def x (p : Pt) : Nat := 0", "'Pt'"),
+                            ("def x := @Sig.const", "'Sig.const'")] do
+          let src := "import Q.A\n" ++ bad ++ "\n"
+          for (how, s) in ← paths src do
+            check (s.messages.any fun m => (m.text.splitOn s!"{what} is private to module Q.A").length > 1)
+              s!"{how}: {bad}: {s.messages.toList.map (·.text)}"
+        -- hovers and messages show the source name
+        let src := "import Q.A\ndef h := favA\ndef n : Nat := favA\n"
+        let (s, _) := Query.elaborate (R := ZeroOneMany) {} src { init with termInfo := true }
+        checkEq (some ("favA", "Color")) (Query.hoverAt s 21)
+        check (s.messages.any fun m => (m.text.splitOn "inferred: Color").length > 1) s!"{s.messages.toList.map (·.text)}" },
     { name := "trust is part of a module's cache key (22f)", run := fun _ => do
         -- the same Prelude, elaborated as untrusted and as trusted through one cache: the
         -- warnings and `#print axioms` of the one run are never replayed in the other
@@ -347,7 +392,18 @@ def toolchainGroup : Group where
         let src := "import Pkg.Three\n#eval three\n"
         let ms ← Module.loadClosure ("lib" :: tc.searchPath) src
         let s := runFrontend (R := ZeroOneMany) src { trustedModule := Tests.libModule, loader := loaderOf ms }
-        checkEq "[2:1: info: 3]" (toString (s.messages.toList.map (·.render src))) }
+        checkEq "[2:1: info: 3]" (toString (s.messages.toList.map (·.render src))) },
+    { name := "#262: `wiz check -I src FILE` and `wiz check FILE -I src` both find the package's modules", run := fun _ => do
+        let dir ← mkTree [("src/Crux/B.wiz", "import Prelude\ndef b : Nat := 1\n"),
+                          ("src/Crux/A.wiz", "import Crux.B\n#eval b\n")]
+        let wiz := (← IO.FS.realPath ".lake/build/bin/wiz").toString
+        for args in [["check", "-I", "src", "src/Crux/A.wiz"], ["check", "src/Crux/A.wiz", "-I", "src"],
+                     ["-I", "src", "check", "src/Crux/A.wiz"]] do
+          let out ← IO.Process.output { cmd := wiz, args := (args ++ ["--no-cache"]).toArray, cwd := some dir }
+          checkEq s!"{args}: 0 src/Crux/A.wiz:2:1: info: 1\n" s!"{args}: {out.exitCode} {out.stdout}{out.stderr}"
+        -- the usage text names -I for check
+        let out ← IO.Process.output { cmd := wiz, args := #["help"] }
+        check ((out.stdout.splitOn "wiz check [-I DIR] FILE").length > 1) out.stdout }
   ]
 
 /-- (9f) An executable with a `link_c` file: editing the C file relinks it (only). -/
@@ -695,12 +751,14 @@ def grailDepsGroup : Group where
   ]
 
 /-- Run `grail test` in-process on a package directory. -/
-def runTests (dir : System.FilePath) (tc : Toolchain) (update : Bool := false) : IO (Array Grail.TestResult × Grail.Stats) := do
+def runTests (dir : System.FilePath) (tc : Toolchain) (update : Bool := false) (testTimeoutMs : Option Nat := none) :
+    IO (Array Grail.TestResult × Grail.Stats) := do
   let std : System.FilePath := "lib"
   match ← Grail.readConfig tc 7 std dir with
   | .error e => throw (IO.userError e)
   | .ok (pkg, _) =>
     let r ← runner dir tc pkg 2 (← IO.mkRef "")
+    let r := { r with testTimeoutMs := testTimeoutMs.getD r.testTimeoutMs }
     let res ← r.tests pkg.targets [] update
     pure (res, ← r.stats.get)
 
@@ -726,6 +784,17 @@ def testRunnerGroup : Group where
         check ((bad.splitOn "tests/sub/bad.wiz:2:").length > 1 && (bad.splitOn "error").length > 1) s!"bad.expected: {bad}"
         let (res, _) ← runTests dir tc
         check (res.all (·.ok)) "the tests failed after --update"
+        -- `--update` with nothing to update records its passes too (docs-tour: "0 recorded
+        -- passes" on the run after it)
+        let cache2 ← IO.FS.createTempDir
+        let dir2 ← mkTree testPkg
+        let tc2 : Toolchain := { cacheDir := some cache2 }
+        let _ ← runTests dir2 tc2 (update := true)
+        let (res, _) ← runTests dir2 tc2 (update := true)
+        check (res.all (·.ok)) "the second --update failed"
+        let (res, st) ← runTests dir2 tc2
+        check (res.all (·.cached)) "an unchanged --update pass was not recorded"
+        checkEq 0 st.ran
         -- passes are recorded: nothing runs again
         let (res, st) ← runTests dir tc
         check (res.all (·.cached)) "a pass was not recorded"
@@ -737,6 +806,23 @@ def testRunnerGroup : Group where
         let some two := res.find? (·.file == "tests/two.wiz") | throw (IO.userError "no test two")
         check (!two.ok) "a wrong output passed"
         check ((two.message.splitOn "info: 3").length > 1 && (two.message.splitOn "info: 2").length > 1) two.message },
+    { name := "a failing test without a `-- test:` line says it was a check (icestick-cpu C8)", run := fun _ => do
+        -- the program's expected output, but no `-- test: run`: it was compared with the
+        -- (empty) messages of checking the file, and nothing said why
+        let dir ← mkTree [("grail.wiz", "import Grail\ndef package : Package := Package.new \"t\" |> Package.tests \"tests\" \"tests\"\n"),
+          ("tests/hello.wiz", "import IO\ndef main : IO Unit := IO.println \"hi\"\n"),
+          ("tests/hello.expected", "hi\n"),
+          ("tests/two.wiz", "-- test: check\nimport Prelude\n#eval 1 + 1\n"),
+          ("tests/two.expected", "tests/two.wiz:3:1: info: 3\n")]
+        let tc : Toolchain := { cacheDir := some (← IO.FS.createTempDir) }
+        let (res, _) ← runTests dir tc
+        let some hello := res.find? (·.file == "tests/hello.wiz") | throw (IO.userError "no test hello")
+        check (!hello.ok) "it passed"
+        check ((hello.message.splitOn "-- test: run").length > 1) hello.message
+        -- with the line, a failure is only the difference
+        let some two := res.find? (·.file == "tests/two.wiz") | throw (IO.userError "no test two")
+        check (!two.ok) "two passed"
+        check ((two.message.splitOn "-- test:").length == 1) two.message },
     { name := "-- test: run compiles and runs main", run := fun _ => do
         let dir ← mkTree [("grail.wiz", "import Grail\ndef package : Package := Package.new \"t\" |> Package.tests \"tests\" \"tests\"\n"),
           ("tests/hello.wiz", "-- test: run\nimport IO\ndef main : IO Unit := IO.println \"hi\"\n"),
@@ -748,6 +834,35 @@ def testRunnerGroup : Group where
         if res.any fun t => (t.message.splitOn "gmp.h").length > 1 then
           skip "no toolchain"; return
         for t in res do check t.ok s!"{t.file}: {t.message}" },
+    { name := "--update never records a failure: a program that doesn't build, fails or times out", run := fun _ => do
+        let tc : Toolchain := { (← toolchain) with cacheDir := some (← IO.FS.createTempDir) }
+        let failed (res : Array Grail.TestResult) (file needle : String) : IO Unit := do
+          match res.find? (·.file == file) with
+          | none => throw (IO.userError s!"no result for {file}")
+          | some t =>
+            check (!t.ok) s!"{file} passed: {t.message}"
+            check ((t.message.splitOn needle).length > 1) s!"{file}: {t.message}"
+        -- its program doesn't check (the run test's check job fails)
+        let dir ← mkTree [("grail.wiz", "import Grail\ndef package : Package := Package.new \"t\" |> Package.tests \"tests\" \"tests\"\n"),
+          ("tests/broken.wiz", "-- test: run\nimport Prelude\ndef main : Nat := Nat.zero Nat.zero\n")]
+        for update in [true, false] do
+          let (res, _) ← runTests dir tc update
+          failed res "tests/broken.wiz" "does not build"
+          check (!(← (dir / "tests/broken.expected").pathExists)) "--update recorded the failure"
+        -- a time limit
+        let dir ← mkTree [("grail.wiz", "import Grail\ndef package : Package := Package.new \"t\" |> Package.tests \"tests\" \"tests\"\n"),
+          ("tests/slow.wiz", "import Prelude\ndef n : Nat := 1\n")]
+        let (res, _) ← runTests dir tc (update := true) (testTimeoutMs := some 1)
+        failed res "tests/slow.wiz" "timed out"
+        check (!(← (dir / "tests/slow.expected").pathExists)) "--update recorded the time-out"
+        -- a program that fails when it runs
+        let dir ← mkTree [("grail.wiz", "import Grail\ndef package : Package := Package.new \"t\" |> Package.tests \"tests\" \"tests\"\n"),
+          ("tests/exit.wiz", "-- test: run\nimport Sys\ndef main : IO Unit := Process.exit 3\n")]
+        let (res, _) ← runTests dir tc (update := true)
+        if res.any fun t => (t.message.splitOn "gmp.h").length > 1 then
+          skip "no toolchain"; return
+        failed res "tests/exit.wiz" "exited with 3"
+        check (!(← (dir / "tests/exit.expected").pathExists)) "--update recorded the failed run" },
     -- the suite's own driver (`Tests/Main.lean`): `tests --run GROUP INDEX` ran a case
     -- in-process and printed nothing for a pass, so a stale binary or a wrong index that
     -- ran another (passing) case looked like a pass; a selector that picked nothing
@@ -774,6 +889,41 @@ def testRunnerGroup : Group where
           let (code, out) ← run bad
           check (code == 2) s!"tests {" ".intercalate bad.toList}: exit code {code}, not 2:\n{out}" }
   ]
+
+/-- The language tour's examples (docs/tour.md): every file in `examples/tour/`, run as
+`grail test` runs it (its messages, or with `-- test: run` what `main` prints, against
+its `.expected`), in a package of its own so that only that file runs. -/
+def tourFiles : List String :=
+  ["00-hello", "01-basics", "02-data", "03-structures", "04-classes", "05-vec", "06-proofs",
+   "07-quantities", "08-codata", "09-ffi", "10-hdl", "11-mistakes"]
+
+def tourCase (f : String) : Case :=
+  { name := s!"examples/tour/{f}.wiz", run := fun _ => do
+      let p := s!"examples/tour/{f}"
+      let dir ← mkTree [
+        ("grail.wiz", "import Grail\ndef package : Package := Package.new \"tour\" |> Package.tests \"tour\" \"examples/tour\"\n"),
+        (p ++ ".wiz", ← IO.FS.readFile (p ++ ".wiz")),
+        (p ++ ".expected", ← IO.FS.readFile (p ++ ".expected"))]
+      let tc ← toolchain
+      let tc : Toolchain := { tc with cacheDir := some (← tc.cacheDir.getDM IO.FS.createTempDir) }
+      let (res, _) ← runTests dir tc
+      checkEq 1 res.size
+      for t in res do
+        if !t.ok && (t.message.splitOn "gmp.h").length > 1 then
+          skip "no toolchain"; return
+        check t.ok s!"{t.file}: {t.message}" }
+
+def tourGroup : Group where
+  name := "tour"
+  exercise := "docs/tour.md"
+  cases :=
+    { name := "examples/tour/ has exactly the files the group knows", run := fun _ => do
+        let mut names : Array String := #[]
+        for e in ← System.FilePath.readDir "examples/tour" do
+          names := names.push e.fileName
+        let want := tourFiles.flatMap fun f => [f ++ ".expected", f ++ ".wiz"]
+        checkEq (want.toArray.qsort (· < ·)).toList (names.qsort (· < ·)).toList } ::
+    tourFiles.map tourCase
 
 def grailSelfhostGroup : Group where
   name := "grail-selfhost"
@@ -1045,6 +1195,7 @@ def groups : List Group :=
   modulesGroup ::
   testRunnerGroup ::
   toolchainGroup ::
+  tourGroup ::
   []
 
 end Tests.Grail

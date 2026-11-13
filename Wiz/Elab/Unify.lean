@@ -58,7 +58,8 @@ def elimsChecked (m : Nat) (sol : Val R) (sp : Array (Elim R)) : ElabM R (Val R)
   let g ← getGlobals
   let mut v := sol
   for e in sp do
-    let fits : Bool := match v, e with
+    -- (on a constructor, `ind` is lazy for speed alone: what it computes must fit)
+    let fits : Bool := match unlazyCon v, e with
       | .neutral .., _ | .unfold .., _ | .lazyInd .., _ => true
       | .lam .., .app _ => true
       | .pair .., .fst | .pair .., .snd => true
@@ -172,7 +173,9 @@ partial def rename (m : Nat) (p : PRen) (v : Val R) : ElabM R (Term R) := do
   -- (given) a glued value keeps its name in the solution
   if let .unfold n us sp _ ← forceMeta v then return ← rename m p (.neutral (.global n us) sp)
   -- (given) and glued induction on a numeral keeps its folded form
-  if let .lazyInd lv I D w P mt i x sp _ ← forceMeta v then
+  if let .lazyInd lv I D w P mt i x sp val ← forceMeta v then
+    -- (on a constructor, `ind` is lazy for speed alone: renamed as what it computes)
+    if (whnf x matches .con _) then return ← rename m p val.get
     let t := Term.ind lv (← rename m p I) (← rename m p D) w (← rename m p P) (← rename m p mt) (← rename m p i) (← rename m p x)
     return ← sp.foldlM (fun t e => match e with
       | .app a => return .app t (← rename m p a)
@@ -217,7 +220,7 @@ partial def rename (m : Nat) (p : PRen) (v : Val R) : ElabM R (Term R) := do
       | some x' =>
         let y : Term R := .var (p.dom - x' - 1)
         if sp[0]? matches some Elim.down then goSp y (sp.extract 1 sp.size) else goSp (.up y) sp
-      | none => throwAt {} "a variable escapes the scope of the hole being solved"
+      | none => throwAt {} "a variable escapes the scope of the hole being solved (the hole was made outside a binder that its solution would mention; a type annotation on that binder may help)"
   | .neutral (.global n us) sp => goSp (.const n us) sp
   | .neutral (.eq A a b) sp => do goSp (.eq (← rename m p A) (← rename m p a) (← rename m p b)) sp
   | .neutral (.eqTy A B) sp => do goSp (.eqTy (← rename m p A) (← rename m p B)) sp
@@ -230,10 +233,41 @@ partial def rename (m : Nat) (p : PRen) (v : Val R) : ElabM R (Term R) := do
       (← rename m p b) (← rename m p e)) sp
   -- (P2) a suspended proof is evaluated for a solution (a normal form, which the kernel
   -- can check)
-  | .neutral (.prf _ _ _ pv) sp => do rename m p (vElims (← getGlobals) pv.get sp)
+  -- within a step budget (`Budget`): a proof need not have one
+  | .neutral (.prf env t) sp => do
+    let g ← getGlobals
+    match g.budget with
+    | some _ => rename m p (vElims g (eval g env t) sp)
+    | none =>
+      -- (the monadic read-back is a pure function of the state: it runs inside the budget)
+      let st ← get
+      let (r, used) := Budget.run g.proofSteps fun b =>
+        let g' := { g with budget := some b }
+        match (rename m p (vElims g' (eval g' env t) sp)).run { st with globals := g' } with
+        | .ok (tm, st') => (some tm, some st', none)
+        | .error e => (none, none, some e)
+      if used > g.proofSteps then throwAt {} (Budget.message g.proofSteps)
+      match r with
+      | (some tm, some st', _) => set { st' with globals := g }; pure tm
+      | (_, _, some e) => throw e
+      | _ => throwAt {} "internal error: read-back of a proof"
   | .neutral (.mvar m') sp =>
-    if m == m' then throwAt {} s!"occurs check: ?m{m} would have to contain itself"
-    else goSp (.mvar m') sp
+    if m == m' then throwAt {} s!"occurs check: the hole ?m{m} would have to contain itself (the type would be infinite, as when a function is applied to itself)"
+    else
+      -- **pruning**: another hole applied to distinct variables, some of them out of the
+      -- solution's scope (`?A n x` in a `match` branch, solving `?T n`): it can't depend
+      -- on those, so it becomes a new hole over the others
+      match ← pruneArgs? p sp with
+      | some keep =>
+        let m'' := (← get).metas.size
+        let info := (← lookupMeta m').info
+        modify fun s => { s with metas := s.metas.push { info, desc := "a pruned hole", arity := keep.size } }
+        let n := sp.size
+        let body : Term R := keep.foldl (fun t i => .app t (.var (n - i - 1))) (.mvar m'')
+        let sol := (List.range n).foldl (fun t i => Term.lam s!"x{n - i - 1}" t) body
+        solveMeta m' (eval (← getGlobals) [] sol)
+        goSp (.mvar m'') (keep.filterMap fun i => sp[i]?)
+      | none => goSp (.mvar m') sp
   | .sort l => pure (.sort l)
   | .pi x bi q a b s =>
     return .pi x bi (← rename m p q) (← rename m p a) (← rename m p.lift (← instM b (Val.var p.cod))) s
@@ -271,6 +305,20 @@ partial def rename (m : Nat) (p : PRen) (v : Val R) : ElabM R (Term R) := do
   | .coit l I D S st i s =>
     return .coit l (← rename m p I) (← rename m p D) (← rename m p S) (← rename m p st) (← rename m p i) (← rename m p s)
 where
+  /-- For a spine of distinct variables of which some are out of `p`'s scope: the
+  positions of those in scope. `none` if nothing is to be pruned (or it isn't such a
+  spine). -/
+  pruneArgs? (p : PRen) (sp : Array (Elim R)) : ElabM R (Option (Array Nat)) := do
+    let mut keep : Array Nat := #[]
+    let mut seen : Std.HashSet Lvl := {}
+    for e in sp, i in [0:sp.size] do
+      let .app a := e | return none
+      let .neutral (.local x) #[] ← force a | return none
+      if seen.contains x then return none
+      seen := seen.insert x
+      if p.ren.contains x || p.downs.contains x then keep := keep.push i
+    if keep.size == sp.size then return none
+    return some keep
   renameHint : Option (Name × List Level × List (Val R)) → ElabM R (Option (Name × List Level × List (Term R)))
     | some (n, us, as) => return some (n, us, ← as.mapM (rename m p))
     | none => pure none
@@ -426,6 +474,56 @@ partial def unifyLevel (a b : Level) : ElabM R Unit := do
   --sol>
 
 
+/-- `v` evaluated again with the holes solved since (as `zonk` does, then `eval`): a
+cast computed while a hole in its types was unsolved is stuck, and may compute now, as
+the kernel will compute it. `none` if nothing changed. -/
+partial def reevalStale? (l : Lvl) (v : Val R) : ElabM R (Option (Val R)) := do
+  let g ← getGlobals
+  let env : Env R := ((List.range l).map fun i => Val.var i).reverse
+  let rec inst (k : Lvl) (t : Term R) : ElabM R (Term R) := do
+    let rec spine : Term R → Array (Term R) → Term R × Array (Term R)
+      | .app f a, acc => spine f (#[a] ++ acc)
+      | t, acc => (t, acc)
+    let (h, args) := spine t #[]
+    match h with
+    | .mvar m =>
+      match (← lookupMeta m).solution with
+      | some sol =>
+        let envk : Env R := ((List.range k).map fun i => Val.var i).reverse
+        inst k (quote g k (args.foldl (fun f a => vApp g f (eval g envk a)) sol))
+      | none => return (← args.mapM (inst k)).foldl .app (.mvar m)
+    | _ =>
+      let h' ← h.mapChildrenM instLevel (fun d c => inst (k + d) c)
+      return (← args.mapM (inst k)).foldl .app h'
+  let q := quote g l v
+  let v' := eval g env (← inst l q)
+  if quote g l v' == q then return none
+  return some v'
+
+/-- η for a projected hole: `?m x… .1` (or `.2`) means `?m x…` is a pair, so it is one:
+solve `?m := fun x… => (?a x…, ?b x…)` with two new holes (exact, not a guess; Agda
+η-expands holes of record type the same way). Then `?m x… .1` is `?a x…`, a pattern
+again: `?q.1 =?= y` (from an equation at a product type computed to its components)
+solves `?a := y`. `false` if the spine isn't applications followed by a projection. -/
+def etaProjected (m : Nat) (sp : Array (Elim R)) : ElabM R Bool := do
+  let k := (sp.toList.takeWhile (· matches .app _)).length
+  let isProj : Bool := match sp[k]? with
+    | some .fst | some .snd => true
+    | _ => false
+  unless isProj do return false
+  unless (← lookupMeta m).solution.isNone do return false
+  let info := (← lookupMeta m).info
+  let fresh (desc : String) : ElabM R Nat := do
+    let id := (← get).metas.size
+    modify fun s => { s with metas := s.metas.push { info, desc, arity := k } }
+    pure id
+  let a ← fresh "a component of a pair"
+  let b ← fresh "a component of a pair"
+  let args (h : Nat) : Term R := (List.range k).foldl (fun t i => .app t (.var (k - i - 1))) (.mvar h)
+  let sol := (List.range k).foldl (fun t i => Term.lam s!"x{k - i - 1}" t) (Term.pair (args a) (args b))
+  solveMeta m (eval (← getGlobals) [] sol)
+  pure true
+
 mutual
 
 /-- **Exercise 3.5.** Unify two values in a context of `l` variables, throwing on
@@ -444,7 +542,10 @@ failure. Force both sides first, then:
 `t.1` and `b` with `t.2`), `unit`, `tt`, `empty`; and the other eliminations in
 `unifySpine`. -/
 partial def unify (l : Lvl) (t u : Val R) : ElabM R Unit := do
-  if ← unifyGlued l (← forceMeta t) (← forceMeta u) then return ()
+  -- (kernel-eval: `ind` on a constructor is lazy for speed alone; the elaborator sees what
+  -- it computes, which may be glued: `K.beq (.cons x xs) (.cons y ys)` against
+  -- `Bool.and ?a ?b` compares the two `Bool.and`s, as before `ind` was lazy there)
+  if ← unifyGlued l (unlazyCon (← forceMeta t)) (unlazyCon (← forceMeta u)) then return ()
   -- numerals: compare two directly, or else look one step inside (`vNatView`)
   let g ← getGlobals
   let (t, u) ← match ← force t, ← force u with
@@ -460,6 +561,15 @@ partial def unify (l : Lvl) (t u : Val R) : ElabM R Unit := do
   if isEq t != isEq u then
     if let some t' ← recomputeEq? t then return ← unify l t' u
     if let some u' ← recomputeEq? u then return ← unify l t u'
+  -- a stuck `cast A B e x` (computed while a hole in `A` or `B` was unsolved) against
+  -- something else: if `A` and `B` are now the same (equal without solving anything),
+  -- it is `x` (regularity; evaluated again, it would compute to `x`)
+  let isCast (v : Val R) : Bool := v matches .neutral (.cast ..) #[]
+  if isCast (← force t) != isCast (← force u) then
+    if isCast (← force t) then
+      if let some t' ← reevalStale? l (← force t) then return ← unify l t' u
+    else
+      if let some u' ← reevalStale? l (← force u) then return ← unify l t u'
   -- a failure that met a metavariable may not be final (see `unifyGlued`)
   if (← force t) matches .neutral (.mvar _) _ || (← force u) matches .neutral (.mvar _) _ then noteMeta
   --<sol
@@ -507,13 +617,31 @@ partial def unify (l : Lvl) (t u : Val R) : ElabM R Unit := do
   | t', .lam x b => withBinderName l x do unify (l + 1) (← vAppM t' (Val.var l)) (← instM b (Val.var l))
   | .neutral (.mvar m) sp, .neutral (.mvar m') sp' =>
     if m == m' then unifySpine l sp sp' else
+    if ← etaProjected m sp then return ← unify l t u
+    if ← etaProjected m' sp' then return ← unify l t u
     -- (if the left spine isn't a pattern, the right one may be)
     tryCatch (solve l m sp (.neutral (.mvar m') sp')) fun e => do
       if e.code != "non-pattern" then throw e
       solve l m' sp' (.neutral (.mvar m) sp)
-  | .neutral (.mvar m) sp, t' => solve l m sp t'
-  | t', .neutral (.mvar m) sp => solve l m sp t'
-  | .neutral h sp, .neutral h' sp' => unifyHead l h h'; unifySpine l sp sp'
+  | .neutral (.mvar m) sp, t' =>
+    if ← etaProjected m sp then unify l t u else solve l m sp t'
+  | t', .neutral (.mvar m) sp =>
+    if ← etaProjected m sp then unify l t u else solve l m sp t'
+  | .neutral h sp, .neutral h' sp' =>
+    -- (P2) two proofs with only applications and projections after them are equal, with
+    -- nothing to compare (as in `convNe`): their spines need not agree (a suspended
+    -- proof on one side, a `transp` applied to a phantom tail's argument on the other).
+    -- This is what makes two values that differ only in an erased proof field equal
+    -- where the type isn't seen (an opaque type, 13b), e.g. two closed words.
+    let lazy := (← getGlobals).lazyProofs
+    let isProof : Head R → Bool
+      | .refl .. | .reflTy _ | .transp .. | .prf .. => true
+      | h => lazy && proofHead h
+    let onProofs (sp : Array (Elim R)) : Bool := sp.all fun
+      | .app _ | .fst | .snd | .down => true
+      | _ => false
+    if isProof h && isProof h' && onProofs sp && onProofs sp' then pure () else
+    unifyHead l h h'; unifySpine l sp sp'
   | _, _ => throwAt {} "rigid mismatch"
   --|ex
   --| sorry
@@ -533,7 +661,9 @@ partial def unifyGlued (l : Lvl) (t u : Val R) : ElabM R Bool := do
     let s ← get
     try x; pure true catch e => set s; keepLearnt e; pure false
   match t, u with
-  | .lazyInd .., .lazyInd .. =>
+  | .lazyInd _ _ _ _ _ _ _ x _ _, .lazyInd _ _ _ _ _ _ _ y _ _ =>
+    -- (on a constructor, `ind` is lazy for speed alone: compared by what it computes)
+    if (whnf x matches .con _) || (whnf y matches .con _) then return false
     let g ← getGlobals
     pure (quote g l t == quote g l u)
   | .unfold n us sp v, .unfold n' us' sp' v' =>
@@ -545,26 +675,30 @@ partial def unifyGlued (l : Lvl) (t u : Val R) : ElabM R Bool := do
     let key? ← if same then failKey? l n t u else pure none
     if let some key := key? then
       if let some msg ← lookupFail key then throwAt {} msg
-    -- lazy delta: unfold the later definition by one step, and compare again
+    -- lazy delta: unfold the later definition by one step (both, if they are the same),
+    -- and compare again
     let g ← getGlobals
-    let height (x : Name) : Nat := (g.order.idxOf? x).getD 0
-    -- (recursors compute: unfold them first; otherwise the later definition, then the other)
-    let isRec (x : Name) : Bool := x.endsWith ".rec" || x.endsWith ".casesOn" || x.endsWith ".scasesOn"
-    let first := isRec n || (!isRec n' && height n ≥ height n')
-    let (one, other) := if first then (unify l v.get u, unify l t v'.get) else (unify l t v'.get, unify l v.get u)
-    match ← trackMeta one with
+    -- (recursors compute: unfold them first; otherwise the later definition)
+    let isRec (x : Name) : Bool := x.endsWith ".rec" || x.endsWith ".casesOn" || x.endsWith ".casesOnA" || x.endsWith ".scasesOn"
+    let first := isRec n || (!isRec n' && g.height n ≥ g.height n')
+    let step := if n == n' then unify l v.get v'.get
+      else if first then unify l v.get u else unify l t v'.get
+    match ← trackMeta step with
     | (.ok (), _) => return true
     | (.error err, sawMeta) =>
-      -- A failure that met no metavariable is final. Unfolding is confluent, and the
-      -- mismatch it found is between rigid parts that no metavariable can change, so
-      -- the other order (or unfolding both, which the caller would do next) meets it
-      -- too. Without this, every glued layer tried two or three orders, and a wrong
-      -- proof about `⋆` took minutes to be rejected (each `⋆` is four definitions deep).
+      -- The failure is final: no other order of unfolding is tried. Unfolding is
+      -- confluent, so unfolding the other side first meets the same normal forms; trying
+      -- both orders at every glued layer is exponential in the number of layers (a wrong
+      -- proof about `⋆`, each four definitions deep, took minutes to be rejected; a
+      -- wrong proof about `Int.ofPair`, a `Nat.sub` five layers deep, 17 s, wiz-reals S1).
+      -- (Trying the other order once per path, when the failure met a metavariable, made
+      -- no file of lib/, examples/, selfhost/ or two dogfooding projects check that
+      -- doesn't check without it, and was slower.) A failure that met no metavariable is
+      -- also remembered (`recordFail`).
       unless sawMeta do
         if let some key := key? then recordFail key err.msg
-        -- (with the state as it is now, which has what was learnt)
-        throw { err with state? := some (← get) }
-      attempt other
+      -- (with the state as it is now, which has what was learnt)
+      throw { err with state? := some (← get) }
   | .neutral (.mvar m) sp, v@(.unfold ..) | v@(.unfold ..), .neutral (.mvar m) sp =>
     noteMeta
     if ← attempt (solve l m sp v) then return true

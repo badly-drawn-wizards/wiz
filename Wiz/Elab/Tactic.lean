@@ -71,6 +71,9 @@ def unfold := 29
 def rewrite := 30
 def ctorInfo := 31
 def isDefinition := 32
+-- (stage 28) solvers
+def satSolve := 33
+def eqView := 34
 end TacTag
 
 structure Goal (R : Type) where
@@ -536,14 +539,17 @@ cases or by structural recursion is `fun x => T.rec … x`: unfolding it means u
 is where the `match` computes), and nobody wants a recursive call folded into `T.rec`. -/
 def isRecursor (g : Globals R) (n : Name) : Bool :=
   match (n.splitOn ".").reverse with
-  | e :: rest => ["rec", "recN", "casesOn", "casesOnN", "scasesOn", "scasesOnN"].contains e &&
+  | e :: rest => ["rec", "recN", "casesOn", "casesOnN", "casesOnA", "scasesOn", "scasesOnN"].contains e &&
       !rest.isEmpty && g.contains (".".intercalate rest.reverse ++ ".desc")
   | _ => false
 
-/-- Unfold the recursors at the head of a value. -/
+/-- Unfold the recursors at the head of a value, and compute a lazy eliminator (a `match`
+on a numeral or a constructor that evaluation postponed): otherwise `unfold` would show
+the raw `ind … L n` of a definition by cases applied to a numeral. -/
 partial def forceRecursors (v : Val R) : ElabM R (Val R) := do
   match ← forceMeta v with
   | .unfold n us sp w => if isRecursor (← getGlobals) n then forceRecursors w.get else pure (.unfold n us sp w)
+  | .lazyInd _ _ _ _ _ _ _ _ _ w => forceRecursors w.get
   | v => pure v
 
 /-- Unfold the head of a value until it is not a definition; also the definitions

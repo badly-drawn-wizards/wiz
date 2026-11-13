@@ -2,8 +2,8 @@ import Tower.Install
 -- tower's commands (stage 26c; the Lean original is Tower/Cli.lean).
 --
 -- Which toolchain runs in a directory (`tower show`): a `+SPEC` first argument of a shim,
--- else, walking up from the directory, an override set for it or a `wiz-toolchain` file
--- in it, else the default. The shims are shell scripts that ask `tower resolve` for the
+-- else, walking up from the directory, an override set for it or a `wiz-toolchain.local`
+-- or `wiz-toolchain` file in it (the local one first), else the default. The shims are shell scripts that ask `tower resolve` for the
 -- toolchain's directory and `exec` its `bin/TOOL`.
 
 def Tower.usage : String := "tower: Wiz toolchains (stage 26)
@@ -27,9 +27,12 @@ usage: tower [--home DIR] COMMAND
                                  gc-cflags, gc-ldflags)
   self shims                     write the shims in ~/.tower/bin
   self install                   copy tower to ~/.tower/bin and write the shims
+  --version                      print tower's version
 
 SPEC: nightly, stable, a tag, a branch, a commit, REF@COMMIT, or a linked name.
 A project names its toolchain in a file `wiz-toolchain` (one line: a SPEC).
+A `wiz-toolchain.local` next to it (not committed) overrides it: a SPEC, or a path
+(/…, ./…, ../…, ~/…) to a toolchain directory or a built checkout.
 "
 
 -- the tools that get a shim
@@ -42,17 +45,70 @@ def Tower.readToolchainFile (f : String) : EIO (Option String) := do
   t ← FS.readFile f;
   EIO.pure (List.find (fun (l : String) => Bool.not (Tower.isComment l)) (List.map String.trim (String.splitOn t "\n")))
 
+-- is a line of `wiz-toolchain.local` a path rather than a spec? (a bare `a/b` is a branch)
+def Tower.isPathEntry (l : String) : Bool :=
+  Bool.or (String.startsWith l "/") (Bool.or (String.startsWith l "./") (Bool.or (String.startsWith l "../")
+    (Bool.or (String.eq l ".") (Bool.or (String.eq l "..") (String.startsWith l "~/")))))
+-- a spec that is a toolchain directory: an absolute path
+def Tower.isPathSpec (spec : String) : Bool := String.startsWith spec "/"
+-- does `dir` hold a toolchain that `link` takes (a built checkout or a toolchain layout)?
+def Tower.isToolchainDir (dir : String) : EIO Bool := do
+  a ← EIO.lift (FS.exists (Path.join dir ".lake/build/bin/wiz"));
+  b ← EIO.lift (FS.exists (Path.join dir "bin/wiz"));
+  EIO.pure (Bool.or a b)
+def Tower.notToolchain (dir : String) : String :=
+  dir & " is not a toolchain: neither a built checkout (.lake/build/bin/wiz) nor a toolchain directory (bin/wiz)"
+-- `/` joined by hand (`Path.join "/" "x"` is `//x`)
+def Tower.under (d x : String) : String := match String.eq d "/" with
+  | .true => "/" & x
+  | .false => Path.join d x
+
+-- The spec in a `wiz-toolchain.local` file: a spec, or a path to a toolchain directory
+-- (relative to the file's directory, absolute, or under `~/`), as its real absolute path.
+-- A path that isn't a toolchain is an error that names the file.
+def Tower.readLocalFile (f : String) : EIO (Option String) := do
+  found ← Tower.readToolchainFile f;
+  match found with
+  | .none => EIO.pure .none
+  | .some l => match Tower.isPathEntry l with
+    | .false => EIO.pure (.some l)
+    | .true => do
+      home ← EIO.lift (Env.get "HOME");
+      let p := (match String.startsWith l "~/" with
+        | .true => Path.join (Tower.getD home "~") (String.drop 2 l)
+        | .false => match String.startsWith l "/" with
+          | .true => l
+          | .false => Path.join (Tower.getD (Tower.parent f) ".") l : String);
+      isd ← EIO.lift (FS.isDir p);
+      match isd with
+      | .false => EIO.fail (f & ": " & l & ": no such directory")
+      | .true => do
+        r ← Tower.realPath p;
+        ok ← Tower.isToolchainDir r;
+        match ok with
+        | .false => EIO.fail (f & ": " & Tower.notToolchain r)
+        | .true => EIO.pure (.some r)
+
 -- the toolchain for `d` and its parents, and why
 partial def Tower.activeGo (s : Settings) (d : String) : EIO (Option (String × String)) :=
   match String.lookup d s.overrides with
   | .some spec => EIO.pure (.some (spec, "override for " & d))
   | .none => do
-    let f := Path.join d "wiz-toolchain";
+    let f := Tower.under d "wiz-toolchain";
+    let lf := Tower.under d "wiz-toolchain.local";
     ex ← EIO.lift (FS.isFile f);
-    found ← (match ex with
+    lex ← EIO.lift (FS.isFile lf);
+    loc ← (match lex with
+      | .true => Tower.readLocalFile lf
+      | .false => EIO.pure .none : EIO (Option String));
+    base ← (match ex with
       | .true => Tower.readToolchainFile f
       | .false => EIO.pure .none : EIO (Option String));
-    match found with
+    match loc with
+    | .some spec => EIO.pure (.some (spec, lf & " (local override: " & (match base with
+      | .some b => "wiz-toolchain names " & b
+      | .none => "no wiz-toolchain here" : String) & ")"))
+    | .none => match base with
     | .some spec => EIO.pure (.some (spec, f))
     | .none => match Tower.parent d with
       | .some p => match String.eq p d with
@@ -70,8 +126,48 @@ def Tower.active (e : TEnv) (dir : String) : EIO (Option (String × String)) := 
     | .some d => EIO.pure (.some (d, "the default toolchain"))
     | .none => EIO.pure .none
 
+-- is `d` the linked toolchain of `dir`?
+def Tower.linkedTo (d dir : String) : EIO Bool := do
+  mi ← Tower.readInfo d;
+  match mi with
+  | .none => EIO.pure .false
+  | .some i => do
+    b ← EIO.lift (FS.exists (Path.join d "bin/wiz"));
+    EIO.pure (Bool.and (Bool.and (String.eq i.source "link") (String.eq i.path dir)) b)
+
+-- The toolchain for a directory (a path spec): a linked toolchain named by its path,
+-- linked on first use (`Tower.link`, with the settings' flags) and again when it points
+-- elsewhere.
+def Tower.ensurePath (e : TEnv) (spec : String) : EIO String := do
+  isd ← EIO.lift (FS.isDir spec);
+  match isd with
+  | .false => EIO.fail (spec & ": no such directory")
+  | .true => do
+    dir ← Tower.realPath spec;
+    ok ← Tower.isToolchainDir dir;
+    match ok with
+    | .false => EIO.fail (Tower.notToolchain dir)
+    | .true => do
+      let d := TEnv.tcDir e dir;
+      already ← Tower.linkedTo d dir;
+      match already with
+      | .true => EIO.pure d
+      | .false => do
+        s ← TEnv.settings e;
+        r ← EIO.lift (Tower.link e dir dir s.flags);
+        match r with
+        | .ok d2 => do
+          Tower.note ("linked " & dir);
+          EIO.pure d2
+        -- (another shim linked it at the same time)
+        | .error m => do
+          again ← Tower.linkedTo d dir;
+          match again with
+          | .true => EIO.pure d
+          | .false => EIO.fail m
+
 -- the toolchain directory for a spec, installing it if allowed
-def Tower.ensure (e : TEnv) (spec : String) (allowInstall : Bool) : EIO String := do
+def Tower.ensureSpec (e : TEnv) (spec : String) (allowInstall : Bool) : EIO String := do
   let d := TEnv.tcDir e spec;
   ex ← EIO.lift (FS.exists (Path.join d "tower.info"));
   match ex with
@@ -81,6 +177,10 @@ def Tower.ensure (e : TEnv) (spec : String) (allowInstall : Bool) : EIO String :
     | .true => do
       Tower.note ("toolchain " & spec & " is not installed; installing it");
       Tower.install e spec .none .false .nil
+-- (a path spec is a toolchain directory)
+def Tower.ensure (e : TEnv) (spec : String) (allowInstall : Bool) : EIO String := match Tower.isPathSpec spec with
+  | .true => Tower.ensurePath e spec
+  | .false => Tower.ensureSpec e spec allowInstall
 
 -- Exit codes: commands return one.
 def Tower.fail (m : String) : EIO Nat := do
@@ -188,6 +288,12 @@ def Tower.hereSpec (e : TEnv) : EIO (Option String) := do
   match a with
   | .some p => EIO.pure (.some p.1)
   | .none => EIO.pure .none
+-- ... or none when that fails (a bad wiz-toolchain.local)
+def Tower.hereSpecD (e : TEnv) : EIO (Option String) := do
+  r ← EIO.lift (Tower.hereSpec e);
+  match r with
+  | .ok h => EIO.pure h
+  | .error m => EIO.pure .none
 
 def Tower.toolchainCmd (e : TEnv) (args : List String) : EIO Nat := match args with
   | .nil => Tower.usageFail
@@ -202,7 +308,7 @@ def Tower.toolchainCmd (e : TEnv) (args : List String) : EIO Nat := match args w
     | .false => match Bool.and (String.eq cmd "list") (List.isEmpty rest) with
     | .true => do
       s ← TEnv.settings e;
-      here ← Tower.hereSpec e;
+      here ← Tower.hereSpecD e;
       names ← TEnv.installed e;
       Tower.listEach e s here names;
       EIO.pure 0
@@ -261,7 +367,7 @@ def Tower.specHere (e : TEnv) (plus : Option String) : EIO String := match plus 
     h ← Tower.hereSpec e;
     match h with
     | .some s => EIO.pure s
-    | .none => EIO.fail "no toolchain here: no wiz-toolchain file, override or default (tower default nightly)"
+    | .none => EIO.fail "no toolchain here: no wiz-toolchain(.local) file, override or default (tower default nightly)"
 
 def Tower.isPinned (spec : String) : Bool := Nat.beq (List.length (String.splitOn spec "@")) 2
 
@@ -360,13 +466,15 @@ def Tower.showCmd (e : TEnv) : EIO Nat := do
   cwd ← FS.currentDir;
   a ← Tower.active e cwd;
   match a with
-  | .none => Tower.fail "no toolchain here (no wiz-toolchain file, override or default)"
+  | .none => Tower.fail "no toolchain here (no wiz-toolchain(.local) file, override or default)"
   | .some p => do
     let d := TEnv.tcDir e p.1;
     ex ← EIO.lift (FS.exists (Path.join d "tower.info"));
     Tower.say (p.1 & "\n  from " & p.2 & "\n  " & (match ex with
       | .true => d
-      | .false => "not installed"));
+      | .false => match Tower.isPathSpec p.1 with
+        | .true => "not linked yet (linked on first use)"
+        | .false => "not installed"));
     EIO.pure 0
 
 def Tower.setCmd (e : TEnv) (k v : String) : EIO Nat := do
@@ -482,6 +590,10 @@ def Tower.dispatch (e : TEnv) (args : List String) : EIO Nat := match args with
   | .false => match Bool.and (Bool.or (String.eq cmd "--help") (String.eq cmd "help")) (List.isEmpty rest) with
   | .true => do
     EIO.lift (IO.print Tower.usage);
+    EIO.pure 0
+  | .false => match Bool.and (String.eq cmd "--version") (List.isEmpty rest) with
+  | .true => do
+    Tower.say "tower 0.1.0-dev";
     EIO.pure 0
   | .false => Tower.usageFail
 

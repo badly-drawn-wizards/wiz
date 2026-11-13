@@ -150,6 +150,55 @@ def cases (impl : IO Impl) : List Case := [
         checkEq (some "v1") ((← showIn e (proj / "sub/deep")).map (·.1))
         let tmp ← IO.FS.createTempDir
         checkEq (some ("nightly", "the default toolchain")) (← showIn e tmp) },
+    { name := "wiz-toolchain.local: a spec or a path, over wiz-toolchain; bad paths; the shims", run := fun _ => do
+        let e ← mkEnv (← impl)
+        tower e ["set", "cflags", "-I/opt/x"]
+        tower e ["self", "shims"]
+        -- a toolchain directory (bin/wiz, bin/grail) and a built checkout (.lake/build/bin, lib/)
+        let root ← IO.FS.realPath (← mkTree [
+          ("tc/bin/wiz", "#!/bin/sh\necho tc wiz \"$@\"\n"), ("tc/bin/grail", "#!/bin/sh\necho tc grail \"$@\"\n"),
+          ("co/.lake/build/bin/wiz", "#!/bin/sh\necho co wiz \"$@\"\n"), ("co/.lake/build/bin/grail", "#!/bin/sh\necho co grail \"$@\"\n"),
+          ("co/lib/Prelude.wiz", ""), ("empty/x", ""),
+          ("proj/wiz-toolchain", "v1\n"), ("proj/sub/x.wiz", "")])
+        for b in ["tc/bin/wiz", "tc/bin/grail", "co/.lake/build/bin/wiz", "co/.lake/build/bin/grail"] do
+          Tower.makeExecutable (root / b)
+        let proj := root / "proj"
+        let lf := proj / "wiz-toolchain.local"
+        let wiz := (e.binDir / "wiz").toString
+        let grail := (e.binDir / "grail").toString
+        -- a spec: it beats wiz-toolchain, and show says so
+        IO.FS.writeFile lf "# mine\nnightly\n"
+        checkEq (some ("nightly", s!"{lf} (local override: wiz-toolchain names v1)")) (← showIn e (proj / "sub"))
+        -- an absolute path to a toolchain directory: the shims run it
+        IO.FS.writeFile lf s!"{root / "tc"}\n"
+        checkEq (some ((root / "tc").toString, s!"{lf} (local override: wiz-toolchain names v1)")) (← showIn e (proj / "sub"))
+        checkEq "tc wiz check a.wiz" (← runOut wiz ["check", "a.wiz"] (proj / "sub"))
+        checkEq "tc grail build" (← runOut grail ["build"] proj)
+        checkHas (← runOut e.self.head! (towerArgs e ["which", "wiz"]).toList proj) "/bin/wiz"
+        -- a relative path (to the file's directory) to a checkout: wrappers with the flags
+        IO.FS.writeFile lf "../co\n"
+        checkEq (some (root / "co").toString) ((← showIn e proj).map (·.1))
+        let out ← runOut wiz ["check"] (proj / "sub")
+        checkEq s!"co wiz --cflags -I/opt/x -I {root / "co/lib"} check" out
+        checkEq "co grail --cflags -I/opt/x test" (← runOut grail ["test"] proj)
+        -- ... which is listed as a linked toolchain, here
+        let (_, l, _) ← towerOut e ["toolchain", "list"] proj
+        checkHas l s!"{root / "co"}  [link {root / "co"}] (here)"
+        -- without the local file, wiz-toolchain again
+        IO.FS.removeFile lf
+        checkEq (some ("v1", (proj / "wiz-toolchain").toString)) (← showIn e proj)
+        -- a missing path, and a directory that isn't a toolchain: errors naming the file
+        for (entry, msg) in [("./nope", s!"{lf}: ./nope: no such directory"),
+                             ("../empty", s!"{lf}: {root / "empty"} is not a toolchain")] do
+          IO.FS.writeFile lf s!"{entry}\n"
+          let (r, _, err) ← towerOut e ["show"] proj
+          check (r != 0) s!"show with {entry} succeeded"
+          checkHas err msg
+          let o ← IO.Process.output { cmd := wiz, args := #["check"], cwd := proj / "sub" }
+          check (o.exitCode != 0) s!"the shim ran with {entry}"
+          checkHas o.stderr msg
+          -- toolchain list still works
+          tower e ["toolchain", "list"] proj },
     { name := "from source: install, channels, update, shims, +SPEC, run", run := fun _ => do
         let (bare, work) ← upstream
         let e ← mkEnv (← impl)
@@ -190,6 +239,15 @@ def cases (impl : IO Impl) : List Case := [
         tower e ["update"]
         checkHas (← runOut shim ["check"] (proj / "sub")) "wiz 3"
         checkHas (← runOut shim ["check"] proj) "wiz 1"
+        -- with a tag `nightly`, every source installs the tag's commit, not the branch's
+        -- tip: a channel names the same commit whatever the source
+        let _ ← gitIn work ["push", "--quiet", bare.toString, "HEAD~1:refs/tags/nightly"]
+        tower e ["update"]
+        checkHas (← runOut shim ["check"] (proj / "sub")) "wiz 2"
+        checkHas (← readFile? (e.tcDir "nightly" / "tower.info")) s!"commit {← gitIn work ["rev-parse", "HEAD~1"]}"
+        let _ ← gitIn work ["push", "--quiet", "--force", bare.toString, "HEAD:refs/tags/nightly"]
+        tower e ["update"]
+        checkHas (← runOut shim ["check"] (proj / "sub")) "wiz 3"
         -- uninstall; without auto-install the shim says how to install it
         tower e ["toolchain", "uninstall", "v1"]
         tower e ["set", "auto-install", "false"]

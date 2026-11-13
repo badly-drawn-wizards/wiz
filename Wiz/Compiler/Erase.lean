@@ -336,7 +336,8 @@ def unfoldCases? (g : Globals R) (t : Term R) : Option (Term R) := do
   let rec arity : Term R → Nat
     | .lam _ b => arity b + 1
     | _ => 0
-  let v := v.instLevels d.levelParams us
+  -- (P2: without the markers of the level-generic eliminator, which mark nothing here)
+  let v := (v.instLevels d.levelParams us).stripMarks
   let k := arity v
   if args.length < k then none
   let b ← beta v (d.type.instLevels d.levelParams us) (args.take k)
@@ -578,6 +579,8 @@ partial def eraseCheck (ctx : Ctx R) (t : Term R) (ty : VTy R) (inDesc : Bool :=
   if erasable ctx ty then return .erased
   -- (given) Q4: `ULift` has no runtime content: `up a` is `a`
   if let (.up a, .ulift _ A) := (t, whnf ty) then return ← eraseCheck ctx a A
+  -- (given) P2: a marked proof is erased; another marker is transparent
+  if let .prf l x := t then return ← (if l.isZero then pure .erased else eraseCheck ctx x ty)
   --<sol
   let g := ctx.globals
   match t, whnf ty with
@@ -665,6 +668,9 @@ partial def eraseCheck (ctx : Ctx R) (t : Term R) (ty : VTy R) (inDesc : Bool :=
   `sfix` becomes a `fix`, and `scase` applies its method to the payload. -/
 partial def eraseInfer (ctx : Ctx R) (t : Term R) (known : Option (VTy R) := none) (inDesc : Bool := false) :
     TCM (ETerm × VTy R) := do
+  -- (given) P2: a marker that is not a proof's is transparent
+  if let .prf l x := t then
+    if !l.isZero then return ← eraseInfer ctx x known inDesc
   -- (`known`: the type, when the caller has it. Otherwise `quickType`, which off the
   -- elimination spine asks the kernel's `infer`: that checks the whole term again, once
   -- per enclosing node, quadratic in the depth of a `match`'s tree of `split`s)
@@ -959,9 +965,10 @@ where
 def eraseDecl (g : Globals R) (d : Decl R) : TCM ETerm := do
   -- the compiler's version (direct recursion), if the elaborator made one
   let some v := d.impl <|> d.value | return .prim .unreachable #[]
-  -- (the kernel has checked it, like the value: `checkImpl`, `addPartialImpl`)
+  -- (the kernel has checked it, like the value: `checkImpl`, `addPartialImpl`; it has
+  -- accepted the term: nothing to require of its markers, `proof`)
   -- (`module`: the declaration's own, for `nativeHome?`)
-  let ctx : Ctx R := { globals := { g with module := (g.declModule[d.name]?).getD "" } }
+  let ctx : Ctx R := { globals := { g with module := (g.declModule[d.name]?).getD "" }, proof := true }
   -- compiled equations (derived from the value, `deriveImpl`): the calls a nested split
   -- reverted go into its branches, and a constructor rebuilt from a branch's fields is the
   -- scrutinee (`Push`), if the result type-checks (else the step before, else the impl as
@@ -979,7 +986,8 @@ def eraseDecl (g : Globals R) (d : Decl R) : TCM ETerm := do
   -- universe polymorphism has no runtime content, but `Sort 0` would make motives
   -- propositions (and everything erasable): erase the `Type` instance
   let us := d.levelParams.map fun _ => Level.succ .zero
-  let e ← eraseTop ctx (v.instLevels d.levelParams us) (ctx.eval (d.type.instLevels d.levelParams us)) (isNuDesc g d)
+  -- (P2: the markers of level-generic terms mark nothing at this instance)
+  let e ← eraseTop ctx (v.instLevels d.levelParams us).stripMarks (ctx.eval (d.type.instLevels d.levelParams us)) (isNuDesc g d)
   return if derived then e.inlineCalls d.name else e
 
 end Wiz
