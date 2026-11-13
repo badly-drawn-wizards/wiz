@@ -88,6 +88,17 @@ def group : Group where
           "#print axioms add2\n")
         noErrors ms
         expect ms "info: 'add2' does not depend on any axioms" },
+    { name := "sat_decide with sharing (28c): a 4-bit carry chain over definitions, not unfolded", run := fun _ => needs "cadical" do
+        let maj := "def maj (a b c : Bool) : Bool := Bool.or (Bool.or (Bool.and a b) (Bool.and a c)) (Bool.and b c)\n"
+        let carry := "def carry (a b c : Bool) : Bool := Bool.or (Bool.and a b) (Bool.and c (Bool.xor a b))\n"
+        let c1 := "(carry a2 b2 (carry a1 b1 (carry a0 b0 Bool.false)))"
+        let c2 := "(maj b2 a2 (maj b1 a1 (maj b0 a0 Bool.false)))"
+        let ms ← msgs ("import SatTactic\n" ++ maj ++ carry ++
+          s!"def eq4 (a0 b0 a1 b1 a2 b2 a3 b3 : Bool) : Bool.xor (Bool.xor a3 b3) {c1} = Bool.xor (Bool.xor b3 a3) {c2} := by sat_decide\n" ++
+          "#print axioms eq4\n#print axioms Sat.dag_sound\n")
+        noErrors ms
+        expect ms "info: 'eq4' does not depend on any axioms"
+        expect ms "info: 'Sat.dag_sound' does not depend on any axioms" },
     { name := "sat_decide: a false goal fails with a counterexample", run := fun _ => needs "cadical" do
         let ms ← msgs ("import SatTactic\ndef wrong (a b : Bool) : Bool.and a b = Bool.or a b := by sat_decide\n")
         expect ms "sat_decide: the goal is false; a counterexample:" },

@@ -3416,6 +3416,29 @@ partial def runTac (code : Code) (info : SourceInfo) (st : TacState R) (v : RVal
   -- the rest are about a goal, the first field
   let gl ← goalOf (fld 0)
   let lvl := gl.ctx.lvl
+  if tag == TacTag.define then
+    -- (28c) `X.def✝k := fun ctx => val : Π ctx, ty`, checked by the kernel with `X`
+    let s ← get
+    if s.smtDecl.isEmpty then throwAt info "tactic: a definition can only be added in the body of a definition"
+    unless gl.ctx.bound.all id do throwAt info "tactic: a definition can't be added in a context with a `let`"
+    let names := gl.ctx.names.reverse
+    let env := gl.ctx.env.reverse.toArray
+    let types ← (List.range lvl).zip gl.ctx.types.reverse |>.mapM fun (j, A) => do
+      let t ← zonk j (quote g j A)
+      pure (eval g (env.extract 0 j).toList.reverse t)
+    let ty ← zonk lvl (← reify st.handles (fld 1) lvl)
+    let val ← zonk lvl (← reify st.handles (fld 2) lvl)
+    unless (Term.mvars ty).isEmpty && (Term.mvars val).isEmpty do throwAt info "tactic: a definition with holes"
+    let q : Term R := .qlit QuantitySyntax.explicitDefault
+    let dTy := (List.range lvl).reverse.foldl (fun body j => .pi (names[j]!) .default q (quote g j types[j]!) body none) ty
+    let dVal := (List.range lvl).reverse.foldl (fun body j => Term.lam (names[j]!) body) val
+    let n := s!"{s.smtDecl}.def✝{s.sideDecls.size + 1}"
+    let d : Decl R := { name := n, levelParams := s.levelParams, type := dTy, value := some dVal }
+    modify fun s => { s with globals := s.globals.insert d, sideDecls := s.sideDecls.push d, unifyFails := {} }
+    let use : Term R := (List.range lvl).foldl (fun f j => Term.app f (.var (lvl - 1 - j)))
+      (Term.const n (s.levelParams.map Level.param))
+    let (r, st) ← refl st gl use
+    return ← runTac code info st (apply code (fld 3) r)
   if tag == TacTag.eqView then
     -- (28b) inside an equation: `a = b` at `A`
     let t ← zonk lvl (← reify st.handles (fld 1) lvl)
@@ -3586,6 +3609,13 @@ partial def runTac (code : Code) (info : SourceInfo) (st : TacState R) (v : RVal
     else
       -- with holes its type can't be inferred yet: at the end of the block (`elabBy`)
       st := { st with unchecked := st.unchecked.push (gl, t) }
+    unifyGoal gl t
+    return ← runTac code info st (fld 2)
+  if tag == TacTag.assignLate then
+    -- (28c) as `assign`, but the term is not inferred by the kernel now: the declaration's
+    -- own check (`addDeclSorted`) is its check
+    let t ← zonk lvl (← reify st.handles (fld 1) lvl)
+    unless t.mvars.isEmpty do throwAt info "assignLate: the term has holes"
     unifyGoal gl t
     return ← runTac code info st (fld 2)
   if tag == TacTag.newGoal then
