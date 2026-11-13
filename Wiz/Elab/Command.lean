@@ -55,6 +55,19 @@ def Msg.render (input : String) (m : Msg) : String :=
   let sev := match m.severity with | .error => "error" | .warning => "warning" | .info => "info"
   s!"{l + 1}:{c + 1}: {sev}: {m.text}"
 
+/-- The error at an `import` of a module `m` (text `src`) whose own check reported
+`errs`. Its own errors are listed once, one per line with their positions in `m`; an
+error that is itself about a module `m` imports (code `module-errors`) is passed on as
+it is, named through `m`, instead of nested inside another list. So a broken module's
+errors appear once in every importer, however deep. -/
+def importErrorsText (m : String) (src : String) (errs : Array Msg) : String :=
+  let own := errs.filter (·.code != "module-errors")
+  let through := errs.filter (·.code == "module-errors")
+  let ownTxt := if own.isEmpty then "" else
+    s!"module {m} has errors:" ++ String.join (own.toList.map fun e => s!"\n  {m}:{e.render src}")
+  let throughTxt := through.toList.map fun e => s!"imported module {m} → {e.text}"
+  "\n".intercalate ((if ownTxt.isEmpty then [] else [ownTxt]) ++ throughTxt)
+
 /-- (11s) A declaration, for documentation: what made it (`def`, `inductive`,
 `structure`, `class`, `instance`, `axiom`, `coinductive`, `extern`, …, or `constructor`
 and `field` for those of a type, `auxiliary` for what the elaborator adds for its own
@@ -284,9 +297,11 @@ def renamePrivate (s : CommandState R) (added : Array Name) : CommandState R :=
   { s with globals := { g with decls, order, heights, instCache, builtins := rb g.builtins, assumed := rb g.assumed },
            builtins := rb s.builtins }
 
-/-- Metas are untyped, so `?A : Sort ?u` never learns `?u` from `?A := A`. For each
-recorded constraint whose hole is now solved, ask the kernel for the solution's type
-and unify its level. -/
+/-- Metas are untyped, so `?A : Sort ?u` never learns `?u` from `?A := A`, and
+`?C : Category.{?a, ?b}` never learns `?a`, `?b` from `?C := C`. For each recorded
+constraint (`addSortConstraint`, `addTypeConstraint`) whose hole is now solved, ask the
+kernel for the solution's type and unify it with the recorded one. A solved level may
+complete another constraint's solution, so this runs until nothing changes. -/
 def solveSortConstraints : ElabM R Unit := do
   finishInstances
   -- size metavariables nothing constrained default to `∞`
@@ -295,17 +310,45 @@ def solveSortConstraints : ElabM R Unit := do
     if e.desc == "a size" && e.solution.isNone then
       let sol : Term R := (List.range e.arity).foldl (fun t _ => .lam "_" t) .szInf
       solveMeta m (eval (← getGlobals) [] sol)
-  for _ in [0:2] do
-    for (ctx, t, l) in (← get).sortConstraints do
-      let t ← zonk ctx.lvl t
-      if !t.mvars.isEmpty then continue
-      let kctx : Ctx R := { globals := ← getGlobals, env := ctx.env, names := ctx.names,
-                            qtys := ctx.names.map fun _ => QPoly.const QuantitySyntax.explicitDefault,
-                            types := ctx.types, lvl := ctx.lvl, proof := true }
-      if let .ok (ty, _) := Wiz.infer kctx t then
-        if let .sort l' ← force ty then
-          try unifyLevel l l' catch e => throwAt ctx.info e.msg
-
+  -- the solution's type, if it is complete and the kernel can infer it (in the context of
+  -- the hole, with the variables' types as they are now: a binder's type may have been a
+  -- hole when it was bound)
+  let typeOf (ctx : LocalCtx R) (t : Term R) : ElabM R (Option (VTy R)) := do
+    let t ← zonk ctx.lvl t
+    if !t.mvars.isEmpty then return none
+    let kctx : Ctx R := { globals := ← getGlobals, env := ctx.env, names := ctx.names,
+                          qtys := ctx.names.map fun _ => QPoly.const QuantitySyntax.explicitDefault,
+                          types := ctx.types, lvl := ctx.lvl, proof := true }
+    match Wiz.infer kctx t with
+    | .ok (ty, _) => return some ty
+    | .error _ =>
+      match Wiz.infer { kctx with types := (← zonkedTypes ctx).toList.reverse } t with
+      | .ok (ty, _) => return some ty
+      | .error _ => return none
+  let solvedLevels : ElabM R Nat := do
+    return (← get).levelMetas.foldl (fun n l => if l.isSome then n + 1 else n) 0
+  let mut doneSort : Std.HashSet Nat := {}
+  let mut doneType : Std.HashSet Nat := {}
+  repeat
+    let before ← solvedLevels
+    for (ctx, t, l) in (← get).sortConstraints, i in [0:(← get).sortConstraints.size] do
+      if doneSort.contains i then continue
+      let some ty ← typeOf ctx t | continue
+      doneSort := doneSort.insert i
+      if let .sort l' ← force ty then
+        try unifyLevel l l' catch e => throwAt ctx.info e.msg
+    for (ctx, t, A) in (← get).typeConstraints, i in [0:(← get).typeConstraints.size] do
+      if doneType.contains i then continue
+      -- (nothing left to learn once the type's levels are known)
+      let g ← getGlobals
+      unless (← zonk ctx.lvl (quote g ctx.lvl A)).hasLevelMVar do
+        doneType := doneType.insert i; continue
+      let some ty ← typeOf ctx t | continue
+      doneType := doneType.insert i
+      -- (a mismatch is the kernel's to report, with the whole declaration)
+      let s ← get
+      try unify ctx.lvl (← refreshVal ctx A) ty catch _ => set s
+    if (← solvedLevels) == before then break
 /-- Elaborate the header and body of a `def` or `axiom` to closed, zonked terms. -/
 def elabDeclTerms (binders : Array Syntax) (typeStx : Option Syntax) (valStx : Option Syntax)
     (info : SourceInfo) (declName? : Option (Name × SourceInfo × Nat) := none) :

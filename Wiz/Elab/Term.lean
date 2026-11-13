@@ -18,8 +18,9 @@ Bidirectional, like the kernel, but on `Syntax` and with metavariables:
 
 Two mechanisms, following elaboration-zoo `04-implicit-args`:
 
-* **Insertion of implicit applications.** (When the implicit argument is a type, its
-  universe is recorded with `addSortConstraint`.) When a term of type `{A : Type} → A → A` is
+* **Insertion of implicit applications.** (Holes are untyped, so the type of an
+  implicit argument is recorded for later when it fixes a universe level:
+  `noteImplicitType`.) When a term of type `{A : Type} → A → A` is
   used where something that isn't an implicit function is expected, `?A` is inserted:
   `id` becomes `id ?A`. This happens before each explicit argument and in `check`'s
   fallback case. `@f` turns it off.
@@ -103,6 +104,16 @@ def lookupLocal (ctx : LocalCtx R) (x : Name) : Option (Nat × VTy R) := Id.run 
     if n == x && x != "_" then return some (i, ty)
   none
 
+/-- (Given) Metas are untyped, so what the type `dom` of the implicit argument `m` of
+`f` says about universe levels is recorded, to be checked once `m` is solved
+(`solveSortConstraints`): its universe, if it is a type (`{A : Type ?u}`), or its type,
+if that mentions a level metavariable of `f` (`{C : Category.{?a, ?b}}`, where nothing
+else may fix `?a` and `?b`). -/
+def noteImplicitType (ctx : LocalCtx R) (f m : Term R) (dom : VTy R) : ElabM R Unit := do
+  if let .sort l ← force dom then addSortConstraint ctx m l; return
+  let some us := (match (Term.spine f).1 with | .const _ us => some us | _ => none) | return
+  if ← us.anyM (fun u => return (← instLevel u).hasMVar) then addTypeConstraint ctx m dom
+
 /-- **Exercise 3.7.** Insert implicit applications: while the type forces to an
 *implicit* Π, apply the term to a fresh metavariable and instantiate the codomain with
 the metavariable's value. -/
@@ -117,7 +128,7 @@ partial def insertImplicits (ctx : LocalCtx R) (t : Term R) (ty : VTy R) :
   match ← force ty with
   | .pi x .implicit _ dom cod _ =>
     let m ← freshMeta ctx s!"implicit argument {x}"
-    if let .sort l ← force dom then addSortConstraint ctx m l
+    noteImplicitType ctx t m dom
     insertImplicits ctx (.app t m) (← instM cod (← evalIn ctx m))
   | _ => pure (t, ty)  -- the type as it was (forcing would lose glued names)
   --|ex
@@ -751,15 +762,45 @@ partial def rewriteRecCalls (g : Globals R) (rc : RecCtx) (binds : List (Name ×
           throw s!"recursive call of {rc.fn} must pass the parameter {p} unchanged"
       args := kept ++ args.extract rc.allParams.length args.size
     -- (#249) which columns the call passes: with `@f` all of them, else the explicit ones
+    let atF := isExplicitF (stx.getArg 0)
     let explicitCols : List Nat := (List.range rc.cols).filter fun i =>
-      isExplicitF (stx.getArg 0) || (rc.colExplicit[i]?.getD true)
-    let np := if args.size ≤ explicitCols.length then 0 else rc.params.length
+      atF || (rc.colExplicit[i]?.getD true)
+    let nExpl := explicitCols.length
+    -- (the old form passes every matched argument, with a `_` at the implicit ones)
+    let allGiven (given : Array Syntax) : Bool :=
+      given.size ≥ rc.cols &&
+        (rc.colExplicit.zip (given.extract 0 rc.cols).toList).all fun (e, a) =>
+          e || a.isOfKind "term.hole"
+    -- is the argument at `i` a recursive field (a variable with a hypothesis)?
+    let isFieldArg (i : Nat) : Bool := match args[i]? with
+      | some a => a.isOfKind "term.ident" && (match (a.getArg 0).getId? with
+          | some y => match binds.find? (·.1 == y) with
+            | some (_, _, .neutral (.local fl) #[]) => rc.ihs.any (·.1 == fl)
+            | _ => false
+          | none => false)
+      | none => false
+    -- a partial application `f n y` passes the parameters and only some of the matched
+    -- arguments: the parameters are there when they are the parameters' names and the
+    -- structural argument after them is a recursive field (`f k _ e` takes no parameter
+    -- there, it passes every column)
+    let isParamsAt0 : Bool := !rc.params.isEmpty && args.size > rc.params.length &&
+      (rc.params.zip (args.extract 0 rc.params.length).toList).all (fun (p, a) =>
+        a.isOfKind "term.ident" && (a.getArg 0).getId? == some p) &&
+      isFieldArg (rc.params.length + (explicitCols.idxOf? rc.pos).getD rc.pos)
+    let np := if isParamsAt0 then rc.params.length
+      else if args.size ≤ nExpl || (!atF && args.size ≤ rc.cols && allGiven args) then 0
+      else rc.params.length
     for p in rc.params.take np, i in [0:np] do
       let ok := match args[i]? with
         | some a => a.isOfKind "term.ident" && (a.getArg 0).getId? == some p
         | none => false
       unless ok do throw s!"recursive call of {rc.fn} must pass the parameter {p} unchanged"
-    let colArgs := args.extract np args.size
+    let given := args.extract np args.size
+    -- (the old form, all columns given: keep the explicit columns' arguments, then any
+    -- further arguments after the columns)
+    let colArgs := if !atF && given.size > nExpl && allGiven given then
+        (explicitCols.map (given[·]!)).toArray ++ given.extract rc.cols given.size
+      else given
     let some posE := explicitCols.idxOf? rc.pos
       | throw s!"recursive call of {rc.fn}: its structural argument is implicit; use @{rc.fn}"
     let some a := colArgs[posE]? | throw s!"recursive call of {rc.fn} without its structural argument"
@@ -2188,6 +2229,15 @@ partial def inferApp (ctx : LocalCtx R) (stx : Syntax) (postpone : Bool := true)
         unifyAt ctx fStx ty pi
         pure pi
       | ty => do
+        -- a type evaluated while its holes were unsolved (an equation stuck on a hole
+        -- that is solved now, as in the type of a binder `α : NatTrans F P` whose
+        -- category is a hole when `α` is bound): evaluated again, it may be a Π
+        if let some ty' ← reevalSolved? ctx ty then
+          if let .pi .. ← force ty' then
+            pure ty'
+          else
+            throwAt (ctx.withInfo fStx).info s!"function expected\n  {← showTermM ctx f} : {← showVal ctx ty'}" ErrorCode.wrongArgumentCount
+        else
         let msg := s!"function expected\n  {← showTermM ctx f} : {← showVal ctx ty}" ++ tooManyArgsHint f
         match ← implicitsFix ctx fStx (stx.getArg 1).args.size with
         | some data => throwFix (ctx.withInfo fStx).info msg ErrorCode.wrongArgumentCount data
@@ -2298,7 +2348,7 @@ partial def inferAppNamed (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R ×
           pure m
         else do
           let m ← freshMeta ctx s!"implicit argument {x}"
-          if let .sort l ← force dom then addSortConstraint ctx m l
+          noteImplicitType ctx f m dom
           pure m
     f := .app f a
     fty ← instM cod (← evalIn ctx a)
@@ -3100,7 +3150,7 @@ partial def infer (ctx : LocalCtx R) (stx : Syntax) : ElabM R (Term R × VTy R) 
           unless ls.size == d.levelParams.length do
             throwAt ctx.info s!"{x} has {d.levelParams.length} universe parameters, {ls.size} given"
           ls.toList.mapM elabLevel
-        | none => d.levelParams.mapM fun _ => freshLevelMeta
+        | none => d.levelParams.mapM fun p => freshLevelMeta ctx.info s!"the universe level {p} of {x}"
       let ty ← evalIn {} (d.type.instLevels d.levelParams us)
       record x {} ty
       return (.const x us, ty)
@@ -3619,9 +3669,19 @@ partial def runTac (code : Code) (info : SourceInfo) (st : TacState R) (v : RVal
     let h ← zonk lvl (← reify st.handles (fld 1) lvl)
     let rtl := decodeBool (fld 2) == some true
     unless h.mvars.isEmpty do throwAt info "rewrite: the equation has holes" ErrorCode.tacticFailed
+    -- the universe levels of its constants (fresh after reflection), from the arguments' types
+    let h ← if h.hasLevelMVar then do
+        let _ ← (RCtx.ofLocal gl.ctx).typeOfUnifying? h
+        zonk lvl h
+      else pure h
+    -- (the variables' types with the holes solved since they were bound, as the kernel
+    -- takes a hole as rigid: `U : UnitCounit F G` with `F`'s categories holes then)
     let hty ← match (← get).kernelInfer (gl.kernelCtx g) h with
       | .ok ty => pure ty
-      | .error e => throwAt info s!"rewrite: {e}" ErrorCode.tacticFailed
+      | .error e =>
+        match (← get).kernelInfer { gl.kernelCtx g with types := (← zonkedTypes gl.ctx).toList.reverse } h with
+        | .ok ty => pure ty
+        | .error _ => throwAt info s!"rewrite: {e}" ErrorCode.tacticFailed
     let (A, a, b) ← match ← force hty with
       | .neutral (.eq A a b) #[] => pure (quote g lvl A, quote g lvl a, quote g lvl b)
       | v => throwAt info s!"rewrite: not an equation between two terms: {← showVal gl.ctx v}" ErrorCode.tacticFailed

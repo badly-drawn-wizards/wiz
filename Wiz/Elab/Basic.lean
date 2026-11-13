@@ -227,6 +227,14 @@ structure ElabState (R : Type) where
   /-- "the solution of this hole has type `Sort l`". Metas are untyped, so these are
   checked after elaboration to solve level metavariables (see `solveSortConstraints`). -/
   sortConstraints : Array (LocalCtx R × Term R × Level) := #[]
+  /-- "the solution of this hole has this type", for an implicit argument whose type
+  mentions a level metavariable (`{C : Category.{?a, ?b}}`): solving `?C := C` never
+  unifies the types, so `?a`, `?b` are found afterwards from `C`'s type (see
+  `solveSortConstraints`) -/
+  typeConstraints : Array (LocalCtx R × Term R × VTy R) := #[]
+  /-- where each level metavariable came from (the constant whose universe parameter it
+  is), for "could not infer a universe level" -/
+  levelMetaInfo : Array (SourceInfo × String) := #[]
   /-- macro rules in scope, latest first -/
   macros : List MacroRule := []
   /-- the next fresh macro scope -/
@@ -568,9 +576,17 @@ def freshMeta (ctx : LocalCtx R) (desc : String := "_") : ElabM R (Term R) := do
 def addSortConstraint (ctx : LocalCtx R) (t : Term R) (l : Level) : ElabM R Unit :=
   modify fun s => { s with sortConstraints := s.sortConstraints.push (ctx, t, l) }
 
-def freshLevelMeta : ElabM R Level := do
+/-- Record that the hole `t` (in `ctx`) must have type `ty`, when `ty` mentions a level
+metavariable (see `ElabState.typeConstraints`). -/
+def addTypeConstraint (ctx : LocalCtx R) (t : Term R) (ty : VTy R) : ElabM R Unit :=
+  modify fun s => { s with typeConstraints := s.typeConstraints.push (ctx, t, ty) }
+
+/-- A fresh level metavariable; `info` and `desc` say where it came from (the universe
+parameter `desc` of a constant written at `info`), for the error if it stays unsolved. -/
+def freshLevelMeta (info : SourceInfo := {}) (desc : String := "") : ElabM R Level := do
   let m := (← get).levelMetas.size
-  modify fun s => { s with levelMetas := s.levelMetas.push none }
+  modify fun s => { s with levelMetas := s.levelMetas.push none,
+                           levelMetaInfo := s.levelMetaInfo.push (info, desc) }
   pure (.mvar m)
 
 /-- Replace solved level metavariables. -/
