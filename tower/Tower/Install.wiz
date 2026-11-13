@@ -155,8 +155,13 @@ def Tower.flakeRef (flake commit : String) : String :=
     | .true => flake & "&rev=" & commit
     | .false => flake & "?rev=" & commit
 
+-- the official flakes: the current one and the pre-move name, which settings saved before
+-- the move to wiz-pl still hold (GitHub redirects it)
+def Tower.officialFlake (flake : String) : Bool :=
+  Bool.or (String.eq flake "github:wiz-pl/wiz") (String.eq flake "github:badly-drawn-wizards/wiz")
+
 def Tower.cachixOptions (s : Settings) : List String :=
-  match String.eq s.flake "github:badly-drawn-wizards/wiz" with
+  match Tower.officialFlake s.flake with
   | .true => "--option" :> "extra-substituters" :> "https://badlydrawnwizards.cachix.org" :>
     "--option" :> "extra-trusted-public-keys" :>
     "badlydrawnwizards.cachix.org-1:TxG+RHY8RMC/AXc0LJbYtYm9LW/XRjfQwgz+EEaAjBI=" :> .nil
