@@ -11,7 +11,7 @@ in what is trusted (design and survey: `wiz-notes/smt.md`):
   trusted, as with Lean's `bv_decide` (which runs its checker compiled, trusting the
   compiler) or Coq's SMTCoq.
 
-## 28a: `smt` and `--trust-smt` ✅
+## 28a: `smt` and `--trust-smt`
 
     def trans (a b c : Nat) (h₁ : Nat.lt a b = .true) (h₂ : Nat.lt b c = .true) :
         Nat.lt a c = .true := by smt
@@ -70,7 +70,7 @@ jobs), so an acceptance is never replayed without the flag. `lib/` never uses `s
 
 **The self-hosted toolchain** has no `smt`: the request is the Lean host's.
 
-## 28b: `sat_decide`: certified, with LRAT ✅
+## 28b: `sat_decide`: certified, with LRAT
 
     import SatTactic
     def demorgan (a b : Bool) : Bool.not (Bool.and a b) = Bool.or (Bool.not a) (Bool.not b) := by sat_decide
@@ -117,7 +117,7 @@ each. A stuck `a && b` is a `match`, not `Bool.and`, so it is an atom (write `Bo
 
 **Not yet** (at 28b): bit vectors; 28d bit-blasts them, with the lemmas 28b expected.
 
-## 28c: sharing ✅
+## 28c: sharing
 
     def maj (a b c : Bool) : Bool := Bool.or (Bool.or (Bool.and a b) (Bool.and a c)) (Bool.and b c)
     def eq4 … : Bool.xor (Bool.xor a3 b3) (carry a2 b2 (carry a1 b1 …)) = Bool.xor … (maj b2 a2 (maj …)) := by sat_decide
@@ -153,7 +153,7 @@ clauses hold under `σ` itself). No axioms.
   expected type costs as much as the check. Faster: a checker for the kernel's evaluator
   (arrays or maps for the clause database).
 
-## 28d: `bv_decide`: words, bit-blasted ✅ (a fragment: bitwise, `+ -`, shifts, `<ᵤ ≤ᵤ`)
+## 28d: `bv_decide`: words, bit-blasted (a fragment: bitwise, `+ -`, shifts, `<ᵤ ≤ᵤ`)
 
     import BvDecide
     def t (x y z : UIntN 8) : UIntN.land x (UIntN.lor y z) = UIntN.lor (UIntN.land x y) (UIntN.land x z) := by bv_decide

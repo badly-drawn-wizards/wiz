@@ -2,11 +2,11 @@
 
 Stage 4 has several steps, each committed separately:
 
-1. **Universe polymorphism** ✅ (below)
-2. **Type-directed conversion, Σ / ⊤ / ⊥ with η** ✅ (below)
-3. **Observational equality** ✅ (below)
-4. **Quantity polymorphism** ✅ and **indexed descriptions, μ / ν** ✅ (below)
-5. Surface `inductive` / `structure` ✅ (below); dependent `match`, structural and
+1. **Universe polymorphism** (below)
+2. **Type-directed conversion, Σ / ⊤ / ⊥ with η** (below)
+3. **Observational equality** (below)
+4. **Quantity polymorphism** and **indexed descriptions, μ / ν** (below)
+5. Surface `inductive` / `structure` (below); dependent `match`, structural and
    well-founded recursion, and copatterns are next
 
 ## 4a: universe polymorphism
@@ -71,14 +71,14 @@ held unrestricted for now. `(1 g : Guard)` can be passed along, but no field of 
 be read, `match` doesn't take it apart, and a nested `let 1 (x, y)` leaves the
 structure's marker tail unconsumed. Use a tuple for linear data, e.g. `Nat × Tok`
 instead of `structure Guard where n : Nat; tok : Tok`. (Linear matching is not there
-yet: `/workspace/wiz-notes/wishful/linear-case.md`.)
+yet: `wiz-notes/wishful/linear-case.md`.)
 This includes a one-field wrapper (`structure Coin where value : Nat`, read with
 `c.value` at 1), which worked before: write it as `def Coin : Type := Nat`. The planned
 form is `let 1 (.mk a b) := s`, compiled to nested splits
-(`/workspace/wiz-notes/linear-case-design.md`). The eliminators follow the same rule:
+(`wiz-notes/linear-case-design.md`). The eliminators follow the same rule:
 `ind`, `sfix`, `scase` (and `coit`/`scofix` for their seed) bind what they take apart at
 ω, so their scrutinee counts ω times and a value of an inductive type held at 1 can be
-passed on but not eliminated; `match` already took its scrutinee at ω. The accepted follow-up is the linear-case plan (`/workspace/wiz-notes/linear-case-design.md`): K2a (an unused variable may leave its binder when its type is `Unit`, so a linear `Unit` needs no consumer), re-encoding B of structures (the marker in a 0-quantity first component, so a nested `let 1` leaves no marker tail to consume), and a quantity on `scase` (`scase_π`: the scrutinee is used π times and its fields are bound at π·q), which gives structures a destructuring form and linear inductive values an eliminator.
+passed on but not eliminated; `match` already took its scrutinee at ω. The accepted follow-up is the linear-case plan (`wiz-notes/linear-case-design.md`): K2a (an unused variable may leave its binder when its type is `Unit`, so a linear `Unit` needs no consumer), re-encoding B of structures (the marker in a 0-quantity first component, so a nested `let 1` leaves no marker tail to consume), and a quantity on `scase` (`scase_π`: the scrutinee is used π times and its fields are bound at π·q), which gives structures a destructuring form and linear inductive values an eliminator.
 
 | #   | Where              | What                                                       |
 |-----|--------------------|------------------------------------------------------------|

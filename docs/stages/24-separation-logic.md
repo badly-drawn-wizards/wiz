@@ -10,7 +10,7 @@ decisions CS7 (shallow model-heap logic first, then linear points-to tokens over
 heap via `implemented_by`), CS10 (first-order concurrent SL with PCM ghost state next).
 Tests: `lake test -- seplogic`.
 
-## 24a: propositional logic over `Prop` ✅
+## 24a: propositional logic over `Prop`
 
 `lib/Logic.wiz` (`import Logic`). Wiz has no inductive propositions (`μ` always lives in
 `Type`), so the connectives are built from what the kernel has:
@@ -44,7 +44,7 @@ Two things about quantities that every proof here runs into:
   their variable (so `Eq.substProp` goes through `congrArg`; the Prelude's `Eq.subst` is the linear transport into a `Type`). Wishful:
   `erased-use-in-types`.
 
-## 24b: heaps and heap predicates ✅
+## 24b: heaps and heap predicates
 
 `lib/HProp.wiz` (`import HProp`), SLF chapters Hprop and Himpl.
 
@@ -65,7 +65,7 @@ Two things about quantities that every proof here runs into:
   `wand.adjoint : (H₁ ⋆ H₂ ⊢ H₃) ↔ (H₁ ⊢ H₂ −∗ H₃)`, `wand.cancel`, `wand.mono`,
   `wand.frame`; and `pts.same_loc : (l ↦ v) ⋆ (l ↦ w) ⊢ \[False]`.
 
-## 24c: Hoare triples, as a Dijkstra monad ✅
+## 24c: Hoare triples, as a Dijkstra monad
 
 `lib/Hoare.wiz` (`import Hoare`), SLF chapters WPsem and Repr. The presentation is SLF's —
 a weakest precondition per command, triples defined from it, structural rules derived —
@@ -103,7 +103,7 @@ since 24d they live in `lib/HoareExamples.wiz` and are proved by the tactics (7 
 
 **What is next** (plan S3–S6): see the end of 24d.
 
-## 24d: automation: `xsimpl`, `xpull` and the `x`-tactics ✅
+## 24d: automation: `xsimpl`, `xpull` and the `x`-tactics
 
 `lib/HoareTactics.wiz` (`import HoareTactics`), SLF chapters Himpl (`xsimpl`) and WPgen
 (the `x`-tactics); `lib/HoareExamples.wiz` has the verified programs. Plan S3.

@@ -6,7 +6,7 @@ puts **shims** named `wiz` and `grail` on `PATH`. A shim runs the toolchain the 
 directory asks for. The editor plugin starts `wiz lsp` from `PATH`, and grail runs the
 `wiz` it finds there, so both get the project's toolchain without any setup of their own.
 
-## 26a: specs, project files, overrides ✅
+## 26a: specs, project files, overrides
 
 A **spec** names a toolchain:
 
@@ -65,7 +65,7 @@ or holds no toolchain is an error naming the file
 (`…/wiz-toolchain.local: /home/me/src/wiz is not a toolchain: …`), not a silent fall back to
 `wiz-toolchain`. An absolute path also works as a spec elsewhere (`wiz +/path/to/tc …`).
 
-## 26b: sources ✅
+## 26b: sources
 
 Installing first resolves the spec to a commit with `git ls-remote` on the `git`
 setting, then realises it from one of three sources:
@@ -87,7 +87,7 @@ release, then the source, and moves on to the next when one fails.
 `tower update` re-resolves channels and branches and reinstalls the ones that moved,
 using the source and flags they were installed with.
 
-## 26c: layout, wrappers and shims ✅
+## 26c: layout, wrappers and shims
 
 ```
 ~/.tower/
@@ -156,7 +156,7 @@ tower self shims / self install    [--self PATH: the tower the shims call]
 `lake build`. Put `dev` in a project's `wiz-toolchain`, or run `wiz +dev …`, to try a
 compiler you are working on.
 
-## 26d: installing tower, release tarballs ✅
+## 26d: installing tower, release tarballs
 
 **With Nix**: the package (`packages.tower`) contains tower and the `wiz` and `grail`
 shims, which call that same tower; installing it puts all three on `PATH`:
@@ -226,7 +226,7 @@ holding a tiny Lake project whose `wiz` and `grail` print their arguments, with 
 
 The shims in the tests call the test driver (`tests --tower …`), which runs tower.
 
-## 26e: tower in Wiz ✅
+## 26e: tower in Wiz
 
 `tower/` is tower again, in Wiz: a grail package (`tower/grail.wiz`) whose executable
 `tower` (`cd tower && grail build`: `.grail/bin/tower`) has the same commands, messages,
@@ -255,7 +255,7 @@ tarball's "glibc and the C runtime only" promise needs a static GMP or `--gmp` w
 mini-gmp), the `--tower` mode of the test driver and `Tower/` go, and the group `tower`
 is dropped in favour of `tower-wiz`.
 
-## 26f: the C toolchain in the release tarball ✅
+## 26f: the C toolchain in the release tarball
 
 Like Lean's releases, a release tarball ships the C toolchain its programs are built
 with, in `share/wiz/cc/` (`scripts/bundle-cc.sh`, run by the release job). On a machine
@@ -278,7 +278,7 @@ libclang-cpp, compiler-rt, a link-only glibc 2.26 and static `libgmp.a`/`libuv.a
 libc headers (Lean's C needs only `lean.h`) and no `llc`. Wiz's runtime and `import_c`
 need libc headers, so the bundle has a whole sysroot, with headers and libraries of the
 same glibc. The clang is Lean's own, so its LLVM follows `lean-toolchain`. The options
-weighed (zig cc, tcc) are in /workspace/wiz-notes/toolchain-cc.md.
+weighed (zig cc, tcc) are in wiz-notes/toolchain-cc.md.
 
 **Downloads.** `scripts/bundle-cc.sources` lists the five outside files (three Ubuntu
 .debs, GMP and the Boehm GC) with their sha256 and URLs. Each file is tried from each
@@ -327,7 +327,7 @@ licence consequences for programs you distribute, explained in docs/building.md
 The tarball grows from 72.5 MB to about 131 MB (the bundle is 165 MB unpacked, 59 MB
 compressed; libLLVM and libclang-cpp are most of it).
 
-## 26g: release snapshots for every master commit ✅
+## 26g: release snapshots for every master commit
 
 A project that pins a commit (`master@<sha>` in `wiz-toolchain`) can be installed
 without Nix: every master push publishes the tarball of that commit.
