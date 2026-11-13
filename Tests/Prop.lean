@@ -13,8 +13,14 @@ The laws tested (`wiz-notes/metatheory-plan.md` §5.1 M1b; `wiz-notes/prop-harne
 * **P4** a type (or term) equation that computes to `False` stays `False` under every
   instance, and the two sides are then never convertible (F6);
 * **P5** the Lean kernel and `selfhost/Kernel.wiz` give the same verdict;
-* **P6** `quote ∘ eval` is the identity up to conversion, normal forms are well typed, and
-  `sameVal` is syntactic equality (S1).
+* **P6** `quote ∘ eval` is the identity up to conversion and normal forms are well typed.
+
+The kernel's P2 makes the marker `prf` part of every well-typed core term: a raw term the
+generator builds is the coarse syntax, and what reaches the kernel is the *marked* term
+(the elaborator's pass, `Wiz/Elab/Mark.lean`). Every check here is of the marked term, and
+the marking pass runs only on a term the kernel already accepted without the requirement
+(the pre-P2 mode, `lazyProofs := false`), as `Tests/Elab` does: the pass checks nothing and
+may loop on an ill-typed term.
 
 Terms are generated type-directed, as a function of a **choice sequence**: the same
 generator enumerates small terms (every sequence with at most `d` non-default choices)
@@ -68,6 +74,7 @@ compile until it is added here (and to `ctorName`). -/
   | .refl A a => return .refl (← f 0 A) (← f 0 a)
   | .reflTy X => return .reflTy (← f 0 X)
   | .cast A B e t => return .cast (← f 0 A) (← f 0 B) (← f 0 e) (← f 0 t)
+  | .prf l t => return .prf (← fl l) (← f 0 t)
   | .transp A a P p b e =>
     return .transp (← f 0 A) (← f 0 a) (← f 0 P) (← f 0 p) (← f 0 b) (← f 0 e)
   | .qty => pure .qty
@@ -125,7 +132,7 @@ def ctorName : Tm → String
   | .out _ => "out" | .size => "size" | .szInf => "szInf" | .szSuc _ => "szSuc" | .sizeLt _ => "sizeLt"
   | .sfix .. => "sfix" | .scase .. => "scase" | .cocon _ => "cocon" | .scofix .. => "scofix"
   | .coit .. => "coit" | .natLit _ => "natLit" | .natOp .. => "natOp" | .ulift .. => "ulift"
-  | .up _ => "up" | .down _ => "down"
+  | .up _ => "up" | .down _ => "down" | .prf .. => "prf"
 
 /-- Every constructor of `Term`, by name. (`ctorName` is exhaustive; a name it returns
 that is missing here fails the coverage gate as "unknown".) -/
@@ -134,7 +141,7 @@ def allCtors : List String :=
    "split", "unit", "tt", "empty", "absurd", "eq", "eqTy", "refl", "reflTy", "cast", "transp", "qty",
    "qlit", "enum", "tag", "ecase", "desc", "dret", "darg", "drec", "dhrec", "delim", "mu", "con", "ind",
    "nu", "out", "size", "szInf", "szSuc", "sizeLt", "sfix", "scase", "cocon", "scofix", "coit",
-   "natLit", "natOp", "ulift", "up", "down"]
+   "natLit", "natOp", "ulift", "up", "down", "prf"]
 
 /-- Constructors no checked term contains: the kernel rejects `mvar`, and `natOp` is made
 only by `eval` (its coverage is the feature rows `native: …`). -/
@@ -201,6 +208,8 @@ partial def sizeT (t : Tm) : Nat :=
 def inferable : Tm → Bool
   | .lam .. | .pair .. | .tt | .con _ | .cocon _ | .up _ | .dret _ | .darg .. | .drec .. | .dhrec ..
   | .natOp .. => false
+  -- (P2: a marker is transparent; the underlying term decides)
+  | .prf _ t => inferable t
   | .letE _ _ _ _ b => inferable b
   | _ => true
 
@@ -292,6 +301,7 @@ partial def toM : Tm → Option MTm
   | .ulift l A => return .ulift (← l.toNat?) (← toM A)
   | .up a => return .up (← toM a)
   | .down t => return .down (← toM t)
+  | .prf l t => do return .prf (.num (← l.toNat?)) (← toM t)
   | _ => none
 
 /-! ## Worlds: the signatures terms are generated over -/
@@ -326,15 +336,30 @@ structure World where
   /-- the types of the gadgets, with their sorts: leaves of the type generator -/
   gadgetTys : List (Tm × Tm) := []
 
+/-- (P2) The term as the elaborator delivers it: the marking pass over `t`, and `none`
+when the pre-P2 kernel (the marker's requirement off) rejects it — the pass checks
+nothing, and a random term can be ill-typed. -/
+def markInf (g : Gl) (t : Tm) : Option Tm :=
+  let ctx : Ctx Q := { globals := { g with lazyProofs := false } }
+  match infer (R := Q) ctx t with
+  | .error _ => none
+  | .ok _ => some (Mark.infer { globals := g } t).1
+
 def accepts (g : Gl) (t : Tm) : Bool :=
-  match infer (R := Q) { globals := g } t with
-  | .ok _ => true
-  | .error _ => false
+  match markInf g t with
+  | none => false
+  | some t' =>
+    match infer (R := Q) { globals := g } t' with
+    | .ok _ => true
+    | .error _ => false
 
 def typeOfClosed (g : Gl) (t : Tm) : Option Tm :=
-  match infer (R := Q) { globals := g } t with
-  | .ok (ty, _) => some (quote g 0 ty)
-  | .error _ => none
+  match markInf g t with
+  | none => none
+  | some t' =>
+    match infer (R := Q) { globals := g } t' with
+    | .ok (ty, _) => some (quote g 0 ty)
+    | .error _ => none
 
 def withGadgets (w : World) (ts : List Tm) : World :=
   let gadgets := ts.filterMap fun t => (typeOfClosed w.g t).map (t, ·)
@@ -450,14 +475,31 @@ def whq (cx : Cx) (t : Tm) : Tm := quote cx.g cx.k.lvl (whnf (cx.k.eval t))
 def convTy (cx : Cx) (A B : Tm) : Bool := Wiz.convTy cx.g cx.k.tys (cx.k.eval A) (cx.k.eval B)
 
 def lvlOf (cx : Cx) (A : Tm) : Option Level :=
-  match checkType cx.k A with
-  | .ok l => some l
+  let ctx0 := { cx.k with globals := { cx.g with lazyProofs := false } }
+  match checkType ctx0 A with
   | .error _ => none
+  | .ok _ => match checkType cx.k (Mark.type cx.k A).1 with
+    | .ok l => some l
+    | .error _ => none
+
+/-- (P2) `t : T` marked, or `none` when the pre-P2 kernel rejects it. -/
+def markAt (cx : Cx) (t T : Tm) : Option Tm :=
+  let ctx0 := { cx.k with globals := { cx.g with lazyProofs := false } }
+  match Wiz.check ctx0 t (ctx0.eval T) with
+  | .error _ => none
+  | .ok _ => some (Mark.check cx.k t (cx.k.eval T))
+
+/-- (P2) `t : T` marked, for a term the kernel already accepted (`V`): the pass checks
+nothing, so it is run only on a term that kernel accepted. -/
+def markKnown (cx : Cx) (t T : Tm) : Tm := Mark.check cx.k t (cx.k.eval T)
 
 def chk (cx : Cx) (t T : Tm) : Bool :=
-  match Wiz.check cx.k t (cx.k.eval T) with
-  | .ok _ => true
-  | .error _ => false
+  match markAt cx t T with
+  | none => false
+  | some t' =>
+    match Wiz.check cx.k t' (cx.k.eval T) with
+    | .ok _ => true
+    | .error _ => false
 
 /-- the variables whose type is convertible with `T` -/
 def varsOfTy (cx : Cx) (T : Tm) : Array Tm :=
@@ -1008,9 +1050,10 @@ def instCtx (ctx : Array Tm) (k : Nat) (a : Tm) : Array Tm :=
 def instJ (j : Jd) (k : Nat) (a : Tm) : Jd :=
   { ctx := instCtx j.ctx k a, t := instTm j.ctx.size k a j.t, T := instTm j.ctx.size k a j.T }
 
-/-- Why the Lean kernel rejects a judgment. -/
+/-- Why the Lean kernel rejects a judgment. (In the pre-P2 mode, so that the marker's
+requirement does not hide the real error; the marks are the pass's job.) -/
 def why (g : Gl) (j : Jd) : String :=
-  match infer (R := Q) { globals := g } (close j.ctx j.t j.T) with
+  match infer (R := Q) { globals := { g with lazyProofs := false } } (close j.ctx j.t j.T) with
   | .ok _ => "(accepted)"
   | .error e => (toString e).replace "\n" " "
 
@@ -1143,6 +1186,9 @@ def lawsOn (w : World) (what : String) (j : Jd) (extra : List Tm) (subs : List (
   let g := w.g
   let cx := mkCx w j.ctx
   let k := cx.k
+  -- (P2) the term as the elaborator delivers it: the marking pass's output. Everything
+  -- below (evaluation, conversion, substitution, the rewrites) is about that term.
+  let j : Jd := { j with t := cx.markKnown j.t j.T }
   let n := j.ctx.size
   let vT := k.eval j.T
   let vt := k.eval j.t
@@ -1166,14 +1212,14 @@ def lawsOn (w : World) (what : String) (j : Jd) (extra : List Tm) (subs : List (
   let mut set : Array (String × Tm) := #[("the term", j.t), ("its normal form", nt)]
   for (name, must, cv, r) in (if derived then [] else rewrites cx j.t j.T) do
     if ← V w name { j with t := r } then
-      set := set.push (name, r)
+      set := set.push (name, cx.markKnown r j.T)
       hit "law L3 rewrites"
       if cv && !conv g k.tys vT vt (k.eval r) then
         bad s!"L3 a term is not convertible with {name}" (ctxOf s!"rewrite {r.pretty (names n)}")
     else if must then
       bad s!"L3 {name} of a well-typed term is ill typed" fun _ =>
         ctxOf s!"rewrite {r.pretty (names n)}\n  the kernel: {why g { j with t := r }}" ()
-  for e in extra do set := set.push ("the other term", e)
+  for e in extra do set := set.push ("the other term", cx.markKnown e j.T)
   let vals := set.map fun (_, a) => k.eval a
   let m := vals.size
   let rel : Array (Array Bool) := vals.map fun a => vals.map fun b => conv g k.tys vT a b
@@ -1188,11 +1234,14 @@ def lawsOn (w : World) (what : String) (j : Jd) (extra : List Tm) (subs : List (
       unless rel[i]![i']! == rel[i']![i]! do
         bad "P2 conversion is not symmetric" (ctxOf s!"{pr i}\n  and {pr i'}")
       hit "law P6 sameVal"
-      let sv := sameVal g vals[i]! vals[i']!
-      unless sv == (syn[i]! == syn[i']!) do
-        bad "P6 sameVal is not syntactic equality" (ctxOf s!"sameVal says {sv} of\n  {pr i}\n  and {pr i'}")
+      -- (P2: `sameVal` is gone. The kernel's remaining value comparison is `convGlued`'s
+      -- shortcut: erase-mode read-back and `==` (`syn`, above). So the law is that this
+      -- comparison never identifies inconvertible values; the read-back's faithfulness is
+      -- what makes it true, and S1 was an instance of it failing.)
+      let sv := syn[i]! == syn[i']!
       if sv && !rel[i]![i']! then
-        bad "P6 sameVal identifies inconvertible values" (ctxOf s!"{pr i}\n  and {pr i'}")
+        bad "P6 the kernel's erase-mode comparison identifies inconvertible values"
+          (ctxOf s!"{pr i}\n  and {pr i'}")
     for i' in [0:m] do
       for i'' in [0:m] do
         hit "law P2 transitive"
@@ -1281,11 +1330,10 @@ def tyPair (w : World) (ctx : Array Tm) (A B : Tm) (subs : List (Nat × Tm)) : M
   if (kind == "False") != (back == "False") then bad "P4 (A = B) is False but (B = A) is not" pr
   if kind == "True" && !c then bad "P4' the equation computes to True but the types are not convertible" pr
   hit "law P6 sameVal"
+  -- (P2: as in `lawsOn` — the kernel's erase-mode read-back comparison, `convGlued`'s)
   let ge : Gl := { g with quoteErasesProofs := true }
-  let sv := sameVal g vA vB
-  unless sv == (quote ge k.lvl vA == quote ge k.lvl vB) do
-    bad "P6 sameVal is not syntactic equality" fun _ => s!"sameVal says {sv} of\n  " ++ pr ()
-  if sv && !c then bad "P6 sameVal identifies inconvertible values" pr
+  let sv := quote ge k.lvl vA == quote ge k.lvl vB
+  if sv && !c then bad "P6 the kernel's erase-mode comparison identifies inconvertible values" pr
   -- (for `Kernel.wiz`: conversion of the two types, and the same two facts, as judgments)
   modify fun a => { a with wizLv := B == bumpLevels A && A != B }
   -- (not a pair that differs in a quantity only: at a proposition that is K1, pinned)
@@ -1336,7 +1384,9 @@ def checkSample (s : Sample) (iseed : Nat) : M Unit := do
   let n := s.ctx.size
   let subs := subsFor w s.ctx iseed
   let ps := lvParams (close s.ctx (.pair s.t s.u) s.T)
-  countAll g (s.ctx.toList ++ [s.T, s.t] ++ (if uOk then [s.u] else []))
+  -- (P2: the coverage of `prf` is the pass's output on the judgment's term)
+  let tM := cx.markKnown s.t s.T
+  countAll g (s.ctx.toList ++ [s.T, tM] ++ (if uOk then [s.u] else []))
   lawsOn w "the judgment" j (if uOk && s.u != s.t then [s.u] else []) subs ps
   if s.types then
     -- instances of the type that stay in the context: two instances of one schema
@@ -1694,15 +1744,19 @@ def leanCase (b : Budget) : IO Unit := do
 /-! ## `Kernel.wiz` -/
 
 def wizVerdict (g : Gl) (t : MTm) : String :=
-  match infer (R := Q) { globals := g } t.toTerm with
-  | .ok (ty, _) => match MTm.ofTerm (quote g 0 ty) with
-    | some m => m.pretty 0
-    | none => "?"
-  | .error _ => "error"
+  -- (P2) each side marks with its own pass, as `Tests/Elab`'s differential test does
+  match markInf g t.toTerm with
+  | none => "error"
+  | some t' => match infer (R := Q) { globals := g } t' with
+    | .ok (ty, _) => match MTm.ofTerm (quote g 0 ty) with
+      | some m => m.pretty 0
+      | none => "?"
+    | .error _ => "error"
 
 /-- The Lean kernel's normal form of a closed term, printed as `Kernel.wiz` prints. -/
 def wizNormal (g : Gl) (t : MTm) : String :=
-  match MTm.ofTerm (quote g 0 (eval g [] t.toTerm)) with
+  let t' := (markInf g t.toTerm).getD t.toTerm
+  match MTm.ofTerm (quote g 0 (eval g [] t')) with
   | some m => m.pretty 0
   | none => "?"
 
@@ -1796,10 +1850,16 @@ def wizCase (b : Budget) : IO Unit := do
     let mine := (qs.zip expected).filter (·.1.2.1 == r)
     IO.println s!"      {mine.length} × {r} ({(mine.filter (·.2 != "error")).length} not `error`)"
   let kernel ← IO.FS.readFile "selfhost/Kernel.wiz"
-  let verdict := "def verdict (t : Tm) : String := match infer empty t with\n  | .ok ty _ => show .nil 0 (quote 0 ty)\n  | .err _ => \"error\"\n"
+  let verdict :=
+    "def rawVerdict (t : Tm) : String := match infer empty t with\n  | .ok ty _ => show .nil 0 (quote 0 ty)\n  | .err _ => \"error\"\n" ++
+    "def markedVerdict (t : Tm) : String := rawVerdict (MR.tm (markInfer (TCtx.relevant empty) t))\n" ++
+    -- (P2) every query gets its proof markers first (the kernel requires them); a term the
+    -- pre-P2 kernel rejects is marked only when that kernel accepts it, as in `Tests/Elab`
+    "def verdict (t : Tm) : String := match infer (TCtx.noMarkers empty) t with\n  | .err _ => \"error\"\n  | .ok _ _ => markedVerdict t\n" ++
+    "def markedNormalize (t : Tm) : String := show .nil 0 (quote 0 (eval .nil (MR.tm (markInfer (TCtx.relevant empty) t))))\n"
   let printAll := "def printAll : List String → IO Unit\n  | .nil => IO.pure ()\n  | .cons s ss => do\n    IO.println s;\n    printAll ss\n"
   let defs := String.join ((List.range qs.length).zip qs |>.map fun (i, (m, _, nf)) =>
-    s!"def q{i} (u : Unit) : String := {if nf then "normalize" else "verdict"} {m.toWiz}\n")
+    s!"def q{i} (u : Unit) : String := {if nf then "markedNormalize" else "verdict"} {m.toWiz}\n")
   let calls := (List.range qs.length).map fun i => s!"(q{i} ())"
   let prog := kernel ++ "\n" ++ verdict ++ printAll ++ defs ++ s!"def main : IO Unit := printAll {Elab.wizList calls}\n"
   let some out ← wizRun prog | IO.println "    (skipped: no toolchain)"
