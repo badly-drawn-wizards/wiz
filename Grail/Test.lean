@@ -35,6 +35,13 @@ def TestKind.ofSource (src : String) : Except String TestKind :=
   | "run" => .ok .run
   | k => .error s!"unknown test kind {k} (check, run)"
 
+/-- What a failing test without a `-- test:` line is told (it was taken for a `check`,
+which compares the messages of elaborating the file: a program's output never shows up). -/
+def TestKind.defaultNote (src : String) : String :=
+  if ((src.splitOn "\n").headD "").startsWith "-- test:" then "" else
+  "\n      (no `-- test:` line, so this was a `check` test: the expected output is the " ++
+  "messages of checking the file; for what `main` prints, make `-- test: run` the first line)"
+
 def TestKind.name : TestKind → String
   | .check => "check" | .run => "run"
 
