@@ -27,9 +27,43 @@ Which toolchain runs (`tower show` says which, and why):
 
 1. `wiz +SPEC …`: a first argument starting with `+` (as with rustup);
 2. else, walking up from the current directory, an **override** for that directory
-   (`tower override set SPEC [DIR]`, kept in the settings), or a `wiz-toolchain` file
-   in it. The first directory with either one wins;
+   (`tower override set SPEC [DIR]`, kept in the settings), a `wiz-toolchain.local`
+   file in it, or a `wiz-toolchain` file in it, in that order. The first directory
+   with any of them wins;
 3. else the **default** (`tower default SPEC`).
+
+**Local overrides: `wiz-toolchain.local`.** A file `wiz-toolchain.local` next to
+`wiz-toolchain` is your own override for that project. It is not committed, so add it
+to the project's `.gitignore`:
+
+```
+wiz-toolchain.local
+```
+
+It has the same format (the first line that isn't blank or a comment) and takes
+everything `wiz-toolchain` does (`nightly`, `master@<sha>`, `v0.2.0`, a linked name),
+plus a **path to a toolchain**: a line starting with `/`, `./`, `../` or `~/` (or `.`,
+`..`). A relative path is resolved against the directory that holds the file. A bare
+`a/b` is a branch name, not a path; write `./a/b`. The directory is either a toolchain
+(`bin/wiz`, `bin/grail`, e.g. an unpacked release tarball or a Nix `result`) or a
+built checkout (`.lake/build/bin/wiz`, `lib/`), exactly what `tower toolchain link`
+takes. On first use tower links it under its absolute path as the name (the same code
+as `toolchain link`, with the `tower set cflags …` flags), so `tower toolchain list`
+shows it as `/path  [link /path]` (relinked if that link is removed). To try a
+compiler you are working on in one project:
+
+```sh
+echo ../wiz > wiz-toolchain.local   # a checkout after `lake build wiz grail`
+tower show
+# /home/me/src/wiz
+#   from /home/me/proj/wiz-toolchain.local (local override: wiz-toolchain names nightly)
+#   /home/me/.tower/toolchains/--home--me--src--wiz
+```
+
+The shims, `tower which` and `tower show` all honour it. A path that does not exist
+or holds no toolchain is an error naming the file
+(`…/wiz-toolchain.local: /home/me/src/wiz is not a toolchain: …`), not a silent fall back to
+`wiz-toolchain`. An absolute path also works as a spec elsewhere (`wiz +/path/to/tc …`).
 
 ## 26b: sources ✅
 
@@ -176,6 +210,10 @@ holding a tiny Lake project whose `wiz` and `grail` print their arguments, with 
   `wiz-toolchain` file, `+nightly` installing on first use, an override beating the
   file, `run`, `update` moving `nightly` but not `v1`, `uninstall`, and `auto-install
   false`;
+* `wiz-toolchain.local`: a spec beating `wiz-toolchain` (and `show` saying so), an
+  absolute path to a toolchain directory and a relative path to a checkout run by the
+  shims (with the flags), listed as a link, and the errors for a missing path and a
+  directory without a toolchain (from `show` and from a shim);
 * a release install from a tarball made by `scripts/release-tarball.sh` (which works on
   its own), a refused checksum, no release for a branch, and `link` plus `default` of an
   unpacked tarball;
