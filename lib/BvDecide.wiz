@@ -1,22 +1,26 @@
 import SatTactic
 import BitBlast
--- `bv_decide` (stage 28d): an equation of words decided by SAT, with no new trust.
--- `import BvDecide`.
---
---     def t (x y : UIntN 8) : UIntN.land x (UIntN.lor x y) = x := by bv_decide
---
--- The goal `lhs = rhs` at `UIntN w` (or `BitVec w`), `w` a numeral, is bit-blasted into
--- 28c's circuit: bit `i` of a word expression `e` is the node whose value is
--- `Bits.bit (UIntN.toNat e) i`; an operation's bit is a gate over its operands' bits, and
--- the node's proof is the operation's lemma (`Bits.wland_bit`, …), checked by the kernel
--- like any other gate. Words the tactic does not look into are inputs (their bits are
--- variables of the formula). The output is `Bits.eqUpTo (toNat lhs) (toNat rhs) w`, and
--- `Bits.word_ext` turns it into `lhs = rhs`.
---
--- The fragment: `UIntN.land/lor/xor/not/add/sub/neg` and shifts by numerals
--- (`shiftLeft`, `shiftRight`), the same under `BitVec`'s names, and closed words
--- (numerals, `UIntN.ofNat 8 13`: their bits are computed). Boolean goals may compare
--- words (`UIntN.lt/le`, `BitVec.ult/ule`) under the connectives `sat_decide` reads.
+/-!
+# BvDecide
+
+`bv_decide` (stage 28d): an equation of words decided by SAT, with no new trust.
+`import BvDecide`.
+
+    def t (x y : UIntN 8) : UIntN.land x (UIntN.lor x y) = x := by bv_decide
+
+The goal `lhs = rhs` at `UIntN w` (or `BitVec w`), `w` a numeral, is bit-blasted into
+28c's circuit: bit `i` of a word expression `e` is the node whose value is
+`Bits.bit (UIntN.toNat e) i`; an operation's bit is a gate over its operands' bits, and
+the node's proof is the operation's lemma (`Bits.wland_bit`, …), checked by the kernel
+like any other gate. Words the tactic does not look into are inputs (their bits are
+variables of the formula). The output is `Bits.eqUpTo (toNat lhs) (toNat rhs) w`, and
+`Bits.word_ext` turns it into `lhs = rhs`.
+
+The fragment: `UIntN.land/lor/xor/not/add/sub/neg` and shifts by numerals
+(`shiftLeft`, `shiftRight`), the same under `BitVec`'s names, and closed words
+(numerals, `UIntN.ofNat 8 13`: their bits are computed). Boolean goals may compare
+words (`UIntN.lt/le`, `BitVec.ult/ule`) under the connectives `sat_decide` reads.
+-/
 
 def BvD.toNatE (w : Nat) (e : Expr) : Expr := Expr.mkApp (.const "UIntN.toNat") (.cons (.lit w) (.cons e .nil))
 def BvD.bitE (w : Nat) (e : Expr) (i : Nat) : Expr := Expr.mkApp (.const "Bits.bit") (.cons (BvD.toNatE w e) (.cons (.lit i) .nil))

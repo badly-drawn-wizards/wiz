@@ -1,16 +1,20 @@
 import Hdl.Core
--- Pin constraints for Xilinx 7-series FPGAs (the XDC of Vivado, read also by
--- nextpnr-xilinx): a package pin and an I/O standard for every port, by the port's name
--- in the netlist, and the clock's period.
---
--- A board is its clock and a table of resources (`XPin`: a port name and its package
--- pins, bit 0 first). A design's ports are looked up in the table by name, so the table
--- can list the whole board and a design uses part of it (`Xdc.check` reports ports
--- without a resource and widths that differ; unused resources are fine).
---
--- Port names as `Verilog.emit` declares them: a one-bit port is `[0:0]` there, and
--- nextpnr names its pin by the bare port name (`uart_tx`), wider ones by bit
--- (`led[0]`), as `Pcf.emit` does for nextpnr-ice40.
+/-!
+# Hdl.Xdc
+
+Pin constraints for Xilinx 7-series FPGAs (the XDC of Vivado, read also by
+nextpnr-xilinx): a package pin and an I/O standard for every port, by the port's name
+in the netlist, and the clock's period.
+
+A board is its clock and a table of resources (`XPin`: a port name and its package
+pins, bit 0 first). A design's ports are looked up in the table by name, so the table
+can list the whole board and a design uses part of it (`Xdc.check` reports ports
+without a resource and widths that differ; unused resources are fine).
+
+Port names as `Verilog.emit` declares them: a one-bit port is `[0:0]` there, and
+nextpnr names its pin by the bare port name (`uart_tx`), wider ones by bit
+(`led[0]`), as `Pcf.emit` does for nextpnr-ice40.
+-/
 
 inductive XPin where
   | one (port : String) (pin : String)

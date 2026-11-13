@@ -1160,7 +1160,7 @@ partial def replaceConst (c : Name) (us : List Level) (t : Term R) (depth : Nat 
   | t => Id.run <| t.mapChildrenM pure (fun k x => pure (replaceConst c us x (depth + k)))
 
 /-- **Every call is on a field** (`checkImplAgrees`; termination of compiled code). The
-implementation is `λ a₀ … a_{k-1}. [let …] K Δ motive m₁ … mₙ ξ x …` for a `T.casesOn`
+implementation is `[prf.{l}] λ a₀ … a_{k-1}. [let …] K Δ motive m₁ … mₙ ξ x …` for a `T.casesOn`
 (or `casesOnN`) `K`, whose scrutinee is the column variable `x` itself (and, in mode A,
 whose indices are the index variables `ixL`), and the definition `fn` (at its own levels `us`) occurs only in the
 methods, each time as the head of a call whose argument at position `x` (the split's
@@ -1176,6 +1176,10 @@ partial def callsOnFields (g : Globals R) (fn : Name) (us : List Level) (k x : N
   let rec peel : Nat → Term R → Option (Term R)
     | 0, t => some t
     | n + 1, .lam _ b => peel n b
+    -- (P2: the value and the implementation of a definition whose sort may be `0` get a
+    -- top marker, `prf.{u}` at a symbolic level; `lams` counts through it and the binder
+    -- indices are unchanged: look through it, as the agreement check does)
+    | n + 1, .prf _ b => peel (n + 1) b
     | _, _ => none
   let some body := peel k impl | return false
   let rec skipLets : Term R → Nat → Term R × Nat
