@@ -404,20 +404,23 @@ def SatT.solveDag (g : Nat) (out : Nat) (st : SatT.St) (close : Expr → Expr �
     -- (not checked now: the kernel checks the declaration, which is where it costs)
     TacticM.assignLate g (close nodesC (SatT.stepsE proof) σ (SatT.holdsE σ nodesC 0 nodes (SatT.St.vals st) (SatT.St.pfs st)))
 
-def SatT.decideDag (g : Nat) (lhs rhs : Expr) : TacticM Unit := match SatT.isConst "Bool.true" rhs with
+-- (from `st0`: nodes another tactic has already made, e.g. `bv_decide`'s comparisons)
+def SatT.decideDagFrom (g : Nat) (st0 : SatT.St) (lhs rhs : Expr) : TacticM Unit := match SatT.isConst "Bool.true" rhs with
   | .true => do
-    r ← SatT.node g 1000 lhs SatT.St.empty;
+    r ← SatT.node g 1000 lhs st0;
     SatT.solveDag g r.1 r.2 (fun nodesE proofE σ holdsE =>
       Expr.mkApp (.const "Sat.dag_sound") (.cons nodesE (.cons (.lit r.1) (.cons proofE (.cons (.const "Sat.trivial")
         (.cons σ (.cons holdsE .nil)))))))
   | .false => do
-    ra ← SatT.node g 1000 lhs SatT.St.empty;
+    ra ← SatT.node g 1000 lhs st0;
     rb ← SatT.node g 1000 rhs ra.2;
     let iffE := Expr.mkApp (.const "Sat.boolEq") (.cons lhs (.cons rhs .nil));
     let ro := SatT.St.add iffE (.iff ra.1 rb.1) rb.2;
     SatT.solveDag g ro.1 ro.2 (fun nodesE proofE σ holdsE =>
       Expr.mkApp (.const "Sat.dag_eq") (.cons nodesE (.cons (.lit ro.1) (.cons proofE (.cons (.const "Sat.trivial")
         (.cons σ (.cons holdsE (.cons lhs (.cons rhs (.cons (.app (.const "Sat.eqRefl") iffE) .nil))))))))))
+
+def SatT.decideDag (g : Nat) (lhs rhs : Expr) : TacticM Unit := SatT.decideDagFrom g SatT.St.empty lhs rhs
 
 syntax (name := satDecide) "sat_decide" : tactic
 def Tactic.satDecide : Tactic := fun _ => do
