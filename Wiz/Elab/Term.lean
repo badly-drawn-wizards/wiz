@@ -1367,7 +1367,8 @@ partial def checkData? (ctx : LocalCtx R) (stx : Syntax) (expected : VTy R) :
     match expected with
     | .mu l I D i sz (some (T, us, args)) =>
       let some cn := dotCtor? g ctx.types.reverse.toArray T c expected
-        | throwFix h.info s!"{← if (ctorNames g T).any (·.contains '.') then showVal ctx expected else pure T} has no constructor {c}" ErrorCode.unknownConstructor [("name", [c]), ("type", [T])]
+        | throwFix h.info s!"{← if (ctorNames g T).any (·.contains '.') then showVal ctx expected else pure T} has no constructor {c}"
+            ErrorCode.unknownConstructor [("name", [c]), ("type", [T])]
       let ident : Syntax := .node h.info "term.ident" #[.ident h.info cn]
       let stx' := if stx.isOfKind "term.app" then .node stx.info "term.app" #[ident, stx.getArg 1] else ident
       let sizedBase := match (sizeView sz).1 with
