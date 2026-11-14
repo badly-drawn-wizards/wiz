@@ -87,6 +87,7 @@ def tacticSrc : String :=
 
 def group : Group where
   name := "lsp"
+  parallel := true
   exercise := "Stage 11 (infoview)"
   cases := [
     { name := "modules in isolation are elaborated once per process", run := fun _ => do
@@ -467,6 +468,7 @@ def wsCase : IO Unit := do
 
 def serverGroup : Group where
   name := "lsp-server"
+  parallel := true
   exercise := "Stage 11 (infoview, code actions)"
   cases := [
     { name := "infoview methods are advertised", run := fun _ => do

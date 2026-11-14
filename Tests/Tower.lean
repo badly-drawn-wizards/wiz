@@ -370,6 +370,7 @@ def cases (impl : IO Impl) : List Case := [
 
 def group : Group where
   name := "tower"
+  parallel := true
   exercise := "Stage 26"
   cases :=
     { name := "the Lean functions: settings, specs, flake references", run := fun _ => do

@@ -69,6 +69,7 @@ def leibnizDecls : List (Decl Unit) := [
 
 def mlttGroup : Group where
   name := "check: dependent types"
+  parallel := true
   exercise := "Exercises 1.5–1.7"
   cases := [
     { name := "id : (A : Type) → A → A",
@@ -151,6 +152,7 @@ def forallA (body : Raw Q) : Raw Q := pi' "A" zero ty body
 
 def qttGroup : Group where
   name := "check: quantities"
+  parallel := true
   exercise := "Exercises 0.1, 1.5–1.7"
   cases := [
     { name := "linear identity: (A :0 Type) → (x :1 A) → A",
@@ -320,6 +322,7 @@ def templatesCheck : IO Unit := do
 
 def structGroup : Group where
   name := "check: structural types"
+  parallel := true
   exercise := "Exercise 4.7"
   cases := [
     { name := "mandatory sorts: every description template is a well-typed term of its type, its written sorts included", run := fun _ => templatesCheck },
