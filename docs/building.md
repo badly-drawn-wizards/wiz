@@ -218,14 +218,29 @@ cached between runs.
   artifact cache rebuilds only what changed. `packages.tests` is the test driver
   (`nix run .#tests -- --list`), from the same build, so building `wiz` builds it too.
 * **The packaged read-only elaboration cache.** The `wiz` package prewarms the
-  elaboration cache with **every** module of `lib/` (all 59 `.wiz` files today, in
-  sorted order: one `wiz check` of a one-line `import M` for each module `M`) during its
-  build and installs it at
-  `$out/share/wiz/cache`: the `.wizc` effects and the `.wizm` seen markers, with no
-  `bin/` memo and `a-w` permissions. Both wrappers (`wiz` and `grail`) add
+  elaboration cache during its build and installs it at `$out/share/wiz/cache`: the
+  `.wizc` effects and the `.wizm` seen markers, with no `bin/` memo and `a-w`
+  permissions. Both wrappers (`wiz` and `grail`) add
   `--cache-ro $out/share/wiz/cache` after their toolchain flags, so a packaged run
   replays the standard library instead of elaborating it; a user's `--cache` (the
   default `~/.cache/wiz`) is still written, so the store cache is only ever read.
+  There are two sets of entries in that one directory, because `wiz` and `grail` are
+  different executables and the cache mixes the running binary's hash into every key
+  (`Cache.binaryId`; an entry written by one is never read by the other):
+  * **wiz**: every module of `lib/` (all 59 `.wiz` files today, in sorted order: one
+    `wiz check` of a one-line `import M` for each module `M`), about 4,100 entries and
+    49 MB. Checking a module's own file would key its commands by the main text, which
+    an importer never looks up, so the warm run imports it instead.
+  * **grail**: a minimal package in `$TMPDIR` whose `grail.wiz` imports `Grail` and
+    whose check target imports `Std` (437 entries, 3.3 MB, about 3 s). grail
+    elaborates in-process, so even a `grail build` of a one-target package would
+    elaborate its build file (Grail and Prelude) and Std's closure itself, under
+    grail's hash; without this set the store cache is never hit by grail (0 reads in a
+    clean-`HOME` probe) and the run writes those entries to the user's cache. With it,
+    the build file's and Std's elaboration replay for any package; a module outside
+    Std's closure is elaborated once, into the user cache. Warming *every* `lib` module
+    in grail's namespace would add another ~4,100 entries and ~50 MB for about 3
+    minutes of build time, which is not worth it for the uncommon imports.
   Flags parse left to right: a later `--no-cache` turns both the packaged cache and the
   write cache off, and a user's `--cache-ro DIR` appends another read-only layer
   (`--cache-ro` is repeatable and searched in the order given). The entries are keyed

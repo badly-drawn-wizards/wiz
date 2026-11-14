@@ -113,6 +113,23 @@
                 printf 'import %s\n' "$m" > "$TMPDIR/lib-import.wiz"
                 .lake/build/bin/wiz --cache "$cache" -I "$share/lib" check "$TMPDIR/lib-import.wiz"
               done < <(find lib -name '*.wiz' | LC_ALL=C sort)
+              # grail elaborates in-process under its *own* binary hash (the build file,
+              # Grail and Prelude, before every command, and each `check` job), so it
+              # hits none of the entries above: the two namespaces are disjoint by
+              # design (Cache.binaryId). Warm grail's too, with a minimal package: its
+              # `grail.wiz` elaborates Grail and Prelude, and the check target elaborates
+              # Std's closure, which is the fixed cost of a first `grail build` (measured:
+              # 437 entries, 3.3 MB, ~3 s here, against ~0 store hits without it). A
+              # module outside Std's closure is elaborated once into the user's cache.
+              # `grail build` reads the build file and runs the check job in one go; the
+              # binary needs no toolchain flags for either (lib/ imports no C headers).
+              warm=$TMPDIR/warm-pkg
+              mkdir -p "$warm"
+              printf '%s\n' 'import Grail' \
+                'def package : Package := Package.new "warm"' \
+                '  |> Package.check "std" "main.wiz"' > "$warm/grail.wiz"
+              printf 'import Std\n' > "$warm/main.wiz"
+              .lake/build/bin/grail -C "$warm" --cache "$cache" build
               # The binary's memo names the build-time executable path in its stamp; it
               # is for the write cache, so the store ships none.
               rm -rf "$cache/bin"
