@@ -364,7 +364,7 @@ The region discipline of 22g used to cost at run time: every handle was a cell
   scope around `push1` went from 15 objects and 8 lifted functions to 4 objects and none,
   and two nested scopes from 29 and 23 to 6 and none (no scope: 3). What remains is the
   handle's cell: `Uniq` is an inductive, which `--unbox-structs` doesn't unbox
-  (`/workspace/wiz-notes/linear-scope-cost.md`).
+  (`wiz-notes/linear-scope-cost.md`).
 
 Objects allocated on `#run`'s checked heap (`tests --allocs FILE ENTRY…`, a measuring
 mode of the test driver), before → after (the "unbox" columns are with `--unbox-structs`;
