@@ -31,10 +31,15 @@ reads it several times (each read would build another instance).
 Simulation: a primitive without a model is 0 at values and in `Netlist.simulate`;
 `Netlist.unmodelled` names such instances and the checked runners
 (`Circuit.runModelled`, `Netlist.simulateModelled`) refuse to run a circuit with one.
+A netlist with more than one clock domain is refused too (`Netlist.domainRefusals`):
+its registers tick at two rates, which the single-tick simulation cannot express.
 
 Clocks: a circuit's registers stay on its one implicit clock. `Clocking` describes a
 generated top-level wrapper whose clock primitive (a PLL) turns the board's clock into
-that implicit clock (through a BUFG) and into the circuit's clock inputs.
+that implicit clock (through a BUFG) and into the circuit's clock inputs. Data that
+crosses from one clock domain into another goes through a synchroniser
+(`Prim.declSync`; `Cdc.sync2` in `Hdl.Cdc`), and `Netlist.domainErrors` rejects every
+other crossing.
 
 A parameter's value, printed as Verilog.
 -/
@@ -57,13 +62,23 @@ def PrimParam.pairs : List (String × PrimParam) → List (String × String)
 
 -- a declaration with typed parameters, the same with other parameters (an instance's
 -- own settings), and with a model
+/-- A primitive declaration: its module, parameters, port names and model. -/
 def Prim.decl {ω i o : HwTy} (name : String) (ps : List (String × PrimParam)) (ins outs : List String)
     (model : Option (HwTy.El i → HwTy.El o)) : Prim i o :=
-  Prim.mk name (PrimParam.pairs ps) ins outs model
+  Prim.mk name (PrimParam.pairs ps) ins outs model .false
+/-- A synchroniser declaration (`Prim.decl` marked as a crossing): its output is in its
+clock input's domain and its data may come from one other domain (`Netlist.domainErrors`).
+Its clock input must be the only clock leaf of `i`; `Cdc.sync2` (`Hdl.Cdc`) is the
+two-flop one. A model, if any, is not a two-flop delay (a model is one total function
+from inputs to outputs), so the checked runners still refuse a multi-domain netlist
+(`Netlist.domainRefusals`). -/
+def Prim.declSync {ω i o : HwTy} (name : String) (ps : List (String × PrimParam)) (ins outs : List String)
+    (model : Option (HwTy.El i → HwTy.El o)) : Prim i o :=
+  Prim.mk name (PrimParam.pairs ps) ins outs model .true
 def Prim.withParams {ω i o : HwTy} (p : Prim i o) (ps : List (String × PrimParam)) : Prim i o :=
-  Prim.mk p.name (PrimParam.pairs ps) p.ins p.outs p.model
+  Prim.mk p.name (PrimParam.pairs ps) p.ins p.outs p.model p.sync
 def Prim.withModel {ω i o : HwTy} (p : Prim i o) (f : HwTy.El i → HwTy.El o) : Prim i o :=
-  Prim.mk p.name p.params p.ins p.outs (Option.some f)
+  Prim.mk p.name p.params p.ins p.outs (Option.some f) p.sync
 
 ------------------------------------------------------------------------------------
 -- Simulation without models: who has none, and runners that refuse.
@@ -80,15 +95,18 @@ def Netlist.unmodelled (n : Netlist) : List String := Netlist.unmodelledAux 0 n.
 def Prim.refusal (es : List String) : String :=
   "simulation refused: " <+> Hdl.sepBy "; " es
 
+def Netlist.simulationRefusals (n : Netlist) : List String :=
+  List.append (Netlist.domainRefusals n) (Netlist.unmodelled n)
+
 def Netlist.simulateModelled (n : Netlist) (inputs : List (List Nat)) : Except String (List (List Nat)) :=
-  match Netlist.unmodelled n with
+  match Netlist.simulationRefusals n with
   | .nil => Except.ok (Netlist.simulate n inputs)
   | es => Except.error (Prim.refusal es)
 
 def Circuit.unmodelled {ω i o : HwTy} (c : Circuit i o) : List String := Netlist.unmodelled (Circuit.netlist "c" c)
 
 def Circuit.runModelled {ω i o : HwTy} (c : Circuit i o) (xs : List (HwTy.El i)) : Except String (List (HwTy.El o)) :=
-  match Circuit.unmodelled c with
+  match Netlist.simulationRefusals (Circuit.netlist "c" c) with
   | .nil => Except.ok (Circuit.run c xs)
   | es => Except.error (Prim.refusal es)
 

@@ -8660,6 +8660,24 @@ def hdlGroup : Group where
           [".cons (\"clk2\", 0) .nil",
            "\"module dom2(input clk2, input [0:0] x, output [7:0] y);\\n  reg [7:0] r; initial r = 8'd250;\\n  wire [7:0] n3 = r + 8'd1;\\n  always @(posedge clk2) r <= n3;\\n  assign y = r;\\nendmodule\\n\"",
            "\"module dom3(input clk2, input [7:0] x, output [0:0] y);\\n  reg [7:0] r; initial r = 8'd0;\\n  wire [0:0] n6;\\n  ODDR u5 (.C(clk2), .D1(1'd0), .D2(1'd1), .Q(n6));\\n  always @(posedge clk2) r <= r;\\n  assign y = n6;\\nendmodule\\n\""] },
+    { name := "C2: clock domains: a synchronised crossing is accepted, an unsynchronised one rejected; clock-as-data still a kind error; one domain per circuit; runners refuse two clocks", run := fun _ => do
+        -- examples/hdl-cdc.wiz: a two-domain top (a clk register, a clk2 register) with and
+        -- without Cdc.sync2 between them; the sync clocked by its own source domain; a clock
+        -- input used as data; a one-domain circuit (no domain errors, the same Verilog); a
+        -- circuit that tries to smuggle a second register domain in; and the checked
+        -- runner's refusal (multi-clock simulation has no event schedule)
+        okLibs (← IO.FS.readFile "examples/hdl-cdc.wiz")
+          [".nil",
+           "\"module cross(input clk, input clk2, output [0:0] y);\\n  reg [0:0] r; initial r = 1'd0;\\n  reg [0:0] s; initial s = 1'd0;\\n  wire [0:0] n3;\\n  wiz_sync2 u2 (.clk(clk2), .d(r), .q(n3));\\n  always @(posedge clk) r <= r;\\n  always @(posedge clk2) s <= n3;\\n  assign y = s;\\nendmodule\\n\"",
+           ".cons \"a clk signal (register r) is used by clk2 logic (register s): no synchroniser\" .nil",
+           ".cons \"a clk signal (register r) is used by clk2 logic (register s): no synchroniser\" .nil",
+           ".cons \"synchroniser wiz_sync2 (node 2): its data is in its clock's own domain clk, not another one\" (.cons \"a clk signal (wiz_sync2.q) is used by clk2 logic (register s): no synchroniser\" .nil)",
+           ".cons \"a clock (input ck) is used as data by register r\" .nil",
+           ".nil",
+           ".nil",
+           "\"module counter(input clk, output [7:0] y);\\n  reg [7:0] r; initial r = 8'd0;\\n  wire [7:0] n3 = r + 8'd1;\\n  always @(posedge clk) r <= n3;\\n  assign y = r;\\nendmodule\\n\"",
+           ".cons \"a clk2 signal (wiz_sync2.q) is used by clk logic (register r): no synchroniser\" (.cons \"the clock net at node 2 is on clock domain clk2, which the netlist does not declare (clk)\" .nil)",
+           ".error \"simulation refused: 2 clock domains (clk, clk2): multi-clock simulation needs an event schedule; wiz_sync2 (node 2) has no behavioural model\""] },
     { name := "S1: bundles, composition, reset and enable at random cycles; netlist simulation = values; names, test bench, PCF, VCD", run := fun _ => do
         -- t1–t6: (agreement of the netlist simulations with `Circuit.run`, the netlist size
         -- and the outputs) for the bundled counter, a delay chain, `par`, a feedback loop,

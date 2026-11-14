@@ -29,6 +29,12 @@ whose step is such code; its state is the registers.
   its Verilog module; `Hw.prim` instantiates it. Their ports carry a kind (data, a clock
   net, a pad, a bidirectional pad, marked by a `named` segment beginning with `@`); only
   primitives' ports connect clock and pad leaves, and `Netlist.kindErrors` checks it.
+* **Clock domains**: a `ClockDomain` names the Verilog net of a clock and its period.
+  A circuit's registers and memories are all on the one domain it is built for
+  (`Circuit.netlistIn d`; `Circuit.netlist` is `ClockDomain.sys`). A design with two
+  clocks is a wiring of single-clock circuits; data crossing from one domain into
+  another must pass a synchroniser (`Prim.declSync`, `Hdl.Cdc`'s `Cdc.sync2`), and
+  `Netlist.domainErrors` rejects every other crossing.
 * **Bundles**: structures of signals (`structure Tx (r : HwTy → Type) where line : r Bit …`)
   are `Bundle`s: `deriving Bundle` gives their code and the conversions, and field access
   is the ordinary `s.line`.
@@ -131,6 +137,20 @@ def Hdl.concat : List String → String
   | .nil => ""
   | .cons s ss => s <+> Hdl.concat ss
 
+/-- Whether a string is in a list. -/
+def Hdl.member (s : String) : List String → Bool
+  | .nil => .false
+  | .cons x xs => Bool.or (Hdl.strEq s x) (Hdl.member s xs)
+/-- The strings joined with `sep` (`""` for an empty list). -/
+def Hdl.sepBy (sep : String) : List String → String
+  | .nil => ""
+  | .cons x .nil => x
+  | .cons x xs => x <+> sep <+> Hdl.sepBy sep xs
+/-- The lists' elements, joined in order. -/
+def Hdl.concatLists {A : Type} : List (List A) → List A
+  | .nil => .nil
+  | .cons xs xss => List.append xs (Hdl.concatLists xss)
+
 ------------------------------------------------------------------------------------
 -- Hardware types (codes) and their values
 
@@ -211,13 +231,16 @@ def ClockDomain.named (name : String) : ClockDomain := ClockDomain.mk name 0
 -- port names (one per leaf of `i`, then of `o`), and a behavioural model at values, if any.
 /-- A primitive (a vendor cell, a black box: `lib/Hdl/Prim.wiz`): its module name, its
 parameters (names and Verilog text), its port names (one per leaf of `i`, then of `o`),
-and a behavioural model at values, if it has one. -/
+a behavioural model at values, if it has one, and whether it is a synchroniser
+(`Prim.declSync`: a cell that may take its data from another clock domain, and whose
+output is in its clock's domain). -/
 structure Prim (i o : HwTy) where
   name : String
   params : List (String × String)   -- Verilog text (`PrimParam.pairs` writes it)
   ins : List String
   outs : List String
   model : Option (HwTy.El i → HwTy.El o)
+  sync : Bool                       -- a clock-domain crossing cell (`Prim.declSync`)
 
 
 /-- The leaves of a code, in order (first component first): the widths of its bit vectors.
@@ -633,8 +656,10 @@ def HwTy.leafKinds (t : HwTy) : List PortKind := HwTy.kindsAux PortKind.data t
 -- values ↦ output values), when the declaration has one.
 /-- A primitive instance as the netlist keeps it: the Verilog module, its parameters
 (names and Verilog text), its port names (one per leaf, inputs then outputs), the
-leaves' kinds, the outputs' widths, and the behavioural model on leaves (input values ↦
-output values), when the declaration has one. -/
+leaves' kinds, the outputs' widths, the behavioural model on leaves (input values ↦
+output values), when the declaration has one, and whether it is a synchroniser
+(`Prim.sync`: its output is in its clock input's domain, and the domain checker lets its
+data come from one other domain). -/
 structure NetPrim where
   name : String
   params : List (String × String)
@@ -644,6 +669,7 @@ structure NetPrim where
   outKinds : List PortKind
   outWidths : List Nat
   model : Option (List Nat → List Nat)
+  sync : Bool
 
 -- (`inst p`: one node of width 0 per instance, whose arguments are the instance's
 --  input leaves; `instOut j lo`: its output leaf `j`, at bit `lo` of the outputs packed
@@ -712,11 +738,14 @@ structure NetMem where
   writes : List (Nat × (Nat × Nat))
   dom : String
 
-/-- A port: its name, width and the node it is (an input) or shows (an output). -/
+/-- A port: its name, width, the node it is (an input) or shows (an output), and its
+clock domain's net (`clk` for the implicit clock). An input's domain is where its data
+comes from; an output's is where it is produced (the domain checker reads inputs). -/
 structure NetPort where
   name : String
   width : Nat
   node : Nat
+  dom : String
 
 /-- A netlist: flat, widths concrete, one node per bit-vector operation (or primitive
 instance). Node `k` is the `k`-th of `nodes` and its arguments refer to earlier nodes;
@@ -1163,12 +1192,13 @@ def Wire.memWrite {ω aw dw : Nat} (m : Wire (HwTy.mem aw dw)) (we : Wire HwTy.b
   NetM.pure (mm.1, List.append mm.2 (.cons (e, (x, y)) .nil))
 
 /-- A primitive declaration as the netlist keeps it: its kinds and output widths from
-its port codes, and its model on leaves. -/
+its port codes, its model on leaves, and its synchroniser marker. -/
 def Prim.erase {ω i o : HwTy} (p : Prim i o) : NetPrim :=
   NetPrim.mk p.name p.params p.ins p.outs (HwTy.leafKinds i) (HwTy.leafKinds o) (HwTy.leafWidths o)
     (match p.model with
     | .none => Option.none
     | .some f => Option.some (fun (ls : List Nat) => HwTy.leaves o (f (HwTy.ofLeaves i ls))))
+    p.sync
 
 -- What is wrong with a declaration: port names that do not match the leaves.
 /-- What is wrong with a primitive declaration: port names that do not match the leaves. -/
@@ -1522,9 +1552,9 @@ def Net.regs (nodes : Hdl.Vec NetNode) (dom : String) : List String → List Nat
     .cons (NetReg.mk nm w v p.2.2 p.1 p.2.1 dom) (Net.regs nodes dom nms ws vs cs xs)
   | _, _, _, _, _ => .nil
 
-/-- Ports from their names, widths and nodes. -/
-def Net.ports : List String → List Nat → List Nat → List NetPort
-  | .cons nm nms, .cons w ws, .cons k ks => .cons (NetPort.mk nm w k) (Net.ports nms ws ks)
+/-- Ports from their names, widths and nodes, in clock domain `dom`. -/
+def Net.ports (dom : String) : List String → List Nat → List Nat → List NetPort
+  | .cons nm nms, .cons w ws, .cons k ks => .cons (NetPort.mk nm w k dom) (Net.ports dom nms ws ks)
   | _, _, _ => .nil
 
 /-- A set of numbers (an `HTrie` of keys). -/
@@ -1578,7 +1608,7 @@ def Net.mapOpt (m : HTrie Nat) : Option Nat → Option Nat
 def NetReg.remap (m : HTrie Nat) (r : NetReg) : NetReg :=
   NetReg.mk r.name r.width r.init (Net.mapId m r.next) (Net.mapOpt m r.rst) (Net.mapOpt m r.en) r.dom
 /-- A port with its node renumbered. -/
-def NetPort.remap (m : HTrie Nat) (p : NetPort) : NetPort := NetPort.mk p.name p.width (Net.mapId m p.node)
+def NetPort.remap (m : HTrie Nat) (p : NetPort) : NetPort := NetPort.mk p.name p.width (Net.mapId m p.node) p.dom
 /-- The wire names of live nodes, renumbered. -/
 def Net.remapHints (live : Hdl.Set) (m : HTrie Nat) : List (Nat × String) → List (Nat × String)
   | .nil => .nil
@@ -2101,6 +2131,279 @@ def Netlist.kindErrors (n : Netlist) (ins outs : List PortKind) : List String :=
 def Netlist.withErrors (n : Netlist) (es : List String) : Netlist :=
   Netlist.mk n.name n.nodes n.regs n.inputs n.outputs n.hints n.mems n.clocks (List.append n.errors es)
 
+------------------------------------------------------------------------------------
+-- (C2) Clock domains: which domain each node's value is in, and the crossings that no
+-- synchroniser makes.
+--
+-- A `Circuit` has one clock domain (all its registers tick together); a design with two
+-- clocks is a composition of such circuits, each on its own domain, wired at the top.
+-- Data crossing from one domain into another must pass a synchroniser: a `Prim` declared
+-- with `Prim.declSync` (`Hdl.Cdc`'s `Cdc.sync2` is two flops in the destination domain).
+-- Everything else is `Netlist.domainErrors`: a combinational path that mixes domains, a
+-- register sampling another domain, a memory written from another domain, a clock net
+-- used where data is expected (that one is `Netlist.kindErrors`), a synchroniser whose
+-- clock or data is in the wrong domain, and a domain the netlist does not declare.
+
+/-- The empty domain set. -/
+def Net.noDom : List String := List.nil
+/-- The union of two domain sets: the first's domains, then the second's that are new (so
+the order is the first argument's and messages are stable). -/
+def Net.domUnion : List String → List String → List String
+  | .nil, b => b
+  | .cons x xs, b => match Hdl.member x b with
+    | .true => Net.domUnion xs b
+    | .false => .cons x (Net.domUnion xs b)
+/-- The union of the domains of a node's arguments. -/
+def Net.domArgs (ds : Hdl.Vec (List String)) : List Nat → List String
+  | .nil => List.nil
+  | .cons a as => Net.domUnion (Hdl.Vec.get Net.noDom ds a) (Net.domArgs ds as)
+/-- The first domain of node `k`'s domain set (`?` if it has none). -/
+def Net.domHead (ds : Hdl.Vec (List String)) (k : Nat) : String :=
+  Hdl.nthD "?" (Hdl.Vec.get Net.noDom ds k) 0
+/-- The first argument with a non-empty domain set: its id and its first domain. -/
+def Net.firstDom (ds : Hdl.Vec (List String)) : List Nat → Option (Nat × String)
+  | .nil => .none
+  | .cons a as => match Hdl.Vec.get Net.noDom ds a with
+    | .nil => Net.firstDom ds as
+    | .cons d _ => .some (a, d)
+/-- The first argument whose domain is not `d` (and not empty). -/
+def Net.otherDom (ds : Hdl.Vec (List String)) (d : String) : List Nat → Option Nat
+  | .nil => .none
+  | .cons a as => match Hdl.Vec.get Net.noDom ds a with
+    | .nil => Net.otherDom ds d as
+    | .cons x _ => match Hdl.strEq x d with
+      | .true => Net.otherDom ds d as
+      | .false => .some a
+
+/-- The domain checker's context: the netlist's nodes, registers, memories, inputs and the
+inputs' names. -/
+structure Net.DomCx where
+  nodes : Hdl.Vec NetNode
+  regs : Hdl.Vec NetReg
+  mems : Hdl.Vec NetMem
+  ins : Hdl.Vec NetPort
+  inNames : List String
+/-- The domain checker's context of a netlist. -/
+def Net.domCx (n : Netlist) : Net.DomCx :=
+  Net.DomCx.mk (Hdl.Vec.ofList n.nodes) (Hdl.Vec.ofList n.regs) (Hdl.Vec.ofList n.mems)
+    (Hdl.Vec.ofList n.inputs) (Hdl.map (fun (p : NetPort) => p.name) n.inputs)
+/-- Node `k`'s arguments. -/
+def Net.DomCx.args (cx : Net.DomCx) (k : Nat) : List Nat := (Hdl.Vec.get NetNode.none cx.nodes k).args
+/-- Register `r`, or a dummy past the end. -/
+def Net.DomCx.reg (cx : Net.DomCx) (r : Nat) : NetReg :=
+  Hdl.Vec.get (NetReg.mk "?" 0 0 0 .none .none "?") cx.regs r
+/-- Memory `m`, or a dummy past the end. -/
+def Net.DomCx.mem (cx : Net.DomCx) (m : Nat) : NetMem :=
+  Hdl.Vec.get (NetMem.mk "?" 0 0 .nil .nil "?") cx.mems m
+/-- Input port `p`, or a dummy past the end. -/
+def Net.DomCx.inPort (cx : Net.DomCx) (p : Nat) : NetPort :=
+  Hdl.Vec.get (NetPort.mk "?" 0 0 "?") cx.ins p
+/-- The primitive instance node `k` is, if it is one. -/
+def Net.DomCx.instAt (cx : Net.DomCx) (k : Nat) : Option NetPrim :=
+  let ω n := Hdl.Vec.get NetNode.none cx.nodes k;
+  match n.op with
+  | .inst p => .some p
+  | _ => .none
+/-- Node `k` as prose for the domain checker: a register by name, else `Net.describe`. -/
+def Net.DomCx.describe (cx : Net.DomCx) (k : Nat) : String :=
+  let ω n := Hdl.Vec.get NetNode.none cx.nodes k;
+  match n.op, n.args with
+  | .reg r, _ => "register " <+> (Net.DomCx.reg cx r).name
+  | _, _ => Net.describe cx.nodes cx.inNames k
+/-- The domain a clock net names: node `k`'s `NetOp.clock dom`. -/
+def Net.clockDom (nodes : Hdl.Vec NetNode) (k : Nat) : Option String :=
+  let ω n := Hdl.Vec.get NetNode.none nodes k;
+  match n.op with
+  | .clock d => .some d
+  | _ => .none
+/-- A synchroniser's clock leaves, in step with its arguments: the domain its clock input
+names (the first clock leaf's). -/
+def Net.syncDomAux (nodes : Hdl.Vec NetNode) : List PortKind → List Nat → Option String
+  | .cons k ks, .cons a as => match k with
+    | .clock => Net.clockDom nodes a
+    | _ => Net.syncDomAux nodes ks as
+  | _, _ => .none
+/-- The domain a synchroniser instance is in: its clock input's. -/
+def Net.syncDom (nodes : Hdl.Vec NetNode) (p : NetPrim) (args : List Nat) : Option String :=
+  Net.syncDomAux nodes p.inKinds args
+/-- How many clock leaves a primitive declaration has. -/
+def Net.clockLeaves : List PortKind → Nat
+  | .nil => 0
+  | .cons k ks => match k with
+    | .clock => Nat.succ (Net.clockLeaves ks)
+    | _ => Net.clockLeaves ks
+/-- The union of the domains of a primitive's data leaves (its clock leaves skipped). -/
+def Net.dataDomAux (ds : Hdl.Vec (List String)) : List PortKind → List Nat → List String
+  | .cons k ks, .cons a as => match k with
+    | .clock => Net.dataDomAux ds ks as
+    | _ => Net.domUnion (Hdl.Vec.get Net.noDom ds a) (Net.dataDomAux ds ks as)
+  | _, _ => List.nil
+/-- The domain a synchroniser's data comes from (empty if it has none, or several). -/
+def Net.dataDom (ds : Hdl.Vec (List String)) (p : NetPrim) (args : List Nat) : List String :=
+  Net.dataDomAux ds p.inKinds args
+
+/-- The domain of a node's value, once the earlier nodes' domains (`ds`) are known: an
+input is in its port's domain, a register in its own, a memory read in the memory's, a
+clock net and a constant have none, a synchroniser's output is in its clock's domain,
+and every other node is in the union of its arguments' domains. -/
+def Net.domOfNode (cx : Net.DomCx) (ds : Hdl.Vec (List String)) (nd : NetNode) : List String :=
+  match nd.op, nd.args with
+  | .input p, _ => .cons (Net.DomCx.inPort cx p).dom List.nil
+  | .reg r, _ => .cons (Net.DomCx.reg cx r).dom List.nil
+  | .memRead m, _ => .cons (Net.DomCx.mem cx m).dom List.nil
+  | .clock _, _ => List.nil
+  | .const _, _ => List.nil
+  | .instOut _ _, .cons i _ => match Net.DomCx.instAt cx i with
+    | .some p => match p.sync with
+      | .true => match Net.syncDom cx.nodes p (Net.DomCx.args cx i) with
+        | .some d => .cons d List.nil
+        | .none => List.nil
+      | .false => Hdl.Vec.get Net.noDom ds i
+    | .none => List.nil
+  | _, _ => Net.domArgs ds nd.args
+/-- The domain of every node, in order: the fixpoint of the rules above (a node's
+arguments are earlier nodes, so one pass reaches it). With one clock domain every set is
+`[dom]` or empty, so the checker says nothing; a set of more than one domain is a value
+that mixed domains without a synchroniser. -/
+def Net.domOfAux (cx : Net.DomCx) : List NetNode → Hdl.Vec (List String) → Hdl.Vec (List String)
+  | .nil, ds => ds
+  | .cons nd nds, ds => Net.domOfAux cx nds (Hdl.Vec.push ds (Net.domOfNode cx ds nd))
+/-- The clock domain (as a set) of every node's value (`Net.domOfAux` over the netlist). -/
+def Net.domOf (n : Netlist) : Hdl.Vec (List String) := Net.domOfAux (Net.domCx n) n.nodes Hdl.Vec.empty
+
+/-- Whether clock domain `d` is one of the netlist's (`Netlist.clocks`). -/
+def Netlist.hasDom (n : Netlist) (d : String) : Bool :=
+  Hdl.member d (Hdl.map (fun (c : ClockDomain) => c.name) n.clocks)
+/-- The netlist's clock domains as prose (`clk, clk2`). -/
+def Netlist.domNames (n : Netlist) : String :=
+  Hdl.sepBy ", " (Hdl.map (fun (c : ClockDomain) => c.name) n.clocks)
+/-- The error where something (`what`) is on clock domain `d`, which the netlist does not
+declare. -/
+def Netlist.undeclared (n : Netlist) (what d : String) : List String :=
+  match Netlist.hasDom n d with
+  | .true => List.nil
+  | .false => .cons (what <+> " is on clock domain " <+> d <+> ", which the netlist does not declare ("
+      <+> Netlist.domNames n <+> ")") List.nil
+
+/-- The error where node `a`, in another clock domain, is used by `d` logic (`what`). A
+node that mixes domains is reported where they meet (or upstream), not again here. -/
+def Net.domSink (cx : Net.DomCx) (ds : Hdl.Vec (List String)) (d : String) (a : Nat) (what : String) : List String :=
+  match Hdl.Vec.get Net.noDom ds a with
+  | .nil => List.nil
+  | .cons x .nil => match Hdl.strEq x d with
+    | .true => List.nil
+    | .false => .cons ("a " <+> x <+> " signal (" <+> Net.DomCx.describe cx a <+> ") is used by " <+> d
+        <+> " logic (" <+> what <+> "): no synchroniser") List.nil
+  | .cons _ (.cons _ _) => List.nil
+/-- `Net.domSink` for an optional node (a register's reset or enable). -/
+def Net.domOptSink (cx : Net.DomCx) (ds : Hdl.Vec (List String)) (d : String) (a : Option Nat) (what : String) : List String :=
+  match a with
+  | .none => List.nil
+  | .some k => Net.domSink cx ds d k what
+/-- The crossing error where a node's arguments mix two clock domains (the first argument
+in a domain, and a later one in another): the crossing that no synchroniser makes. -/
+def Net.domMix (cx : Net.DomCx) (ds : Hdl.Vec (List String)) (k : Nat) (nd : NetNode) : List String :=
+  match Net.firstDom ds nd.args with
+  | .none => List.nil
+  | .some a => match Net.otherDom ds a.2 nd.args with
+    | .none => List.nil
+    | .some b => .cons ("a " <+> Net.domHead ds b <+> " signal (" <+> Net.DomCx.describe cx b
+        <+> ") and a " <+> a.2 <+> " signal (" <+> Net.DomCx.describe cx a.1 <+> ") meet at node "
+        <+> Hdl.show k <+> ": no synchroniser") List.nil
+/-- The errors of a synchroniser instance: exactly one clock input, naming the destination
+domain, and data in exactly one other domain. (Its output, and so the logic it feeds, is
+in the clock's domain; `Net.domOfNode` puts it there.) -/
+def Net.domSync (cx : Net.DomCx) (ds : Hdl.Vec (List String)) (k : Nat) (p : NetPrim) : List String :=
+  let ω name := "synchroniser " <+> p.name <+> " (node " <+> Hdl.show k <+> ")";
+  match Nat.beq 1 (Net.clockLeaves p.inKinds) with
+  | .false => .cons (name <+> ": a synchroniser needs exactly one clock input") List.nil
+  | .true => match Net.syncDom cx.nodes p (Net.DomCx.args cx k) with
+    | .none => .cons (name <+> ": no clock net (Hw.clockOf d) at its clock input") List.nil
+    | .some d => match Net.dataDom ds p (Net.DomCx.args cx k) with
+      | .nil => List.nil
+      | .cons src rest => match rest with
+        | .cons _ _ => .cons (name <+> ": its data mixes clock domains") List.nil
+        | .nil => match Hdl.strEq src d with
+          | .true => .cons (name <+> ": its data is in its clock's own domain " <+> d
+              <+> ", not another one") List.nil
+          | .false => List.nil
+/-- The crossing errors of one node: a mix of domains in its arguments, or a
+synchroniser's own rules. -/
+def Net.domNode (cx : Net.DomCx) (ds : Hdl.Vec (List String)) (k : Nat) (nd : NetNode) : List String :=
+  match nd.op with
+  | .inst p => match p.sync with
+    | .true => Net.domSync cx ds k p
+    | .false => Net.domMix cx ds k nd
+  | .input _ => List.nil
+  | .const _ => List.nil
+  | .reg _ => List.nil
+  | .clock _ => List.nil
+  | .instOut _ _ => List.nil
+  | _ => Net.domMix cx ds k nd
+/-- The crossing errors of every node, in order. -/
+def Net.domNodes (cx : Net.DomCx) (ds : Hdl.Vec (List String)) : Nat → List NetNode → List String
+  | _, .nil => List.nil
+  | k, .cons nd nds => List.append (Net.domNode cx ds k nd) (Net.domNodes cx ds (Nat.succ k) nds)
+/-- The crossing errors of one register: what it loads, its reset and its enable must be
+in its own domain. -/
+def Net.domReg (cx : Net.DomCx) (ds : Hdl.Vec (List String)) (r : NetReg) : List String :=
+  List.append (Net.domSink cx ds r.dom r.next ("register " <+> r.name))
+    (List.append (Net.domOptSink cx ds r.dom r.rst ("the reset of register " <+> r.name))
+      (Net.domOptSink cx ds r.dom r.en ("the enable of register " <+> r.name)))
+/-- The crossing errors of the registers, in order. -/
+def Net.domRegs (cx : Net.DomCx) (ds : Hdl.Vec (List String)) : List NetReg → List String
+  | .nil => List.nil
+  | .cons r rs => List.append (Net.domReg cx ds r) (Net.domRegs cx ds rs)
+/-- The crossing errors of one memory write: its enable, address and data must be in the
+memory's domain. -/
+def Net.domMemWrite (cx : Net.DomCx) (ds : Hdl.Vec (List String)) (m : NetMem) (we wa wd : Nat) : List String :=
+  List.append (Net.domSink cx ds m.dom we ("the write enable of memory " <+> m.name))
+    (List.append (Net.domSink cx ds m.dom wa ("the write address of memory " <+> m.name))
+      (Net.domSink cx ds m.dom wd ("the write data of memory " <+> m.name)))
+/-- The crossing errors of a memory's writes, in order. -/
+def Net.domMemWrites (cx : Net.DomCx) (ds : Hdl.Vec (List String)) (m : NetMem) : List (Nat × (Nat × Nat)) → List String
+  | .nil => List.nil
+  | .cons w ws => List.append (Net.domMemWrite cx ds m w.1 w.2.1 w.2.2) (Net.domMemWrites cx ds m ws)
+/-- The crossing errors of the memories, in order. -/
+def Net.domMems (cx : Net.DomCx) (ds : Hdl.Vec (List String)) : List NetMem → List String
+  | .nil => List.nil
+  | .cons m ms => List.append (Net.domMemWrites cx ds m m.writes) (Net.domMems cx ds ms)
+/-- The undeclared domains of the input ports. -/
+def Net.domPorts (n : Netlist) : List NetPort → List String
+  | .nil => List.nil
+  | .cons p ps => List.append (Netlist.undeclared n ("input " <+> p.name) p.dom) (Net.domPorts n ps)
+/-- The undeclared domain of every port, register and memory. -/
+def Net.domDeclared (n : Netlist) : List String :=
+  List.append (Net.domPorts n n.inputs)
+    (List.append (Hdl.concatLists (Hdl.map (fun (r : NetReg) => Netlist.undeclared n ("register " <+> r.name) r.dom) n.regs))
+      (Hdl.concatLists (Hdl.map (fun (m : NetMem) => Netlist.undeclared n ("memory " <+> m.name) m.dom) n.mems)))
+/-- The undeclared domain of every clock net. -/
+def Net.domClockNets (n : Netlist) : Nat → List NetNode → List String
+  | _, .nil => List.nil
+  | k, .cons nd ns => List.append (match nd.op with
+    | .clock d => Netlist.undeclared n ("the clock net at node " <+> Hdl.show k) d
+    | _ => List.nil) (Net.domClockNets n (Nat.succ k) ns)
+
+/-- What is wrong with a netlist's clock domains: data crossing a domain boundary without
+a synchroniser, a synchroniser in the wrong domain, a clock used as data (that one is
+`Netlist.kindErrors`), and a domain the netlist does not declare. -/
+def Netlist.domainErrors (n : Netlist) : List String :=
+  let ω cx := Net.domCx n;
+  let ω ds := Net.domOf n;
+  List.append (Net.domNodes cx ds 0 n.nodes)
+    (List.append (Net.domRegs cx ds n.regs)
+      (List.append (Net.domMems cx ds n.mems)
+        (List.append (Net.domDeclared n) (Net.domClockNets n 0 n.nodes))))
+
+/-- What makes the checked runners refuse a netlist: more than one clock domain. The
+single-tick simulation (`Netlist.simulate`, `Circuit.run`) has one clock; a design whose
+registers tick at two rates needs an event schedule, which is not implemented. -/
+def Netlist.domainRefusals (n : Netlist) : List String :=
+  match n.clocks with
+  | .cons _ (.cons _ _) => .cons (Hdl.show (List.length n.clocks) <+> " clock domains ("
+      <+> Netlist.domNames n <+> "): multi-clock simulation needs an event schedule") List.nil
+  | _ => List.nil
+
 -- the netlist, and the builder's final state
 /-- The netlist of a circuit in clock domain `d` (hash-consed if `cse`), and the builder's
 final state (for counting nodes and work). -/
@@ -2111,9 +2414,9 @@ def Circuit.netlistSIn {ω i o : HwTy} (d : ClockDomain) (cse : Bool) (name : St
   let ω nodes := Hdl.Vec.ofList (Hdl.reverse s.nodes);
   let ω regs := Net.regs nodes d.name (HwTy.portNames "r" c.st) (HwTy.leafWidths c.st) (HwTy.leaves c.st c.init) ids.2.1 ids.2.2.1;
   let ω n := Net.finish name (.cons d .nil) d.name s regs ids.2.1
-    (Net.ports (HwTy.portNames "x" i) (HwTy.leafWidths i) ids.1)
-    (Net.ports (HwTy.portNames "y" o) (HwTy.leafWidths o) ids.2.2.2);
-  (Netlist.withErrors n (Netlist.kindErrors n (HwTy.leafKinds i) (HwTy.leafKinds o)), s)
+    (Net.ports d.name (HwTy.portNames "x" i) (HwTy.leafWidths i) ids.1)
+    (Net.ports d.name (HwTy.portNames "y" o) (HwTy.leafWidths o) ids.2.2.2);
+  (Netlist.withErrors n (List.append (Netlist.kindErrors n (HwTy.leafKinds i) (HwTy.leafKinds o)) (Netlist.domainErrors n)), s)
 /-- The netlist of a circuit in the implicit clock domain `sys` (hash-consed if `cse`). -/
 def Circuit.netlistS {ω i o : HwTy} (cse : Bool) (name : String) (c : Circuit i o) : Netlist × NetS :=
   Circuit.netlistSIn ClockDomain.sys cse name c
@@ -2176,10 +2479,6 @@ def Verilog.identChar (c : Char) : Char :=
 def Verilog.identChars : List Char → List Char
   | .nil => .nil
   | .cons c cs => .cons (Verilog.identChar c) (Verilog.identChars cs)
-/-- Whether a string is in a list. -/
-def Hdl.member (s : String) : List String → Bool
-  | .nil => .false
-  | .cons x xs => Bool.or (Hdl.strEq s x) (Hdl.member s xs)
 /-- The SystemVerilog keywords too (yosys, Verilator and simulators in SV mode read the
 output), which no identifier may be either. -/
 def Verilog.svKeywords : List String :=
@@ -2526,11 +2825,6 @@ def Verilog.ctx (n : Netlist) (vn : VNames) : VCtx :=
 
 -- Primitive instances: `NAME #(.P(v), …) uK (.port(net), …);`, after the wires. An
 -- output nothing reads is left unconnected.
-/-- The strings joined with `sep` (`""` for an empty list). -/
-def Hdl.sepBy (sep : String) : List String → String
-  | .nil => ""
-  | .cons x .nil => x
-  | .cons x xs => x <+> sep <+> Hdl.sepBy sep xs
 /-- `String`. -/
 def Verilog.conn (port net : String) : String := "." <+> port <+> "(" <+> net <+> ")"
 /-- `List String → List Nat → List String | .cons pn pns, .cons a as => .cons (Verilog.conn

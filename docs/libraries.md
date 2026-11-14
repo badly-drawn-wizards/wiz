@@ -473,12 +473,29 @@ data fed to a clock port, a pad on a data output.
 Registers stay on the one implicit clock. For more clocks a `Clocking` (`Hdl.Prim`)
 describes a top-level wrapper: `Verilog.emitTop n ck` prints the circuit as `NAME_core`
 and a module `NAME` whose clock primitive (a PLL, `X7.pll`) takes the board's `clk`, and
-drives the core's `clk` and its clock inputs through BUFGs. Logic in several clock
-domains (CDC) is not supported.
+drives the core's `clk` and its clock inputs through BUFGs.
+
+Clock domains (`ClockDomain`: the Verilog net and its period; `ClockDomain.sys` is `clk`)
+name a design's clocks without giving a circuit a second one: a circuit's registers and
+memories are all on the domain `Circuit.netlistIn d` builds it for, and
+`Circuit.netlist` is the `sys` case. A design with two clocks is a composition of such
+circuits wired at the top; data crossing from one domain into another must pass a
+synchroniser (`Hdl.Cdc`'s `Cdc.sync2 dst d`: two flops in the destination domain,
+declared with `Prim.declSync`). `Netlist.domainErrors` (appended to `Netlist.errors` next
+to `Netlist.kindErrors`) infers each node's domain (`Net.domOf`: an input from its
+port's, a register or memory read from its own, a synchroniser's output from its clock's,
+anything else the union of its arguments') and rejects a combinational path that mixes
+domains, a register or memory write sampling another domain, a synchroniser clocked by
+the domain it samples, and a domain the netlist does not declare. `Cdc.verilog` is the
+Verilog module `wiz_sync2` that the emitted instances refer to, with `async_reg`. A
+clock used as data, and data fed to a clock port, stay kind errors.
 
 Simulation: a primitive without a model is 0 at values and in `Netlist.simulate`.
 `Netlist.unmodelled`/`Circuit.unmodelled` name such instances, and
-`Circuit.runModelled`/`Netlist.simulateModelled` refuse to run a circuit with one.
+`Circuit.runModelled`/`Netlist.simulateModelled` refuse to run a circuit with one. They
+also refuse a netlist with more than one clock domain (`Netlist.domainRefusals`): its
+registers tick at different rates, which the one-tick-per-input simulation cannot
+express (a merged event schedule is not implemented).
 
 `Hdl.Xilinx7` (`X7.*`) declares the 7-series cells of a DDR3 PHY: OBUF, IBUF, IOBUF,
 OBUFDS, IOBUFDS, BUFG (with models), ODDR, OSERDESE2 (8:1 DDR with tristate),
