@@ -972,6 +972,7 @@ def cases (long : Bool) : List Case := [
 
 def group : Group where
   name := "audit"
+  parallel := true
   exercise := "soundness audit 2"
   cases := cases false
 
@@ -1014,8 +1015,7 @@ def longMain : IO UInt32 := do
   IO.println s!"{failed} failed"
   pure (if failed == 0 then 0 else 1)
 
-def groups : List Group :=
-  group :: kernelGroup ::
-  []
+builtin_initialize registerGroup group
+builtin_initialize registerGroup kernelGroup
 
 end Tests.Audit
