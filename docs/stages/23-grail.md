@@ -76,7 +76,7 @@ of the files that import what changed, and an edit that leaves the C alone stops
 The key also covers the grail binary itself, so a new elaborator rebuilds everything.
 
 There are no environment variables: the C compiler and its flags come from flags
-(`--cc`, `--cflags`, `--ldflags`, `--llc`, `-I DIR`, `--cache DIR`, `--no-cache`) or from
+(`--cc`, `--cflags`, `--ldflags`, `--llc`, `-I DIR`, `--cache DIR`, `--cache-ro DIR`, `--no-cache`) or from
 an uncommitted `grail.local.wiz` with this machine's paths (`nix develop` writes it from
 `flake.nix`):
 
@@ -91,7 +91,7 @@ def settings : Settings := Settings.empty
 
 `wiz` reads no environment variables: the toolchain record (`Wiz/Toolchain.lean`: C
 compiler and flags, `llc`, the collector's flags, the cache, module roots) comes from
-`--cc`, `--cflags`, `--ldflags`, `--libs`, `--llc`, `--cache DIR`/`--no-cache` and
+`--cc`, `--cflags`, `--ldflags`, `--libs`, `--llc`, `--cache DIR`/`--cache-ro DIR`/`--no-cache` and
 `-I DIR` (which replaces `$WIZ_PATH`), and is passed explicitly to everything that
 compiles. Its compiler fields are its `id`, which enters grail's keys.
 

@@ -223,6 +223,11 @@ cached between runs.
   is made of (the `.lean` files, Lean, `flake.lock`), and partial hits only come from the
   same compiler (the elaboration cache's own keys include the wiz binary's hash, but the
   test driver's grail runs use a fixed binary id and the `/tmp` programs a timestamp).
+  The elaboration cache may also have read-only layers (`--cache-ro DIR`, repeatable,
+  searched in order after the written `--cache DIR`, never written). The Nix package
+  can ship one in `$out/share/wiz/cache` for `--cache-ro $out/share/wiz/cache`, so CI and
+  users share a warm cache without a writable store path; a run with no write cache
+  hashes the wiz executable each time instead of remembering it under `bin/`.
 * **Storage.** The repository's Actions cache holds 10 GB and evicts the least recently
   used entries, so pull requests don't keep big entries: the elan toolchain (~770 MB) is
   saved only by `master` (pull requests restore master's), and a pull request's (or merge

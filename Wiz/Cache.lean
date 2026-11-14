@@ -10,6 +10,12 @@ the key is the chained content hash of the command and everything before it (and
 version salt). Elaboration is deterministic, so a shared directory is a shared cache:
 two machines elaborating the same text compute the same keys and the same effects.
 
+Any number of directories may also be **read-only caches** (`wiz --cache-ro DIR`, in
+order): misses are looked up there after the write cache, and they are never written. A
+Nix package ships one in `$out/share/wiz/cache`; a run with only read caches
+(`--no-cache --cache-ro DIR`, since the default write cache is on) still replays modules
+and computes the binary's id on every run.
+
 Commands that change the grammar or the macros (`syntax`, `macro_rules`, `notation`,
 attributes, `import`, user-defined commands) aren't cached; they are cheap to rerun.
 Declarations read from the cache were checked by the kernel when they were stored, so
@@ -537,7 +543,9 @@ def writeAtomic (file : System.FilePath) (content : String) : IO Unit := do
 executable. Hashing it takes a moment, so the result is remembered in `dir/bin/`, by the
 executable's path, size and modification time. Without it, a cache directory shared by
 several builds (worktrees on different branches, CI runs) would serve one kernel's
-verdicts to another whenever a change forgot to bump `salt`. -/
+verdicts to another whenever a change forgot to bump `salt`. `dir` is the **write** cache:
+with none (read-only caches only), the executable is hashed on every run and nothing is
+written. -/
 def binaryId (dir : Option System.FilePath) : IO UInt64 := do
   let exe ← IO.appPath
   let md ← exe.metadata
@@ -596,9 +604,9 @@ inductive Mode where
   (their effect could depend on what the importer imported before) -/
   | replay
 
-/-- Where command effects are kept: a directory (the shared cache), or memory (for one
-run without the cache: modules are still elaborated in isolation, so the cache on or off
-gives the same results). -/
+/-- Where command effects are kept: a write directory and read-only directories (the
+shared cache), or memory (for one run without the cache: modules are still elaborated in
+isolation, so the cache on or off gives the same results). -/
 structure Store (R : Type) where
   get : UInt64 → IO (Option (Effect R))
   put : UInt64 → Effect R → IO Unit
@@ -606,18 +614,45 @@ structure Store (R : Type) where
   seen : UInt64 → IO Bool
   markSeen : UInt64 → Name → IO Unit
 
-/-- The store in directory `dir`, for the binary `binary` (`binaryId`): its files are
-named by the key mixed with the binary, so another build of wiz finds none of them. -/
-def Store.disk (dir : System.FilePath) (binary : UInt64) : IO (Store R) := do
-  IO.FS.createDirAll dir
+/-- A layered store: entries are looked up in `write` first, then in each of `reads` in
+order, and written only to `write` (none: `put` does nothing). A read cache is never
+created or written: `get` just reports a missing or unparsable entry as a miss, so a
+corrupt entry falls through to the next cache. `seen` is true when any cache has the
+module's marker; `markSeen` writes the marker to `write`, or keeps it in memory when
+there is none, so a `--cache-ro`-only run knows which modules it has already elaborated
+in isolation. Its files are named by the key mixed with the binary, so another build of
+wiz finds none of them. -/
+def Store.layered (write : Option System.FilePath) (reads : List System.FilePath)
+    (binary : UInt64) : IO (Store R) := do
+  if let some dir := write then IO.FS.createDirAll dir
   let name (k : UInt64) := toString (mixHash binary k)
+  let dirs := write.toList ++ reads
+  let seenInMemory ← IO.mkRef ({} : Std.HashSet UInt64)
   pure {
     get := fun k => do
-      let file := dir / s!"{name k}.wizc"
-      if ← file.pathExists then pure ((Sx.parse (← IO.FS.readFile file)).bind Effect.ofSx?) else pure none
-    put := fun k e => writeAtomic (dir / s!"{name k}.wizc") e.toSx.render
-    seen := fun k => (dir / s!"{name k}.wizm").pathExists
-    markSeen := fun k m => writeAtomic (dir / s!"{name k}.wizm") m }
+      let file := s!"{name k}.wizc"
+      for dir in dirs do
+        let f := dir / file
+        if ← f.pathExists then
+          if let some e := (Sx.parse (← IO.FS.readFile f)).bind Effect.ofSx? then return some e
+      pure none
+    put := fun k e => match write with
+      | some dir => writeAtomic (dir / s!"{name k}.wizc") e.toSx.render
+      | none => pure ()
+    seen := fun k => do
+      if (← seenInMemory.get).contains k then return true
+      for dir in dirs do
+        if ← (dir / s!"{name k}.wizm").pathExists then return true
+      pure false
+    markSeen := fun k m => match write with
+      | some dir => writeAtomic (dir / s!"{name k}.wizm") m
+      | none => seenInMemory.modify (·.insert k) }
+
+/-- The store in directory `dir`, for the binary `binary` (`binaryId`): a layered store
+with one write directory and no read caches (the compatibility name for the old
+single-directory store). -/
+def Store.disk (dir : System.FilePath) (binary : UInt64) : IO (Store R) :=
+  Store.layered (some dir) [] binary
 
 def Store.memory : IO (Store R) := do
   let effects ← IO.mkRef ({} : Std.HashMap UInt64 (Effect R))
@@ -742,12 +777,14 @@ where
         pos := stop
     pure (s, hits)
 
-/-- `elaborateWith`, through the cache directory `dir`, as this binary (`binaryId`) unless
-`binary` says otherwise (tests). -/
-def elaborateCached (dir : System.FilePath) (input : String) (init : CommandState R) (key₀ : UInt64)
+/-- `elaborateWith`, through the layered cache: `write` is the directory that is written
+(none: no writes), `reads` are read-only directories searched after it, in order. As this
+binary (`binaryId` of `write`) unless `binary` says otherwise (tests). -/
+def elaborateCached (write : Option System.FilePath) (reads : List System.FilePath)
+    (input : String) (init : CommandState R) (key₀ : UInt64)
     (toolchain : UInt64 := 0) (binary : Option UInt64 := none) : IO (CommandState R × Nat) := do
-  let binary ← match binary with | some b => pure b | none => binaryId (some dir)
-  elaborateWith (← Store.disk dir binary) input init key₀ toolchain
+  let binary ← match binary with | some b => pure b | none => binaryId write
+  elaborateWith (← Store.layered write reads binary) input init key₀ toolchain
 
 /-- `elaborateWith`, without a cache: modules are elaborated in isolation all the same. -/
 def elaborateUncached (input : String) (init : CommandState R) (toolchain : UInt64 := 0) : IO (CommandState R) := do

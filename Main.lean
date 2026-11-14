@@ -25,7 +25,9 @@ def usage : String := "usage:
   wiz lsp … --web DIR              the web infoview's files, served on the WebSocket's port
                                    (default: share/wiz/web, or web/out in a checkout)
 options: --cache DIR (the elaboration cache, default ~/.cache/wiz; shared, since it is
-content-addressed), --no-cache, -I DIR (another module root, after lib/)
+content-addressed), --cache-ro DIR (repeatable: a read-only cache, searched in order
+after the write cache and never written, as in a Nix package's share/wiz/cache),
+--no-cache (both), -I DIR (another module root, after lib/)
 trust: --trust-native (27a: `def X : a = b := native_refl` is decided by running a and b;
 the kernel does not check it, `#print axioms` lists it), --native-fuel N (its step limit)
 experimental kernel options (D1, they turn the cache off): --regularity off|full (full:
@@ -181,15 +183,14 @@ def elaborate (tc : Toolchain) (path : String) (input : String) : IO (CommandSta
       trustedModule := own.contains, trustNative := tc.trustNative,
       nativeFuel := tc.nativeFuel.getD NativeRun.defaultFuel, smt := ← tc.smt.resolve }
   -- the cache doesn't know the experimental options
-  let cache := if regularity == .off && !predicativeProp && lazyProofs && inertReg == .conv && !unboxStructs &&
+  let cacheOn := regularity == .off && !predicativeProp && lazyProofs && inertReg == .conv && !unboxStructs &&
       proofSteps == Budget.defaultSteps && !traceProofSteps && !(← strictPrivacyOpt.get) && !(← ppAllOpt.get)
-    then tc.cacheDir else none
-  match cache with
-  | none => Cache.elaborateUncached input init
-  | some dir =>
+  if cacheOn && (tc.cacheDir.isSome || !tc.readCaches.isEmpty) then
     -- the key starts from the headers the file sees; modules enter it by their own keys
     let key₀ := hash (toString (headers.toList.map (·.2)))
-    pure (← Cache.elaborateCached dir input init key₀).1
+    pure (← Cache.elaborateCached tc.cacheDir tc.readCaches input init key₀).1
+  else
+    Cache.elaborateUncached input init
 
 /-- (27a) `--trust-native` and `--native-fuel N`. -/
 def nativeOpts (tc : Toolchain) : Bool × Nat := (tc.trustNative, tc.nativeFuel.getD NativeRun.defaultFuel)
