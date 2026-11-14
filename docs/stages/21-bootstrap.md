@@ -559,7 +559,7 @@ the quantity first; new `Tm.qty`, `Tm.qlit`, `Tm.sigmaQ`, `Val.vqty`, `Val.vqlit
 in both frontends (`fieldQtyDecls`); a program with them, compiled by the Lean compiler and
 by the self-hosted one (both collectors); the differential test's `MTm` descriptions carry
 a quantity (ω in the existing terms); two core terms from the review of this stage
-(/workspace/wiz-notes/fieldq-review.md, probes 7a and 15b) checked by Kernel.wiz with the
+(`wiz-notes/fieldq-review.md, probes 7a and 15b) checked by Kernel.wiz with the
 Lean kernel's verdicts.
 ## 21x: modules and imports (A14, first milestone)
 

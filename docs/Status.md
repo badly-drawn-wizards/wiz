@@ -1208,7 +1208,7 @@ equations are not provable by computation. They are incompleteness, not unsoundn
 * **The sorts decide between rules** (P1 inventory, U5). `propSort?` reads a Π/Σ's
   component sorts. They are mandatory and conversion compares them, so convertible types
   are treated alike (before, an unannotated type and a convertible annotated one were
-  treated differently; `/workspace/wiz-notes/p1-stable.md`).
+  treated differently; `wiz-notes/p1-stable.md`).
 * **Conversion is incomplete** where proof irrelevance meets computation (e.g. a `split`
   stuck on one proof and computing on another). Incompleteness only.
 
