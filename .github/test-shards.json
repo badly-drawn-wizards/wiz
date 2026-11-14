@@ -58,6 +58,7 @@
     "=sat",
     "=scry-datalog",
     "=scry-cert",
+    "=scry-egraph",
     "=smt",
     "std",
     "tactics",
