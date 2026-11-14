@@ -515,7 +515,10 @@ against `wiz_apply`'s argument array, and a treap/offset-chain layout against fl
 constructors. That is the obstacle in front of moving runtime leaves into Wiz
 (`wiz-notes/runtime-in-wiz.md`, decision D5): a Wiz module would have to be written twice
 or know which runtime it is running on. This section records the first step: `rt.c` now
-uses `wiz.c`'s representation for everything the self-hosted backend needs.
+uses `wiz.c`'s representation for everything the self-hosted backend needs. (The Lean
+runtime's file was split into `runtime/wiz_rt.h` and the `runtime/rt_*.inc` area files
+after this section was written; "`wiz.c`" below means that runtime, whose header is now
+`wiz_rt.h`.)
 
 **What now agrees** (checked by `_Static_assert`s in `rt.c`):
 
