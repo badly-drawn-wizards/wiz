@@ -30,6 +30,7 @@ def libFiles : List (String × String) :=
 
 def modulesGroup : Group where
   name := "modules"
+  parallel := true
   exercise := "Stage 23b–c"
   cases := [
     { name := "dotted names are paths", run := fun _ => do
@@ -899,9 +900,31 @@ def testRunnerGroup : Group where
         for bad in [#["--run", "driver-fixtures", "4"], #["--run", "driver-fixtures", "x"],
             #["--run", "no-such-group", "0"], #["--run", "driver-fixtures"],
             #["--run", "driver-fixtures", "0", "extra"], #["=no-such-group"], #["=testrunner#99"],
-            #["testrunner", "--no-such-flag"]] do
+            #["testrunner", "--no-such-flag"], #["=rig", "--jobs", "0"], #["=rig", "--jobs", "x"]] do
           let (code, out) ← run bad
-          check (code == 2) s!"tests {" ".intercalate bad.toList}: exit code {code}, not 2:\n{out}" }
+          check (code == 2) s!"tests {" ".intercalate bad.toList}: exit code {code}, not 2:\n{out}" },
+    -- `--jobs N` runs an opted-in group's cases in a bounded pool; its log is the
+    -- sequential log but for the times (the cases are printed in case order, whether
+    -- they finished in that order or not)
+    { name := "--jobs N: an opted-in group's log is the --jobs 1 log, in case order", run := fun _ => do
+        let self ← IO.appPath
+        let run (args : Array String) : IO (UInt32 × String) := do
+          let o ← IO.Process.output { cmd := self.toString, args }
+          pure (o.exitCode, o.stdout)
+        let (c1, one) ← run #["--jobs", "1", "=rig"]
+        let (c4, four) ← run #["--jobs", "4", "=rig"]
+        checkEq 0 c1; checkEq 0 c4
+        -- the case lines, without their times (`(0.032 s)`); the group total too
+        let norm (out : String) : List String :=
+          (out.splitOn "\n").filterMap fun l =>
+            if l.startsWith "── " then some l
+            else if l.startsWith "  ✓ " || l.startsWith "  ⊘ " || l.startsWith "  ✗ " then some (l.splitOn " (").head!
+            else none
+        check ((norm four).length > 4) "no cases in the --jobs 4 log"
+        checkEq (norm one) (norm four)
+        -- and the same result
+        checkEq (one.splitOn "\n" |>.find? (·.endsWith " passed, 0 failed"))
+          (four.splitOn "\n" |>.find? (·.endsWith " passed, 0 failed")) }
   ]
 
 /-- The language tour's examples (docs/tour.md): every file in `examples/tour/`, run as
