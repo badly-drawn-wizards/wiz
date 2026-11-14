@@ -2482,12 +2482,12 @@ def conv : TCtx → Val → Val → Val → Bool
     | .false => match whnf ty with
       -- (η at a Π or a Σ, after the neutral comparison, as in `Conv.lean`: two neutrals
       -- that `convNe` finds equal are equal, and η would find it too; otherwise η)
-      | .vpi _ dom env cod _ => match neutralsAgree c a b with
+      | .vpi _ _ _ dom env cod => match neutralsAgree c a b with
         | .true => .true
         | .false =>
           let x := fresh (TCtx.lvl c);
           conv (TCtx.bind c dom) (eval (.cons x env) cod) (vapp a x) (vapp b x)
-      | .vsigma _ ta env tb _ => match neutralsAgree c a b with
+      | .vsigma _ _ _ ta env tb => match neutralsAgree c a b with
         | .true => .true
         | .false =>
           Bool.and (conv c ta (vfst a) (vfst b)) (conv c (eval (.cons (vfst a) env) tb) (vsnd a) (vsnd b))
