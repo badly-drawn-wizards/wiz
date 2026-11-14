@@ -10,7 +10,8 @@ statement.
 It is proved for a rule set `S` as a closure property `RenClosed S R`: every rule of `S`,
 renamed, is derivable in `R` from the renamed premises. Then `Derivable R` is closed under
 renaming when each of the sets `R` is made of is (`rename_of_closed`). This is the same
-architecture as `WizMeta/Spec/Weakening.lean`, for `F0Rules` (both `EqTy` variants).
+architecture as `WizMeta/Spec/Weakening.lean`, for `F0Rules` (both `EqTy` variants; the
+concrete `F0Base_*` theorems instantiate the levelled one).
 
 What the proof needs from the rules: a rule with a premise under a binder has the
 binder's type among its premises (`Pi.lam`, `Pi.beta`, `Pi.eta`, `Pi.cong`,
@@ -463,20 +464,22 @@ theorem F0Rules_renClosed {sg : Sig} {var : EqTyVariant} (hsg : Sig.Closed sg) :
     RenClosed (F0Rules sg var) (F0Rules sg var) :=
   F0Rules_renClosedIn hsg (fun _ x => x) (fun _ x => core_in_F0Rules x)
 
-/-- **The renaming lemma for F0** (levelled variant): every judgment derivable in F0 stays
-derivable under a renaming into a well-formed context that respects the variables' types. -/
-theorem F0_rename {sg : Sig} (hsg : Sig.Closed sg) {j : Jdg} (d : Derivable (F0 sg) j) :
-    Renames (F0 sg) j :=
+/-- **The renaming lemma for the fragment** (`F0Base`, levelled variant): every judgment
+derivable in `F0Base` stays derivable under a renaming into a well-formed context that
+respects the variables' types. The same statement for `F0` (which adds `Struct sg`) is
+conditional on `StructRenClosed` (`F0/Typing.lean`). -/
+theorem F0Base_rename {sg : Sig} (hsg : Sig.Closed sg) {j : Jdg} (d : Derivable (F0Base sg) j) :
+    Renames (F0Base sg) j :=
   rename_of_closed (F0Rules_renClosed hsg) d
 
-/-- Weakening for F0: the first consequence of the renaming lemma. Needs a closed
+/-- Weakening for `F0Base`: the first consequence of the renaming lemma. Needs a closed
 signature and a well-formed context (the latter would follow from context validity,
 `Γ ⊢ J → ⊢ Γ`, which is not proved). -/
-theorem F0_weakening {sg : Sig} (hsg : Sig.Closed sg) {Γ : Ctx} {t A B : Tm} {s : Srt}
-    (hΓ : Derivable (F0 sg) (.wf Γ)) (ht : Derivable (F0 sg) (Γ ⊢ t ∶ A))
-    (hB : Derivable (F0 sg) (Γ ⊢ B ∶ .sort s)) :
-    Derivable (F0 sg) ((B :: Γ) ⊢ t.shift ∶ A.shift) :=
-  F0_rename hsg ht Nat.succ (B :: Γ) (RenOK.succ Γ B)
+theorem F0Base_weakening {sg : Sig} (hsg : Sig.Closed sg) {Γ : Ctx} {t A B : Tm} {s : Srt}
+    (hΓ : Derivable (F0Base sg) (.wf Γ)) (ht : Derivable (F0Base sg) (Γ ⊢ t ∶ A))
+    (hB : Derivable (F0Base sg) (Γ ⊢ B ∶ .sort s)) :
+    Derivable (F0Base sg) ((B :: Γ) ⊢ t.shift ∶ A.shift) :=
+  F0Base_rename hsg ht Nat.succ (B :: Γ) (RenOK.succ Γ B)
     (ofRule (core_in_F0Rules (Core.wfCons (s := s))) (by
       simp only [List.mem_cons, List.mem_nil_iff, or_false, forall_eq_or_imp, forall_eq]
       exact ⟨hΓ, hB⟩))

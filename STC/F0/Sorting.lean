@@ -9,7 +9,9 @@ one sort. This file attacks that lemma, and records exactly where F0's rules sto
 ## The reduction
 
 `SortUniqueAt` is not proved here. It is **reduced to two named M1 statements**
-(`Obligations.lean`), and the reduction is proved:
+(`Obligations.lean`), and the reduction is proved — but `TyUnique` as stated is not the
+right statement at the top universe (see "The boundary of `TyUnique`" below, which also
+states the corrected `TyUniqueTyped` + `TopSortUnique` reduction):
 
 * `TyUnique sg` — two types of one term are convertible at one sort. This is the `conv`
   case of the sorting lemma, i.e. uniqueness of types up to conversion. Its proof is
@@ -52,11 +54,10 @@ rules (`refl`; the per-former `cong`s; η; `irrel`; `redEq`) under `symm`, `tran
 the intermediate `w` is constrained by nothing in the rules: it need not be a canonical
 form, a normal form, or even well typed (only `refl` and the generative rules carry a
 typing premise for an end; `trans`, `symm`, `eqConv` and `redConv` carry none for the two
-ends, and F0 has no rule typing them).
-`conv_sort_rev` shows that the *reverse* conversion can always be built, so the failure is
-not that we cannot move the sort to the other end; it is that **no structural recursion on
-the derivation reaches `w`'s sort value**. What the `trans` case needs is the sharp
-statement
+ends). `conv_sort_rev` shows that the *reverse* conversion can always be built, so the
+failure is not that we cannot move the sort to the other end; it is that **no structural
+recursion on the derivation reaches `w`'s sort value**. What the `trans` case needs is the
+sharp statement
 
     ConvTargetUnique:  Γ ⊢ v ≡ sort s ∶ C  →  Γ ⊢ v ≡ sort t ∶ C  →  s = t,
 
@@ -76,48 +77,61 @@ confluent; `stc-plan.md` gets it from the logical relation), or, equivalently, s
 completeness of the *algorithmic* conversion `DecConv`, which decides at canonical types by
 inversion and so never sees `trans` with an arbitrary intermediate. Adding rules cannot
 help: adding rules only makes `≡` larger, and uniqueness/apartness are upper bounds on it.
+It is stated as `ConvJoin` below; `convInjSort_of_join` proves that it closes
+`ConvInjSort` (`red_not_sort`: no reduction starts at a sort, so a common reduct of two
+sorts is the sorts themselves).
 
-The other two blockers are of the same kind, and two of them *are* missing rules:
+## The two rule gaps, and `Struct`
 
-* `conv` (typing): `Core.conv` retypes along an arbitrary `Γ ⊢ A ≡ B ∶ Sort s`. To compare
-  two types of one term one needs `TyUnique`, whose `app`/`fst`/`snd`/`down` cases need
-  `ConvInjPi`/`ConvInjSigma` (above), and whose `letE`/`letUnit` cases substitute into the
-  body (the substitution lemma, `F0_subst*`). Two rule-level gaps sit under it:
-  - **conversion typing.** Only `Core.refl` types either end of a conversion at the
-    conversion's type; `symm`, `trans`, `eqConv` and `redConv` carry no typing premise for
-    the ends, and F0 has no rule that supplies one. (This is not the kernels' `InReg`,
-    which `Core.lean` rules out on purpose: it is "the endpoints of `Γ ⊢ v ≡ w ∶ C` are
-    typed at `C`".) So from `Γ ⊢ v ≡ w ∶ C` one may not conclude `Γ ⊢ v ∶ C`, and a
-    congruence such as `Eq.eqTyCong` cannot even be applied to a conversion obtained at an
-    arbitrary `C` (it needs the conversion at `Sort s'`). The missing rule is
-        Γ ⊢ v ≡ w ∶ C
-        ────────────────   eqTyped
-        Γ ⊢ v ∶ C            (and symmetrically for `w`),
-    or, equivalently, typing premises on the structural conversion rules.
-  - **context conversion.** `Pi.cong` and `Sigma.cong` relate a binder's body:
+The other two blockers *were* missing rules, and `Spec/Struct.lean` supplies them:
 
-        (A :: Γ) ⊢ B ≡ B' ∶ Sort j   ⟹   Γ ⊢ Π s A B ≡ Π s' A' B' ∶ Sort s
+* **conversion typing.** Only `Core.refl` typed an end of a conversion at the conversion's
+  type; `symm`, `trans`, `eqConv` and `redConv` carried no typing premise for the ends, and
+  F0 had no rule that supplied one. (This is not the kernels' `InReg`, which `Core.lean`
+  rules out on purpose: it is "the endpoints of `Γ ⊢ v ≡ w ∶ C` are typed at `C`".) The
+  rule is `Struct.eqTyped`: `Γ ⊢ v ≡ w ∶ C ⟹ Γ ⊢ v ∶ C` (and `v`/`w` swapped by
+  `Core.symm`). `Typing.eqTyped_left`/`eqTyped_right` prove both ends, so a congruence such
+  as `Eq.eqTyCong` can now be applied to a conversion obtained at an arbitrary `C`
+  (`Typing.conv_typed_left'`).
+* **context conversion.** `Pi.cong` and `Sigma.cong` relate a binder's body:
 
-    but only premise `(A :: Γ)` types `B'`; the second `Π` lives in `A' :: Γ`. To type it
-    (as `ConvInjPi`'s conclusion, and hence `TyUnique`, needs) one has to move a derivation
-    from `A :: Γ` to `A' :: Γ` given `Γ ⊢ A ≡ A' ∶ Sort i`. **No rule of F0 does that**:
-    every typing rule concludes in the context of its direct typing premises, and the only
-    context-extension rule (`Core.wfCons`) extends only for `wf`; `F0_rename` renames
-    variables but cannot change an entry's type. So the rules do not even type the second
-    endpoint of their own `cong` conclusion. The missing rule is
+      (A :: Γ) ⊢ B ≡ B' ∶ Sort j   ⟹   Γ ⊢ Π s A B ≡ Π s' A' B' ∶ Sort s
 
-        Γ ⊢ A ≡ A' ∶ Sort i      (A :: Γ) ⊢ J
-        ────────────────────────────────────────   ctxConv
-        (A' :: Γ) ⊢ J
+  but only premise `(A :: Γ)` types `B'`; the second `Π` lives in `A' :: Γ`. Nothing moved
+  a derivation from `A :: Γ` to `A' :: Γ` given `Γ ⊢ A ≡ A' ∶ Sort i`. The rule is
+  `Struct.ctxConv` (with `J`'s variables unchanged); `Typing.ctxConv_wf/ty/eq/red` are its
+  four instances. With it, `Typing.pi_cong_typed`/`sigma_cong_typed` **type both endpoints
+  of a `cong` conclusion from the rule's own premises** — the statement the previous
+  commit recorded as impossible.
 
-    (with `J`'s variables unchanged); with `Sig.Closed`, a renaming-for-conversion lemma
-    would also give it, but `SortUniqueAt` has no `Sig.Closed` hypothesis.
-* `irrel`: `Core.irrel` makes any two terms of a proposition convertible. To exclude a
-  sort from that it must be *typed* at a proposition, which needs a conversion from the
-  sort's successor sort to a proposition: the same canonical-head problem. In a system with
-  quantities the premise "`t`, `u` are proofs" would settle it syntactically; F0 has no
-  quantities by design (`Syntax.lean`, "no quantities"), so `irrel` needs the sort
-  apartness it is being used to prove. `ConvInjSort` is that statement, isolated.
+Both rules are licensed by `Sig.Closed sg` (`Spec/Struct.lean`), and they are folded into
+`F0` (not into `F0Base`, which is what the renaming/substitution lemmas are proved for:
+`ctxConv` is not closed under a plain renaming `RenOK`, see `Typing.lean`,
+`StructRenClosed`).
+
+## The boundary of `TyUnique`
+
+`TyUnique` (`Obligations.lean`) is the statement at the joint the rules make visible, but
+its exact form has a boundary problem that the two new rules make visible too: at
+`t = Sort u0` with `A = B = Sort u1` (two valid typings, `Core.sort rfl`), the conclusion
+`∃ s, Γ ⊢ Sort u1 ≡ Sort u1 ∶ Sort s` needs `Sort u1` to be a term with a sort. It is not:
+`Srt.succ? .u1 = none`, so `Core.sort` cannot form it, and no other rule concludes a typing
+of `Sort u1` except `conv` (from another such typing) and — with `Struct` — `eqTyped`
+(from a conversion of `Sort u1`, which leads back to the same problem). The corrected
+statement is `TyUniqueTyped` below: both types are themselves typed. The reduction
+`sortUniqueAt_of` uses `TyUnique` as stated (so it is vacuous if `TyUnique` is false); the
+corrected reduction is `SortUniqueAt` from `TyUniqueTyped`, `ConvInjSort` and the top-sort
+statement `TopSortUnique` (no term of sort `u1` has another sort), both stated below. This
+boundary is an open item, not a proof.
+
+## `irrel`
+
+`Core.irrel` makes any two terms of a proposition convertible. To exclude a sort from that
+it must be *typed* at a proposition, which needs a conversion from the sort's successor
+sort to a proposition: the same canonical-head problem. In a system with quantities the
+premise "`t`, `u` are proofs" would settle it syntactically; F0 has no quantities by design
+(`Syntax.lean`, "no quantities"), so `irrel` needs the sort apartness it is being used to
+prove. `ConvInjSort` is that statement, isolated.
 -/
 
 
@@ -169,7 +183,7 @@ would use if the intermediate's sort value were known. -/
 theorem conv_sort_rev {sg : Sig} {Γ : Ctx} {v w C : Tm} {s : Srt}
     (d : Derivable (F0 sg) (Γ ⊢ v ≡ w ∶ C)) (h : v = .sort s) :
     Derivable (F0 sg) (Γ ⊢ w ≡ .sort s ∶ C) :=
-  h ▸ ofRule (core_in_F0Rules Core.symm) (by
+  h ▸ ofRule (core_in_F0 Core.symm) (by
     simp only [List.mem_cons, List.mem_nil_iff, or_false, forall_eq]
     exact d)
 
@@ -181,15 +195,15 @@ theorem conv_target_unique_of_injSort {sg : Sig} (h : ConvInjSort sg) :
       Derivable (F0 sg) (Γ ⊢ v ≡ .sort t ∶ C) → s = t := by
   intro Γ v s t C d1 d2
   have hsym : Derivable (F0 sg) (Γ ⊢ .sort t ≡ v ∶ C) :=
-    ofRule (core_in_F0Rules Core.symm) (by
+    ofRule (core_in_F0 Core.symm) (by
       simp only [List.mem_cons, List.mem_nil_iff, or_false, forall_eq]
       exact d2)
   have hts : Derivable (F0 sg) (Γ ⊢ .sort t ≡ .sort s ∶ C) :=
-    ofRule (core_in_F0Rules Core.trans) (by
+    ofRule (core_in_F0 Core.trans) (by
       simp only [List.mem_cons, List.mem_nil_iff, or_false, forall_eq_or_imp, forall_eq]
       exact ⟨hsym, d1⟩)
   have hst : Derivable (F0 sg) (Γ ⊢ .sort s ≡ .sort t ∶ C) :=
-    ofRule (core_in_F0Rules Core.symm) (by
+    ofRule (core_in_F0 Core.symm) (by
       simp only [List.mem_cons, List.mem_nil_iff, or_false, forall_eq]
       exact hts)
   exact h Γ s t C hst
@@ -217,6 +231,273 @@ theorem WhRed.empty_at_prop_uncond {sg : Sig} (hty : TyUnique sg) (hsi : ConvInj
     {Γ : Ctx} {t u A : Tm} (h : WhRed (F0 sg) Γ t u A)
     (hp : Derivable (F0 sg) (Γ ⊢ A ∶ .sort .prop)) : False :=
   WhRed.empty_at_prop' (sortUnique_of hty hsi) h hp
+
+/-! ## The canonical-head obligation: conversion is joinable reduction
+
+The two structural rules (`Spec/Struct.lean`) close the `conv`/`cong` blockers, but not
+the `trans` case: they *type* conversions, they do not give them a canonical head. The
+remaining ingredient is the M1 theorem that `≡` is generated by `⟶` with a common reduct
+(Church–Rosser plus subject reduction; equivalently, soundness and completeness of the
+whnf-interleaved algorithmic conversion `DecConv`). It is stated here as `ConvJoin`, and
+`convInjSort_of_join` shows that it does close `ConvInjSort`: a common reduct of two
+sorts is the sorts themselves, because no reduction starts at a `Sort` (`red_not_sort`).
+
+`red_not_sort` is a rule-by-rule fact of the *reduction* rules only: every rule whose
+conclusion is a reduction has an application/formula former on the left (`.app`, `.fst`,
+`.cast`, `.eq`, …), never `.sort`; `Core.redConv` is the recursive case. `Struct`'s two
+rules conclude a typing or carry an arbitrary `J` (so `ctxConv` is the recursive case
+too). -/
+
+/-- No reduction step starts at a sort: the left endpoint of a derivable `⟶` is never
+`Sort s`. -/
+theorem red_not_sort {sg : Sig} : ∀ (j : Jdg), Derivable (F0 sg) j →
+    ∀ (Γ : Ctx) (t u A : Tm) (s : Srt), j = .red Γ t u A → t = .sort s → False := by
+  intro j d
+  induction d with
+  | intro r hr hp ih =>
+    intro Γ t u A s heq hs
+    rcases hr with hbase | hstruct
+    · rcases hbase with hrest | hulift
+      · rcases hrest with hrest | heqty
+        · rcases hrest with hrest | heq
+          · rcases hrest with hrest | hglobal
+            · rcases hrest with hrest | hlet
+              · rcases hrest with hrest | henum
+                · rcases hrest with hrest | hempty
+                  · rcases hrest with hrest | hunit
+                    · rcases hrest with hrest | hsigma
+                      · rcases hrest with hcore | hpi
+                        · cases hcore with
+                          | wfNil => cases heq
+                          | wfCons => cases heq
+                          | var => cases heq
+                          | sort => cases heq
+                          | conv => cases heq
+                          | eqConv => cases heq
+                          | @redConv Γ₀ t₀ u₀ A₀ B₀ s₀ =>
+                            cases heq
+                            exact ih (.red Γ t u A₀) (by simp) Γ t u A₀ s rfl hs
+                          | refl => cases heq
+                          | symm => cases heq
+                          | trans => cases heq
+                          | redEq => cases heq
+                          | irrel => cases heq
+                          | eqProp => cases heq; cases hs
+                          | eqType => cases heq; cases hs
+                          | eqTySort => cases heq; cases hs
+                          | eqTySortApart => cases heq; cases hs
+                          | castSort => cases heq; cases hs
+                        · cases hpi with
+                          | form => cases heq
+                          | lam => cases heq
+                          | app => cases heq
+                          | beta => cases heq; cases hs
+                          | appRed => cases heq; cases hs
+                          | eta => cases heq
+                          | cong => cases heq
+                          | appCong => cases heq
+                          | eq => cases heq; cases hs
+                          | eqTyApart => cases heq; cases hs
+                          | cast => cases heq; cases hs
+                      · cases hsigma with
+                        | form => cases heq
+                        | pair => cases heq
+                        | fst => cases heq
+                        | snd => cases heq
+                        | fstBeta => cases heq; cases hs
+                        | sndBeta => cases heq; cases hs
+                        | fstRed => cases heq; cases hs
+                        | sndRed => cases heq; cases hs
+                        | eta => cases heq
+                        | cong => cases heq
+                        | fstCong => cases heq
+                        | sndCong => cases heq
+                        | eq => cases heq; cases hs
+                        | eqProof => cases heq; cases hs
+                        | eqTyApart => cases heq; cases hs
+                        | cast => cases heq; cases hs
+                    · cases hunit with
+                      | form => cases heq
+                      | tt => cases heq
+                      | eta => cases heq
+                      | cong => cases heq
+                      | eq => cases heq; cases hs
+                      | eqTy => cases heq; cases hs
+                      | eqTyApart => cases heq; cases hs
+                      | cast => cases heq; cases hs
+                  · cases hempty with
+                    | form => cases heq
+                    | absurd => cases heq
+                    | cong => cases heq
+                    | absurdCong => cases heq
+                    | eq => cases heq; cases hs
+                    | eqTy => cases heq; cases hs
+                    | eqTyApart => cases heq; cases hs
+                    | cast => cases heq; cases hs
+                · cases henum with
+                  | form => cases heq
+                  | tag => cases heq
+                  | ecase => cases heq
+                  | iota => cases heq; cases hs
+                  | ecaseRed => cases heq; cases hs
+                  | ecaseCong => cases heq
+                  | eqSame => cases heq; cases hs
+                  | eqDiff => cases heq; cases hs
+                  | eqRedL => cases heq; cases hs
+                  | eqRedR => cases heq; cases hs
+                  | eqTySame => cases heq; cases hs
+                  | eqTyDiff => cases heq; cases hs
+                  | cast => cases heq; cases hs
+              · cases hlet with
+                | letE => cases heq
+                | zeta => cases heq; cases hs
+                | letUnit => cases heq
+                | letUnitRed => cases heq; cases hs
+                | ann => cases heq
+                | annRed => cases heq; cases hs
+            · cases hglobal with
+              | const => cases heq
+              | delta => cases heq; cases hs
+          · cases heq with
+            | eq => cases heq
+            | refl => cases heq
+            | reflTy => cases heq
+            | transp => cases heq
+            | cast => cases heq
+            | eqCong => cases heq
+            | eqTyCong => cases heq
+            | castCong => cases heq
+            | eqRed => cases heq; cases hs
+            | eqTyRedL => cases heq; cases hs
+            | eqTyRedR => cases heq; cases hs
+            | castRedL => cases heq; cases hs
+            | castRedR => cases heq; cases hs
+            | eqAtProp => cases heq; cases hs
+            | eqTyProps => cases heq; cases hs
+            | eqTyFormers => cases heq; cases hs
+        · change EqTyLevelled r at heqty
+          cases heqty with
+          | form => cases heq
+          | pi => cases heq; cases hs
+          | sigma => cases heq; cases hs
+      · cases hulift with
+        | form => cases heq
+        | up => cases heq
+        | down => cases heq
+        | beta => cases heq; cases hs
+        | downRed => cases heq; cases hs
+        | eta => cases heq
+        | cong => cases heq
+        | downCong => cases heq
+        | eqProp => cases heq; cases hs
+        | eq => cases heq; cases hs
+        | eqTy => cases heq; cases hs
+        | eqTyApart => cases heq; cases hs
+        | cast => cases heq; cases hs
+    · cases hstruct with
+      | eqTyped => cases heq
+      | @ctxConv hsg₀ Γ₀ A₀ A₀' s₀ j₀ hctx =>
+        cases j₀ with
+        | wf Γ' => cases heq
+        | ty Γ' t' A' => cases heq
+        | eq Γ' t' u' A' => cases heq
+        | red Γ' t' u' A' =>
+          cases heq
+          exact ih (.red Γ' t u A) (by simp) Γ' t u A s rfl hs
+
+/-- **A common reduct of two sorts is the sorts themselves**: no reduction starts at a
+sort, so the only `RedStar` chain from `Sort s` ends at `Sort s`. -/
+theorem redStar_of_sort {sg : Sig} {Γ : Ctx} {A : Tm} {s : Srt} {v : Tm}
+    (h : RedStar sg Γ A (.sort s) v) : v = .sort s := by
+  rcases h with rfl | h
+  · rfl
+  · induction h with
+    | single step =>
+      exact (red_not_sort (.red Γ _ _ A) step Γ _ _ A s rfl rfl).elim
+    | tail _ step ih =>
+      subst ih
+      exact (red_not_sort (.red Γ _ _ A) step Γ _ _ A s rfl rfl).elim
+
+/-! ### The corrected uniqueness statement, and the top-universe case -/
+
+/-- **`TyUniqueTyped`**: the corrected `TyUnique` — the two types are themselves types
+(`Γ ⊢ A ∶ Sort sA`, `Γ ⊢ B ∶ Sort sB`). This is the statement a common-successor-sort
+argument can use: the boundary `A = B = Sort u1` of `TyUnique`, where no sort types the
+witness conversion, is excluded. -/
+def TyUniqueTyped (sg : Sig) : Prop :=
+  ∀ Γ t A B, (∃ s, Derivable (F0 sg) (Γ ⊢ A ∶ .sort s)) →
+    (∃ s, Derivable (F0 sg) (Γ ⊢ B ∶ .sort s)) →
+    Derivable (F0 sg) (Γ ⊢ t ∶ A) → Derivable (F0 sg) (Γ ⊢ t ∶ B) →
+    ∃ s, Derivable (F0 sg) (Γ ⊢ A ≡ B ∶ .sort s)
+
+/-- **`TopSortUnique`**: no term of sort `u1` has another sort. This is the branch of
+`SortUniqueAt` that `TyUniqueTyped` cannot see (`Sort u1` is not a term with a sort, so the
+boundary case has no common-sort witness). -/
+def TopSortUnique (sg : Sig) : Prop :=
+  ∀ Γ A s, Derivable (F0 sg) (Γ ⊢ A ∶ .sort .u1) →
+    Derivable (F0 sg) (Γ ⊢ A ∶ .sort s) → s = .u1
+
+namespace Srt
+theorem exists_succ? {s : Srt} (h : s ≠ .u1) : ∃ s', s.succ? = some s' := by
+  cases s with
+  | prop => exact ⟨.u0, rfl⟩
+  | u0 => exact ⟨.u1, rfl⟩
+  | u1 => exact absurd rfl h
+end Srt
+
+/-- **The corrected reduction**: `SortUniqueAt`, from `TyUniqueTyped`, `ConvInjSort` and
+`TopSortUnique`, at a well-formed context (context validity for `F0` — the `Struct` cases
+of `F0Base_ctx` — is not proved here; `F0Base_ctx` is the fragment's). The two sort
+premises are turned into types by `Core.sort` precisely because `s, s' ≠ u1`. -/
+theorem sortUniqueAt_of_typed {sg : Sig} (hty : TyUniqueTyped sg) (hsi : ConvInjSort sg)
+    (htop : TopSortUnique sg) {Γ : Ctx} (hΓ : Derivable (F0 sg) (.wf Γ)) (A : Tm) :
+    SortUniqueAt sg Γ A := by
+  intro s s' hs hs'
+  by_cases h1 : s = .u1
+  · subst h1; exact (htop Γ A s' hs hs').symm
+  by_cases h2 : s' = .u1
+  · subst h2; exact htop Γ A s hs' hs
+  · obtain ⟨sA, hsA⟩ := Srt.exists_succ? h1
+    obtain ⟨sB, hsB⟩ := Srt.exists_succ? h2
+    have htA : Derivable (F0 sg) (Γ ⊢ .sort s ∶ .sort sA) :=
+      ofRule (core_in_F0 (Core.sort hsA)) (by
+        simp only [List.mem_cons, List.mem_nil_iff, or_false, forall_eq]
+        exact hΓ)
+    have htB : Derivable (F0 sg) (Γ ⊢ .sort s' ∶ .sort sB) :=
+      ofRule (core_in_F0 (Core.sort hsB)) (by
+        simp only [List.mem_cons, List.mem_nil_iff, or_false, forall_eq]
+        exact hΓ)
+    obtain ⟨c, hc⟩ := hty Γ A (.sort s) (.sort s') ⟨sA, htA⟩ ⟨sB, htB⟩ hs hs'
+    exact hsi Γ s s' (.sort c) hc
+
+/-- **`ConvJoin`**: conversion is generated by reduction with a common reduct. This is the
+M1 Church–Rosser/subject-reduction theorem, and the only remaining ingredient of the
+sorting lemma that the two structural rules do not supply. -/
+def ConvJoin (sg : Sig) : Prop :=
+  ∀ Γ t u A, Derivable (F0 sg) (Γ ⊢ t ≡ u ∶ A) →
+    ∃ v, RedStar sg Γ A t v ∧ RedStar sg Γ A u v
+
+/-- **`ConvJoin` closes `ConvInjSort`**: two convertible sorts are joinable, and a
+`RedStar` chain from a sort never moves. -/
+theorem convInjSort_of_join {sg : Sig} (hj : ConvJoin sg) : ConvInjSort sg := by
+  intro Γ u v C d
+  obtain ⟨w, h1, h2⟩ := hj Γ (Tm.sort u) (Tm.sort v) C d
+  have h1' : w = Tm.sort u := redStar_of_sort h1
+  subst h1'
+  have h2' : Tm.sort u = Tm.sort v := redStar_of_sort h2
+  cases h2'
+  rfl
+
+/-- The global sorting lemma, from the two remaining M1 statements: `TyUnique` and
+`ConvJoin` (which gives `ConvInjSort`). -/
+theorem sortUnique_of_join {sg : Sig} (hty : TyUnique sg) (hj : ConvJoin sg) : SortUnique sg :=
+  sortUnique_of hty (convInjSort_of_join hj)
+
+/-- `WhRed` is empty at propositions, from `TyUnique` and the joinability of conversion. -/
+theorem WhRed.empty_at_prop_join {sg : Sig} (hty : TyUnique sg) (hj : ConvJoin sg)
+    {Γ : Ctx} {t u A : Tm} (h : WhRed (F0 sg) Γ t u A)
+    (hp : Derivable (F0 sg) (Γ ⊢ A ∶ .sort .prop)) : False :=
+  WhRed.empty_at_prop' (sortUnique_of_join hty hj) h hp
 
 end Spec
 end F0

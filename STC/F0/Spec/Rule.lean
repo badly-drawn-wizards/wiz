@@ -33,6 +33,19 @@ inductive Jdg where
   | eq (Γ : Ctx) (t u A : Tm)
   | red (Γ : Ctx) (t u A : Tm)
 
+/-- The context of a judgment. -/
+def Jdg.ctx : Jdg → Ctx
+  | .wf Γ | .ty Γ .. | .eq Γ .. | .red Γ .. => Γ
+
+/-- Replace the context of a judgment, keeping its terms and its kind. This is the
+operation `ctxConv` (`Spec/Struct.lean`) acts with: a judgment about terms in `A :: Γ` is
+also a judgment about the same terms in `A' :: Γ`. -/
+def Jdg.rectx (Δ : Ctx) : Jdg → Jdg
+  | .wf _ => .wf Δ
+  | .ty _ t A => .ty Δ t A
+  | .eq _ t u A => .eq Δ t u A
+  | .red _ t u A => .red Δ t u A
+
 structure Rule where
   prems : List Jdg
   concl : Jdg

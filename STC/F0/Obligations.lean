@@ -106,9 +106,13 @@ def DecConv (sg : Sig) : Prop :=
 "regularity plus uniqueness of types plus injectivity of the formers" (`stc-plan.md`,
 M1). The two statements below are that obligation, split at the joint the rules make
 visible; `F0/Sorting.lean` derives `SortUniqueAt` from them, and proves the parts of them
-that F0's rules do give. They are *statements to prove in M1*, like `SoundF0` above: the
-declarative rules have no inversion principle for `≡` and no normal-form theorem, so
-neither is derivable by rule induction (see `F0/Sorting.lean`, "the gap"). -/
+that F0's rules do give. They are *statements to prove in M1*: the declarative rules have
+no inversion principle for `≡` and no normal-form theorem. Two of the rule-level gaps the
+first version of this note recorded are now rules (`Spec/Struct.lean`: `eqTyped`,
+`ctxConv`), so `Sorting.lean`'s `conv`/`cong` blockers are discharged; the `trans` case is
+not (it needs `ConvJoin`, `Sorting.lean`), and `TyUnique` as stated has a top-universe
+boundary (`Sort u1` is not a term with a sort), for which `Sorting.lean` states the
+corrected `TyUniqueTyped` and `TopSortUnique`. -/
 
 /-- **`TyUnique`**: two types of one term are convertible at one sort. This is
 "uniqueness of types up to conversion"; its proof is where the injectivity lemmas

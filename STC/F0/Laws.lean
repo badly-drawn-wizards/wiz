@@ -149,10 +149,6 @@ end Tm
 
 namespace Spec
 
-/-- The context of a judgment. -/
-def Jdg.ctx : Jdg → Ctx
-  | .wf Γ | .ty Γ .. | .eq Γ .. | .red Γ .. => Γ
-
 /-- The action of a renaming on a judgment whose context becomes `Δ`. -/
 def Jdg.ren (ρ : Nat → Nat) (Δ : Ctx) : Jdg → Jdg
   | .wf _ => .wf Δ

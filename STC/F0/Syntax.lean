@@ -191,5 +191,17 @@ abbrev Sig := List Decl
 
 def Sig.find? (sg : Sig) (c : String) : Option Decl := List.find? (·.name == c) sg
 
+namespace Spec
+
+/-- Every declaration is closed: substituting any terms leaves its type (and value) alone.
+Needed by the renaming lemma and by the two structural conversion rules (`Spec/Struct.lean`);
+not implied by `SigWF` without "typed in the empty context implies closed", which is not
+proved. -/
+def Sig.Closed (sg : Sig) : Prop :=
+  ∀ d, d ∈ sg → ∀ σ : Nat → Tm, d.type.sub σ = d.type ∧
+    ∀ v, d.value = some v → v.sub σ = v
+
+end Spec
+
 end F0
 end STC

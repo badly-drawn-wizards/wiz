@@ -23,8 +23,9 @@ propositions, e.g. `Pi.beta` into a `Π` ending in `Prop`; they are just not `Wh
 `ConvInjSort`) and proves the reduction, including the version of the theorem here that
 takes those two instead of `SortUniqueAt` at the term. It also records which rule-level
 cases block the two statements: the `trans` case of conversion needs the normalisation
-(canonical-head) theorem, and the `cong` cases need a context-conversion rule F0 does not
-have. Read that file before attempting the lemma.
+(canonical-head) theorem (`ConvJoin`); the `conv`/`cong` rule gaps it once recorded are
+now rules (`Spec/Struct.lean`: `eqTyped`, `ctxConv`). Read that file before attempting the
+lemma.
 -/
 
 

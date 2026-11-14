@@ -5,17 +5,18 @@ import STC.F0.Renaming
 The companion of `Renaming.lean`, in the same architecture (which is
 `WizMeta/Spec/Substitution.lean`'s): a substitution sending each variable of `Γ` to a term
 of `Δ` at the substituted type (`SubOK`), a closure property per rule set (`SubClosed`),
-and the lemma for `F0`. Lifting a substitution under a binder needs the renaming lemma
-(`F0_rename`): the variables of `Γ`, weakened into the extended context, are renamed.
+and the lemma for `F0Base` (the fragment without the two `Struct` rules; their closure is
+`StructSubClosed`, `F0/Typing.lean`). Lifting a substitution under a binder needs the renaming lemma
+(`F0Base_rename`): the variables of `Γ`, weakened into the extended context, are renamed.
 
 The rule-level work is the same as for renaming, with `sub` in place of `ren`: a rule
 with a premise under a binder has the binder's type among its premises (`Pi.lam`,
 `Pi.beta`, `Pi.eta`, `Pi.cong`, `Sigma.cong`, `EqTyLevelled.pi/sigma`), and the signature
 is closed (`Sig.Closed`).
 
-The concrete companions (`F0_subst`, `F0_subst_eq`, `F0_subst_red`) instantiate the
-substitution at `[a/0]`. The well-formedness of `Γ` that `F0_weakening` takes as a
-hypothesis is not needed: context validity (`F0_ctx`, `Γ ⊢ J → ⊢ Γ`) is proved below from
+The concrete companions (`F0Base_subst`, `F0Base_subst_eq`, `F0Base_subst_red`) instantiate the
+substitution at `[a/0]`. The well-formedness of `Γ` that `F0Base_weakening` takes as a
+hypothesis is not needed: context validity (`F0Base_ctx`, `Γ ⊢ J → ⊢ Γ`) is proved below from
 the rules, so the companions have the shape of the implementation note.
 -/
 
@@ -560,18 +561,18 @@ theorem F0Rules_substs {sg : Sig} (hsg : Sig.Closed sg) {var : EqTyVariant} {j :
   subst_of_closed (F0Rules_subClosed hsg) d
 
 /-- **The substitution lemma for F0**: the levelled variant, the system of `Obligations`. -/
-theorem F0_substs {sg : Sig} (hsg : Sig.Closed sg) {j : Jdg}
-    (d : Derivable (F0 sg) j) : Substs (F0 sg) j :=
+theorem F0Base_substs {sg : Sig} (hsg : Sig.Closed sg) {j : Jdg}
+    (d : Derivable (F0Base sg) j) : Substs (F0Base sg) j :=
   F0Rules_substs hsg d
 
 /-! ## Context validity
 
 Every derivable judgment has a well-formed context. This is what lets the concrete
-substitution laws below drop the `⊢ Γ` hypothesis that `F0_weakening` carries (there is no
+substitution laws below drop the `⊢ Γ` hypothesis that `F0Base_weakening` carries (there is no
 inversion lemma, so the proof follows the last rule of the derivation). -/
 
-theorem F0_ctx {sg : Sig} {j : Jdg}
-    (d : Derivable (F0 sg) j) : Derivable (F0 sg) (.wf (Jdg.ctx j)) := by
+theorem F0Base_ctx {sg : Sig} {j : Jdg}
+    (d : Derivable (F0Base sg) j) : Derivable (F0Base sg) (.wf (Jdg.ctx j)) := by
   induction d with
   | intro r hr hp ih =>
     -- `F0` is a left-associated union chain: peel the components from the right.
@@ -792,9 +793,9 @@ theorem F0_ctx {sg : Sig} {j : Jdg}
 /-- Dropping the head variable of a well-formed context: `⊢ A :: Γ` gives `⊢ Γ`. (The
 `wf` judgment has no term position, so this is the only nontrivial `wf` inversion; the
 rule's other premises are not needed.) -/
-theorem F0_wf_tail {sg : Sig} {Γ : Ctx} {A : Tm}
-    (h : Derivable (F0 sg) (.wf (A :: Γ))) : Derivable (F0 sg) (.wf Γ) := by
-  have aux : ∀ j, Derivable (F0 sg) j → j = .wf (A :: Γ) → Derivable (F0 sg) (.wf Γ) := by
+theorem F0Base_wf_tail {sg : Sig} {Γ : Ctx} {A : Tm}
+    (h : Derivable (F0Base sg) (.wf (A :: Γ))) : Derivable (F0Base sg) (.wf Γ) := by
+  have aux : ∀ j, Derivable (F0Base sg) j → j = .wf (A :: Γ) → Derivable (F0Base sg) (.wf Γ) := by
     intro j dj
     induction dj with
     | intro r hr hp ih =>
@@ -844,8 +845,8 @@ theorem F0_wf_tail {sg : Sig} {Γ : Ctx} {A : Tm}
 
 /-- The substitution `[a/0]` is `SubOK` from `A :: Γ` to `Γ`, given a well-formed `Γ`. -/
 theorem subOK_one {sg : Sig} {Γ : Ctx} {A a : Tm}
-    (hΓ : Derivable (F0 sg) (.wf Γ)) (ha : Derivable (F0 sg) (Γ ⊢ a ∶ A)) :
-    SubOK (F0 sg) (Tm.one a) (A :: Γ) Γ := by
+    (hΓ : Derivable (F0Base sg) (.wf Γ)) (ha : Derivable (F0Base sg) (Γ ⊢ a ∶ A)) :
+    SubOK (F0Base sg) (Tm.one a) (A :: Γ) Γ := by
   intro i C hC
   cases i with
   | zero =>
@@ -865,38 +866,38 @@ theorem subOK_one {sg : Sig} {Γ : Ctx} {A a : Tm}
         simp only [List.mem_cons, List.mem_nil_iff, or_false, forall_eq]
         exact hΓ)
 
-/-- **Substitution for F0 typing**, the companion of `F0_rename`: `t[a/0]` has the
+/-- **Substitution for F0 typing**, the companion of `F0Base_rename`: `t[a/0]` has the
 substituted type. Needs a closed signature; the well-formedness of `Γ` follows from the
-term's typing by `F0_ctx`. -/
-theorem F0_subst {sg : Sig} (hsg : Sig.Closed sg) {Γ : Ctx} {A t B a : Tm}
-    (ht : Derivable (F0 sg) ((A :: Γ) ⊢ t ∶ B))
-    (ha : Derivable (F0 sg) (Γ ⊢ a ∶ A)) :
-    Derivable (F0 sg) (Γ ⊢ t.inst a ∶ B.inst a) := by
-  have hΓ := F0_ctx ha
-  have := F0_substs hsg ht (Tm.one a) Γ (subOK_one hΓ ha) hΓ
+term's typing by `F0Base_ctx`. -/
+theorem F0Base_subst {sg : Sig} (hsg : Sig.Closed sg) {Γ : Ctx} {A t B a : Tm}
+    (ht : Derivable (F0Base sg) ((A :: Γ) ⊢ t ∶ B))
+    (ha : Derivable (F0Base sg) (Γ ⊢ a ∶ A)) :
+    Derivable (F0Base sg) (Γ ⊢ t.inst a ∶ B.inst a) := by
+  have hΓ := F0Base_ctx ha
+  have := F0Base_substs hsg ht (Tm.one a) Γ (subOK_one hΓ ha) hΓ
   simpa [Jdg.sub, Tm.inst] using this
 
-/-- **Substitution for F0 conversion**: the companion of `F0_subst` at the `≡` judgment. -/
-theorem F0_subst_eq {sg : Sig} (hsg : Sig.Closed sg) {Γ : Ctx} {A t u B a : Tm}
-    (ht : Derivable (F0 sg) ((A :: Γ) ⊢ t ≡ u ∶ B))
-    (ha : Derivable (F0 sg) (Γ ⊢ a ∶ A)) :
-    Derivable (F0 sg) (Γ ⊢ t.inst a ≡ u.inst a ∶ B.inst a) := by
-  have hΓ := F0_ctx ha
-  have := F0_substs hsg ht (Tm.one a) Γ (subOK_one hΓ ha) hΓ
+/-- **Substitution for F0 conversion**: the companion of `F0Base_subst` at the `≡` judgment. -/
+theorem F0Base_subst_eq {sg : Sig} (hsg : Sig.Closed sg) {Γ : Ctx} {A t u B a : Tm}
+    (ht : Derivable (F0Base sg) ((A :: Γ) ⊢ t ≡ u ∶ B))
+    (ha : Derivable (F0Base sg) (Γ ⊢ a ∶ A)) :
+    Derivable (F0Base sg) (Γ ⊢ t.inst a ≡ u.inst a ∶ B.inst a) := by
+  have hΓ := F0Base_ctx ha
+  have := F0Base_substs hsg ht (Tm.one a) Γ (subOK_one hΓ ha) hΓ
   simpa [Jdg.sub, Tm.inst] using this
 
-/-- **Substitution for F0 reduction**: the companion of `F0_subst` at the `⟶` judgment. -/
-theorem F0_subst_red {sg : Sig} (hsg : Sig.Closed sg) {Γ : Ctx} {A t u B a : Tm}
-    (ht : Derivable (F0 sg) ((A :: Γ) ⊢ t ⟶ u ∶ B))
-    (ha : Derivable (F0 sg) (Γ ⊢ a ∶ A)) :
-    Derivable (F0 sg) (Γ ⊢ t.inst a ⟶ u.inst a ∶ B.inst a) := by
-  have hΓ := F0_ctx ha
-  have := F0_substs hsg ht (Tm.one a) Γ (subOK_one hΓ ha) hΓ
+/-- **Substitution for F0 reduction**: the companion of `F0Base_subst` at the `⟶` judgment. -/
+theorem F0Base_subst_red {sg : Sig} (hsg : Sig.Closed sg) {Γ : Ctx} {A t u B a : Tm}
+    (ht : Derivable (F0Base sg) ((A :: Γ) ⊢ t ⟶ u ∶ B))
+    (ha : Derivable (F0Base sg) (Γ ⊢ a ∶ A)) :
+    Derivable (F0Base sg) (Γ ⊢ t.inst a ⟶ u.inst a ∶ B.inst a) := by
+  have hΓ := F0Base_ctx ha
+  have := F0Base_substs hsg ht (Tm.one a) Γ (subOK_one hΓ ha) hΓ
   simpa [Jdg.sub, Tm.inst] using this
 
 /-- **Substitution for F0 well-formedness**: the `.wf` companion. The wf judgment has no
 term position; substituting the head variable away (`⊢ A :: Γ`) leaves `Γ` well formed. -/
-theorem F0_subst_wf {sg : Sig} {Γ : Ctx} {A : Tm}
-    (h : Derivable (F0 sg) (.wf (A :: Γ))) :
-    Derivable (F0 sg) (.wf Γ) :=
-  F0_wf_tail h
+theorem F0Base_subst_wf {sg : Sig} {Γ : Ctx} {A : Tm}
+    (h : Derivable (F0Base sg) (.wf (A :: Γ))) :
+    Derivable (F0Base sg) (.wf Γ) :=
+  F0Base_wf_tail h
