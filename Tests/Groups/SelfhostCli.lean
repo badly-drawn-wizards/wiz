@@ -162,10 +162,11 @@ def cliGroup : Group where
     { name := "-I: a module root, and a module's errors at its own position", run := fun _ =>
         withSelfhostCli fun exe => do
         let files := #[("lib/M.wiz", "import Prelude\ndef one : Nat := 1\n"), ("main.wiz", cliGood.replace "def one : Nat := 1" "import M")]
-        -- without -I the module is unknown (exit 1, `unknown-module`)
+        -- without -I the module is not found (exit 1, `unknown-module`): the loader
+        -- searches the -I roots and then the working directory, not the importer's
         let (c, _, err) ← cliRun exe files #["check", "main.wiz"]
         checkEq 1 c
-        cliCheck err "main.wiz:2:1: error: unknown module M [unknown-module]" "unknown module"
+        cliCheck err "main.wiz:2:1: error: cannot find module M [unknown-module]" "unknown module"
         -- with -I it is read, and both files' declarations are reported where they are
         let (c, out, err) ← cliRun exe files #["check", "-I", "lib", "main.wiz", "--types"]
         checkEq 0 c
@@ -188,6 +189,12 @@ def cliGroup : Group where
         let (c, _, err) ← cliRun exe #[("dup.wiz", dup)] #["check", "dup.wiz"]
         checkEq 1 c
         cliCheck err "dup.wiz:3:1: error: 'one' has already been declared [duplicate-declaration]" "duplicate"
+        -- the loader's errors carry their codes too
+        let cyc := #[("c.wiz", "import Prelude\nimport D\n"), ("D.wiz", "import Prelude\nimport c\n")]
+        let (c, _, err) ← cliRun exe cyc #["check", "c.wiz"]
+        checkEq 1 c
+        cliCheck err "c.wiz:2:1: error: import cycle: " "cycle position"
+        cliCheck err "[import-cycle]" "cycle code"
         -- the parser's error, at the command that starts it
         let (c, _, err) ← cliRun exe #[("parse.wiz", "import Prelude\ndef one : Nat := 1\ndef two : Nat :=\n")] #["check", "parse.wiz"]
         checkEq 1 c

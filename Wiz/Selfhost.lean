@@ -82,10 +82,11 @@ Any change to the selfhost sources makes the cache cold. -/
 def toolchainId (srcs : List String) : String :=
   s!"{hash (Wiz.version ++ "\n".intercalate srcs)}"
 
-/-- The self-hosted checker: reads `input.wiz` and prints what the frontend makes of it. -/
+/-- The self-hosted checker: reads `input.wiz` (and the modules it imports, with `-I`
+roots) and prints what the frontend makes of them. -/
 def checkerSource (srcs : List String) : String :=
   "import IO\nimport Std\n" ++ "\n".intercalate (srcs.map strip) ++ "\n" ++ tablesSource ++
-    "def main : IO Unit := do\n  text ← IO.readFile \"input.wiz\";\n  printAll (checkFile cats tokens text)\n"
+    "def main : IO Unit := moduleMain cats tokens\n"
 
 /-- The self-hosted compiler, with the driver (`selfhost/Cli.wiz`) last: `--rc` (or
 `--rc-owned`, `--gc`) on its command line picks the backend's mode (stage 21k;
