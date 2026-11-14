@@ -41,6 +41,12 @@ def world : World := sharedWorld ()
 
 def cx0 : Cx := mkCx world #[]
 
+/-- Fill the sort of every `Π`/`Σ` the generators write. Sorts are mandatory (#203): the
+Lean side fills holes in `Mark`, and `toM` would otherwise ask `Kernel.wiz` about a
+hole-sorted term, whose `propSort?` is `none` — a different question, not a kernel
+difference. -/
+def filled (t : Tm) : Tm := annotate cx0 t
+
 /-- A term of `T`, drawn from the property harness's generator in the empty context. -/
 def leaf (T : Tm) (fuel : Nat := 1) : Gen Tm := genTm cx0 T fuel
 
@@ -453,7 +459,7 @@ def campaign (sh : Shape) (n : Nat) (seed0 : Nat) : SM (Array Query) := do
     seed := lcg seed
     let (triple, gs) := runGen #[] (some seed) (genSample sh)
     let seq := gs.log.map (·.1)
-    let f : Fuzz := { shape := sh, T := triple.1, v := triple.2.1, seq, decision := triple.2.2 }
+    let f : Fuzz := { shape := sh, T := filled triple.1, v := filled triple.2.1, seq, decision := triple.2.2 }
     bump sh.label
     if accepts world.g (.ann f.v f.T) then bumpCore sh.label
     else
@@ -542,7 +548,7 @@ def checkAnswers (_qs : Array Query) (ans : Array (Query × String)) : SM Unit :
 /-- Print one sample and both kernels' answers (the replay command's body). -/
 def replayOne (sh : Shape) (seq : Array Nat) : IO UInt32 := do
   let (triple, _) := runGen seq none (genSample sh)
-  let f : Fuzz := { shape := sh, T := triple.1, v := triple.2.1, seq, decision := triple.2.2 }
+  let f : Fuzz := { shape := sh, T := filled triple.1, v := filled triple.2.1, seq, decision := triple.2.2 }
   IO.println s!"shape {sh.label}, choices {seq.toList}"
   IO.println s!"  T := {f.T.pretty []}"
   IO.println s!"  v := {f.v.pretty []}"
@@ -571,7 +577,7 @@ def checkMain (args : List String) : IO UInt32 := do
   for _ in [0:n] do
     seed := lcg seed
     let (triple, gs) := runGen #[] (some seed) (genSample sh)
-    let f : Fuzz := { shape := sh, T := triple.1, v := triple.2.1, seq := gs.log.map (·.1), decision := triple.2.2 }
+    let f : Fuzz := { shape := sh, T := filled triple.1, v := filled triple.2.1, seq := gs.log.map (·.1), decision := triple.2.2 }
     let ok := accepts world.g (.ann f.v f.T)
     IO.println s!"{sh.label}: core {if ok then "ok" else "ILL TYPED"} choices {f.seq.toList}"
     IO.println s!"  T := {f.T.pretty []}\n  v := {f.v.pretty []}"
