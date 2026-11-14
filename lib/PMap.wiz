@@ -50,8 +50,15 @@ exactly when `a = b`, and `.gt` otherwise. -/
 class Compare (K : Type) where
   compare : K → K → Ordering
 
-/-- Natural numbers are compared by `Nat.cmp`. -/
-instance : Compare Nat := Compare.mk Nat.cmp
+/-- Three-way comparison of natural numbers, through the native `Nat.lt` and `Nat.beq`
+(in compiled code these are builtins; `Nat.cmp` would recurse once per unary `succ`). -/
+def Nat.compare (a b : Nat) : Ordering := match Nat.lt a b with
+  | .true => .lt
+  | .false => match Nat.beq a b with
+    | .true => .eq
+    | .false => .gt
+/-- Natural numbers are compared by `Nat.compare`. -/
+instance : Compare Nat := Compare.mk Nat.compare
 
 /-- Three-way comparison of 64-bit words (unsigned). -/
 def U64.cmp (a b : U64) : Ordering := match UIntN.lt a b with
