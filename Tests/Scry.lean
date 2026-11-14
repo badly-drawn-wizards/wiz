@@ -6,7 +6,9 @@ import Tests.Elab
 # scry's Datalog engine (S3, deep embedding)
 
 The group `scry-datalog` checks `lib/Scry/Store.wiz`, `lib/Scry/Datalog.wiz` and
-`lib/Scry/Eval.wiz` through `examples/scry-datalog-*.wiz`:
+`lib/Scry/Eval.wiz` through `examples/scry-datalog-*.wiz`; the group `scry-egraph`
+checks the S12 e-graph (`lib/Scry/Egraph.wiz`) through `examples/scry-egraph-*.wiz`.
+The Datalog group's cases are:
 
 * transitive closure and a provenance witness;
 * same-generation;
@@ -54,6 +56,26 @@ def strataCase : IO Unit := do
   -- strata [0, 1, 0] read from the right by the fold: 010
   Elab.okLibs src ["10"]
 
+def scryEgraphGroup : Group where
+  name := "scry-egraph"
+  exercise := "S12: lib/Scry/Egraph.wiz"
+  cases := [
+    { name := "congruence: a = b also equates f a = f b and g (f a) = g (f b)", run := fun _ =>
+        interp "scry-egraph-congruence" "14111" },
+    { name := "rebuild: a batch of unions canonicalises every class, child and level", run := fun _ =>
+        interp "scry-egraph-rebuild" "14111" },
+    { name := "extraction: unit cost takes x, a heavy leaf weight takes 0 + 1", run := fun _ =>
+        interp "scry-egraph-extract" "11332" },
+    { name := "extraction: the same under C and LLVM", run := fun _ =>
+        compiled "scry-egraph-extract" "11332" },
+    { name := "saturation: x + 0 → x, x * 1 → x and commutativity reach x", run := fun _ =>
+        interp "scry-egraph-saturate" "3171" },
+    { name := "fuel: a growing rewrite adds one layer per round and stops at the bound", run := fun _ =>
+        interp "scry-egraph-fuel" "2851" },
+    { name := "Datalog: derived equality facts feed one mergeFacts, then congruence", run := fun _ =>
+        interp "scry-egraph-datalog" "4021" }
+  ]
+
 def scryGroup : Group where
   name := "scry-datalog"
   exercise := "S3: lib/Scry/Store.wiz, lib/Scry/Datalog.wiz, lib/Scry/Eval.wiz"
@@ -78,6 +100,6 @@ def scryGroup : Group where
         strataCase }
   ]
 
-def groups : List Group := [scryGroup]
+def groups : List Group := [scryGroup, scryEgraphGroup]
 
 end Tests.Scry
