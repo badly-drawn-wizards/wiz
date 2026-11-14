@@ -11,6 +11,7 @@ import Tests.Lint
 import Tests.Allocs
 import Tests.Scaling
 import Tests.ScryWil
+import Tests.ScryTaint
 import Tests.Audit
 import Tests.Prop
 import Tests.Feral
@@ -45,6 +46,7 @@ def groups : List Group :=
   Parser.groups ++
   Prop.groups ++
   ScryWil.groups ++
+  ScryTaint.groups ++
   Rig.groups ++
   Scaling.groups ++
   Scry.groups ++

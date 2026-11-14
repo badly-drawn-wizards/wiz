@@ -51,6 +51,7 @@
     "phantom",
     "regions",
     "=scry-wil",
+    "=scry-taint",
     "=linear-case",
     "repr",
     "seplogic",
