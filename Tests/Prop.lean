@@ -135,6 +135,100 @@ def ctorName : Tm → String
   | .coit .. => "coit" | .natLit _ => "natLit" | .natOp .. => "natOp" | .ulift .. => "ulift"
   | .up _ => "up" | .down _ => "down" | .prf .. => "prf"
 
+/-- A structural hash of a term: its constructor, the parts that are not subterms (names,
+the tag index, the quantity literal, …) and its children's hashes. It only picks a memo
+bucket — an equal key decides a hit — so a collision costs a comparison. (A fold, with no
+list built per node: the memo hashes a term on every lookup.) -/
+partial def hashTm : Tm → UInt64
+  | .var i => h 1 (hash i)
+  | .const n ls => h 2 (h (hash n) (hash ls))
+  | .sort l => h 3 (hash l)
+  | .pi x bi q a b σ => h 4 (h (hash x) (h (biHash bi) (h (hashTm q) (h (hashTm a) (h (hashTm b) (sortsHash σ))))))
+  | .lam x b => h 5 (h (hash x) (hashTm b))
+  | .app a b => h 6 (h (hashTm a) (hashTm b))
+  | .letE x q t v b => h 7 (h (hash x) (h (hashTm q) (h (hashTm t) (h (hashTm v) (hashTm b)))))
+  | .letUnit u b => h 8 (h (hashTm u) (hashTm b))
+  | .ann a b => h 9 (h (hashTm a) (hashTm b))
+  | .mvar i => h 10 (hash i)
+  | .sigma x q a b σ => h 11 (h (hash x) (h (hashTm q) (h (hashTm a) (h (hashTm b) (sortsHash σ)))))
+  | .pair a b => h 12 (h (hashTm a) (hashTm b))
+  | .fst t => h 13 (hashTm t)
+  | .snd t => h 14 (hashTm t)
+  | .split q s z m x y b =>
+    h 15 (h (hashTm q) (h (hashTm s) (h (hash z) (h (hashTm m) (h (hash x) (h (hash y) (hashTm b)))))))
+  | .unit l => h 16 (hash l)
+  | .tt => h 17 0
+  | .empty l => h 18 (hash l)
+  | .absurd a b => h 19 (h (hashTm a) (hashTm b))
+  | .eq A a b => h 20 (h (hashTm A) (h (hashTm a) (hashTm b)))
+  | .eqTy A B => h 21 (h (hashTm A) (hashTm B))
+  | .refl A a => h 22 (h (hashTm A) (hashTm a))
+  | .reflTy X => h 23 (hashTm X)
+  | .cast A B e t => h 24 (h (hashTm A) (h (hashTm B) (h (hashTm e) (hashTm t))))
+  | .transp A a P p b e =>
+    h 25 (h (hashTm A) (h (hashTm a) (h (hashTm P) (h (hashTm p) (h (hashTm b) (hashTm e))))))
+  | .qty => h 26 0
+  | .qlit r => h 27 (qHash r)
+  | .enum ls => h 28 (hash ls)
+  | .tag ls i => h 29 (h (hash ls) (hash i))
+  | .ecase z mo s bs => h 30 (h (hash z) (h (hashTm mo) (h (hashTm s) (hs bs))))
+  | .desc l I => h 31 (h (hash l) (hashTm I))
+  | .dret i => h 32 (hashTm i)
+  | .darg q S D => h 33 (h (hashTm q) (h (hashTm S) (hashTm D)))
+  | .drec q j D => h 34 (h (hashTm q) (h (hashTm j) (hashTm D)))
+  | .dhrec q H j D => h 35 (h (hashTm q) (h (hashTm H) (h (hashTm j) (hashTm D))))
+  | .delim v P a b c e D =>
+    h 36 (h (hash v) (h (hashTm P) (h (hashTm a) (h (hashTm b) (h (hashTm c) (h (hashTm e) (hashTm D)))))))
+  | .mu l I D i sz hh =>
+    h 37 (h (hash l) (h (hashTm I) (h (hashTm D) (h (hashTm i) (h (hashTm sz) (hintHash hh))))))
+  | .con x => h 38 (hashTm x)
+  | .ind l I D v P m i x =>
+    h 39 (h (hash l) (h (hashTm I) (h (hashTm D) (h (hash v) (h (hashTm P) (h (hashTm m) (h (hashTm i) (hashTm x))))))))
+  | .nu l I D i sz hh =>
+    h 40 (h (hash l) (h (hashTm I) (h (hashTm D) (h (hashTm i) (h (hashTm sz) (hintHash hh))))))
+  | .out x => h 41 (hashTm x)
+  | .size => h 42 0
+  | .szInf => h 43 0
+  | .szSuc s => h 44 (hashTm s)
+  | .sizeLt s => h 45 (hashTm s)
+  | .sfix l I D v P g s i x =>
+    h 46 (h (hash l) (h (hashTm I) (h (hashTm D) (h (hash v) (h (hashTm P) (h (hashTm g) (h (hashTm s) (h (hashTm i) (hashTm x)))))))))
+  | .scase l q I D v P m s i x =>
+    h 47 (h (hash l) (h (hashTm q) (h (hashTm I) (h (hashTm D) (h (hash v) (h (hashTm P) (h (hashTm m) (h (hashTm s) (h (hashTm i) (hashTm x))))))))))
+  | .cocon x => h 48 (hashTm x)
+  | .scofix l I D A f s i a =>
+    h 49 (h (hash l) (h (hashTm I) (h (hashTm D) (h (hashTm A) (h (hashTm f) (h (hashTm s) (h (hashTm i) (hashTm a))))))))
+  | .coit l I D S st i s =>
+    h 50 (h (hash l) (h (hashTm I) (h (hashTm D) (h (hashTm S) (h (hashTm st) (h (hashTm i) (hashTm s)))))))
+  | .natLit n => h 51 (hash n)
+  | .natOp op args => h 52 (h (hash op) (ha args))
+  | .ulift k l A => h 53 (h (lvHash k) (h (hash l) (hashTm A)))
+  | .up a => h 54 (hashTm a)
+  | .down t => h 55 (hashTm t)
+  | .prf l t => h 56 (h (hash l) (hashTm t))
+where
+  /-- Mix one field into a node's hash. -/
+  h (a b : UInt64) : UInt64 := mixHash (mixHash 0x9e3779b97f4a7c15 a) b
+  /-- Mix a list of terms (a description's branches). -/
+  hs (ts : List Tm) : UInt64 := ts.foldl (fun acc t => h acc (hashTm t)) 0
+  /-- Mix an array of terms (a native operation's arguments). -/
+  ha (ts : Array Tm) : UInt64 := ts.foldl (fun acc t => h acc (hashTm t)) 0
+  biHash : BinderInfo → UInt64
+    | .default => 1
+    | .implicit => 2
+    | .instImplicit => 3
+  lvHash (l : Level) : UInt64 := mixHash 0x5bd1e995 (hash l)
+  /-- A `Π`/`Σ`'s two component sorts. -/
+  sortsHash : BinderSorts → UInt64
+    | σ => h (lvHash σ.dom) (lvHash σ.cod)
+  qHash : Q → UInt64
+    | .zero => 1
+    | .one => 2
+    | .many => 3
+  hintHash : Option (Name × List Level × List Tm) → UInt64
+    | none => 0
+    | some (n, us, ts) => h (h (hash n) (hash us)) (hs ts)
+
 /-- Every constructor of `Term`, by name. (`ctorName` is exhaustive; a name it returns
 that is missing here fails the coverage gate as "unknown".) -/
 def allCtors : List String :=
@@ -206,6 +300,190 @@ partial def mentionsSize (t : Tm) : Bool :=
 
 partial def sizeT (t : Tm) : Nat :=
   ((mapKidsM (m := StateM Nat) pure (fun _ c => do modify (· + sizeT c); pure c) t).run 1).2
+
+/-! ## A memo for the marking pass
+
+Under P2 every term is marked before it is checked (`Wiz/Elab/Mark.lean`), and the same
+raw term is marked again and again — and soon: the judgment's term once for the coverage
+table and again in `lawsOn`; a type at each `tyPair` of a sample and again in `genTm`; a
+candidate argument each time the generator rebuilds it for the next choice sequence; a
+query's normal form right after its verdict. The pass is a pure function of the term and
+the context it is run in, so the harness keeps its answers. (This is only a memo: the pass,
+and what the harness checks, are untouched.)
+
+The key is **structural** — the entry point, the world (a tag for its globals), the context
+(its raw types, which `Cx.k` is `eval` of), the raw term, and for `Mark.check` the written
+type — never an address. A lookup compares the stored key with the requested one (`BEq` on
+`Term` is structural), so a hash collision costs a comparison and cannot change an answer.
+
+The cell is mutable behind a pure interface (`unsafeBaseIO`, as `Budget` in
+`Wiz/Core/Term.lean` and the module cache in `Wiz/Frontend/Frontend.lean`): the compiled
+test driver uses it, and the interpreter (and the kernel) sees a miss, so a cached answer
+can only ever save work. It keeps a rolling window of `PROP_MEMO_CAP` answers (2000: the
+measured best; see `memoCapRef`), starting again from empty when full, so a run that marks
+millions of candidates keeps bounded memory. A world's name means the same globals only
+within one case, so each case starts from an empty memo (`memoReset`). `PROP_MEMO_STATS=1`
+prints the counts; `PROP_NO_MEMO=1` turns the memo off (an A/B in one build). -/
+
+/-- A marking call, as the memo keys it. `kind` is the entry point (a `chk` never gets an
+`accepts`' answer); `world` tags the globals; `ctx` is the context a term is marked in (its
+raw types, innermost first — the level follows their number); `ty` is the written type, for
+`Mark.check`. `h` is the key's hash, computed once when the key is made (a lookup and its
+insert both use it). -/
+structure MKey where
+  kind : UInt64
+  world : UInt64
+  ctx : List Tm := []
+  t : Tm
+  ty : Option Tm := none
+  h : UInt64 := 0
+  deriving BEq
+
+/-- A memo's answer; the key's `kind` says which field is meaningful. (Only what a second
+call can reuse is kept: a closed term's marked form never repeated — 3 hits in a run — and
+keeping those terms is what a run cannot afford, so `accepts` keeps its verdict alone, and
+`chk` — which repeats — is the entry point that carries `markAt`.) -/
+structure Ans where
+  /-- the marked term (`markKnown`) -/
+  term : Option Tm := none
+  /-- the level of a marked type (`lvlOf`) -/
+  level : Option Level := none
+  /-- a verdict (`chk`, `accepts`) -/
+  verdict : Bool := false
+  /-- a `Kernel.wiz` query's answer (`wizVerdict`, `wizNormal`) -/
+  text : String := ""
+  deriving Inhabited
+
+structure MemoState where
+  map : Std.HashMap UInt64 (Array (MKey × Ans)) := {}
+  calls : Nat := 0
+  hits : Nat := 0
+  inserts : Nat := 0
+  /-- lookups and hits of each entry point (`kind`) -/
+  byKind : Array (Nat × Nat) := Array.replicate 9 (0, 0)
+  /-- nanoseconds spent inside lookups and inserts -/
+  lookupNs : Nat := 0
+  insertNs : Nat := 0
+  deriving Inhabited, Nonempty
+
+structure Memo where
+  ref : IO.Ref MemoState
+
+/-- A key with its hash. -/
+def mkeyOf (kind world : UInt64) (ctx : List Tm) (t : Tm) (ty : Option Tm := none) : MKey :=
+  let h := ctx.foldl (fun h A => mixHash h (hashTm A))
+    (mixHash (mixHash 0x243f6a8885a308d3 kind) world)
+  let h := mixHash h (hashTm t)
+  let h := match ty with
+    | none => h
+    | some T => mixHash (mixHash h 0x9e3779b97f4a7c15) (hashTm T)
+  { kind, world, ctx, t, ty, h }
+
+def MKey.hash (k : MKey) : UInt64 := k.h
+
+initialize memoRef : IO.Ref MemoState ← IO.mkRef {}
+
+/-- `PROP_NO_MEMO=1` turns the memo off (every lookup misses, nothing is kept): an A/B
+of the memo in one build. -/
+initialize memoOffRef : IO.Ref Bool ← do
+  pure (← IO.mkRef (← IO.getEnv "PROP_NO_MEMO").isSome)
+
+/-- `PROP_MEMO_STATS=1`: count the memo's lookups, hits and time (off, so that a run
+measures the harness and not the counters). -/
+initialize memoStatsOnRef : IO.Ref Bool ← do
+  pure (← IO.mkRef (← IO.getEnv "PROP_MEMO_STATS").isSome)
+
+/-- How many answers the memo keeps (`PROP_MEMO_CAP`, default 2000: measured fastest, and a
+bigger window only costs memory). A full memo starts again from empty, so it keeps the
+most recent window: a run that marks millions of generated candidates keeps bounded
+memory, and the answers the harness asks for again soon (a sample's term in `lawsOn` right
+after the coverage table, a type at the next `tyPair`, a candidate the generator rebuilds
+for the next choice sequence) are still there. -/
+initialize memoCapRef : IO.Ref Nat ← do
+  let n := ((← IO.getEnv "PROP_MEMO_CAP").bind String.toNat?).getD 2000
+  pure (← IO.mkRef n)
+
+/-- This run's memo. -/
+def memo : Memo := ⟨memoRef⟩
+
+private unsafe def memoFindImpl (m : Memo) (k : MKey) : Option Ans :=
+  unsafeBaseIO do
+    if ← memoOffRef.get then pure none else
+    let stats ← memoStatsOnRef.get
+    let t0 ← if stats then IO.monoNanosNow else pure 0
+    let s ← m.ref.get
+    let found := (s.map.getD k.hash #[]).find? (fun (k', _) => k' == k)
+    if stats then
+      let i := k.kind.toNat
+      let byKind :=
+        if i < s.byKind.size then
+          let (c, n) := s.byKind.getD i (0, 0)
+          s.byKind.set! i (c + 1, n + (if found.isSome then 1 else 0))
+        else s.byKind
+      m.ref.set { s with calls := s.calls + 1, hits := s.hits + (if found.isSome then 1 else 0), byKind,
+                         lookupNs := s.lookupNs + ((← IO.monoNanosNow) - t0) }
+    pure (found.map (·.2))
+
+/-- The memo's answer for `k`, if it has one. (Compiled code reads the cell; the
+interpreter misses.) -/
+@[implemented_by memoFindImpl]
+opaque memoFind (m : Memo) (k : MKey) : Option Ans
+
+private unsafe def memoPutImpl (m : Memo) (k : MKey) (a : Ans) : Ans :=
+  unsafeBaseIO do
+    if ← memoOffRef.get then pure a else
+    let stats ← memoStatsOnRef.get
+    let t0 ← if stats then IO.monoNanosNow else pure 0
+    let cap ← memoCapRef.get
+    let s ← m.ref.get
+    let s := if s.map.size ≥ cap then { s with map := {} } else s
+    let bucket := s.map.getD k.hash #[]
+    let s :=
+      if bucket.any (fun (k', _) => k' == k) then s else
+      { s with map := s.map.insert k.hash (bucket.push (k, a)), inserts := s.inserts + 1 }
+    if stats then
+      m.ref.set { s with insertNs := s.insertNs + ((← IO.monoNanosNow) - t0) }
+    else m.ref.set s
+    pure a
+
+/-- Keep `a` under `k`; returns it (so the write cannot be dropped). -/
+@[implemented_by memoPutImpl]
+opaque memoPut (m : Memo) (k : MKey) (a : Ans) : Ans
+
+/-- Start a case from an empty memo. -/
+def memoReset : IO Unit := memo.ref.set {}
+
+/-- The name of an entry point, for the memo's table. -/
+def kindName : Nat → String
+  | 3 => "markKnown" | 4 => "lvlOf" | 5 => "chk" | 6 => "accepts"
+  | 7 => "wizVerdict" | 8 => "wizNormal" | k => s!"kind {k}"
+
+/-- (`PROP_MEMO_STATS=1`) the memo's counts, on stdout and in `.scratch/mark-cache-stats.txt`
+(the driver keeps a passing case's output to itself). -/
+def memoStats (what : String) : IO Unit := do
+  if (← IO.getEnv "PROP_MEMO_STATS").isSome then
+    let s ← memo.ref.get
+    let pct := if s.calls == 0 then 0 else s.hits * 100 / s.calls
+    let secs (ns : Nat) : String := s!"{ns / 1000000} ms"
+    let nodes := s.map.toList.foldl (fun n (_, b) => b.foldl (fun n (k, _) => n + sizeT k.t) n) 0
+    let mut out := s!"{what}: {s.calls} lookups, {s.hits} hits ({pct}%), {s.inserts} kept, {s.map.size} keys, {nodes} terms; {secs s.lookupNs} in lookups, {secs s.insertNs} in inserts\n"
+    for ((c, n), kind) in s.byKind.zipIdx do
+      unless c == 0 && n == 0 do out := out ++ s!"  {kindName kind}: {c} lookups, {n} hits\n"
+    IO.print out
+    if ← System.FilePath.isDir ".scratch" then
+      let f := ".scratch/mark-cache-stats.txt"
+      let old ← if ← System.FilePath.pathExists f then IO.FS.readFile f else pure ""
+      IO.FS.writeFile f (old ++ out)
+
+private def kMarkKnown : UInt64 := 3
+private def kLvlOf : UInt64 := 4
+private def kChk : UInt64 := 5
+private def kAccepts : UInt64 := 6
+private def kWizVerdict : UInt64 := 7
+private def kWizNormal : UInt64 := 8
+
+/-- The tag of the globals `wizCase` asks `Kernel.wiz`'s queries with (`Elab.leanGlobals`). -/
+private def wizTag : UInt64 := hash "prop.wiz-case"
 
 def inferable : Tm → Bool
   | .lam .. | .pair .. | .tt | .con _ | .cocon _ | .up _ | .dret _ | .darg .. | .drec .. | .dhrec ..
@@ -369,6 +647,21 @@ def typeOfClosed (g : Gl) (t : Tm) : Option Tm :=
     | .ok (ty, _) => some (quote g 0 ty)
     | .error _ => none
 
+/-- (memo) `accepts`, for a world whose tag is `tag`: a closed term is checked once, and
+the same closed term is a law's term in one law and the same judgment's term in another. -/
+def acceptsC (tag : UInt64) (g : Gl) (t : Tm) : Bool :=
+  let k := mkeyOf kAccepts tag [] t
+  match memoFind memo k with
+  | some a => a.verdict
+  | none =>
+    let b := match markInf g t with
+      | none => false
+      | some t' =>
+        match infer (R := Q) { globals := g } t' with
+        | .ok _ => true
+        | .error _ => false
+    (memoPut memo k { verdict := b }).verdict
+
 def withGadgets (w : World) (ts : List Tm) : World :=
   let gadgets := ts.filterMap fun t => (typeOfClosed w.g t).map (t, ·)
   let tys := (gadgets.map (·.2)).eraseDups.filterMap fun ty => (typeOfClosed w.g ty).map (ty, ·)
@@ -483,13 +776,23 @@ def nf (cx : Cx) (t : Tm) : Tm := quote cx.g cx.k.lvl (cx.k.eval t)
 def whq (cx : Cx) (t : Tm) : Tm := quote cx.g cx.k.lvl (whnf (cx.k.eval t))
 def convTy (cx : Cx) (A B : Tm) : Bool := Wiz.convTy cx.g cx.k.tys (cx.k.eval A) (cx.k.eval B)
 
+/-- (memo) the key of a marking call made in this context. -/
+def mkey (cx : Cx) (kind : UInt64) (t : Tm) (ty : Option Tm := none) : MKey :=
+  mkeyOf kind (hash cx.w.name) cx.tys t ty
+
 def lvlOf (cx : Cx) (A : Tm) : Option Level :=
-  let ctx0 := { cx.k with globals := { cx.g with lazyProofs := false, sortHolesOk := true } }
-  match checkType ctx0 A with
-  | .error _ => none
-  | .ok _ => match checkType cx.k (Mark.type cx.k A).1 with
-    | .ok l => some l
-    | .error _ => none
+  let k := cx.mkey kLvlOf A
+  match memoFind memo k with
+  | some a => a.level
+  | none =>
+    -- (mandatory sorts: the pre-check tolerates the generator's holes, as `markAt` does)
+    let ctx0 := { cx.k with globals := { cx.g with lazyProofs := false, sortHolesOk := true } }
+    let l := match checkType ctx0 A with
+      | .error _ => none
+      | .ok _ => match checkType cx.k (Mark.type cx.k A).1 with
+        | .ok l => some l
+        | .error _ => none
+    (memoPut memo k { level := l }).level
 
 /-- (P2) `t : T` marked, or `none` when the pre-P2 kernel rejects it. -/
 def markAt (cx : Cx) (t T : Tm) : Option Tm :=
@@ -502,15 +805,26 @@ def markAt (cx : Cx) (t T : Tm) : Option Tm :=
 
 /-- (P2) `t : T` marked, for a term the kernel already accepted (`V`): the pass checks
 nothing, so it is run only on a term that kernel accepted. -/
-def markKnown (cx : Cx) (t T : Tm) : Tm := Mark.check cx.k t (cx.k.eval T)
+def markKnown (cx : Cx) (t T : Tm) : Tm :=
+  let k := cx.mkey kMarkKnown t (some T)
+  match (memoFind memo k).bind (·.term) with
+  | some t' => t'
+  | none =>
+    let t' := Mark.check cx.k t (cx.k.eval T)
+    (memoPut memo k { term := some t' }).term.getD t'
 
 def chk (cx : Cx) (t T : Tm) : Bool :=
-  match markAt cx t T with
-  | none => false
-  | some t' =>
-    match Wiz.check cx.k t' (cx.k.eval T) with
-    | .ok _ => true
-    | .error _ => false
+  let k := cx.mkey kChk t (some T)
+  match memoFind memo k with
+  | some a => a.verdict
+  | none =>
+    let b := match markAt cx t T with
+      | none => false
+      | some t' =>
+        match Wiz.check cx.k t' (cx.k.eval T) with
+        | .ok _ => true
+        | .error _ => false
+    (memoPut memo k { verdict := b }).verdict
 
 /-- the variables whose type is convertible with `T` -/
 def varsOfTy (cx : Cx) (T : Tm) : Array Tm :=
@@ -1051,7 +1365,7 @@ def wq (w : World) (role : String) (closed : Tm) (nf : Bool := false) (pair : Bo
 def V (w : World) (role : String) (j : Jd) : M Bool := do
   let c := close j.ctx j.t j.T
   wq w role c
-  return accepts w.g c
+  return acceptsC (hash w.name) w.g c
 
 def names (n : Nat) : List Name := (List.range n).reverse.map (s!"x{·}")
 
@@ -1781,6 +2095,7 @@ def runLean (b : Budget) : IO Acc := do
     let start ← IO.monoMsNow
     (acc, seen) ← runWorld w b acc seen
     IO.println s!"  (world {w.name}: {(← IO.monoMsNow) - start} ms)"
+    memoStats s!"world {w.name}"
   return acc
 
 /-- `tests --prop-replay WORLD CTX MODE FUEL ISEED CHOICE…`: one sample again, with
@@ -1803,6 +2118,7 @@ def replayMain (args : List String) : IO UInt32 := do
   | _ => do IO.eprintln "usage: --prop-replay WORLD CTX MODE FUEL ISEED CHOICE…"; pure 2
 
 def leanCase (b : Budget) : IO Unit := do
+  memoReset
   let acc ← runLean b
   let failed ← coverage acc 10 (sizes := !(← noSizesRef.get))
   summarize acc
@@ -1815,20 +2131,30 @@ def leanCase (b : Budget) : IO Unit := do
 
 def wizVerdict (g : Gl) (t : MTm) : String :=
   -- (P2) each side marks with its own pass, as `Tests/Elab`'s differential test does
-  match markInf g t.toTerm with
-  | none => "error"
-  | some t' => match infer (R := Q) { globals := g } t' with
-    | .ok (ty, _) => match MTm.ofTerm (quote g 0 ty) with
-      | some m => m.pretty 0
-      | none => "?"
-    | .error _ => "error"
+  let k := mkeyOf kWizVerdict wizTag [] t.toTerm
+  match memoFind memo k with
+  | some a => a.text
+  | none =>
+    let s := match markInf g t.toTerm with
+      | none => "error"
+      | some t' => match infer (R := Q) { globals := g } t' with
+        | .ok (ty, _) => match MTm.ofTerm (quote g 0 ty) with
+          | some m => m.pretty 0
+          | none => "?"
+        | .error _ => "error"
+    (memoPut memo k { text := s }).text
 
 /-- The Lean kernel's normal form of a closed term, printed as `Kernel.wiz` prints. -/
 def wizNormal (g : Gl) (t : MTm) : String :=
-  let t' := (markInf g t.toTerm).getD t.toTerm
-  match MTm.ofTerm (quote g 0 (eval g [] t')) with
-  | some m => m.pretty 0
-  | none => "?"
+  let k := mkeyOf kWizNormal wizTag [] t.toTerm
+  match memoFind memo k with
+  | some a => a.text
+  | none =>
+    let t' := (markInf g t.toTerm).getD t.toTerm
+    let s := match MTm.ofTerm (quote g 0 (eval g [] t')) with
+      | some m => m.pretty 0
+      | none => "?"
+    (memoPut memo k { text := s }).text
 
 /-- Build and run a program with `main : IO Unit`; its output (`none`: no C toolchain). -/
 def wizRun (src : String) : IO (Option String) := do
@@ -1899,6 +2225,7 @@ judgments, their substitution instances, their normal forms, and conversions wri
 judgments). With P1–P3 holding in the Lean kernel on the same queries, they hold in
 `Kernel.wiz` on them too. -/
 def wizCase (b : Budget) : IO Unit := do
+  memoReset
   let acc ← runLean b
   -- (the pinned queries first)
   let acc := { acc with wiz := (pinned.map fun ((r, nf, m, _) : String × Bool × MTm × Bool) => (m, "pinned " ++ r, nf)).toArray ++ acc.wiz }
@@ -1910,6 +2237,7 @@ def wizCase (b : Budget) : IO Unit := do
   let verdicts := (qs.zip expected).filter fun ((_, _, nf), _) => !nf
   let accepted := (verdicts.filter (·.2 != "error")).length
   IO.println s!"    ({qs.length} queries: {verdicts.length} verdicts, {accepted} accepted by the Lean kernel; {qs.length - verdicts.length} normal forms)"
+  memoStats "prop-kernels: the queries"
   let w1 := qs.filter fun (m, _, _) => (m.toWiz.splitOn "polyK").length > 1
   let has (x frag : String) : Bool := (x.splitOn frag).length > 1
   let two := w1.filter fun (m, _, _) => has m.toWiz "(.lnum 1) .nil" && has m.toWiz "(.lnum 0) .nil"
