@@ -41,6 +41,25 @@ Not yet: facts like `Vec.get v (Fin.of 3 1 rfl) = 20 := rfl` (the `rfl` shape
 problem above; `drafts/vec-lib/VecProofs.wiz`), arithmetic facts about `BitVec` in general, numerals and operators
 (`a + b`) for `BitVec` (decision HD9).
 
+`lib/BitVecShift.wiz` (`import BitVecShift`): the first of those arithmetic facts, for
+shifts. `BitVec.toNat_concat_zero`, `BitVec.shl_toNat` and `BitVec.shlStage_toNat` put
+the barrel's left `concat`/`slice` stages and `BitVec.shl` in one normal form (the low
+bits of a product); `Bits.low_shift` and `Bits.low_low` compose stages. The right-shift
+side has `BitVec.lshr_toNat`/`lshr_low_toNat` (`Bits.high`, the barrel's other normal
+form), the stage `BitVec.shrStage`/`shrStage_toNat`, and the stage-composition facts
+`Bits.low_of_lt`, `Bits.low_low_rev`, `Bits.high_high`, `Bits.high_lt`,
+`Bits.div_add_pow`/`high_add_pow`, `Bits.high_add_pow_l`, `Bits.high_low`, plus the fill
+lemmas `BitVec.and_zero_left`/`and_one_left`/`and_zero_toNat` and the fill-by-value
+stage `BitVec.fillWord`/`shrStageK` (a symbolic fill value, so a probe's `Nat` steps are
+genuine equations). For arithmetic shifts `Bits.sub_one_high` and `Bits.sub_pow_ones` are
+the ones-fill identities, `Bits.pow_add`/`pow_sub`/`dec_mul`/`add_sub_one` are its `Nat`
+lemmas, and `IntN.shiftRight_pos_toNat`/`neg_toNat`/`neg_ones_toNat` read
+`IntN.shiftRight` (the `BitVec.ashr` of `lib/BitVec.wiz`) in `toNat` form; they use the
+now-public `IntN.shiftRightBody`/`IntN.below_toNat` of `lib/Word.wiz`. This is the lemma set the RV core's barrel shifter proofs need (SLLI is closed;
+the right-shift instruction probes are blocked on a conversion limitation, see
+`wiz-notes/rv-shift-lemmas.md`). It imports `BitBlast` for `Bits.low`, so it is a proof
+module, not part of `BitVec` itself.
+
 ## H14 S0: hardware as tagless-final code, with sharing
 
 `lib/Hdl/Core.wiz` (`import Hdl.Core`) is the L2 layer of the HDL plan: combinational
