@@ -68,7 +68,11 @@ def builtinGroup : Group where
           "def t (f : Nat → Nat) (y : Nat) : f y = Nat.add (Nat.mul 0 (Nat.pow 2 1)) (f y) := rfl\n" ++
           "def tree : Nat → Nat → Nat\n  | .zero, z => z\n  | .succ k, z => Nat.add (tree k z) (tree k z)\n" ++
           "def u (z : Nat) : Nat.mul 0 (tree 8 z) = Nat.mul 0 (tree 8 (Nat.add (Nat.mul 0 (Nat.pow 2 1)) z)) := rfl\n" ++
-          "def v (z : Nat) : Nat.div (Nat.add (Nat.mul 0 (Nat.pow 2 1)) z) 2 = Nat.div z 2 := rfl") },
+          "def v (z : Nat) : Nat.div (Nat.add (Nat.mul 0 (Nat.pow 2 1)) z) 2 = Nat.div z 2 := rfl\n" ++
+          -- the product is 0 whatever `slow` is: forcing it here made the check cost `slow`'s
+          -- whole `Nat.divGo` recursion (200000 was 46 s before the fix)
+          "def slow : Nat := Nat.divGo 20000 20000 1\n" ++
+          "def w : Nat.mul 0 slow = Nat.mul 0 (Nat.add (Nat.mul 0 (Nat.pow 2 1)) slow) := rfl") },
     { name := "implemented_by: compiled code runs the implementation, the kernel the model", run := fun _ => do
         -- the implementation is trusted: here it deliberately differs, to show which runs
         let src := "import Prelude\ndef model (n : Nat) : Nat := n\ndef impl (n : Nat) : Nat := n + 1\n" ++
