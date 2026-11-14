@@ -22,6 +22,18 @@ too. Commands that change the grammar or the macros rerun (they are cheap).
 `Wiz/Cache.lean` serialises terms as S-expressions (quantities through the rig's
 literal syntax). Every example gives the same output from the cache as without it.
 
+**Module regions (`--region-cache`, experimental).** A module's effects are also written
+as one `<cache>/<binary ⊕ module key>.wizr`, a `Lean.CompactedRegion` (the format of
+`.olean`: an mmap'able image of the terms, saved at a base address derived from the module
+name; `Wiz/Cache.lean`, "Module regions"). `--region-cache` serves a module's cached
+commands from that region instead of decoding its `.wizc` entries. The text entries stay
+the authority and the fallback: a missing, truncated or mistagged region is a miss, and the
+next run rewrites it. The command loop (keys, imports, duplicate checks) is unchanged — it
+still parses every command and only takes the effects from the region, so the result is
+the same as the text path's. The artifact holds only `Effect`s, which have no closures, so
+the loader applies them to the live state (`Effect.apply`): `loader`, `trustedModule`,
+`pp.run` and the `Budget` stay live. `--region-stats` prints what came from a region.
+
 Next: finer dependencies (re-elaborate only what an edit affects, not everything
 after it).
 
