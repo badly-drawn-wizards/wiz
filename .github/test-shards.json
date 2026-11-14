@@ -55,6 +55,7 @@
     "seplogic",
     "=sat",
     "=scry-datalog",
+    "=scry-cert",
     "=smt",
     "std",
     "tactics",
