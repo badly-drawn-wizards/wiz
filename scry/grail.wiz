@@ -12,6 +12,7 @@ import Grail
 def package : Package := Package.new "scry"
   |> Package.lib "src" "src"
   |> Package.exe "scry" "App.wiz"
+  |> Package.exe "scry-schema" "tools/SchemaMain.wiz"
   |> Package.tests "tests" "tests"
   -- the S1 skeleton's end-to-end checks: each command runs the CLI over the fixture.
   -- They are ordinary build jobs (keyed by the exe, the fixture and the arguments), so
@@ -36,3 +37,18 @@ def package : Package := Package.new "scry"
        |> Command.arg "--stats"
        |> Command.input "fixtures/demo.facts.json"
        |> Command.stdout "build/parse-stats.txt")
+  -- The real parser (S1): a C fixture through the vendored tree-sitter shim.
+  |> Package.command (Command.new "parse-native" (Tool.exe "scry")
+       |> Command.arg "parse"
+       |> Command.arg "--stats"
+       |> Command.input "fixtures/hello.c"
+       |> Command.stdout "build/parse-native.txt")
+  -- Schema codegen (design §4.2): `gen/C/Schema.wiz` is the checked-in output of this
+  -- command, and `schema-check` (phony) refuses a stale one.
+  |> Package.command (Command.new "schema" (Tool.exe "scry-schema")
+       |> Command.input "grammars/tree-sitter-c/node-types.json"
+       |> Command.stdout "build/Schema.wiz")
+  |> Package.phony (Command.new "schema-check" (Tool.exe "scry-schema")
+       |> Command.arg "--check"
+       |> Command.input "gen/C/Schema.wiz"
+       |> Command.input "grammars/tree-sitter-c/node-types.json")
