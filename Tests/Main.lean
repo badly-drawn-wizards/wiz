@@ -151,6 +151,12 @@ def takeFlag (flag : String) : List String → Option String × List String
     let (x, r) := takeFlag flag (v :: rest); (x, f :: r)
   | args => (none, args)
 
+/-- Remove `--FLAG` from the arguments; whether it was there. -/
+def takeSwitch (flag : String) : List String → Bool × List String
+  | f :: rest => if f == flag then (true, rest) else
+    let (b, r) := takeSwitch flag rest; (b, f :: r)
+  | args => (false, args)
+
 /-- This machine's toolchain settings, from the uncommitted `grail.local.wiz` that the nix
 dev shell writes (`flake.nix`), as grail reads them. -/
 def localToolchain : IO Wiz.Toolchain := do
@@ -184,7 +190,13 @@ exits with its result (`runOne`). A selector that picks nothing, a case index th
 lacks and an unknown flag are errors. A skipped case (`Tests.skip`) shows as `⊘` and is
 counted apart. `--timings FILE` appends one line of JSON per case to
 FILE (its group, index, name, wall time in seconds, whether it passed, and its notes:
-`Tests.note`), labelled with `--shard NAME`. -/
+`Tests.note`), labelled with `--shard NAME`.
+
+`--jobs N` (default 1) runs the cases of a group that opted in (`Group.parallel`, see
+"Running cases in parallel" in docs/building.md) N at a time in child processes, printing
+each case's output and `--timings` line in the group's case order; groups that did not opt
+in still run one case at a time. `--jobs-all` also parallelizes groups that did not opt in
+(for auditing a group's isolation, not for CI). -/
 def main (args : List String) : IO UInt32 := do
   -- a `panic!` fails the case that hits it (each case runs in its own process), as it
   -- fails `wiz check`; `--panic-probe continue` turns it off again
@@ -264,20 +276,32 @@ def main (args : List String) : IO UInt32 := do
   | args => do
     let (timings, args) := takeFlag "--timings" args
     let (shard, args) := takeFlag "--shard" args
+    let (jobsArg, args) := takeFlag "--jobs" args
+    let (jobsAll, args) := takeSwitch "--jobs-all" args
+    let jobs : Option Nat := match jobsArg with
+      | none => some 1
+      | some s => match s.toNat? with
+        | some 0 => none
+        | n => n
+    let some jobs := jobs
+      | IO.eprintln "--jobs needs a count of at least 1"; return 2
     let shard := shard.getD ""
     if let some code ← checkSelectors args then return code
     let groups ← allGroups
     let selected := if args.isEmpty then groups
       else groups.filter fun g => args.any (selects g)
+    let record (g : Group) (r : CaseResult) : IO Unit := do
+      if let some file := timings then
+        let h ← IO.FS.Handle.mk file .append
+        h.putStrLn (timingLine shard g.name r)
     let mut passed := 0
     let mut failed := 0
     let mut skipped := 0
     for g in selected do
       let start ← IO.monoMsNow
-      let results ← g.run (selectedCases g args) fun r => do
-        if let some file := timings then
-          let h ← IO.FS.Handle.mk file .append
-          h.putStrLn (timingLine shard g.name r)
+      let results ← if jobs > 1 && (g.parallel || jobsAll) then
+          g.runJobs jobs (selectedCases g args) (record g)
+        else g.run (selectedCases g args) (record g)
       let cases := results.foldl (· + ·.ms) 0
       IO.println s!"  ({g.name}: {showMs ((← IO.monoMsNow) - start)} s; cases {showMs cases} s)"
       let p := (results.filter (·.ok)).length
