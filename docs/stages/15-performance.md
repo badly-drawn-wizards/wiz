@@ -219,7 +219,7 @@ keep it for the rest of the run:
   return a scalar or another constant (`def tab := table`). The hoisted literal constants
   of 20f (`wiz.const.k`) are now just CAFs, cached by LLVM too.
 * The function reads a slot (one atomic load) and returns the value; while the slot is
-  empty it calls `wiz_caf_init` (`runtime/wiz.c`), which runs the body, makes the result
+  empty it calls `wiz_caf_init` (`runtime/`), which runs the body, makes the result
   **immortal** (rc 0: never counted, never freed, not a leak) and publishes it with a
   compare-and-swap. Threads may race to build it: the first wins, a loser's copy stays
   immortal and unused.

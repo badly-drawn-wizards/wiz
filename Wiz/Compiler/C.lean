@@ -8,7 +8,7 @@ import WizRuntime
 Each IR function becomes a C function on `wiz_val`s, plus a *boxed* version taking an
 array, which closures point to. Variables become locals, `case` a `switch` on the
 tag, join points labelled blocks entered with `goto` (their parameters are locals
-assigned before the jump), and `dup`/`drop` calls to the runtime (`runtime/wiz.c`,
+assigned before the jump), and `dup`/`drop` calls to the runtime (`runtime/`,
 which is pasted at the top of the output; `Wiz.C.runtime`, in `runtime/WizRuntime.lean`).
 -/
 
