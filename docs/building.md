@@ -144,6 +144,15 @@ cached between runs.
   script's fixtures (`--self-test`) and then the check, on every push and pull request
   (including docs-only ones), and `CI result` requires it. No code block is exempt; a
   reviewed exception goes in the script's `ALLOW` list with a reason.
+* **Trust ledger** (the `trust-ledger` job): `scripts/trust-ledger.sh --check` runs the
+  `--trust-ledger` mode of the test driver (`Tests/Native.lean`) over `lib/` and the
+  axiom-free examples, and compares the sources of trust it finds with
+  `.github/trust-baseline.tsv`: a new `axiom`, `sorry`, `native_refl` or SMT axiom,
+  `implemented_by`/`repr:` implementation, `builtin` registration or `partial`
+  definition fails until it is reviewed and the baseline regenerated with
+  `scripts/trust-ledger.sh --update`. The `native` and `hdl-verified` groups check the
+  same ledger in the shards; this job runs the whole of it without a shard's path
+  filter to skip it, and `CI result` requires it when code changed.
 * **Split shards.** A shard with `"split": N` runs as N jobs `NAME-1` … `NAME-N`, each a
   list of `=GROUP#I,J,…` selectors. `scripts/ci.py` balances the parts with the case
   times in `.github/test-timings.json`: the cases that use the same shared program (the
@@ -224,7 +233,8 @@ cached between runs.
 
 * **Path filters.** On a pull request the `changes` job (`scripts/ci.py changes`) reads
   the files the PR changes and decides what runs: nothing but `changes`, `docs_style`
-  and `CI result` for a docs-only PR (`docs/`, `*.md`, LICENSE); every shard when a Lean
+  and `CI result` for a docs-only PR (`docs/`, `*.md`, LICENSE); `trust-ledger` runs
+  whenever any code did; every shard when a Lean
   file, the build, the runtime, `scripts/` or `.github/` changed; otherwise each shard
   with `"inputs"` in `.github/test-shards.json` only when one of its inputs changed
   (a `lib/X.wiz` input brings the lib files it imports), and the shards without
