@@ -527,6 +527,25 @@ partial def vNatView (g : Globals R) : Val R → Val R
     if n == 0 then ctor "nat.zero" else vApp g (ctor "nat.succ") (.natLit (n - 1))
   | v => v
 
+/-- One step of a `Nat` operation whose result does not depend on a possibly-stuck
+argument: `Nat.add 0 x ↦ x`, `Nat.mul 0 x ↦ 0`, `Nat.sub x 0 ↦ x`, `Nat.pow b 0 ↦ 1`.
+Conversion does this before comparing a glued application by its spine: otherwise
+`Nat.mul 0 s` against `Nat.mul 0 t` first compares the stuck applications `s` and `t`
+(which may be large, or the very comparison being decided), only to find `0 = 0`.
+The reduction is cheap: the definition's pattern match selects the zero branch before
+forcing the other argument. -/
+partial def vNatStep (g : Globals R) (v : Val R) : Val R :=
+  match v with
+  | .unfold n _ sp _ =>
+    let zeroAt (i : Nat) : Bool := match sp[i]? with
+      | some (.app (.natLit 0)) => true
+      | _ => false
+    match g.builtinKey? n with
+    | some "nat.add" | some "nat.mul" => if zeroAt 0 then whnf v else v
+    | some "nat.sub" | some "nat.pow" => if zeroAt 1 then whnf v else v
+    | _ => v
+  | _ => v
+
 /-- A registered operation applied to all its arguments: native arithmetic on literals,
 otherwise the operation's definition. -/
 partial def vNatOp (g : Globals R) (op : Name) (args : Array (Val R)) : Val R :=
