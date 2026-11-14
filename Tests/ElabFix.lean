@@ -133,6 +133,7 @@ def protoLike : String :=
 
 def group : Group where
   name := "elabfix"
+  parallel := true
   exercise := "elaborator bugs"
   cases := [
     { name := "x - 55296 with x stuck doesn't unfold the numeral (memory bound)", run := fun _ =>
