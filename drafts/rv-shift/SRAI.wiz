@@ -1,0 +1,169 @@
+import Rv.Proofs
+import BitVecShift
+-- SRAI probe: the barrel shifter's right stage as `BitVec.ashr`, for `SRAI x9, x2, 1`.
+--
+-- A right stage is `concat (fill) (slice j (32-j) x)`. For SRAI the fill is
+-- `Hw.and d.alt (bit 31 a)` with `d.alt = 1`, so it is the sign bit's word
+-- (`BitVec.and_one_left`). `shamt = 1` turns on stage 1 only (the two-stage composition
+-- is in SRLI.wiz): `BitVec.ashr` is `IntN.shiftRight`, and its two branches are
+-- `IntN.shiftRight_pos_toNat` (clear sign: logical) and `IntN.shiftRight_neg_ones_toNat`
+-- (set sign: ones fill, `Bits.sub_one_high`/`Bits.sub_pow_ones`, in the stage's own
+-- `(2^k - 1)·2^(w-k)` shape so the concrete `k` is never evaluated). The fill value
+-- `K = sign.toNat` stays symbolic; `K = 0`/`1` are applied by `transp` from the
+-- (definitionally true) instances.
+--
+-- Check: wiz check --no-cache -I /workspace/wiz-rv/src drafts/rv-shift/SRAI.wiz
+--
+-- WIP: does NOT check yet. The `sign = 0` branch (`Rs.srai1_zero_toNat`) checks (74 s);
+-- the `sign = 1` branch stops in the checker with a **stack overflow** on the ones-fill
+-- bound: `Nat.add_le_add A (2^31) H1 (2^31 - 1) (Bits.le_refl (2^31)) h31` with
+-- `A = Nat.mul (2^1 - 1) (2^31)` (a closed product) is enough to reproduce it. So the
+-- stage's own `(2^k - 1)·2^(w-k)` shape is right (no large numeral is added to a
+-- symbolic term), but the `low 32` bound on `A + H1` needs a numeral fact the checker
+-- overflows on — the same conversion/normalizer family as §7 of
+-- wiz-notes/rv-shift-lemmas.md; the `nat-normalizer` agent should see it.
+
+def Rs.fillW (j : Nat) (F : BitVec 1) : BitVec j :=
+  match BitVec.isTrue F with
+  | .true => BitVec.ofNat j (Nat.sub (Nat.pow 2 j) 1)
+  | .false => BitVec.ofNat j 0
+
+def Rs.fillW_toNat (j : Nat) (F : BitVec 1) :
+    (Rs.fillW j F).toNat = Nat.mul F.toNat (Nat.sub (Nat.pow 2 j) 1) :=
+  Or.elim (UIntN.cases1 F)
+    (fun e => transp (fun t _ => (Rs.fillW j t).toNat
+        = Nat.mul t.toNat (Nat.sub (Nat.pow 2 j) 1)) (BitVec.toNat_zero j) (Eq.symm e))
+    (fun e => transp (fun t _ => (Rs.fillW j t).toNat
+        = Nat.mul t.toNat (Nat.sub (Nat.pow 2 j) 1))
+      (Eq.trans
+        (Eq.trans (Bits.wofNat_val j (Nat.sub (Nat.pow 2 j) 1))
+          (Bits.low_of_lt j (Nat.sub (Nat.pow 2 j) 1) (Word.pow_pred_lt j)))
+        (Eq.symm (Nat.one_mul (Nat.sub (Nat.pow 2 j) 1))))
+      (Eq.symm e))
+
+-- the sign bit's word, and stage 1 (the barrel's `shift1` with the ones/zero fill)
+def Rs.sign (x : BitVec 32) : BitVec 1 := BitVec.ofNat 1 (Nat.shiftRight x.toNat 31)
+
+def Rs.stage1 (F : BitVec 1) (x : BitVec 32) : BitVec 32 :=
+  BitVec.concat (Rs.fillW 1 F) (BitVec.ofNat 31 (Nat.shiftRight x.toNat 1))
+
+def Rs.barrel1_eq (F : BitVec 1) (x : BitVec 32) :
+    barrel (r := HwTy.El) (BitVec.ofNat 1 0) F (BitVec.ofNat 5 1) x = Rs.stage1 F x := rfl
+
+def Rs.stage1_toNat (F : BitVec 1) (x : BitVec 32) :
+    (Rs.stage1 F x).toNat
+      = Bits.low 32 (Nat.add (Nat.mul (Nat.mul F.toNat (Nat.sub (Nat.pow 2 1) 1)) (Nat.pow 2 31))
+          (Bits.low 31 (Bits.high 1 x.toNat))) :=
+  Eq.trans
+    (BitVec.shrStage_toNat 31 1 (Rs.fillW 1 F) x)
+    (Bits.congr (fun t => Bits.low 32 (Nat.add (Nat.mul t (Nat.pow 2 31))
+        (Bits.low 31 (Bits.high 1 x.toNat)))) (Rs.fillW_toNat 1 F))
+
+-- The execute cycle's fill is `and 1 (bit 31 x)`, which is the sign word itself.
+def Rs.stage1_sign (x : BitVec 32) :
+    (Rs.stage1 (BitVec.and (BitVec.ofNat 1 1) (Rs.sign x)) x).toNat
+      = (Rs.stage1 (Rs.sign x) x).toNat :=
+  Bits.congr (fun w => (Rs.stage1 w x).toNat) (BitVec.and_one_left (Rs.sign x))
+
+-- `sign = 0`: a logical shift by 1
+def Rs.srai1_zero_toNat (x : BitVec 32) (hf : (Rs.sign x).toNat = 0) :
+    (Rs.stage1 (Rs.sign x) x).toNat = Bits.low 32 (Bits.high 1 x.toNat) :=
+  let F := Rs.sign x;
+  let K := F.toNat;
+  let F1 := Nat.mul K (Nat.sub (Nat.pow 2 1) 1);
+  let L1 := Bits.low 31 (Bits.high 1 x.toNat);
+  let H1 := Bits.high 1 x.toNat;
+  let h31 : Nat.lt H1 (Nat.pow 2 31) = .true := Bits.high_lt 1 31 x.toNat (UIntN.toNat_lt x);
+  let h32 : Nat.lt H1 (Nat.pow 2 32) = .true := Bits.high_lt_pow 1 32 x.toNat (UIntN.toNat_lt x);
+  let hX : Nat.mul F1 (Nat.pow 2 31) = 0 :=
+    transp (fun t _ => Nat.mul (Nat.mul t (Nat.sub (Nat.pow 2 1) 1)) (Nat.pow 2 31) = 0)
+      rfl (Eq.symm hf);
+  let hY : Nat.add (Nat.mul F1 (Nat.pow 2 31)) (Bits.low 31 H1) = Bits.low 31 H1 :=
+    transp (fun t _ => Nat.add t (Bits.low 31 H1) = Bits.low 31 H1) rfl (Eq.symm hX);
+  Eq.trans
+    (Rs.stage1_toNat F x)
+    (Eq.trans
+      (Bits.congr (fun t => Bits.low 32 t) hY)
+      (Eq.trans
+        (Bits.low_low_rev 31 32 H1 rfl)
+        (Eq.trans (Bits.low_of_lt 31 H1 h31) (Eq.symm (Bits.low_of_lt 32 H1 h32)))))
+
+-- `sign = 1`: ones fill by 1, in the stage's own `(2^1 - 1)·2^31` shape
+def Rs.srai1_one_toNat (x : BitVec 32) (hK : (Rs.sign x).toNat = 1) :
+    (Rs.stage1 (Rs.sign x) x).toNat
+      = Bits.low 32 (Nat.add (Nat.mul (Nat.sub (Nat.pow 2 1) 1) (Nat.pow 2 31))
+          (Bits.high 1 x.toNat)) :=
+  let F := Rs.sign x;
+  let K := F.toNat;
+  let F1 := Nat.mul K (Nat.sub (Nat.pow 2 1) 1);
+  let L1 := Bits.low 31 (Bits.high 1 x.toNat);
+  let H1 := Bits.high 1 x.toNat;
+  let A := Nat.mul (Nat.sub (Nat.pow 2 1) 1) (Nat.pow 2 31);
+  let h31 : Nat.lt H1 (Nat.pow 2 31) = .true := Bits.high_lt 1 31 x.toNat (UIntN.toNat_lt x);
+  let hbnd : Nat.lt (Nat.add A H1) (Nat.pow 2 32) = .true :=
+    Nat.add_le_add A (Nat.pow 2 31) H1 (Nat.sub (Nat.pow 2 31) 1)
+      (Bits.le_refl (Nat.pow 2 31)) h31;
+  let hF : Nat.mul F1 (Nat.pow 2 31) = A :=
+    Eq.trans
+      (transp (fun t _ => Nat.mul (Nat.mul t (Nat.sub (Nat.pow 2 1) 1)) (Nat.pow 2 31)
+          = Nat.mul (Nat.mul 1 (Nat.sub (Nat.pow 2 1) 1)) (Nat.pow 2 31)) rfl hK)
+      (Bits.congr (fun t => Nat.mul t (Nat.pow 2 31)) (Nat.one_mul (Nat.sub (Nat.pow 2 1) 1)));
+  Eq.trans
+    (Rs.stage1_toNat F x)
+    (Eq.trans
+      (Bits.congr (fun t => Bits.low 32 t) (Bits.congr (fun t => Nat.add t (Bits.low 31 H1)) hF))
+      (Eq.trans
+        (Bits.congr (fun t => Bits.low 32 (Nat.add A t)) (Bits.low_of_lt 31 H1 h31))
+        (Bits.low_of_lt 32 (Nat.add A H1) hbnd)))
+
+-- The barrel lemma, by the sign word (two cases)
+def Rs.barrel1_srai (x : BitVec 32) :
+    barrel (r := HwTy.El) (BitVec.ofNat 1 0)
+        (BitVec.and (BitVec.ofNat 1 1) (Rs.sign x)) (BitVec.ofNat 5 1) x
+      = BitVec.ashr x 1 :=
+  let ebar : (barrel (r := HwTy.El) (BitVec.ofNat 1 0)
+        (BitVec.and (BitVec.ofNat 1 1) (Rs.sign x)) (BitVec.ofNat 5 1) x).toNat
+      = (Rs.stage1 (Rs.sign x) x).toNat :=
+    Eq.trans
+      (Bits.congr (fun w => w.toNat)
+        (Rs.barrel1_eq (BitVec.and (BitVec.ofNat 1 1) (Rs.sign x)) x))
+      (Rs.stage1_sign x);
+  let sgn : BitVec 1 := Rs.sign x;
+  let modSign : Nat := Nat.mod (Nat.shiftRight x.toNat 31) 2;
+  let hmod : (Rs.sign x).toNat = modSign := Eq.symm (BitVec.toNat_ofNat 1 (Nat.shiftRight x.toNat 31));
+  Or.elim (UIntN.cases1 (Rs.sign x))
+    (fun e0 => UIntN.ext
+      (barrel (r := HwTy.El) (BitVec.ofNat 1 0)
+        (BitVec.and (BitVec.ofNat 1 1) (Rs.sign x)) (BitVec.ofNat 5 1) x)
+      (BitVec.ashr x 1)
+      (Eq.trans ebar
+        (Eq.trans
+          (Rs.srai1_zero_toNat x (Eq.trans (Bits.congr (fun w => w.toNat) e0) (BitVec.toNat_zero 1)))
+          (Eq.symm (IntN.shiftRight_pos_toNat 32 1 (UIntN.toIntN x)
+            (Bits.congr (fun t => Nat.beq t 1)
+              (Eq.trans (Eq.symm hmod)
+                (Eq.trans (Bits.congr (fun w => w.toNat) e0) (BitVec.toNat_zero 1)))))))))
+    (fun e1 => UIntN.ext
+      (barrel (r := HwTy.El) (BitVec.ofNat 1 0)
+        (BitVec.and (BitVec.ofNat 1 1) (Rs.sign x)) (BitVec.ofNat 5 1) x)
+      (BitVec.ashr x 1)
+      (Eq.trans ebar
+        (Eq.trans
+          (Rs.srai1_one_toNat x (Bits.congr (fun w => w.toNat) e1))
+          (Eq.symm (IntN.shiftRight_neg_ones_toNat 32 1 (UIntN.toIntN x)
+            (Bits.congr (fun t => Nat.beq t 1)
+              (Eq.trans (Eq.symm hmod) (Bits.congr (fun w => w.toNat) e1)))
+            (Bits.le_refl 32))))))
+
+def Rs.srai_pc (a : Arch) : BitVec 32 := BitVec.add a.pc (BitVec.ofNat 32 4)
+
+def Rs.srai1_G (a : Arch) (m0 m1 m2 m3 : BitVec 9 → BitVec 8) (x1 x2 acc dv rm : BitVec 32)
+    (cnt srd : BitVec 5) (sf3 : BitVec 3) (slo : BitVec 2) (sio : BitVec 1) :
+    Pf.G a (Pf.w (A.srai 9 2 1)) 9 m0 m1 m2 m3 x1 x2 acc dv rm cnt srd sf3 slo sio
+        (Pf.bytes (Pf.w (A.srai 9 2 1))) = Pf.spec a (Pf.w (A.srai 9 2 1)) 9 :=
+  Eq.congrArg (fun v => (Rs.srai_pc a, v)) (Rs.barrel1_srai (Pf.rf a (BitVec.ofNat 4 2)))
+
+def Rs.srai_ok : Pf.Claim (Pf.w (A.srai 9 2 1)) 9 :=
+  fun a m0 m1 m2 m3 x1 x2 acc dv rm cnt srd sf3 slo sio h =>
+    Pf.ok a (Pf.w (A.srai 9 2 1)) 9 m0 m1 m2 m3 x1 x2 acc dv rm cnt srd sf3 slo sio
+      (Rs.srai1_G a m0 m1 m2 m3 x1 x2 acc dv rm cnt srd sf3 slo sio) h
