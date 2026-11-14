@@ -12,8 +12,8 @@ rebalancing rotations).
 The representation is a size-balanced binary search tree (a weight-balanced tree, after
 Adams; the same scheme as Haskell's `Data.Map`), with the subtree size stored in each
 node. Keys are ordered by a `Compare` instance: `compare k k'` is `.lt`, `.eq` or `.gt`.
-Instances are provided for `Nat` and `U64`; any other key type gets one by defining its
-`Compare` instance. (`U64Map` in lib/WordMap.wiz is the specialised, in-place when unique
+Instances are provided for `Nat` (through the builtin `Nat.lt`/`Nat.beq`) and `U64`
+(unsigned); any other key type gets one by defining its `Compare` instance. (`U64Map` in lib/WordMap.wiz is the specialised, in-place when unique
 map with a native hash-table backend; `PMap` is the pure model a future `U64Map` can be
 defined against, see `wiz-notes/persistent-data.md`.)
 
@@ -42,8 +42,7 @@ Laws (`find_empty`, `size_empty`) are proved on the definitions. The other expec
 rotations; they are checked by the tests (group `persistent`) rather than proved here.
 -/
 
-/-- The result of comparing two keys: `lt`, `eq` or `gt`. (lib/Nat.wiz's `Ordering`.) -/
--- (`Ordering` and `Nat.cmp` come from lib/Nat.wiz.)
+-- (`Ordering` is lib/Nat.wiz's three-way comparison type.)
 
 /-- Keys with a total order. `compare a b` must be `.lt` exactly when `a < b`, `.eq`
 exactly when `a = b`, and `.gt` otherwise. -/

@@ -768,7 +768,8 @@ increasing key order, and `fromList` accepts entries in any order (a later dupli
 wins).
 
 Keys are ordered by a `Compare` instance (`compare : K → K → Ordering`), with instances
-for `Nat` and `U64`; define one instance to use any other key type. `PSet` and the map
+for `Nat` (through the native `Nat.lt`/`Nat.beq`) and `U64` (`U64.cmp`, unsigned);
+define one instance to use any other key type. `PSet` and the map
 algorithms are key-generic, unlike `U64Map`. `size` and the balance checks are O(1) (the
 subtree size is stored in each node), so `insert`, `erase`, `find` and `contains` are
 O(log n) worst case, `toList`, `keys` and `foldl` are O(n), and `fromList` is

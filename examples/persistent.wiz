@@ -242,7 +242,7 @@ def randOps : Nat → Nat → PMap Nat Nat → PMap Nat Nat
     else randOps k y (PMap.erase m kk)
 
 def checkEraseInvariant : Nat :=
-  let m := randOps 3000 11 PMap.empty;
+  let m := randOps 10000 11 PMap.empty;
   addChk (if treeOk (PMap.tree m) then 0 else 1)
     (addChk (if sortedNatPairs (PMap.toList m) then 0 else 2)
       (addChk (if heightOk (PMap.size m) m then 0 else 4) 0))
