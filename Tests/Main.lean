@@ -16,6 +16,7 @@ import Tests.Feral
 import Tests.Tower
 import Tests.Native
 import Tests.Smt
+import Tests.Scry
 import Tests.Doc
 
 -- Closed terms are normally evaluated at program start-up; that would execute
@@ -44,6 +45,7 @@ def groups : List Group :=
   Prop.groups ++
   Rig.groups ++
   Scaling.groups ++
+  Scry.groups ++
   Tower.groups ++
   []
 
