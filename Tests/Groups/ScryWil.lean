@@ -101,6 +101,6 @@ def group : Group where
         "def factRef : Nat → Nat\n  | .zero => 1\n  | .succ n => Nat.mul (.succ n) (factRef n)\n#eval match Wil.runFunction Scry.facLoop 1000 \"fac\" [] with\n  | .ok v => match Nat.beq (Wil.Val.bitsAt 32 v) (factRef 5) with\n    | .true => 1\n    | .false => 0\n  | _ => 0" [1] }
   ]
 
-def groups : List Group := [group]
+builtin_initialize registerGroup group
 
 end Tests.ScryWil
