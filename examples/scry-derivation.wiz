@@ -1,8 +1,8 @@
 import Scry.Cert
 -- Derivation certificates (`scry-derivation`): a valid transitive-closure
 -- derivation, three rejections (a wrong premise, an out-of-range rule, a falsified
--- fact), a lattice join (min) certificate, `explain` from the evaluator's provenance,
--- and the rendered certificate. `main` is the test group's arithmetic digest.
+-- fact), a lattice join (min) certificate, a negation certificate, `explain` from the
+-- evaluator's provenance, and the rendered certificate. `main` is the test group's arithmetic digest.
 
 -- ## Transitive closure: edges (rel 0) and reach (rel 1)
 
@@ -122,6 +122,53 @@ def latBadDeriv : Scry.Derivation Nat :=
     jn 1 0 9 1 2,
     lnode 1 5 1 (Scry.Env.mk [(0, u 0), (1, u 1)] [(0, 5)]) [0, 3]
   ] 4
+
+-- ## Negation: `bad(x)` when `node(x)` holds and `edge(x,2)` is absent
+
+def negRule : Scry.Rule Nat :=
+  Scry.Rule.mk (Scry.Head.tuple 1 [Scry.Term.var 0])
+    [Scry.Atom.pos 0 [Scry.Term.var 0],
+     Scry.Atom.neg 2 [Scry.Term.var 0, Scry.Term.lit (u 2)]]
+
+def negProg : Scry.Program Nat :=
+  Scry.Program.mk dcOps [1, 1, 2] [] [] [negRule]
+
+def negState : Scry.State Nat :=
+  Scry.State.addTuple
+    (Scry.State.addTuple
+      (Scry.State.addTuple Scry.State.empty 0 [u 1]) 0 [u 2]) 2 [u 1, u 2]
+
+def negEdb : Scry.Db Nat := negState.db
+
+-- `bad(2)`: `node(2)` holds and `edge(2,2)` is absent, so the negation holds.
+def negDeriv : Scry.Derivation Nat :=
+  Scry.Derivation.mk [
+    enode 0 [2],
+    pnode 1 [2] 0 (ev [(0, 2)]) [0]
+  ] 1
+
+-- `bad(1)`: `node(1)` holds but `edge(1,2)` is present, so the negation fails.
+def negBadDeriv : Scry.Derivation Nat :=
+  Scry.Derivation.mk [
+    enode 0 [1],
+    pnode 1 [1] 0 (ev [(0, 1)]) [0]
+  ] 1
+
+-- A lattice head with a negated body: `val(0) = 9` under `not edge(2,2)` holds,
+-- under `not edge(1,2)` does not.
+def negLatGood : Scry.Rule Nat :=
+  Scry.Rule.mk (Scry.Head.lat 1 [Scry.Term.lit (u 0)] (Scry.LExpr.lit 9))
+    [Scry.Atom.neg 2 [Scry.Term.lit (u 2), Scry.Term.lit (u 2)]]
+def negLatBad : Scry.Rule Nat :=
+  Scry.Rule.mk (Scry.Head.lat 1 [Scry.Term.lit (u 0)] (Scry.LExpr.lit 9))
+    [Scry.Atom.neg 2 [Scry.Term.lit (u 1), Scry.Term.lit (u 2)]]
+def negLatProg : Scry.Program Nat :=
+  Scry.Program.mk dcOps [1, 1, 2] [1] [] [negLatGood, negLatBad]
+
+def negLatOkDeriv : Scry.Derivation Nat :=
+  Scry.Derivation.mk [lnode 0 9 0 (Scry.Env.mk [] []) []] 0
+def negLatBadDeriv : Scry.Derivation Nat :=
+  Scry.Derivation.mk [lnode 0 9 1 (Scry.Env.mk [] []) []] 0
 
 def bit (b : Bool) : Nat := if b then 1 else 0
 
