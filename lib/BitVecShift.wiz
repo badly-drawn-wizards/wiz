@@ -1,0 +1,125 @@
+import BitVec
+import BitBlast
+-- Shift lemmas for the hardware barrel shifter (`import BitVecShift`).
+--
+-- `lib/BitVec.wiz` defines `BitVec.shl`/`lshr` through `Word`, but the barrel shifter in
+-- `Rv.Core` (and the Hdl examples) builds a shift from `concat`/`slice` stages, so the two
+-- are not convertible for symbolic data. These lemmas put both in the same normal form:
+-- the low `w` bits (`Bits.low`, lib/BitBlast.wiz) of a product.
+--
+-- The one fact every stage needs: a left shift by `j` of a word below `2^(w+j)` is
+-- `2^j` times the shift of its low `w` bits (`Bits.low_shift`), and taking low bits twice
+-- is the second, smaller one (`Bits.low_low`).
+
+def BitVec.toNat_ofNat (w n : Nat) : (BitVec.ofNat w n).toNat = Nat.mod n (Nat.pow 2 w) :=
+  Eq.trans (Bits.wofNat_val w n) (Eq.symm (Bits.mod_pow w n))
+
+-- A left shift by `j` of a number below `2^(w+j)`: the low `w+j` bits are `2^j` times
+-- the low `w` bits. (This is the stage identity: `concat`ing `j` zero bits below the low
+-- `w` bits of `a` is `a * 2^j` taken to `w+j` bits.)
+def Bits.low_shift : (w j a : Nat) →
+    Bits.low (Nat.add w j) (Nat.mul a (Nat.pow 2 j)) = Nat.mul (Bits.low w a) (Nat.pow 2 j)
+  | w, .zero, a =>
+    Eq.trans
+      (Bits.congr (fun t => Bits.low (Nat.add w 0) t) (Bits.mul_one_r a))
+      (Eq.trans
+        (Bits.congr (fun t => Bits.low t a) (Bits.add_zero w))
+        (Eq.symm (Bits.mul_one_r (Bits.low w a))))
+  | w, .succ j, a =>
+    let W := Nat.add w j;
+    let q := Nat.mul a (Nat.pow 2 j);
+    let e1 : Bits.low (Nat.add w (Nat.succ j)) (Nat.mul a (Nat.pow 2 (Nat.succ j)))
+        = Bits.low (Nat.succ W) (Nat.mul 2 q) :=
+      Eq.trans
+        (Bits.congr (fun t => Bits.low t (Nat.mul a (Nat.pow 2 (Nat.succ j)))) (Bits.add_succ w j))
+        (Bits.congr (fun t => Bits.low (Nat.succ W) t)
+          (nat_ring! a * (2 * Nat.pow 2 j) = 2 * (a * Nat.pow 2 j)));
+    let e2 : Bits.low (Nat.succ W) (Nat.mul 2 q) = Nat.mul 2 (Bits.low W q) :=
+      Eq.trans
+        (Bits.congr (fun t => Bits.cons t (Bits.low W (Nat.div (Nat.mul 2 q) 2)))
+          (Bits.isOdd_cons .false q))
+        (Bits.congr (fun t => Bits.cons .false (Bits.low W t)) (Bits.div_cons .false q));
+    let e3 : Nat.mul 2 (Bits.low W q) = Nat.mul (Bits.low w a) (Nat.pow 2 (Nat.succ j)) :=
+      Eq.trans
+        (Bits.congr (Nat.mul 2) (Bits.low_shift w j a))
+        (nat_ring! 2 * (Bits.low w a * Nat.pow 2 j) = Bits.low w a * (2 * Nat.pow 2 j));
+    Eq.trans (Eq.trans e1 e2) e3
+
+-- a zero word's bits are zero. (`low (succ w) 0` is `2 * low w 0` by computation, so the
+-- step is the induction hypothesis under `2 * _`; stating the intermediate `2 * 0 = 0`
+-- would be `True` by computation and `Eq.trans` could not chain through it.)
+def Bits.low_zero : (w : Nat) → Bits.low w 0 = 0
+  | .zero => rfl
+  | .succ w => Bits.congr (fun t => Nat.mul 2 t) (Bits.low_zero w)
+
+def BitVec.toNat_zero (j : Nat) : (BitVec.ofNat j 0).toNat = 0 :=
+  Eq.trans (Bits.wofNat_val j 0) (Bits.low_zero j)
+
+-- `concat hi 0…0` (a left shift stage's shape): the low `m+j` bits are `2^j` times
+-- `hi`'s bits. No bound is needed: `toNat` of a word is the low bits.
+def BitVec.toNat_concat_zero {ω m j : Nat} (hi : BitVec m) :
+    (BitVec.concat hi (BitVec.ofNat j 0)).toNat
+      = Bits.low (Nat.add m j) (Nat.mul hi.toNat (Nat.pow 2 j)) :=
+  Eq.trans
+    (Eq.congrArg (fun t => (BitVec.ofNat (Nat.add m j)
+      (Nat.add (Nat.mul hi.toNat (Nat.pow 2 j)) t)).toNat) (BitVec.toNat_zero j))
+    (Eq.trans
+      (Bits.wofNat_val (Nat.add m j) (Nat.add (Nat.mul hi.toNat (Nat.pow 2 j)) 0))
+      (Bits.congr (fun t => Bits.low (Nat.add m j) t) (Bits.add_zero (Nat.mul hi.toNat (Nat.pow 2 j)))))
+
+-- the right-shift stage's shape, `0…0 concat lo`
+def BitVec.toNat_concat_zero_left {ω j n : Nat} (lo : BitVec n) :
+    (BitVec.concat (BitVec.ofNat j 0) lo).toNat = Bits.low (Nat.add j n) lo.toNat :=
+  Eq.trans
+    (Eq.congrArg (fun t => (BitVec.ofNat (Nat.add j n)
+      (Nat.add (Nat.shiftLeft t n) lo.toNat)).toNat) (BitVec.toNat_zero j))
+    (Bits.wofNat_val (Nat.add j n) lo.toNat)
+
+-- `BitVec.shl` in the same normal form as the barrel's stages
+def BitVec.shl_toNat (n k : Nat) (x : BitVec n) :
+    (BitVec.shl x k).toNat = Bits.low n (Nat.mul x.toNat (Nat.pow 2 k)) :=
+  Bits.wofNat_val n (Nat.mul x.toNat (Nat.pow 2 k))
+
+-- `a / 1 = a` (the barrel's `slice 0 w x` is `x >> 0`)
+def Bits.div_one (a : Nat) : Nat.div a 1 = a :=
+  transp (fun t _ => Nat.divGo a t 1 = a)
+    (Bits.divGoG 1 0 rfl a a (Bits.le_refl a))
+    (nat_ring! 1 * a + 0 = a)
+
+def Bits.shiftRight_zero (a : Nat) : Nat.shiftRight a 0 = a := Bits.div_one a
+
+-- Taking the low `w` bits of the low `v` bits, `w ≤ v`, is taking the low `w` bits.
+-- (A `Nat.le w v` is `Nat.lt w (succ v)`, so the `succ`/`succ` case below is the
+-- hypothesis the induction needs, unchanged.)
+def Bits.low_low : (w v n : Nat) → Nat.le w v = .true → Bits.low w (Bits.low v n) = Bits.low w n
+  | .zero, _, _, _ => rfl
+  | .succ w, .zero, _, h => absurd (Sat.contra (Nat.le (Nat.succ w) .zero) h (Bits.ltz w))
+  | .succ w, .succ v, n, h =>
+    Eq.trans
+      (Bits.congr (fun t => Bits.cons t (Bits.low w (Nat.div (Bits.low (Nat.succ v) n) 2)))
+        (Bits.isOdd_cons (Nat.isOdd n) (Bits.low v (Nat.div n 2))))
+      (Eq.trans
+        (Bits.congr (fun t => Bits.cons (Nat.isOdd n) (Bits.low w t))
+          (Bits.div_cons (Nat.isOdd n) (Bits.low v (Nat.div n 2))))
+        (Bits.congr (Bits.cons (Nat.isOdd n)) (Bits.low_low w v (Nat.div n 2) h)))
+
+-- One left barrel stage: the low `m` bits of `x` with `j` zero bits below, at width
+-- `m + j` (the barrel's `shift1`…`shift16`, whose `m` is `32 - j`).
+def BitVec.shlStage (m j : Nat) (x : BitVec (Nat.add m j)) : BitVec (Nat.add m j) :=
+  BitVec.concat (BitVec.ofNat m (Nat.shiftRight x.toNat 0)) (BitVec.ofNat j 0)
+
+-- Its bits: the low `m+j` bits of `x * 2^j` (the stage only keeps `x`'s low `m` bits,
+-- and `low_shift` says the rest was shifted out anyway).
+def BitVec.shlStage_toNat (m j : Nat) (x : BitVec (Nat.add m j)) :
+    (BitVec.shlStage m j x).toNat = Bits.low (Nat.add m j) (Nat.mul x.toNat (Nat.pow 2 j)) :=
+  Eq.trans
+    (Eq.trans
+      (BitVec.toNat_concat_zero (BitVec.ofNat m (Nat.shiftRight x.toNat 0)))
+      (Bits.congr (fun t => Bits.low (Nat.add m j) (Nat.mul t (Nat.pow 2 j)))
+        (Eq.trans
+          (Bits.wofNat_val m (Nat.shiftRight x.toNat 0))
+          (Bits.congr (fun s => Bits.low m s) (Bits.shiftRight_zero x.toNat)))))
+    (Eq.trans
+      (Bits.congr (fun t => Bits.low (Nat.add m j) t) (Eq.symm (Bits.low_shift m j x.toNat)))
+      (Bits.low_low (Nat.add m j) (Nat.add m j)
+        (Nat.mul x.toNat (Nat.pow 2 j)) (Bits.le_refl (Nat.add m j))))

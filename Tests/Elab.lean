@@ -7558,7 +7558,13 @@ def vecGroup : Group where
           "1000 * (BitVec.ofVec (Vec.cons Bool.true (Vec.cons Bool.false (Vec.cons Bool.true Vec.nil)))).toNat + " ++
           "10000 * (UIntN.xor (UIntN.max 3) (UIntN.ofNat 3 2)).toNat\n"
         okLibs (src ++ "#eval main\n") ["55241"]
-        cRunLibs src "55241" }
+        cRunLibs src "55241" },
+    { name := "BitVecShift: shifts and barrel stages in toNat/low form", run := fun _ =>
+        okLibs ("import BitVecShift\n" ++
+          "def a (x : BitVec 8) (k : Nat) : (BitVec.shl x k).toNat = Bits.low 8 (Nat.mul x.toNat (Nat.pow 2 k)) := BitVec.shl_toNat 8 k x\n" ++
+          "def b (x : BitVec 4) : (BitVec.shlStage 2 2 x).toNat = Bits.low 4 (Nat.mul x.toNat 4) := BitVec.shlStage_toNat 2 2 x\n" ++
+          "def c (w j a : Nat) : Bits.low (Nat.add w j) (Nat.mul a (Nat.pow 2 j)) = Nat.mul (Bits.low w a) (Nat.pow 2 j) := Bits.low_shift w j a\n" ++
+          "def d (x : BitVec 4) : Bits.low 2 (Bits.low 4 x.toNat) = Bits.low 2 x.toNat := Bits.low_low 2 4 x.toNat rfl\n") }
   ]
 
 /-! ## Stage 24: separation logic (lib/Logic.wiz, lib/HProp.wiz, lib/Hoare.wiz) -/

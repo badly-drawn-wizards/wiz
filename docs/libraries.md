@@ -41,6 +41,14 @@ Not yet: facts like `Vec.get v (Fin.of 3 1 rfl) = 20 := rfl` (the `rfl` shape
 problem above; `drafts/vec-lib/VecProofs.wiz`), arithmetic facts about `BitVec` in general, numerals and operators
 (`a + b`) for `BitVec` (decision HD9).
 
+`lib/BitVecShift.wiz` (`import BitVecShift`): the first of those arithmetic facts, for
+shifts. `BitVec.toNat_concat_zero`, `BitVec.shl_toNat` and `BitVec.shlStage_toNat` put
+`concat`/`slice` stages and `BitVec.shl` in one normal form (the low bits of a
+product); `Bits.low_shift` and `Bits.low_low` compose stages. This is the lemma set the
+RV core's barrel shifter proofs need (SLLI; the right shifts still need the fill-bit
+lemmas). It imports `BitBlast` for `Bits.low`, so it is a proof module, not part of
+`BitVec` itself.
+
 ## H14 S0: hardware as tagless-final code, with sharing
 
 `lib/Hdl/Core.wiz` (`import Hdl.Core`) is the L2 layer of the HDL plan: combinational
