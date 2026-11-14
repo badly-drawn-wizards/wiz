@@ -433,7 +433,7 @@ def linkCCase : Case :=
         if !ok then
           skip "no toolchain"
           return
-        checkEq 5 s.ran
+        checkEq 3 s.ran
         let exe := (dir / ".grail" / "bin" / "hi").toString
         checkEq "1\n" (← IO.Process.output { cmd := exe }).stdout
         let (s, _) ← build dir tc
@@ -549,7 +549,7 @@ def grailGroup : Group where
         -- nothing half-written is left
         let tmp := dir / ".grail" / "tmp"
         if ← tmp.pathExists then checkEq 0 (← tmp.readDir).size },
-    { name := "an executable: check, IR, C, object, link", run := fun _ => do
+    { name := "an executable: build (check, IR and C in one job), object, link", run := fun _ => do
         let tc : Toolchain := { (← toolchain) with cacheDir := some (← IO.FS.createTempDir) }
         let dir ← mkTree [("grail.wiz", "import Grail\ndef package : Package := Package.new \"p\" |> Package.exe \"hello\" \"hello.wiz\"\n"),
                           ("hello.wiz", "import IO\ndef main : IO Unit := IO.println \"hello from grail\"\n")]
@@ -557,15 +557,15 @@ def grailGroup : Group where
         if !ok then
           skip "no toolchain"
           return
-        checkEq 5 s.ran
+        checkEq 3 s.ran
         let out ← IO.Process.output { cmd := (dir / ".grail" / "bin" / "hello").toString }
         checkEq "hello from grail\n" out.stdout
         let (s, _) ← build dir tc
         checkEq 0 s.ran
-        -- a change that doesn't change the program's code: only check, IR and C rerun
+        -- a change that doesn't change the program's code: only the one build job reruns
         IO.FS.writeFile (dir / "hello.wiz") "import IO\n-- a comment\ndef main : IO Unit := IO.println \"hello from grail\"\n"
         let (s, _) ← build dir tc
-        checkEq 3 s.ran
+        checkEq 1 s.ran
         checkEq 2 s.upToDate },
     linkCCase,
     grailLspCase
@@ -1162,12 +1162,12 @@ def grailCommandsGroup : Group where
           skip "no toolchain"
           return
         check ok log
-        checkEq 6 s.ran
+        checkEq 4 s.ran
         checkEq "hello from grail\n" (← IO.FS.readFile (dir / "said.txt"))
         -- a comment: the program is rebuilt as far as its C, which doesn't change
         IO.FS.writeFile (dir / "hello.wiz") "import IO\n-- c\ndef main : IO Unit := IO.println \"hello from grail\"\n"
         let (s, _, _) ← buildLog dir tc ["say"]
-        checkEq 3 s.ran },
+        checkEq 1 s.ran },
     { name := "an installed output keeps its executable bit", run := fun _ => do
         let mk := "  |> Package.command (Command.new \"script\" (Tool.path \"sh\") |> Command.arg \"-c\" |> Command.arg \"printf '#!/bin/sh\\\\necho ran\\\\n' > \\\"$1\\\"; chmod +x \\\"$1\\\"; echo data > \\\"$2\\\"\" |> Command.arg \"sh\" |> Command.output \"bin/run.sh\" |> Command.output \"bin/data.txt\")\n"
         let dir ← mkTree (cmdFiles mk)
