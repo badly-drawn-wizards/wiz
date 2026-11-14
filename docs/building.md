@@ -33,6 +33,30 @@ printing the case's name and result, a failure's output, and a last line
 `GROUP #INDEX: passed|FAILED|SKIPPED`. Build the driver first (`lake build wiz tests`):
 plain `lake build` does not, and a stale driver runs whichever case had that index.
 
+### Running cases in parallel (`--jobs`)
+
+`lake test -- --jobs N` (default 1) runs the cases of a group that opted in N at a time, in
+a bounded pool of child processes; a group that did not opt in still runs one case at a
+time, and groups themselves run one after another. Output and `--timings` lines stay in
+the group's case order (each case's output is buffered until the cases before it are
+printed), so a parallel log is a sequential log but for the times; a case's `seconds` is
+its own process's time, not the time it waited in the pool; the totals and the exit code
+are the same as a sequential run, and a failing case does not stop the others. An
+exception kills the cases still running, and the cases stay in the driver's process
+group, so Ctrl-C reaches them as it did sequentially.
+
+The opt-in is `parallel := true` on a `Group` (`Tests/Harness.lean`). Enable it only for a
+group whose cases share no mutable state: every case's files must be its own (its own temp
+directory, or a fixed path that no other case touches), and a group has no build
+directory in the work tree, no port, no environment variable of the driver and no cached
+program another case builds; no case
+may assert on wall time or on the machine's load (a `scaling`-style bound). A case that
+needs a shared program the first case builds (the self-hosted checker, `tower-wiz`) is
+not parallel-safe: N processes would build it N times. `--jobs-all` also parallelizes the
+groups that did not opt in, for auditing one group's isolation — not for CI. On a 4-core
+runner `--jobs 4` is the useful setting; more jobs only add memory pressure (a case that
+compiles C can peak at a few hundred MB).
+
 **Embedded files.** Lake does not track files a module reads with `include_str`, so each
 embedded file gets a library of its own whose `needs` names the file as an
 `input_file` (`lakefile.lean`): Lake mixes the file's content hash into that library's
@@ -141,6 +165,12 @@ cached between runs.
   `prop`, `audit`), so adding a slow case there does not unbalance `core`.
   To refresh the baseline from a CI run:
   `gh run download RUN -n test-timings && scripts/ci.py baseline timings.jsonl > .github/test-timings.json`.
+* **`"jobs"`.** A shard may say `"jobs": N` to give `lake test` `--jobs N` (above): its
+  opted-in groups run N cases at a time. Only set it on a shard whose groups were
+  verified (and opted in) to be safe in parallel; `core`, `library` and `backends` use
+  4 on the 4-core hosted runner. A shard of one long case (`grail-selfhost`,
+  `hdl-verified`) and the shards that build a shared program (`selfhost`) keep 1. A
+  case's `seconds` stays its own process's time, so shard balance is unaffected.
 * **Shard balance.** CI's wall time is its longest job, so the invariant is that **no
   test shard's test time is over 1.5× the median shard's**. Every split shard's cases
   have an entry in `.github/test-timings.json`, and no shared program is built by two
