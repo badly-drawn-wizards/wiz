@@ -52,6 +52,7 @@ def lrefl {A : Type 1} (x : A) : Leibniz x x := fun P px => px
 
 def group : Group where
   name := "elab"
+  parallel := true
   exercise := "Exercises 3.1–3.9"
   cases := [
     { name := "implicit arguments are inserted", run := fun _ =>
@@ -123,6 +124,7 @@ namespace Tests.Elab
 
 def levelGroup : Group where
   name := "universes"
+  parallel := true
   exercise := "Exercises 4.1–4.2 (and 1.7 for imax)"
   cases := [
     { name := "level normal forms (given)", run := fun _ => do
@@ -164,6 +166,7 @@ namespace Tests.Elab
 
 def structGroup : Group where
   name := "elab: structural types"
+  parallel := true
   exercise := "Exercise 4.9 (and 4.3–4.8)"
   cases := [
     { name := "pairs and projections", run := fun _ =>
@@ -346,6 +349,7 @@ def tyOfDef : String := "def TyOf {ω A : Type} (a : A) : Type := A\n"
 
 def ottGroup : Group where
   name := "observational equality"
+  parallel := true
   exercise := "Exercises 4.10–4.14"
   cases := [
     { name := "function extensionality is definitional", run := fun _ =>
@@ -534,6 +538,7 @@ def appDef : String :=
 
 def qtyGroup : Group where
   name := "quantity polymorphism"
+  parallel := true
   exercise := "Exercise 4.15"
   cases := [
     { name := "application at any quantity", run := fun _ => ok appDef },
@@ -575,6 +580,7 @@ def dataPrelude : String := "\ndef BoolD : Desc Unit := Desc.arg 1 (Enum [false,
 
 def dataGroup : Group where
   name := "data"
+  parallel := true
   exercise := "Exercises 4.17–4.20"
   cases := [
     { name := "Bool, Nat, add, streams", run := fun _ => ok dataPrelude },
@@ -614,6 +620,7 @@ def indPrelude : String := "\ninductive Nat where\n  | zero\n  | succ (n : Nat)\
 
 def inductiveGroup : Group where
   name := "inductive"
+  parallel := true
   exercise := "Exercise 4.21"
   cases := [
     { name := "Nat, Vec, Point", run := fun _ => ok indPrelude },
@@ -655,6 +662,7 @@ def matchPrelude : String := "inductive Nat where\n  | zero\n  | succ (n : Nat)\
 
 def matchGroup : Group where
   name := "match"
+  parallel := true
   exercise := "stage 4e"
   cases := [
     { name := "pred, add, head, map", run := fun _ => ok matchPrelude },
@@ -703,6 +711,7 @@ def registerSrc : String :=
 
 def coinductiveGroup : Group where
   name := "copatterns"
+  parallel := true
   exercise := "stage 4e, Exercise 4.24"
   cases := [
     { name := "Stream, nats, repeat", run := fun _ => ok streamPrelude },
@@ -757,6 +766,7 @@ def sizedPrelude : String := "inductive Nat where\n  | zero\n  | succ (n : Nat)\
 
 def sizedGroup : Group where
   name := "sized types"
+  parallel := true
   exercise := "Exercises 4.22–4.23"
   cases := [
     { name := "subtyping: smaller sizes fit bigger ones", run := fun _ =>
@@ -786,6 +796,7 @@ def runPrelude : String := "inductive Nat where\n  | zero\n  | succ (n : Nat)\nd
 
 def runGroup : Group where
   name := "eval"
+  parallel := true
   exercise := "Exercises 5.1–5.3"
   cases := [
     { name := "structural recursion runs", run := fun _ =>
@@ -813,6 +824,7 @@ def macroPrelude : String := "inductive Nat where\n  | zero\n  | succ (n : Nat)\
 
 def macroGroup : Group where
   name := "macros"
+  parallel := true
   exercise := "Exercise 6.1"
   cases := [
     { name := "infixl with precedence", run := fun _ =>
@@ -956,6 +968,7 @@ attribute [tactic tactic.dump] dumpTac
 
 def tacticGroup : Group where
   name := "tactics"
+  parallel := true
   exercise := "Exercises 6.4–6.6"
   cases := [
     { name := "intro and exact", run := fun _ =>
@@ -1150,6 +1163,7 @@ instance : Sub Z3 := Sub.mk (fun x y => Z3.ofNat (Z3.toNat x + (3 - Z3.toNat y))
 
 def classGroup : Group where
   name := "classes"
+  parallel := true
   exercise := "Exercise 7.1"
   cases := [
     { name := "methods take the instance as an instance-implicit argument", run := fun _ =>
@@ -1406,6 +1420,7 @@ def main : IO Unit := IO.bind twice (fun _ => twice)
 
 def backendGroup : Group where
   name := "backend"
+  parallel := true
   exercise := "Exercise 8.1"
   cases := [
     { name := "numbers through the IR", run := fun _ =>
@@ -1637,6 +1652,7 @@ def onlyParamReset (n : Name) : IO Unit := do
 
 def reuseGroup : Group where
   name := "reuse"
+  parallel := true
   exercise := "Stage 8c"
   cases := [
     { name := "across one case: the cell is rebuilt in both branches, no allocation", run := fun _ => do
@@ -1768,6 +1784,7 @@ def projOfNumber : Array IR.Decl :=
 
 def borrowGroup : Group where
   name := "borrow"
+  parallel := true
   exercise := "Stage 8e"
   cases := [
     { name := "the length of a list borrows it", run := fun _ => borrowedUncounted "len" 0 },
@@ -1917,6 +1934,7 @@ def linkFiles : List (String × String) :=
 
 def ffiGroup : Group where
   name := "ffi"
+  parallel := true
   exercise := "Stage 9a"
   cases := [
     { name := "IO actions run in order", run := fun _ =>
@@ -2197,6 +2215,7 @@ def bauds : List Baud → List SerialConfig
 
 def serialGroup : Group where
   name := "serial"
+  parallel := true
   exercise := "Stage 9k"
   cases := [
     { name := "a pseudo-terminal: every byte value both ways, raw settings read back", run := fun _ =>
@@ -2252,6 +2271,7 @@ def serialGroup : Group where
 
 def sysGroup : Group where
   name := "sys"
+  parallel := true
   exercise := "Stage 9h"
   cases := [
     { name := "spawn echo and collect its output", run := fun _ =>
@@ -2428,6 +2448,7 @@ def tickSrc (release : Bool) : String :=
 
 def callbacksGroup : Group where
   name := "callbacks"
+  parallel := true
   exercise := "Stage 9g"
   cases := [
     { name := "qsort with a Wiz comparator (a closure, borrowed for the call)", run := fun _ =>
@@ -2520,6 +2541,7 @@ def divSrc : String :=
 
 def ffiStructGroup : Group where
   name := "ffi-structs"
+  parallel := true
   exercise := "Stage 9i"
   cases := [
     { name := "a C struct by value: div_t from div()", run := fun _ => ioRun divSrc "3\n2\n" },
@@ -5512,6 +5534,7 @@ def r1Header : String := "import Prelude\naxiom Tok : Type\n"
 
 def languageGroup : Group where
   name := "language"
+  parallel := true
   exercise := "Stage 13"
   cases := [
     { name := "string escapes: \\r, \\t, \\0, \\\\, \\\", \\', \\xHH, \\u{H}; a bad one is reported where it is", run := fun _ => do
@@ -6038,6 +6061,7 @@ def wordTable64Value : String := ".cons 9223372036854775808 (.cons 0 (.cons 1844
 
 def wordGroup : Group where
   name := "word"
+  parallel := true
   exercise := "Stage 22c"
   cases := [
     { name := "the definitions compute in the kernel", run := fun _ =>
@@ -6207,6 +6231,7 @@ def main : IO Unit := IO.bind (MVar.new (A := Nat)) (fun r =>
 
 def nativesGroup : Group where
   name := "natives"
+  parallel := true
   exercise := "S0: lib/WordArray.wiz, lib/WordMap.wiz, lib/Intern.wiz (docs/stages/29-natives.md)"
   cases := [
     { name := "word arrays: the model (#eval, #run) and the natives (C, LLVM) agree", run := fun _ =>
@@ -6264,6 +6289,7 @@ def nativesGroup : Group where
 
 def stdGroup : Group where
   name := "std"
+  parallel := true
   exercise := "Stage 12a"
   cases := [
     -- (7e) integers
@@ -6359,6 +6385,7 @@ def stdGroup : Group where
 
 def effectsGroup : Group where
   name := "effects"
+  parallel := true
   exercise := "Stage 10a"
   cases := [
     { name := "a program reads its command-line arguments (IO.args, 21k), C and LLVM", run := fun _ => do
@@ -6412,6 +6439,7 @@ def effectsGroup : Group where
 
 def toolingGroup : Group where
   name := "tooling"
+  parallel := true
   exercise := "Stage 11"
   cases := [
     { name := "queries: an edit re-elaborates only what follows it", run := fun _ => do
@@ -6615,17 +6643,20 @@ def nativeCases (llvm : Bool) : List Case :=
 
 def cGroup : Group where
   name := "c"
+  parallel := true
   exercise := "Exercise 8.2"
   cases := nativeCases false
 
 /-- The same programs, through LLVM (the toolchain's `llc`). -/
 def llvmGroup : Group where
   name := "llvm"
+  parallel := true
   exercise := "Stage 8d"
   cases := nativeCases true
 
 def builtinGroup : Group where
   name := "builtins"
+  parallel := true
   exercise := "Stage 6b"
   cases := [
     { name := "import the prelude", run := fun _ =>
@@ -6780,6 +6811,7 @@ def failsOptic (input : String) (fragment : String) : IO Unit := do
 
 def opticGroup : Group where
   name := "optic"
+  parallel := true
   exercise := "lib/Optic.wiz (Feral, RD11)"
   cases := [
     { name := "the optics library checks, with its lens laws", run := fun _ =>
@@ -6878,6 +6910,7 @@ attribute [macro command.shape] shapeM
 
 def derivingGroup : Group where
   name := "deriving"
+  parallel := true
   exercise := "HD8"
   cases := [
     { name := "a command macro expands into several commands", run := fun _ =>
@@ -7444,6 +7477,7 @@ def w3 : V Nat 3 := .cons 1 (.cons 2 (.cons 3 .nil))
 
 def vecGroup : Group where
   name := "vec"
+  parallel := true
   exercise := "Stage H0c"
   cases := [
     { name := "index-refining matches run: #eval, #run and C (regression: erasing a cast)", run := fun _ => do
@@ -7565,6 +7599,7 @@ def vecGroup : Group where
 
 def seplogicGroup : Group where
   name := "seplogic"
+  parallel := true
   exercise := "Stage 24"
   cases := [
     { name := "13o: the libraries' helper notation stays in them (∷, ▸, +++, ⊕); Hdl's <+> is public", run := fun _ =>
@@ -7843,6 +7878,7 @@ def depth : T3 → Nat
 
 def liftGroup : Group where
   name := "lift"
+  parallel := true
   exercise := "Q4 (lifted description fields)"
   cases := [
     { name := "a proof field is lifted invisibly: constructor, pattern, printing", run := fun _ =>
@@ -7903,6 +7939,7 @@ def abelCoquandTwoBoxes : String :=
 
 def descEqGroup : Group where
   name := "desceq"
+  parallel := true
   exercise := "Equality of descriptions (4g)"
   cases := [
     { name := "List Nat = List Bool computes through the codes, and gives Nat = Bool", run := fun _ =>
@@ -7995,6 +8032,7 @@ def descEqGroup : Group where
 
 def phantomGroup : Group where
   name := "phantom"
+  parallel := true
   exercise := "Phantom parameters"
   cases := [
     { name := "UIntN 8 and UIntN 16 are different types", run := fun _ =>
@@ -8304,6 +8342,7 @@ def sealLayer3 (bad : Decl ZeroOneMany) (fragment : Option String) : IO Unit := 
 
 def reprGroup : Group where
   name := "repr"
+  parallel := true
   exercise := "Representations and conversion (R3)"
   cases := [
     { name := "R3: a hand-written Σ of a structure's shape converts to the structure and back", run := fun _ =>
@@ -8547,6 +8586,7 @@ def hdlPrimTools : IO Unit := do
 
 def hdlGroup : Group where
   name := "hdl"
+  parallel := true
   exercise := "HDL stage S0 (hdl-plan H14)"
   cases := [
     { name := "S2: operators on signals: same Verilog as the Hw operations, numerals at the width, if as a mux, printed back", run := fun _ => do
@@ -8836,6 +8876,7 @@ def libsAllocs (s : CommandState ZeroOneMany) (n : Name) : IO Nat := do
 
 def regionsGroup : Group where
   name := "regions"
+  parallel := true
   exercise := "lib/Region.wiz (Feral lifetimes)"
   cases := [
     { name := "handles in different regions are different types; regions are inferred", run := fun _ => do
@@ -9156,6 +9197,7 @@ def ticketSrc : String := ticketHeader ++
 
 def linearCaseGroup : Group where
   name := "linear-case"
+  parallel := true
   exercise := "docs/CoreSpec.md §10.2 (K1), §10.2a (the unit eliminator)"
   cases := [
     { name := "a2: a linear field matched out of a linear scrutinee, handed back in both alternatives (D8)", run := fun _ =>
@@ -9306,6 +9348,7 @@ def main : IO Unit := do1
 
 def concGroup : Group where
   name := "conc"
+  parallel := true
   exercise := "lib/Session.wiz, lib/MVar.wiz, runtime threads (stage 25)"
   cases := [
     { name := "a dependent protocol: the pure semantics `link` runs it", run := fun _ =>
@@ -9449,6 +9492,7 @@ def esc (s : String) : List Char := .cons (Char.mk 27) (String.chars s)
 
 def infoviewGroup : Group where
   name := "infoview"
+  parallel := true
   exercise := "lib/Json.wiz, lib/Infoview.wiz (stages 11m, 11n)"
   cases := [
     { name := "JSON: printing escapes quotes, newlines; integers keep their sign", run := fun _ =>
@@ -9538,6 +9582,7 @@ def infoviewGroup : Group where
 /-- `lib/Text.wiz` (stage 9j): pure, so `#eval` runs it; and the same compiled. -/
 def textGroup : Group where
   name := "text"
+  parallel := true
   exercise := "Stage 9j"
   cases := [
     -- two modules that declare one name are an error at import: the libraries that had

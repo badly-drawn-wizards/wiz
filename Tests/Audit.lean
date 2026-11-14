@@ -972,6 +972,7 @@ def cases (long : Bool) : List Case := [
 
 def group : Group where
   name := "audit"
+  parallel := true
   exercise := "soundness audit 2"
   cases := cases false
 
