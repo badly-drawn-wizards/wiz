@@ -27,7 +27,7 @@
     "serial",
     "sys"
   ]},
-  {"name": "library", "split": 3, "jobs": 4, "select": [
+  {"name": "library", "split": 5, "jobs": 4, "select": [
     "builtins",
     "classes",
     "deriving",
@@ -68,11 +68,19 @@
     "vec",
     "word"
   ]},
+  {"name": "scaling", "split": 2, "select": [
+    "=scaling"
+  ]},
+  {"name": "prop", "select": [
+    "=prop"
+  ]},
+  {"name": "audit", "select": [
+    "=audit"
+  ]},
   {"name": "core", "jobs": 4,
    "inputs": ["selfhost/Kernel.wiz", "examples/*", "lib/Prelude.wiz", "lib/IO.wiz", "lib/Std.wiz",
               "lib/Eff.wiz", "lib/BitVec.wiz", "lib/Logic.wiz", "lib/Hdl/*"],
    "select": [
-    "=audit",
     "check",
     "conv",
     "copatterns",
@@ -88,10 +96,8 @@
     "=meta",
     "observational",
     "parser",
-    "=prop",
     "quantity",
     "rig",
-    "scaling",
     "sized",
     "universes"
   ]}
