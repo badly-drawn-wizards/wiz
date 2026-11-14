@@ -4779,6 +4779,18 @@ def knownCommand (k : String) : Bool := Bool.or (Bool.or (strEq k "command.def")
 -- the output so far, the globals, and the parser's tables and notations
 inductive Run where
   | mk (out : List String) (gs : Globals) (cats : List Cat) (tokens : List String) (notes : List Note)
+def Run.out : Run → List String
+  | .mk o _ _ _ _ => o
+def Run.gs : Run → Globals
+  | .mk _ g _ _ _ => g
+def Run.catsOf : Run → List Cat
+  | .mk _ _ c _ _ => c
+def Run.tokensOf : Run → List String
+  | .mk _ _ _ t _ => t
+def Run.notesOf : Run → List Note
+  | .mk _ _ _ _ n => n
+def Run.addLine (r : Run) (l : String) : Run := match r with
+  | .mk out gs cats tokens notes => .mk (.cons l out) gs cats tokens notes
 -- all the commands of a file, one output line each
 -- one command: its output line (none for an import or a notation), and the state after
 -- it; `done` at the end of the input
@@ -4786,16 +4798,19 @@ inductive StepR where
   | done
   | next (line : Option String) (stop : Nat) (gs : Globals) (cats : List Cat) (tokens : List String) (notes : List Note)
 mutual
-def stepCommand (cats : List Cat) (tokens : List String) (notes : List Note) (input : Array Nat) (pos : Nat)
-    (gs : Globals) : StepR :=
+def stepCommand (inlineImports : Bool) (cats : List Cat) (tokens : List String) (notes : List Note)
+    (input : Array Nat) (pos : Nat) (gs : Globals) : StepR :=
   match Nat.lt (skipWs input pos) (Array.size input) with
   | .false => .done
   | .true => match parseCommandAt cats tokens input pos with
     | .err m => .next (.some (String.append "parse " m)) (Array.size input) gs cats tokens notes
     | .ok stx0 stop => match strEq (kindOf stx0) "command.import" with
-    -- (only the Prelude: its commands are checked, silently)
-    | .true => match runCommands (doCats cats) (.cons "←" (.cons "do" tokens)) notes (String.codes preludeText) 0 gs .nil with
-      | .mk _ gs' cats' tokens' notes' => .next .none stop gs' cats' tokens' notes'
+    -- (A14) with the module loader (`inlineImports = false`) the import was loaded
+    -- before the file: skip it (only the Prelude, when checking one file, is inline)
+    | .true => match inlineImports with
+      | .false => .next .none stop gs cats tokens notes
+      | .true => match runCommands .true (doCats cats) (.cons "←" (.cons "do" tokens)) notes (String.codes preludeText) 0 gs .nil with
+        | .mk _ gs' cats' tokens' notes' => .next .none stop gs' cats' tokens' notes'
     | .false => match strEq (kindOf stx0) "command.infix" with
     | .true => match infixCmd cats tokens stx0 with
       | .mk cats' tokens' note => .next .none stop gs cats' tokens' (.cons note notes)
@@ -4838,15 +4853,259 @@ def stepCommand (cats : List Cat) (tokens : List String) (notes : List Note) (in
       | .mk line gs' => match newDuplicate gs gs' with
         | .some x => .next (.some (String.append (String.append "error: '" x) "' has already been declared")) stop gs cats tokens notes
         | .none => .next (.some line) stop gs' cats tokens notes
-def runCommands (cats : List Cat) (tokens : List String) (notes : List Note) (input : Array Nat) (pos : Nat)
-    (gs : Globals) (out : List String) : Run :=
-  match stepCommand cats tokens notes input pos gs with
+def runCommands (inlineImports : Bool) (cats : List Cat) (tokens : List String) (notes : List Note)
+    (input : Array Nat) (pos : Nat) (gs : Globals) (out : List String) : Run :=
+  match stepCommand inlineImports cats tokens notes input pos gs with
   | .done => .mk out gs cats tokens notes
-  | .next line stop gs' cats' tokens' notes' => runCommands cats' tokens' notes' input stop gs' (match line with
+  | .next line stop gs' cats' tokens' notes' => runCommands inlineImports cats' tokens' notes' input stop gs' (match line with
     | .some l => .cons l out
     | .none => out)
 end
 
+-- (A14) one file, with each `import` loading the embedded Prelude inline (the compiler
+-- driver and `checkFile` keep this path; the module loader is `moduleCheck` below)
 def checkFile (cats : List Cat) (tokens : List String) (text : String) : List String :=
-  match runCommands cats tokens .nil (String.codes text) 0 Globals.empty .nil with
+  match runCommands .true cats tokens .nil (String.codes text) 0 Globals.empty .nil with
   | .mk out _ _ _ _ => List.reverseOf out .nil
+
+-- (A14) Modules. `import M` loads the module `M`: the file `M.wiz` under the first `-I`
+-- root that has it, else in the working directory (`A.B` is `A/B.wiz`). Each module is
+-- elaborated once, before the modules that import it, into the same globals (`Globals`)
+-- and parser tables, so an importer sees the declarations of the modules it imports.
+-- `Prelude` is always the embedded prelude (`preludeText`): the self-hosted prelude is
+-- what this frontend can check, not `lib/Prelude.wiz` (A9-A23). A module's imports are
+-- hoisted: they are loaded (and the modules checked) before any other command of the
+-- module, in source order; the module's own declarations keep their source order.
+--
+-- The loader is pure: the driver reads the files (moduleRootSources) and `moduleCheck`
+-- builds the dependency graph from the sources. A cycle is an error naming the cycle, and
+-- a module that cannot be found is an error naming it. `private` is still private to one
+-- file only: hiding names across modules needs each name's module in `Globals`
+-- (docs/stages/21-bootstrap.md, 21n); until then a private name is visible project-wide.
+
+-- a module's source: its name (`B`), the path it was read from ("" when missing), its
+-- text, and the modules it imports (in source order)
+inductive ModSrc where
+  | mk (name : String) (path : String) (text : String) (imports : List String)
+def modName : ModSrc → String
+  | .mk n _ _ _ => n
+def modPath : ModSrc → String
+  | .mk _ p _ _ => p
+def modText : ModSrc → String
+  | .mk _ _ t _ => t
+def modImports : ModSrc → List String
+  | .mk _ _ _ is => is
+-- the module `m` among `tab`, if present
+def modFind : List ModSrc → String → Option ModSrc
+  | .nil, _ => .none
+  | .cons (.mk n p t is) rest, m => match strEq n m with
+    | .true => .some (.mk n p t is)
+    | .false => modFind rest m
+
+-- a module name as a file path: `A.B` is `A/B.wiz` (`.` becomes `/`)
+def modRelChars : List Char → List Char
+  | .nil => .nil
+  | .cons c cs => .cons (match Nat.beq (Char.code c) 46 with
+      | .true => Char.mk 47
+      | .false => c) (modRelChars cs)
+def modRelPath (name : String) : String :=
+  String.append (String.mk (modRelChars (match name with | .mk cs => cs))) ".wiz"
+-- whether a string is empty (the Prelude has no `String.length`; `Text.wiz` does)
+def modEmpty (s : String) : Bool := match s with
+  | .mk cs => match cs with
+    | .nil => .true
+    | .cons _ _ => .false
+-- `root/rel` (just `rel` when the root is "", the working directory)
+def modJoin (root rel : String) : String := match modEmpty root with
+  | .true => rel
+  | .false => String.append root (String.append "/" rel)
+-- the paths a module may be at: the `-I` roots in order, then the working directory
+def modPaths : List String → String → List String
+  | .nil, rel => .cons rel .nil
+  | .cons r rs, rel => .cons (modJoin r rel) (modPaths rs rel)
+def modCandidates (roots : List String) (name : String) : List String :=
+  modPaths roots (modRelPath name)
+
+-- the top-level `import`s of a text, in source order (a parse error here is reported when
+-- the module is elaborated: its imports are then what was read before the error)
+--
+-- The names the self-hosted toolchain's own drivers use (`IO`, `Std`, `Sys`) all mean the
+-- embedded prelude until `lib/` can be checked by this frontend: the prelude declares the
+-- `IO` names, and a real `IO.wiz` cannot be checked today (A9-A23). This is the one place
+-- module names are canonicalised, so a program importing `IO` and `Prelude` loads one
+-- prelude.
+def modCanonical (name : String) : String :=
+  match strEq name "IO" with
+  | .true => "Prelude"
+  | .false => match strEq name "Std" with
+    | .true => "Prelude"
+    | .false => match strEq name "Sys" with
+      | .true => "Prelude"
+      | .false => name
+partial def modImportsAt (cats : List Cat) (tokens : List String) (input : Array Nat) (pos : Nat) : List String :=
+  match Nat.lt (skipWs input pos) (Array.size input) with
+  | .false => .nil
+  | .true => match parseCommandAt cats tokens input pos with
+    | .err _ => .nil
+    | .ok stx stop => match strEq (kindOf stx) "command.import" with
+      | .true => .cons (modCanonical (identOf'' (kid stx 1))) (modImportsAt cats tokens input stop)
+      | .false => modImportsAt cats tokens input stop
+
+def moduleImports (cats : List Cat) (tokens : List String) (text : String) : List String :=
+  modImportsAt cats tokens (String.codes text) 0
+
+-- (the cache key) the modules in load order: each module's name and text, mixed into a
+-- number (a rolling hash; the real cache, D5, also keys on the frontend's version)
+def modOrder : List String → List ModSrc → List ModSrc
+  | .nil, _ => .nil
+  | .cons n ns, tab => match modFind tab n with
+    | .some m => .cons m (modOrder ns tab)
+    | .none => modOrder ns tab
+def modHashChars : List Char → Nat → Nat
+  | .nil, h => h
+  | .cons c cs, h => modHashChars cs (Nat.mod (Nat.add (Nat.mul h 33) (Char.code c)) 2147483647)
+def modHash (h : Nat) (s : String) : Nat :=
+  modHashChars (match s with | .mk cs => cs) h
+def modGraphHash : Nat → List ModSrc → Nat
+  | h, .nil => h
+  | h, .cons (.mk n _ t _) rest => modGraphHash (modHash (modHash (Nat.add h 1) n) t) rest
+def moduleGraphKey (order : List String) (tab : List ModSrc) : Nat :=
+  modGraphHash 17 (modOrder order tab)
+
+-- a module's state in the graph: not visited, on the current import path, or loaded
+inductive ModState where
+  | unseen
+  | loading
+  | loaded
+def modStateOf (vis : StrMap Nat) (name : String) : ModState :=
+  match StrMap.findD vis (Str.ofString name) 0 with
+  | .zero => .unseen
+  | .succ k => match k with
+    | .zero => .loading
+    | _ => .loaded
+def modMark (vis : StrMap Nat) (name : String) (v : Nat) : StrMap Nat :=
+  StrMap.insert vis (Str.ofString name) v
+
+def modJoinArrows : List String → String
+  | .nil => ""
+  | .cons x rest => match rest with
+    | .nil => x
+    | .cons _ _ => String.append x (String.append " -> " (modJoinArrows rest))
+-- the import path from `name` (re-entered) to the current module: the head of the stack is
+-- the current module, so `B -> C -> B` when C imports B while B is loading
+def modTakeTo : List String → String → List String
+  | .nil, _ => .nil
+  | .cons x rest, n => match strEq x n with
+    | .true => .cons x .nil
+    | .false => .cons x (modTakeTo rest n)
+def modCycleMsg (stack : List String) (name : String) : String :=
+  String.append "error: import cycle: "
+    (modJoinArrows (List.append (List.reverseOf (modTakeTo stack name) .nil) (.cons name .nil)))
+
+-- the loader's state: the output, globals and tables (`Run`), each module's state, the
+-- current import path, and the modules loaded so far (in load order)
+inductive ModLoad where
+  | mk (run : Run) (vis : StrMap Nat) (stack : List String) (order : List String)
+
+-- one module's commands, its imports already loaded (skipped); the Prelude needs the `do`
+-- grammar and the `←` token, as the inline import did, and its output is silent (it
+-- declares the ambient names, it is not part of the program's output)
+def modRunBody (r : Run) (name : String) (text : String) : Run :=
+  match strEq name "Prelude" with
+  | .true => match runCommands .false (doCats (Run.catsOf r)) (.cons "←" (.cons "do" (Run.tokensOf r)))
+      (Run.notesOf r) (String.codes text) 0 (Run.gs r) .nil with
+    | .mk _ gs' cats' tokens' notes' => .mk (Run.out r) gs' cats' tokens' notes'
+  | .false => runCommands .false (Run.catsOf r) (Run.tokensOf r) (Run.notesOf r)
+      (String.codes text) 0 (Run.gs r) (Run.out r)
+
+mutual
+def modLoadOne (tab : List ModSrc) (l : ModLoad) (name : String) : ModLoad :=
+  match l with
+  | .mk run vis stack order => match modStateOf vis name with
+    | .loaded => l
+    | .loading => .mk (Run.addLine run (modCycleMsg stack name)) vis stack order
+    | .unseen => match modFind tab name with
+      | .none => .mk (Run.addLine run (String.append "error: cannot find module " name))
+          (modMark vis name 2) stack order
+      | .some (.mk n p t is) => match modEmpty p with
+        -- the driver found no file: a `ModSrc` with path "" (or the caller had no entry)
+        | .true => .mk (Run.addLine run (String.append "error: cannot find module " n))
+            (modMark vis name 2) stack order
+        | .false =>
+          let l1 : ModLoad := .mk run (modMark vis name 1) (.cons name stack) order;
+          match modLoadAll tab l1 is with
+          | .mk run2 vis2 _ order2 =>
+            .mk (modRunBody run2 name t) (modMark vis2 name 2) stack (.cons name order2)
+def modLoadAll (tab : List ModSrc) (l : ModLoad) : List String → ModLoad
+  | .nil => l
+  | .cons n ns => modLoadAll tab (modLoadOne tab l n) ns
+end
+
+-- the whole graph from `roots`, in order: dependencies first, each module once; its
+-- output lines, globals and tables (the load order is in `order`)
+def modCheckRun (cats : List Cat) (tokens : List String) (tab : List ModSrc) (roots : List String) : ModLoad :=
+  modLoadAll tab (.mk (Run.mk .nil Globals.empty cats tokens .nil) StrMap.empty .nil .nil) roots
+-- the output lines of the graph (each module's `#check`s and errors, in load order)
+def moduleCheck (cats : List Cat) (tokens : List String) (tab : List ModSrc) (roots : List String) : List String :=
+  match modCheckRun cats tokens tab roots with
+  | .mk run _ _ _ => List.reverseOf (Run.out run) .nil
+
+-- the driver: the `-I` roots and `--key` among the command-line arguments
+partial def modRoots : List String → List String
+  | .nil => .nil
+  | .cons a rest => match strEq a "-I" with
+    | .true => match rest with
+      | .nil => .nil
+      | .cons d ds => .cons d (modRoots ds)
+    | .false => modRoots rest
+def modHasFlag : List String → String → Bool
+  | .nil, _ => .false
+  | .cons a rest, f => match strEq a f with
+    | .true => .true
+    | .false => modHasFlag rest f
+
+-- the first candidate path of `name` with text ("" when none: with `IO.readFile` an empty
+-- file and a missing one look alike)
+partial def modProbeAt (cats : List Cat) (tokens : List String) (name : String) : List String → IO ModSrc
+  | .nil => IO.pure (ModSrc.mk name "" "" .nil)
+  | .cons p ps => do
+    t ← IO.readFile p;
+    match modEmpty t with
+    | .true => modProbeAt cats tokens name ps
+    | .false => IO.pure (ModSrc.mk name p t (moduleImports cats tokens t))
+-- read `name`, and then (breadth first) the modules it imports, once each
+partial def modDiscover (cats : List Cat) (tokens : List String) (roots : List String)
+    (tab : List ModSrc) (queue : List String) : IO (List ModSrc) :=
+  match queue with
+  | .nil => IO.pure tab
+  | .cons name rest => match modFind tab name with
+    | .some _ => modDiscover cats tokens roots tab rest
+    | .none => do
+      m ← modProbeAt cats tokens name (modCandidates roots name);
+      match modEmpty (modText m) with
+      | .true => modDiscover cats tokens roots (.cons m tab) rest
+      | .false => modDiscover cats tokens roots (.cons m tab) (List.append rest (modImports m))
+
+-- the root module (`Main` is the file `input.wiz`) and, from it, the modules it imports
+def moduleRootSources (cats : List Cat) (tokens : List String) (roots : List String)
+    (text : String) : IO (List ModSrc) := do
+  let root : ModSrc := ModSrc.mk "Main" "input.wiz" text (moduleImports cats tokens text);
+  let tab0 : List ModSrc := .cons (ModSrc.mk "Prelude" "prelude" preludeText .nil) (.cons root .nil);
+  modDiscover cats tokens roots tab0 (modImports root)
+
+partial def modPrint : List String → IO Unit
+  | .nil => IO.pure ()
+  | .cons s ss => do
+    IO.println s;
+    modPrint ss
+
+-- (A14) the checker's driver: read `input.wiz` and its modules (with `-I` roots), check
+-- the graph and print the output lines; `--key` prints the graph's cache key instead
+def moduleMain (cats : List Cat) (tokens : List String) : IO Unit := do
+  args ← IO.args;
+  text ← IO.readFile "input.wiz";
+  tab ← moduleRootSources cats tokens (modRoots args) text;
+  match modCheckRun cats tokens tab (.cons "Main" .nil) with
+  | .mk run _ _ order => match modHasFlag args "--key" with
+    | .true => IO.println (Nat.toString (moduleGraphKey order tab))
+    | .false => modPrint (List.reverseOf (Run.out run) .nil)

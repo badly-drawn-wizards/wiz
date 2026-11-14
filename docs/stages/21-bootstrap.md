@@ -561,3 +561,44 @@ by the self-hosted one (both collectors); the differential test's `MTm` descript
 a quantity (ω in the existing terms); two core terms from the review of this stage
 (/workspace/wiz-notes/fieldq-review.md, probes 7a and 15b) checked by Kernel.wiz with the
 Lean kernel's verdicts.
+## 21x: modules and imports (A14, first milestone)
+
+`import M` was silently the embedded Prelude: the self-hosted frontend had one module,
+the input file. The frontend now loads a module graph. A module's name is a path
+(`A.B` is `A/B.wiz`), resolved under the `-I` roots in order and then in the working
+directory; the root module is `Main` (the file `input.wiz`). `Prelude` is still the
+embedded `preludeText`: the self-hosted frontend cannot check `lib/Prelude.wiz` yet
+(A9-A23). The other library imports the corpus uses (`IO`, `Std`, `Sys`) are
+canonicalised to `Prelude` when imports are scanned, since the embedded prelude declares
+the `IO` names and no real `IO.wiz` is checkable yet (without it, every existing
+`import IO` program would be a missing module).
+
+The loader (`selfhost/Frontend.wiz`, "A14") is pure: the driver reads the files
+(`moduleRootSources`, breadth first, each module once, with `IO.readFile`), and
+`moduleCheck` builds the dependency graph. A module's imports are hoisted, in source
+order; dependencies are elaborated before their importers into the same `Globals` and
+the same parser tables, so an importer sees the imported module's names and notations,
+and each module is elaborated once no matter how many modules import it. Declaration
+order is deterministic: dependencies in source order, then the module's own commands in
+source order. A cycle is an error naming it (`error: import cycle: B -> C -> B`); a
+module that cannot be found is `error: cannot find module NAME`. Duplicate names are
+rejected across modules as within one (the same `newDuplicate` check).
+
+The cache key (`moduleGraphKey`) is a rolling hash of the loaded modules' names and
+texts in load order; the checker prints it with `--key`. The real cache (D5) will key on
+it, plus the frontend's version.
+
+**Not done.** `private` is still private to one file only: hiding names across modules
+needs each name's module in `Globals` (21n). `namespace`/`open`/`section` are not parsed
+(A23). The compiler driver accepts modules for checking, but `link_c` paths and the
+`-- wiz: rc` pragma are read from the root file only. Compiling `lib/` still needs
+classes/instances (A10), universe polymorphism (A15), the proof surface (A16), tactics
+(A13), macros (A12), `deriving` (A11) and the wider runtime (C11/C12); modules were the
+first dependency, not the last.
+
+**Tests** (group `selfhost`, eight cases): an imported module's declarations in scope, a
+transitive import (A→B→C) with a shared Prelude, a diamond (one module imported twice is
+checked once), a cycle, a missing module, a duplicate name across modules, a `-I` root,
+and the cache key (stable for one graph, different when a module's text changes). `wiz
+check` of the generated self-hosted sources passes, and the self-hosted frontend still
+checks itself.
