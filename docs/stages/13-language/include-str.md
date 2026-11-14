@@ -18,6 +18,10 @@ before the command is elaborated. Macros therefore stay **pure**: no macro, tact
 elaborator step ever reads a file, and a macro that receives or produces the node still
 sees a string literal.
 
+The literal is an ordinary string (`String.mk [Char.mk n, …]`), one term node per
+character: files of a few KB are fine; a multi-MB file would want a future `Str`/`Bytes`
+primitive with a native literal.
+
 ## Where the file is read
 
 The frontend (`runFrontend`, `ElabM`, `MacroM`) is pure, so file IO happens in the
