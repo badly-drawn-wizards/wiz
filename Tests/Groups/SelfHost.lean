@@ -1588,7 +1588,56 @@ def selfHostGroup : Group where
         let g : Globals ZeroOneMany := { leanGlobals () with regularity := .full }
         match infer (R := ZeroOneMany) { globals := g } (Mark.infer (R := ZeroOneMany) { globals := g } loop.toTerm).1 with
         | .ok _ => pure ()
-        | .error e => throw (IO.userError s!"the Lean kernel with full regularity rejects it: {e}") }
+        | .error e => throw (IO.userError s!"the Lean kernel with full regularity rejects it: {e}") },
+    -- (A14) modules: `import M` loads `M.wiz` (a `-I` root, then the working directory)
+    { name := "modules: an imported module's declarations are in scope", run := fun _ =>
+        selfhostCheckModules
+          [("B.wiz", "import Prelude\ndef one : Nat := 1\n"),
+           ("input.wiz", "import Prelude\nimport B\ndef two : Nat := one\n")]
+          "one : Nat\ntwo : Nat\n" },
+    { name := "modules: a transitive import (A imports B, B imports C)", run := fun _ =>
+        selfhostCheckModules
+          [("C.wiz", "import Prelude\ndef three : Nat := 3\n"),
+           ("B.wiz", "import Prelude\nimport C\ndef two : Nat := three\n"),
+           ("input.wiz", "import Prelude\nimport B\ndef four : Nat := three + two\n")]
+          "three : Nat\ntwo : Nat\nfour : Nat\n" },
+    { name := "modules: a module imported twice is checked once (a diamond)", run := fun _ =>
+        selfhostCheckModules
+          [("D.wiz", "import Prelude\ndef four : Nat := 4\n"),
+           ("B.wiz", "import Prelude\nimport D\ndef b : Nat := four\n"),
+           ("C.wiz", "import Prelude\nimport D\ndef c : Nat := four\n"),
+           ("input.wiz", "import Prelude\nimport B\nimport C\ndef sum2 : Nat := b + c\n")]
+          "four : Nat\nb : Nat\nc : Nat\nsum2 : Nat\n" },
+    { name := "modules: an import cycle is an error naming it", run := fun _ =>
+        selfhostCheckModules
+          [("B.wiz", "import Prelude\nimport C\n"),
+           ("C.wiz", "import Prelude\nimport B\n"),
+           ("input.wiz", "import Prelude\nimport B\n")]
+          "error: import cycle: B -> C -> B\n" },
+    { name := "modules: a missing module is an error naming it", run := fun _ =>
+        selfhostCheckModules
+          [("input.wiz", "import Prelude\nimport Nope\n")]
+          "error: cannot find module Nope\n" },
+    { name := "modules: a duplicate name across modules is rejected", run := fun _ =>
+        selfhostCheckModules
+          [("B.wiz", "import Prelude\ndef x : Nat := 1\n"),
+           ("input.wiz", "import Prelude\nimport B\ndef x : Nat := 2\n")]
+          "x : Nat\nerror: 'x' has already been declared\n" },
+    { name := "modules: a -I root is searched before the working directory", run := fun _ => do
+        let files := [("sub/B.wiz", "import Prelude\ndef one : Nat := 1\n"),
+                      ("input.wiz", "import Prelude\nimport B\n")]
+        -- without the root, B is not found; with it, it is
+        selfhostCheckModules files "error: cannot find module B\n"
+        selfhostCheckModules files "one : Nat\n" (args := #["-I", "sub"]) },
+    { name := "modules: the cache key includes the module graph", run := fun _ => do
+        let root := "import Prelude\nimport B\ndef two : Nat := one\n"
+        let files1 := [("B.wiz", "import Prelude\ndef one : Nat := 1\n"), ("input.wiz", root)]
+        let files2 := [("B.wiz", "import Prelude\ndef one : Nat := 2\n"), ("input.wiz", root)]
+        let some k1 ← selfhostModuleOutput files1 #["--key"] | return
+        let some k1' ← selfhostModuleOutput files1 #["--key"] | return
+        let some k2 ← selfhostModuleOutput files2 #["--key"] | return
+        unless k1 == k1' do throw (IO.userError s!"the key is not stable: {k1} / {k1'}")
+        if k1 == k2 then throw (IO.userError s!"the key ignores a module's text: {k1}") }
   ]
 
 builtin_initialize registerGroup selfHostGroup
