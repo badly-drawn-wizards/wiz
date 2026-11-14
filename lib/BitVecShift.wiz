@@ -103,6 +103,156 @@ def Bits.low_low : (w v n : Nat) → Nat.le w v = .true → Bits.low w (Bits.low
           (Bits.div_cons (Nat.isOdd n) (Bits.low v (Nat.div n 2))))
         (Bits.congr (Bits.cons (Nat.isOdd n)) (Bits.low_low w v (Nat.div n 2) h)))
 
+-- ## Right shifts (SRLI/SRAI)
+
+-- `low w n = n` when `n` is below `2^w`: the stage's fill word and slice are already
+-- words, so their `low` is the identity.
+def Bits.low_of_lt : (w n : Nat) → Nat.lt n (Nat.pow 2 w) = .true → Bits.low w n = n
+  | .zero, n, h => Eq.symm (Bits.lt_one n h)
+  | .succ w, n, h =>
+    let P := Nat.pow 2 w;
+    let hh : Nat.lt (Nat.div n 2) P = .true :=
+      transp (fun t _ => Nat.lt t P = .true) (Bits.half_lt n P h) (Eq.symm (Bits.div2 n));
+    Eq.trans
+      (Bits.congr (fun t => Bits.cons (Nat.isOdd n) t) (Bits.low_of_lt w (Nat.div n 2) hh))
+      (Bits.ndecomp n)
+
+-- `high` twice: `(n / 2^j) / 2^k = n / 2^(j+k)` (the composition of two right stages).
+def Bits.high_high : (k j n : Nat) → Bits.high k (Bits.high j n) = Bits.high (Nat.add j k) n
+  | k, .zero, n => rfl
+  | k, .succ j, n => Bits.high_high k j (Nat.div n 2)
+
+-- `n < 2^(j+m)` gives `high j n < 2^m` (the stage's `high` part fits its width).
+def Bits.high_lt : (j m n : Nat) → Nat.lt n (Nat.pow 2 (Nat.add j m)) = .true →
+    Nat.lt (Bits.high j n) (Nat.pow 2 m) = .true
+  | .zero, m, n, h => h
+  | .succ j, m, n, h =>
+    let hh : Nat.lt (Nat.div n 2) (Nat.pow 2 (Nat.add j m)) = .true :=
+      transp (fun t _ => Nat.lt t (Nat.pow 2 (Nat.add j m)) = .true)
+        (Bits.half_lt n (Nat.pow 2 (Nat.add j m)) h) (Eq.symm (Bits.div2 n));
+    Bits.high_lt j m (Nat.div n 2) hh
+
+-- `high j n < 2^nwidth` for any `nwidth` the number is below (a `high` part never grows).
+def Bits.high_lt_pow (j m n : Nat) (h : Nat.lt n (Nat.pow 2 m) = .true) :
+    Nat.lt (Bits.high j n) (Nat.pow 2 m) = .true :=
+  Nat.lt_of_le_of_lt (Bits.high j n) n (Nat.pow 2 m) (Bits.high_le j n) h
+
+-- `(A · 2^k + B) / 2^k = A + B / 2^k`, for any `B` (no bound: `div` keeps the remainder).
+def Bits.div_add_pow (k A B : Nat) :
+    Nat.div (Nat.add (Nat.mul A (Nat.pow 2 k)) B) (Nat.pow 2 k)
+      = Nat.add A (Nat.div B (Nat.pow 2 k)) :=
+  let P := Nat.pow 2 k;
+  let H := Bits.high k B;
+  let L := Bits.low k B;
+  let e := Bits.pos_succ P (Word.pow_pos k);
+  let hl : Nat.lt L (Nat.succ (Bits.dec P)) = .true :=
+    transp (fun t _ => Nat.lt L t = .true) (Bits.low_lt k B) e;
+  let r : Nat.div (Nat.add (Nat.mul (Nat.succ (Bits.dec P)) (Nat.add A H)) L) (Nat.succ (Bits.dec P))
+      = Nat.add A H :=
+    Bits.div_mq (Bits.dec P) (Nat.add A H) L hl;
+  let r2 : Nat.div (Nat.add (Nat.mul P (Nat.add A H)) L) P = Nat.add A H :=
+    transp (fun t _ => Nat.div (Nat.add (Nat.mul t (Nat.add A H)) L) t = Nat.add A H) r (Eq.symm e);
+  let r3 : Nat.div (Nat.add (Nat.mul A P) (Nat.add (Nat.mul P H) L)) P = Nat.add A H :=
+    transp (fun t _ => Nat.div t P = Nat.add A H) r2
+      (Eq.symm (nat_ring! A * P + (P * H + L) = P * (A + H) + L));
+  Eq.trans
+    (transp (fun t _ => Nat.div (Nat.add (Nat.mul A P) t) P = Nat.add A H) r3
+      (Eq.symm (Bits.split k B)))
+    (Bits.congr (Nat.add A) (Eq.symm (Bits.div_pow k B)))
+
+-- The `high` form of the same identity: `(A · 2^k + B) >> k = A + B >> k`.
+def Bits.high_add_pow (k A B : Nat) :
+    Bits.high k (Nat.add (Nat.mul A (Nat.pow 2 k)) B) = Nat.add A (Bits.high k B) :=
+  Eq.trans
+    (Eq.symm (Bits.div_pow k (Nat.add (Nat.mul A (Nat.pow 2 k)) B)))
+    (Eq.trans
+      (Bits.div_add_pow k A B)
+      (Bits.congr (Nat.add A) (Bits.div_pow k B)))
+
+-- `high (low (k+m))`: the second right stage sees through the first stage's `low`.
+def Bits.high_low : (k m n : Nat) →
+    Bits.high k (Bits.low (Nat.add k m) n) = Bits.low m (Bits.high k n)
+  | .zero, m, n => rfl
+  | .succ k, m, n =>
+    Eq.trans
+      (Bits.congr (fun t => Bits.high k t) (Bits.div_cons (Nat.isOdd n) (Bits.low (Nat.add k m) (Nat.div n 2))))
+      (Bits.high_low k m (Nat.div n 2))
+
+-- `BitVec.lshr` in the barrel's normal form
+def BitVec.lshr_toNat (n k : Nat) (x : BitVec n) :
+    (BitVec.lshr x k).toNat = Bits.high k x.toNat :=
+  Bits.wshr_val x k
+
+-- ... and the same under the width's `low` (the form a stage produces)
+def BitVec.lshr_low_toNat (n k : Nat) (x : BitVec n) :
+    (BitVec.lshr x k).toNat = Bits.low n (Bits.high k x.toNat) :=
+  Eq.trans (BitVec.lshr_toNat n k x)
+    (Eq.symm (Bits.low_of_lt n (Bits.high k x.toNat)
+      (Bits.high_lt_pow k n x.toNat (UIntN.toNat_lt x))))
+
+-- `min x 0 = 0` (for `Hw.and 0 b = 0`, where `land`'s value is `min (land a b) a`)
+def Bits.min_zero (x : Nat) : Word.min x 0 = 0 :=
+  Eq.trans (Bits.congr (fun t => Word.pick t x 0) (Bits.ltz x)) rfl
+
+-- `0 · Y + X = X`, with `Y` symbolic (a zero fill's contribution; stated for a variable
+-- so that the kernel never has to compute a large `2^n`)
+def Bits.zero_mul_add (Y X : Nat) : Nat.add (Nat.mul 0 Y) X = X := rfl
+
+-- `Hw.and 0 b = 0` at any width: SRLI's barrel fill (`Hw.and d.alt (bit 31 a)`, with
+-- `d.alt = 0`) is the zero word.
+def BitVec.and_zero_left {n : Nat} (b : BitVec n) :
+    BitVec.and (BitVec.ofNat n 0) b = BitVec.ofNat n 0 :=
+  UIntN.ext (BitVec.and (BitVec.ofNat n 0) b) (BitVec.ofNat n 0)
+    (Eq.trans
+      (Eq.trans
+        (Bits.congr (fun t => Word.min (Nat.land t b.toNat) t)
+          (Eq.trans (Bits.wofNat_val n 0) (Bits.low_zero n)))
+        (Bits.min_zero (Nat.land 0 b.toNat)))
+      (Eq.symm (BitVec.toNat_zero n)))
+
+-- `Hw.and 1 b = b` for a one-bit `b`: SRAI's fill (`d.alt = 1`) is the sign bit.
+def BitVec.and_one_left (b : BitVec 1) :
+    BitVec.and (BitVec.ofNat 1 1) b = b :=
+  Or.elim (UIntN.cases1 b)
+    (fun e => transp (fun t _ => BitVec.and (BitVec.ofNat 1 1) t = t) rfl (Eq.symm e))
+    (fun e => transp (fun t _ => BitVec.and (BitVec.ofNat 1 1) t = t) rfl (Eq.symm e))
+
+-- One right barrel stage: `j` fill bits on top of the low `m` bits of `x >> j`, at
+-- width `j + m` (the barrel's `shift1`…`shift16`, whose `m` is `32 - j`).
+def BitVec.shrStage (m j : Nat) (f : BitVec j) (x : BitVec (Nat.add m j)) : BitVec (Nat.add j m) :=
+  BitVec.concat f (BitVec.ofNat m (Nat.shiftRight x.toNat j))
+
+-- Its bits: the low `j+m` bits of `f · 2^m + (x >> j)`. No bound is needed: the sum
+-- stays under `low`, and the composition lemmas (`low_low`, `high_low`, `high_add_pow`)
+-- never take it out.
+def BitVec.shrStage_toNat (m j : Nat) (f : BitVec j) (x : BitVec (Nat.add m j)) :
+    (BitVec.shrStage m j f x).toNat
+      = Bits.low (Nat.add j m) (Nat.add (Nat.mul f.toNat (Nat.pow 2 m))
+          (Bits.low m (Bits.high j x.toNat))) :=
+  let lo : BitVec m := BitVec.ofNat m (Nat.shiftRight x.toNat j);
+  let lo_toNat : lo.toNat = Bits.low m (Bits.high j x.toNat) :=
+    Eq.trans (Bits.wofNat_val m (Nat.shiftRight x.toNat j))
+      (Bits.congr (fun t => Bits.low m t) (Bits.div_pow j x.toNat));
+  Eq.trans
+    (Eq.congrArg (fun t => (BitVec.ofNat (Nat.add j m)
+      (Nat.add (Nat.mul f.toNat (Nat.pow 2 m)) t)).toNat) lo_toNat)
+    (Bits.wofNat_val (Nat.add j m) (Nat.add (Nat.mul f.toNat (Nat.pow 2 m))
+      (Bits.low m (Bits.high j x.toNat))))
+
+-- Padding a `low` with a lower one: `low v (low w n) = low w n` for `w ≤ v` (the
+-- outside-in dual of `low_low`; a right stage's slice is a `low` inside the stage's own).
+def Bits.low_low_rev : (w v n : Nat) → Nat.le w v = .true → Bits.low v (Bits.low w n) = Bits.low w n
+  | .zero, v, n, _ => Bits.low_zero v
+  | .succ w, .zero, n, h => absurd (Sat.contra (Nat.le (Nat.succ w) .zero) h (Bits.ltz w))
+  | .succ w, .succ v, n, h =>
+    Eq.trans
+      (Bits.congr (fun t => Bits.cons t (Bits.low v (Nat.div (Bits.low (Nat.succ w) n) 2)))
+        (Bits.isOdd_cons (Nat.isOdd n) (Bits.low w (Nat.div n 2))))
+      (Eq.trans
+        (Bits.congr (fun t => Bits.cons (Nat.isOdd n) (Bits.low v t))
+          (Bits.div_cons (Nat.isOdd n) (Bits.low w (Nat.div n 2))))
+        (Bits.congr (Bits.cons (Nat.isOdd n)) (Bits.low_low_rev w v (Nat.div n 2) h)))
+
 -- One left barrel stage: the low `m` bits of `x` with `j` zero bits below, at width
 -- `m + j` (the barrel's `shift1`…`shift16`, whose `m` is `32 - j`).
 def BitVec.shlStage (m j : Nat) (x : BitVec (Nat.add m j)) : BitVec (Nat.add m j) :=
@@ -123,3 +273,155 @@ def BitVec.shlStage_toNat (m j : Nat) (x : BitVec (Nat.add m j)) :
       (Bits.congr (fun t => Bits.low (Nat.add m j) t) (Eq.symm (Bits.low_shift m j x.toNat)))
       (Bits.low_low (Nat.add m j) (Nat.add m j)
         (Nat.mul x.toNat (Nat.pow 2 j)) (Bits.le_refl (Nat.add m j))))
+
+-- ## The arithmetic of an arithmetic shift (SRAI)
+
+-- `BitVec.ashr` shifts in copies of the sign bit (ones in the top `k` bits), so its value
+-- is `2^w - 1 - ((2^w - 1 - a) >> k)` when the sign is set. These are the `Nat` facts
+-- that turn that into `(2^w - 2^(w-k)) + (a >> k)`; the `IntN.shiftRight` branch lemmas
+-- that use them need `IntN.below`'s `toNat` exported from `lib/Word.wiz` (it is private
+-- today; `wiz-notes/rv-shift-lemmas.md` §7).
+
+-- `2^(a+b) = 2^a · 2^b`
+def Bits.pow_add : (a b : Nat) → Nat.pow 2 (Nat.add a b) = Nat.mul (Nat.pow 2 a) (Nat.pow 2 b)
+  | a, .zero =>
+    Eq.trans
+      (Bits.congr (fun t => Nat.pow 2 t) (Bits.add_zero a))
+      (Eq.symm (Bits.mul_one_r (Nat.pow 2 a)))
+  | a, .succ b =>
+    Eq.trans
+      (transp (fun t _ => Nat.pow 2 t = Nat.mul 2 (Nat.pow 2 (Nat.add a b)))
+        rfl (Eq.symm (Bits.add_succ a b)))
+      (Eq.trans
+        (Bits.congr (Nat.mul 2) (Bits.pow_add a b))
+        (nat_ring! 2 * (Nat.pow 2 a * Nat.pow 2 b) = Nat.pow 2 a * (2 * Nat.pow 2 b)))
+
+-- `2^w = 2^k · 2^(w-k)` for `k ≤ w`
+def Bits.pow_sub (w k : Nat) (hk : Nat.le k w = .true) :
+    Nat.pow 2 w = Nat.mul (Nat.pow 2 k) (Nat.pow 2 (Nat.sub w k)) :=
+  transp (fun t _ => Nat.pow 2 t = Nat.mul (Nat.pow 2 k) (Nat.pow 2 (Nat.sub w k)))
+    (Bits.pow_add k (Nat.sub w k)) (Nat.add_sub_of_le k w hk)
+
+-- `x < m` gives `x / m = 0`
+def Bits.div_small : (x m : Nat) → Nat.lt x m = .true → Nat.div x m = 0
+  | .zero, .zero, _ => rfl
+  | .zero, .succ _, _ => rfl
+  | .succ x, .zero, _ => rfl
+  | .succ x, .succ m, h => Bits.divGo_small (Nat.succ x) (Nat.succ x) (Nat.succ m) h
+
+-- `a - b ≤ a`
+def Bits.sub_le_self : (a b : Nat) → Nat.le (Nat.sub a b) a = .true
+  | a, .zero => Bits.le_refl a
+  | a, .succ b =>
+    Bits.le_trans (Nat.sub a (Nat.succ b)) (Nat.sub a b) a
+      (Bits.pred_le (Nat.sub a b)) (Bits.sub_le_self a b)
+
+-- `A + Q - 1 = A + (Q - 1)` for `Q ≥ 1`
+def Bits.add_sub_one (A Q : Nat) (hQ : Nat.lt 0 Q = .true) :
+    Nat.sub (Nat.add A Q) 1 = Nat.add A (Bits.dec Q) :=
+  Eq.trans
+    (Bits.congr (fun t => Nat.sub (Nat.add A t) 1) (Bits.pos_succ Q hQ))
+    (transp (fun t _ => Nat.sub t 1 = Nat.add A (Bits.dec Q))
+      (refl (Nat.add A (Bits.dec Q))) (Eq.symm (Bits.add_succ A (Bits.dec Q))))
+
+-- `P · (Q-1) + (P-1) = P·Q - 1` for `P ≥ 1`, `Q ≥ 1`
+def Bits.dec_mul (P Q : Nat) (hP : Nat.lt 0 P = .true) (hQ : Nat.lt 0 Q = .true) :
+    Nat.add (Nat.mul P (Bits.dec Q)) (Bits.dec P) = Bits.dec (Nat.mul P Q) :=
+  Eq.symm
+    (Eq.trans
+      (Bits.congr (fun t => Bits.dec (Nat.mul P t)) (Bits.pos_succ Q hQ))
+      (Eq.trans
+        (Bits.congr Bits.dec (Nat.mul_succ P (Bits.dec Q)))
+        (Eq.trans
+          (Bits.congr (fun t => Bits.dec (Nat.add t (Nat.mul P (Bits.dec Q)))) (Bits.pos_succ P hP))
+          (Eq.symm (Nat.add_comm (Nat.mul P (Bits.dec Q)) (Bits.dec P))))))
+
+-- `Q ≤ P · Q` for `P ≥ 1`
+def Bits.le_mul_self (P Q : Nat) (hP : Nat.lt 0 P = .true) : Nat.le Q (Nat.mul P Q) = .true :=
+  transp (fun t _ => Nat.le Q (Nat.mul t Q) = .true)
+    (Nat.le_add_right Q (Nat.mul (Bits.dec P) Q)) (Eq.symm (Bits.pos_succ P hP))
+
+-- The ones-fill identity: `2^w - 1 - ((2^w - 1 - a) >> k) = (2^w - 2^(w-k)) + (a >> k)`.
+def Bits.sub_one_high (w k a : Nat) (hk : Nat.le k w = .true) (ha : Nat.lt a (Nat.pow 2 w) = .true) :
+    Nat.sub (Bits.dec (Nat.pow 2 w)) (Bits.high k (Nat.sub (Bits.dec (Nat.pow 2 w)) a))
+      = Nat.add (Nat.sub (Nat.pow 2 w) (Nat.pow 2 (Nat.sub w k))) (Bits.high k a) :=
+  let M := Nat.pow 2 w;
+  let P := Nat.pow 2 k;
+  let Q := Nat.pow 2 (Nat.sub w k);
+  let h := Bits.high k a;
+  let l := Bits.low k a;
+  let X := Nat.sub (Bits.dec Q) h;
+  let Y := Nat.sub (Bits.dec P) l;
+  let hp : Nat.lt 0 P = .true := Word.pow_pos k;
+  let hq : Nat.lt 0 Q = .true := Word.pow_pos (Nat.sub w k);
+  let hM : Nat.lt 0 M = .true := Word.pow_pos w;
+  let hlt : Nat.lt h Q = .true :=
+    Bits.high_lt k (Nat.sub w k) a
+      (transp (fun t _ => Nat.lt a (Nat.pow 2 t) = .true) ha (Eq.symm (Nat.add_sub_of_le k w hk)));
+  let hle : Nat.le h (Bits.dec Q) = .true := Bits.lt_le_pred h Q hlt;
+  let lle : Nat.le l (Bits.dec P) = .true := Bits.lt_le_pred l P (Bits.low_lt k a);
+  let hle_a : Nat.le a (Bits.dec M) = .true := Bits.lt_le_pred a M ha;
+  let eX : Nat.add X h = Bits.dec Q :=
+    Eq.trans (Nat.add_comm X h) (Nat.add_sub_of_le h (Bits.dec Q) hle);
+  let eY : Nat.add Y l = Bits.dec P :=
+    Eq.trans (Nat.add_comm Y l) (Nat.add_sub_of_le l (Bits.dec P) lle);
+  let epow : M = Nat.mul P Q := Bits.pow_sub w k hk;
+  let edec : Nat.add (Nat.mul P (Bits.dec Q)) (Bits.dec P) = Bits.dec M :=
+    Eq.trans (Bits.dec_mul P Q hp hq) (Eq.symm (Bits.congr Bits.dec epow));
+  let esum : Nat.add (Nat.add (Nat.mul P X) Y) a = Bits.dec M :=
+    Eq.trans
+      (Eq.trans
+        (Bits.congr (fun t => Nat.add (Nat.add (Nat.mul P X) Y) t) (Bits.split k a))
+        (nat_ring! P * X + Y + (P * h + l) = P * (X + h) + (Y + l)))
+      (Eq.trans
+        (Bits.congr (fun t => Nat.add (Nat.mul P t) (Nat.add Y l)) eX)
+        (Eq.trans
+          (Bits.congr (Nat.add (Nat.mul P (Bits.dec Q))) eY)
+          edec));
+  let n_eq : Nat.sub (Bits.dec M) a = Nat.add (Nat.mul P X) Y :=
+    Eq.symm
+      (Nat.add_right_cancel
+        (Eq.trans esum
+          (Eq.symm
+            (Eq.trans (Nat.add_comm (Nat.sub (Bits.dec M) a) a)
+              (Nat.add_sub_of_le a (Bits.dec M) hle_a)))));
+  let Ylt : Nat.lt Y P = .true :=
+    Nat.lt_of_le_of_lt Y (Bits.dec P) P
+      (Bits.sub_le_self (Bits.dec P) l)
+      (transp (fun t _ => Nat.lt t P = .true) (Word.pred_lt P hp) (Bits.sub_one P));
+  let Ydiv : Bits.high k Y = 0 :=
+    Eq.trans (Eq.symm (Bits.div_pow k Y)) (Bits.div_small Y P Ylt);
+  let eH : Bits.high k (Nat.sub (Bits.dec M) a) = X :=
+    Eq.trans
+      (Bits.congr (fun t => Bits.high k t) n_eq)
+      (Eq.trans
+        (Bits.congr (fun t => Bits.high k t)
+          (Bits.congr (fun s => Nat.add s Y) (Nat.mul_comm P X)))
+        (Eq.trans
+          (Bits.high_add_pow k X Y)
+          (Eq.trans (Bits.congr (Nat.add X) Ydiv) (Bits.add_zero X))));
+  let hQM : Nat.le Q M = .true :=
+    transp (fun t _ => Nat.le Q t = .true) (Bits.le_mul_self P Q hp) (Eq.symm epow);
+  let hleX2 : Nat.le (Bits.dec Q) (Bits.dec M) = .true :=
+    transp (fun t _ => Nat.lt (Bits.dec Q) t = .true)
+      (transp (fun t _ => Nat.lt t (Nat.succ M) = .true) hQM (Bits.pos_succ Q hq))
+      (Bits.pos_succ M hM);
+  let hleX : Nat.le X (Bits.dec M) = .true :=
+    Bits.le_trans X (Bits.dec Q) (Bits.dec M) (Bits.sub_le_self (Bits.dec Q) h) hleX2;
+  let step1 : Nat.add (Nat.add (Nat.sub M Q) h) X = Nat.add (Nat.sub M Q) (Nat.add h X) :=
+    Nat.add_assoc (Nat.sub M Q) h X;
+  let step2 : Nat.add (Nat.sub M Q) (Nat.add h X) = Nat.add (Nat.sub M Q) (Bits.dec Q) :=
+    Bits.congr (fun t => Nat.add (Nat.sub M Q) t) (Eq.trans (Nat.add_comm h X) eX);
+  let step3 : Nat.add (Nat.sub M Q) (Bits.dec Q) = Nat.sub (Nat.add (Nat.sub M Q) Q) 1 :=
+    Eq.symm (Bits.add_sub_one (Nat.sub M Q) Q hq);
+  let step4 : Nat.sub (Nat.add (Nat.sub M Q) Q) 1 = Nat.sub M 1 :=
+    Bits.congr (fun t => Nat.sub t 1)
+      (Eq.trans (Nat.add_comm (Nat.sub M Q) Q) (Nat.add_sub_of_le Q M hQM));
+  let step5 : Nat.sub M 1 = Bits.dec M := Bits.sub_one M;
+  let e1 : Nat.add (Nat.add (Nat.sub M Q) h) X = Bits.dec M :=
+    Eq.trans step1 (Eq.trans step2 (Eq.trans step3 (Eq.trans step4 step5)));
+  let e2 : Nat.add (Nat.sub (Bits.dec M) X) X = Bits.dec M :=
+    Eq.trans (Nat.add_comm (Nat.sub (Bits.dec M) X) X) (Nat.add_sub_of_le X (Bits.dec M) hleX);
+  let e3 : Nat.add (Nat.sub M Q) h = Nat.sub (Bits.dec M) X :=
+    Nat.add_right_cancel (Eq.trans e1 (Eq.symm e2));
+  Eq.trans (Bits.congr (fun t => Nat.sub (Bits.dec M) t) eH) (Eq.symm e3)

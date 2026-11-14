@@ -43,11 +43,18 @@ problem above; `drafts/vec-lib/VecProofs.wiz`), arithmetic facts about `BitVec` 
 
 `lib/BitVecShift.wiz` (`import BitVecShift`): the first of those arithmetic facts, for
 shifts. `BitVec.toNat_concat_zero`, `BitVec.shl_toNat` and `BitVec.shlStage_toNat` put
-`concat`/`slice` stages and `BitVec.shl` in one normal form (the low bits of a
-product); `Bits.low_shift` and `Bits.low_low` compose stages. This is the lemma set the
-RV core's barrel shifter proofs need (SLLI; the right shifts still need the fill-bit
-lemmas). It imports `BitBlast` for `Bits.low`, so it is a proof module, not part of
-`BitVec` itself.
+the barrel's left `concat`/`slice` stages and `BitVec.shl` in one normal form (the low
+bits of a product); `Bits.low_shift` and `Bits.low_low` compose stages. The right-shift
+side has `BitVec.lshr_toNat`/`lshr_low_toNat` (`Bits.high`, the barrel's other normal
+form), the stage `BitVec.shrStage`/`shrStage_toNat`, and the stage-composition facts
+`Bits.low_of_lt`, `Bits.low_low_rev`, `Bits.high_high`, `Bits.high_lt`,
+`Bits.div_add_pow`/`high_add_pow`, `Bits.high_low`, plus the fill lemmas
+`BitVec.and_zero_left`/`and_one_left`. For arithmetic shifts `Bits.sub_one_high` is the
+ones-fill identity, and `Bits.pow_add`/`pow_sub`/`dec_mul`/`add_sub_one` are its `Nat`
+lemmas. This is the lemma set the RV core's barrel shifter proofs need (SLLI is closed;
+the right-shift instruction probes are blocked on a conversion limitation, see
+`wiz-notes/rv-shift-lemmas.md`). It imports `BitBlast` for `Bits.low`, so it is a proof
+module, not part of `BitVec` itself.
 
 ## H14 S0: hardware as tagless-final code, with sharing
 
