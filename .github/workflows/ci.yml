@@ -43,7 +43,7 @@ env:
   # to it needs the repository secret CACHIX_AUTH_TOKEN; without the secret (pull
   # requests from forks) it is pull-only.
   CACHIX_NAME: badlydrawnwizards
-  # Lake's artifact cache (enableArtifactCache in lakefile.toml) inside .lake rather than
+  # Lake's artifact cache (enableArtifactCache in lakefile.lean) inside .lake rather than
   # under the elan toolchain, so that caching .lake caches the whole build.
   LAKE_CACHE_DIR: ${{ github.workspace }}/.lake/cache
 
@@ -105,10 +105,10 @@ jobs:
         run: |
           # the hash part alone too: a test job on another architecture (a self-hosted
           # runner, docs/ci-runner.md) prefixes its own os/arch
-          echo "hash=${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-${{ hashFiles('lakefile.toml', '**/*.lean') }}" >> "$GITHUB_OUTPUT"
-          echo "key=lake-${{ runner.os }}${{ runner.arch != 'X64' && format('-{0}', runner.arch) || '' }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-${{ hashFiles('lakefile.toml', '**/*.lean') }}" >> "$GITHUB_OUTPUT"
+          echo "hash=${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-${{ hashFiles('lakefile.lean', '**/*.lean') }}" >> "$GITHUB_OUTPUT"
+          echo "key=lake-${{ runner.os }}${{ runner.arch != 'X64' && format('-{0}', runner.arch) || '' }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-${{ hashFiles('lakefile.lean', '**/*.lean') }}" >> "$GITHUB_OUTPUT"
           # what identifies the compiler and test driver (and the C toolchain they use)
-          echo "compiler=${{ hashFiles('flake.lock', 'flake.nix', 'lean-toolchain', 'lake-manifest.json', 'lakefile.toml', '**/*.lean', 'runtime/**', 'c/**') }}" >> "$GITHUB_OUTPUT"
+          echo "compiler=${{ hashFiles('flake.lock', 'flake.nix', 'lean-toolchain', 'lake-manifest.json', 'lakefile.lean', '**/*.lean', 'runtime/**', 'c/**') }}" >> "$GITHUB_OUTPUT"
       - name: Cache the Lake build
         uses: actions/cache@v4
         with:
@@ -431,7 +431,7 @@ jobs:
           path: |
             .lake
             ~/.cache/wiz
-          key: fixpoint-${{ runner.os }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-${{ hashFiles('lakefile.toml', '**/*.lean', 'selfhost/*.wiz', 'lib/*.wiz') }}
+          key: fixpoint-${{ runner.os }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-${{ hashFiles('lakefile.lean', '**/*.lean', 'selfhost/*.wiz', 'lib/*.wiz') }}
           restore-keys: fixpoint-${{ runner.os }}-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-
       - name: Fixpoint
         run: scripts/fixpoint.sh .lake/fixpoint 2>&1 | tee fixpoint.log

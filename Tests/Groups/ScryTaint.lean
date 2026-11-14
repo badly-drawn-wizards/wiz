@@ -134,6 +134,6 @@ def group : Group where
          "  | _ => 0") [80] }
   ]
 
-def groups : List Group := [group]
+builtin_initialize registerGroup group
 
 end Tests.ScryTaint
