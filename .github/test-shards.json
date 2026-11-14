@@ -55,6 +55,7 @@
     "repr",
     "seplogic",
     "=sat",
+    "=scry-datalog",
     "=smt",
     "std",
     "tactics",
