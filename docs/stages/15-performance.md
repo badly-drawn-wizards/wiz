@@ -342,7 +342,10 @@ against the split runtime runs 42.3 s, so ~11% is runtime calls and ~16% generat
 cross-unit calls. `-fvisibility=hidden` does not help; `-flto` recovers the run time
 (40.5 s) but its link costs 84.2 s, so the build is no faster than single
 (`-flto=8`: 88.1 s / 43.2 s). The split is therefore **opt-in** (`--split N`,
-default 1), for fast iteration rather than release builds.
+default 1), for fast iteration rather than release builds. The partition is
+deterministic (declaration order, balanced by C text), and each part keeps its object
+in `<out>.split/` with a stamp of its text and flags, so a rebuild to the same output
+compiles only the parts that changed (an example: 3.3 s -> 0.5 s on a second build).
 
 What is left:
 

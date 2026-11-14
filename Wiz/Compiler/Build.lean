@@ -102,32 +102,45 @@ def compileDecls (tc : Toolchain) (decls : Array IR.Decl) (io : Bool) (extra : S
   if lib || n < 2 || decls.size < 2 then
     return ← compileC tc src out link lib
   let dir := (out.parent.getD ".") / ((out.fileName.getD "wiz") ++ ".split")
-  if ← dir.pathExists then IO.FS.removeDirAll dir
   IO.FS.createDirAll dir
   let header := "wiz_split.h"
-  IO.FS.writeFile (dir / header) (C.splitHeader decls exports)
-  IO.FS.writeFile (dir / "support.c") (C.splitSupport decls io extra unbox exports noMain)
+  let headerText := C.splitHeader decls exports
+  IO.FS.writeFile (dir / header) headerText
   let parts := C.splitParts decls n
-  for (body, i) in parts.zipIdx do
-    IO.FS.writeFile (dir / s!"part{i}.c") (C.splitPartText header body)
+  -- (deterministic inputs; a part whose text and flags are unchanged reuses its object)
+  let inputs : Array (String × String × Bool) :=
+    #[("support", C.splitSupport decls io extra unbox exports noMain, true)] ++
+    parts.zipIdx.map fun (p : String × Nat) => (s!"part{p.2}", C.splitPartText header p.1, false)
   let cc := tc.cc
   let cflags := tc.cflags.toArray
+  let keyOf (text : String) (api : Bool) : String :=
+    toString (mixHash (hash text) (hash s!"{cc} {" ".intercalate tc.cflags} -O2 -w {api}"))
   let ccOne (file obj : String) (api : Bool) : IO (Except String Unit) :=
     runCC cc (#["-O2", "-w", "-c", "-o", (dir / obj).toString, (dir / file).toString] ++
       (if api then #["-DWIZ_API="] else #[]) ++ cflags)
-  let supportTask ← IO.asTask (prio := .dedicated) (ccOne "support.c" "support.o" true)
-  let partTasks ← parts.zipIdx.mapM fun (p : String × Nat) =>
-    IO.asTask (prio := .dedicated) (ccOne s!"part{p.2}.c" s!"part{p.2}.o" false)
   let err ← IO.mkRef (none : Option String)
+  let mut todo : Array (String × Bool × String) := #[]
+  for (name, text, api) in inputs do
+    let stamp := keyOf text api
+    let hit ← if (← (dir / (name ++ ".stamp")).pathExists) && (← (dir / (name ++ ".o")).pathExists) then
+        pure ((← IO.FS.readFile (dir / (name ++ ".stamp"))).trimAscii.toString == stamp)
+      else pure false
+    unless hit do
+      IO.FS.writeFile (dir / (name ++ ".c")) text
+      todo := todo.push (name, api, stamp)
+  let tasks ← todo.mapM fun (name, api, stamp) =>
+    IO.asTask (prio := .dedicated) do
+      match ← ccOne (name ++ ".c") (name ++ ".o") api with
+      | .ok () => IO.FS.writeFile (dir / (name ++ ".stamp")) stamp; pure (.ok ())
+      | .error e => pure (.error e)
   let collect (t : Task (Except IO.Error (Except String Unit))) : IO Unit := do
     match t.get with
     | .ok (.ok ()) => pure ()
     | .ok (.error e) => if (← err.get).isNone then err.set (some e)
     | .error e => if (← err.get).isNone then err.set (some (toString e))
-  collect supportTask
-  for t in partTasks do collect t
+  for t in tasks do collect t
   if let some e ← err.get then return .error e
-  let objs := (#[dir / "support.o"] ++ parts.zipIdx.map fun (p : String × Nat) => dir / s!"part{p.2}.o").map (·.toString)
+  let objs := inputs.map fun (name, _, _) => (dir / (name ++ ".o")).toString
   let srcArgs := if link.sources.isEmpty then #[] else #["-O2", "-w"] ++ link.sources ++ cflags
   runCC cc (#["-o", out.toString] ++ objs ++ srcArgs ++ tc.gmp.toArray ++ tc.ldflags.toArray ++
     tc.libs.toArray ++ link.libFlags)
