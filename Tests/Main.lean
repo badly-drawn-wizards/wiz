@@ -10,6 +10,7 @@ import Tests.Meta
 import Tests.Lint
 import Tests.Allocs
 import Tests.Scaling
+import Tests.ScryWil
 import Tests.Audit
 import Tests.Prop
 import Tests.Feral
@@ -42,6 +43,7 @@ def groups : List Group :=
   Smt.groups ++
   Parser.groups ++
   Prop.groups ++
+  ScryWil.groups ++
   Rig.groups ++
   Scaling.groups ++
   Tower.groups ++
