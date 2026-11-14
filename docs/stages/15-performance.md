@@ -376,7 +376,7 @@ memory per check job is the limit of the shared heavy slot.
 temporary name and a rename, so it is safe to re-run):
 
 ```sh
-python3 scripts/perf-dashboard.py                       # /workspace/wiz-tools/perf-history.tsv
+python3 scripts/perf-dashboard.py                       # wiz-tools/perf-history.tsv
 python3 scripts/perf-dashboard.py --timings RUNS --html out.html
 ```
 
@@ -402,4 +402,4 @@ time; compare groups over runs, not runs on different runners.
 
 `scripts/test-perf-dashboard.sh` checks the two input formats and the self-contained
 output against the small fixtures in `scripts/fixtures/perf/` (under a second, no
-toolchain). The coordinator publishes the page from `/workspace/wiz-notes/`.
+toolchain). The page is published from the notes directory (`wiz-notes/`).
