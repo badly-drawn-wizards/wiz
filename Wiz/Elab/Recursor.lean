@@ -317,8 +317,11 @@ def mkRecursor (g : Globals R) (T : Name) (ctors : List Name) (withIH : Bool) (s
           -- A field at a quantity variable cannot be projected (`1 ≤ q` is not known):
           -- take the payload apart with `split`s at 1, which give each field at its
           -- declared quantity (split at 1 of a pair `(q a : A) × B` gives `a` at `q`).
-          -- (prototype gate) only non-literal field quantities take the split path;
-          -- literals keep the existing projection-based recursor unchanged.
+          -- Only a non-literal quantity takes this path; all-literal types keep the
+          -- projection-based recursor unchanged (so `Vec` and the library do not move).
+          -- (A *recursive* field in a q-variable type is not supported yet: the kernel's
+          -- hypothesis `h` is about `proj r k`, which `split` cannot identify with its
+          -- variable when `r` is neutral.)
           let allLit := fields.all fun (_, _, q, _) => match q with | .qlit _ => true | _ => false
           if !linear then
             if allLit then bodyFor ((List.range n).map (proj r)) (proj r n)
