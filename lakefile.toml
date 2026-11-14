@@ -20,6 +20,12 @@ name = "WizMeta"
 # a misspelt name in a rule must be an error, not a fresh variable
 leanOptions = { autoImplicit = false, relaxedAutoImplicit = false }
 
+# The F0 specification of the STC track (see /workspace/wiz-notes/stc-m0-spec.md).
+# A separate library, not a default target: nothing else imports it yet.
+[[lean_lib]]
+name = "STC"
+leanOptions = { autoImplicit = false, relaxedAutoImplicit = false }
+
 [[lean_exe]]
 name = "wiz"
 moreLinkObjs = ["sockets"]
