@@ -61,10 +61,15 @@ compiles C can peak at a few hundred MB).
 embedded file gets a library of its own whose `needs` names the file as an
 `input_file` (`lakefile.lean`): Lake mixes the file's content hash into that library's
 module traces, so editing the file rebuilds the embedding module and its importers, and
-the artifact cache never serves a stale one. The only one today is the C runtime:
-`runtime/wiz.c`, embedded by `runtime/WizRuntime.lean` (library `WizRuntime`, imported by
-`Wiz/Compiler/C.lean`). A new `include_str` goes in such a library too, not in `Wiz`
-(a `needs` on `Wiz` would rebuild all of it); `scripts/test-embed.sh` checks the setup (CI runs it in the build job).
+the artifact cache never serves a stale one. The only one today is the C runtime,
+`runtime/wiz_rt.h` plus `runtime/rt_{core,num,words,data,sys,con}.inc`, embedded by
+`runtime/WizRuntime.lean` (library `WizRuntime`, imported by `Wiz/Compiler/C.lean`); the
+parts are concatenated in the order of the old single file, so generated C is unchanged.
+A new `include_str` goes in such a library too, not in `Wiz` (a `needs` on `Wiz` would
+rebuild all of it); `scripts/test-embed.sh` checks the setup (CI runs it in the build
+job), and `scripts/test-runtime.sh` compiles the runtime alone with `cc -fsyntax-only
+-Wall -Wextra`, with `WIZ_API=` and `WIZ_API=static` (the header's prototypes are checked
+against the parts).
 
 ## Test layout
 
@@ -93,8 +98,8 @@ Adding a test group touches no shared file:
 ## What `wiz build` links
 
 `wiz build` turns a program into C (or LLVM IR) and hands it to a C compiler with the
-runtime (`runtime/wiz.c`), which needs GMP; programs from the self-hosted compiler also
-need the Boehm GC. The release toolchains (what tower installs) bring all of that in
+runtime (`runtime/wiz_rt.h` and `runtime/rt_*.inc`), which needs GMP; programs from the
+self-hosted compiler also need the Boehm GC. The release toolchains (what tower installs) bring all of that in
 `share/wiz/cc` (docs/stages/26-tower.md, 26f): clang, a glibc 2.27 sysroot, and GMP and the
 GC as static libraries (the bundled clang needs glibc 2.30 or later; programs it builds
 need glibc 2.27 or later and nothing else), and CaDiCaL, the SAT solver of `sat_decide`

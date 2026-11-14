@@ -133,9 +133,14 @@ jobs:
           # only the shards this change needs (all of them outside pull requests)
           echo "matrix=$(python3 scripts/ci.py matrix --only '${{ needs.changes.outputs.shards }}')" >> "$GITHUB_OUTPUT"
           python3 scripts/ci.py plan
-      - name: Lake tracks the embedded runtime (runtime/wiz.c)
-        # editing wiz.c rebuilds what embeds it and nothing else (docs/building.md)
+      - name: Lake tracks the embedded runtime (runtime/wiz_rt.h, runtime/rt_*.inc)
+        # editing one of the runtime's files rebuilds what embeds it and nothing else
+        # (docs/building.md)
         run: scripts/test-embed.sh
+      - name: The runtime compiles on its own
+        # cc -fsyntax-only -Wall -Wextra, with WIZ_API= (the object ABI) and WIZ_API=static
+        # (a generated program); the header's prototypes are checked against the parts
+        run: scripts/test-runtime.sh
 
   test:
     name: test (${{ matrix.shard.name }})
