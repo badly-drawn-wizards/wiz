@@ -369,6 +369,7 @@ def trustLedgerMain (args : List String) : IO UInt32 := do
 
 def group : Group where
   name := "native"
+  parallel := true
   exercise := "—"
   cases := [
     { name := "accepted with --trust-native: numbers, lists, a declaration that uses it", run := fun _ => do

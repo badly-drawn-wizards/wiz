@@ -219,13 +219,15 @@ jobs:
       - name: lake test -- ${{ matrix.shard.name }}
         env:
           SELECT: ${{ matrix.shard.select }}
+          JOBS: ${{ matrix.shard.jobs }}
         run: |
           mapfile -t sel <<< "$SELECT"
           mkdir -p logs ~/.cache/wiz
           du -sh ~/.cache/wiz .grail /tmp/wiz-selfhost-* 2>/dev/null || true
-          echo "lake test -- --cache ~/.cache/wiz ${sel[*]}"
+          echo "lake test -- --cache ~/.cache/wiz --jobs $JOBS ${sel[*]}"
           # every case's time, as JSON lines (scripts/ci.py summary and baseline read them)
-          lake test -- --cache "$HOME/.cache/wiz" --timings "logs/${{ matrix.shard.name }}.jsonl" \
+          lake test -- --cache "$HOME/.cache/wiz" --jobs "$JOBS" \
+            --timings "logs/${{ matrix.shard.name }}.jsonl" \
             --shard "${{ matrix.shard.name }}" "${sel[@]}" 2>&1 | tee "logs/${{ matrix.shard.name }}.log"
       # a test job on another architecture (no build job there) keeps its own build
       - name: Save the Lake build (${{ runner.arch }})

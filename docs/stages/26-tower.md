@@ -246,14 +246,10 @@ snapshots of commits (short shas through the `snapshot-*` tags, the `.sha256` re
 `nightly` as the commit of the tag `nightly`, `keep/` tags as specs, release in the `auto`
 candidates, and the same error for a commit without a snapshot.
 
-The Lean tower is still what the flake (`packages.tower`) and the release tarball ship.
-Switching means: `packages.tower` builds `tower/` with grail (the `wiz` package plus GMP
-and a C compiler at build time instead of Lake: the binary then links GMP, so the
-package's closure grows by GMP and glibc only), `scripts/release-tarball.sh` takes the
-grail-built binary (it is linked against the system GMP like `wiz build` output, so the
-tarball's "glibc and the C runtime only" promise needs a static GMP or `--gmp` with
-mini-gmp), the `--tower` mode of the test driver and `Tower/` go, and the group `tower`
-is dropped in favour of `tower-wiz`.
+The flake (`packages.tower`) and the release tarball now build `tower/` with grail
+(stage 26h); `Tower/` and the `--tower` mode of the test driver remain as the reference
+implementation, so the `tower` group still runs the same cases against both. Removing
+them is the last, optional step; nothing shipped depends on the Lean tower any more.
 
 ## 26f: the C toolchain in the release tarball
 
@@ -395,4 +391,41 @@ the `keep/`/`v*` snapshots, with their commits, and how many recent ones there a
 the alternatives: `--source source` (builds with elan), `--source nix`, or dispatching
 the workflow for that commit. With `--source auto` tower falls through to the next
 source.
+
+## 26h: shipping the Wiz tower
+
+The Wiz tower is feature-complete against the Lean one for the command line, and the
+flake package and the release tarball now ship it (`scripts/build-tower-wiz.sh`). The
+two implementations were compared command by command and against a local upstream and
+release directory; their stdout, stderr, exit codes and written files agree (apart from
+the home path, and the OS error text for a path that does not exist). `--version` is
+`tower 0.1.0-dev` in both, and `tower settings` is byte-identical.
+
+| feature | Lean `Tower/` | Wiz `tower/` |
+|---|---|---|
+| `toolchain install/uninstall/list/link`, aliases `install`, `uninstall`, `list`, `link` | ✓ | ✓ |
+| `install` flags `--source`, `--force`, `--cflags …`, several specs, per-spec status | ✓ | ✓ |
+| `default`, `override set/unset/list`, `show`, `which`, `resolve`, `run`, `update` | ✓ | ✓ |
+| `set KEY VALUE`, `settings`, `--home`, `--self`, `--self-arg`, `--version`, `--help` | ✓ | ✓ |
+| settings file: `default`, `source`, `flake`, `git`, `releases`, `nightly-ref`, `auto-install`, seven flag keys, `override` | ✓ | ✓ |
+| `wiz-toolchain` (`#`/`--` comments), `wiz-toolchain.local` (spec or path), overrides walking up | ✓ | ✓ |
+| sources `auto`/`nix`/`release`/`source`; channels as tags (`nightly`, `stable`), `REF@COMMIT`, `keep/`; release snapshots and their `.sha256` | ✓ | ✓ |
+| layout `toolchains/NAME/{bin,share/wiz,tower.info}`, wrappers with flags, atomic install, linked toolchains | ✓ | ✓ |
+| shims (including `+SPEC`), `self shims`, `self install`, `resolve` installing on first use | ✓ | ✓ |
+| error messages and exit codes (1: command failure, 2: usage, child status for `run`) | ✓ | ✓ |
+| `grail test` pure checks / the `tower` and `tower-wiz` test groups | ✓ | ✓ |
+
+Shipping it means no Lean at build time: `scripts/build-tower-wiz.sh` copies `tower/` to
+a scratch directory and runs `grail build tower` there. `packages.tower` passes the Nix
+C compiler and GMP's flags (not the Boehm collector: tower's generated C does not use
+it); the release workflow passes the bundled C toolchain (`cc-bundle/bin/cc`) when there
+is one, which links GMP statically and keeps the tarball's glibc 2.27 promise, and the
+system `cc` otherwise (an older commit). A new test case covers `self install` for the
+Wiz tower: the copy and the shims call the copy, and it still runs tower.
+
+Remaining (not needed for shipping): `Tower/`, the `--tower` test driver mode and the
+`tower` group are still there as the reference implementation; delete them once the Wiz
+tests alone are trusted. The Wiz tower's `--version` is a literal that must be kept in
+step with `Wiz/Version.lean` (the file says so); a build-time substitution would remove
+that duplicated constant.
 

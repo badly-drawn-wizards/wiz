@@ -25,6 +25,7 @@ def axiomsG : Globals Unit :=
 
 def evalGroup : Group where
   name := "eval/quote"
+  parallel := true
   exercise := "Exercises 1.1–1.3"
   cases := [
     { name := "Type normalises to itself", run := fun _ => checkEq "Type" (nf' (.sort 0)) },
@@ -73,6 +74,7 @@ def aa : Raw Unit := arr () "A" "A"
 
 def convGroup : Group where
   name := "conv"
+  parallel := true
   exercise := "Exercise 1.4"
   cases := [
     { name := "Type ≡ Type", run := fun _ => check (isConvTy ty ty) "" },
@@ -93,6 +95,7 @@ def convGroup : Group where
 
 def structGroup : Group where
   name := "conv: structural types"
+  parallel := true
   exercise := "Exercises 4.3–4.6"
   cases := [
     { name := "β for pairs: (a, b).1 ≡ a", run := fun _ =>
