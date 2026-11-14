@@ -4780,13 +4780,21 @@ inductive Run where
 inductive StepR where
   | done
   | next (line : Option String) (stop : Nat) (gs : Globals) (cats : List Cat) (tokens : List String) (notes : List Note)
+-- (D6) every output line names the offset of the command that produced it, as
+-- `@OFFSET text`; the driver (`selfhost/Cli.wiz`) turns that into `file:line:col`, and
+-- `checkFile` strips it again, so `checkFile`'s output is unchanged. (The one place a
+-- line leaves `stepCommand`: the driver entry.)
+def atLine (start : Nat) (l : Option String) : Option String := match l with
+  | .none => .none
+  | .some s => .some (String.append (String.append "@" (Nat.toString start)) (String.append " " s))
 mutual
 def stepCommand (cats : List Cat) (tokens : List String) (notes : List Note) (input : Array Nat) (pos : Nat)
     (gs : Globals) : StepR :=
-  match Nat.lt (skipWs input pos) (Array.size input) with
+  let start := skipWs input pos;
+  match Nat.lt start (Array.size input) with
   | .false => .done
   | .true => match parseCommandAt cats tokens input pos with
-    | .err m => .next (.some (String.append "parse " m)) (Array.size input) gs cats tokens notes
+    | .err m => .next (atLine start (.some (String.append "parse " m))) (Array.size input) gs cats tokens notes
     | .ok stx0 stop => match strEq (kindOf stx0) "command.import" with
     -- (only the Prelude: its commands are checked, silently)
     | .true => match runCommands (doCats cats) (.cons "←" (.cons "do" tokens)) notes (String.codes preludeText) 0 gs .nil with
@@ -4803,7 +4811,7 @@ def stepCommand (cats : List Cat) (tokens : List String) (notes : List Note) (in
       let stx := unwrapPrivate stx1;
       match linkStep gs stx with
       | .some r => (match r with
-        | LinkR.mk line gs' => StepR.next line stop gs' cats tokens notes)
+        | LinkR.mk line gs' => StepR.next (atLine start line) stop gs' cats tokens notes)
       | .none =>
       let step := match strEq (kindOf stx) "command.partial" with
         | .true => partialCmd gs (one stx)
@@ -4831,8 +4839,8 @@ def stepCommand (cats : List Cat) (tokens : List String) (notes : List Note) (in
                       | .false => errStep gs (String.append "unsupported command " (kindOf stx));
       match step with
       | .mk line gs' => match newDuplicate gs gs' with
-        | .some x => .next (.some (String.append (String.append "error: '" x) "' has already been declared")) stop gs cats tokens notes
-        | .none => .next (.some line) stop gs' cats tokens notes
+        | .some x => .next (atLine start (.some (String.append (String.append "error: '" x) "' has already been declared"))) stop gs cats tokens notes
+        | .none => .next (atLine start (.some line)) stop gs' cats tokens notes
 def runCommands (cats : List Cat) (tokens : List String) (notes : List Note) (input : Array Nat) (pos : Nat)
     (gs : Globals) (out : List String) : Run :=
   match stepCommand cats tokens notes input pos gs with
@@ -4842,6 +4850,31 @@ def runCommands (cats : List Cat) (tokens : List String) (notes : List Note) (in
     | .none => out)
 end
 
+-- (D6) drop the `@OFFSET ` prefix `stepCommand` adds (see `atLine`)
+def stripAtDigits : List Char → Option (List Char)
+  | .nil => .none
+  | .cons c cs => match Nat.beq (Char.code c) 32 with
+    | .true => .some cs
+    | .false => match isDigitC (Char.code c) with
+      | .true => stripAtDigits cs
+      | .false => .none
+def stripAt : String → String
+  | .mk cs => .mk (match cs with
+    | .nil => .nil
+    | .cons c rest => match Nat.beq (Char.code c) 64 with
+      | .false => cs
+      | .true => match rest with
+        | .cons d ds => match isDigitC (Char.code d) with
+          | .true => match stripAtDigits ds with
+            | .some out => out
+            | .none => cs
+          | .false => cs
+        | .nil => cs)
+
+def stripAts : List String → List String
+  | .nil => .nil
+  | .cons l rest => .cons (stripAt l) (stripAts rest)
+
 def checkFile (cats : List Cat) (tokens : List String) (text : String) : List String :=
   match runCommands cats tokens .nil (String.codes text) 0 Globals.empty .nil with
-  | .mk out _ _ _ _ => List.reverseOf out .nil
+  | .mk out _ _ _ _ => stripAts (List.reverseOf out .nil)
