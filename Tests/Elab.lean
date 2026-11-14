@@ -1879,7 +1879,8 @@ def ioFails (src : String) (fragment : String) : IO Unit := do
   unless (errs[0]!.splitOn fragment).length > 1 do throw (IO.userError s!"error does not mention '{fragment}':\n{errs[0]!}")
 
 /-- (9f) Elaborate `main.wiz` in a fresh directory holding `files` (modules under it are
-importable), resolving `link_c` files as `wiz` does, relative to each file. -/
+importable), resolving `link_c` files as `wiz` does, relative to each file, and
+(include-str) `include_str` files too. -/
 def elabTree (files : List (String × String)) : IO (CommandState ZeroOneMany × String × System.FilePath) := do
   let dir ← IO.FS.createTempDir
   for (p, text) in files do
@@ -1889,8 +1890,10 @@ def elabTree (files : List (String × String)) : IO (CommandState ZeroOneMany ×
   let src ← IO.FS.readFile (dir / "main.wiz")
   let mods ← Module.loadClosure ["lib", dir] src
   let sources ← Module.cSourceTable dir src mods
+  let includes ← Module.includeTable dir src mods
   let s := runFrontend (R := ZeroOneMany) src
-    { loader := fun m => (mods[m]?).map (·.2), cSources := some (Module.cSourceResolver sources) }
+    { loader := fun m => (mods[m]?).map (·.2), cSources := some (Module.cSourceResolver sources),
+      includes := some (Module.includeResolver includes) }
   pure (s, src, dir)
 
 /-- `elabTree`, then build and run `main` (through C, or LLVM) and compare its output. -/
@@ -2039,7 +2042,66 @@ def ffiGroup : Group where
     { name := "link_c: a file is linked once, however often it is named", run := fun _ => do
         let (s, _, _) ← elabTree [("main.wiz", "import Prelude\nlink_c \"a.c\"\nlink_c \"./a.c\"\nlink_lib \"m\"\nlink_lib \"m\"\n"), ("a.c", "")]
         checkEq 1 s.linkC.size
-        checkEq #["m"] s.linkLibs }
+        checkEq #["m"] s.linkLibs },
+    { name := "include_str: the included file's text is a String (#eval and #run)", run := fun _ => do
+        let (s, src, _) ← elabTree
+          [("main.wiz", "import Prelude\ndef s : String := include_str \"data/hi.txt\"\n#eval s\n#run s\n"),
+           ("data/hi.txt", "hi\n")]
+        let errs := (s.messages.filter (·.severity == .error)).map (·.render src)
+        checkEq #[] errs
+        let infos := (s.messages.filter (·.severity == .info)).map (·.text)
+        checkEq 2 infos.size
+        for i in infos do checkEq "\"hi\\n\"" i },
+    { name := "include_str: a program prints the included text", run := fun _ =>
+        linkRun [("main.wiz", "import IO\ndef main : IO Unit := IO.print (include_str \"greeting.txt\")\n"),
+                 ("greeting.txt", "hello\nworld\n")] "hello\nworld\n" },
+    { name := "include_str: a module's file is relative to the module", run := fun _ =>
+        linkRun [("main.wiz", "import IO\nimport Lib.Data\ndef main : IO Unit := IO.print Lib.Data.greeting\n"),
+                 ("Lib/Data.wiz", "import Prelude\ndef greeting : String := include_str \"data.txt\"\n"),
+                 ("Lib/data.txt", "from the module\n")] "from the module\n" },
+    { name := "include_str: a missing file is an error at the include", run := fun _ => do
+        let (s, src, _) ← elabTree [("main.wiz", "import Prelude\ndef s := include_str \"nowhere.txt\"\n")]
+        let errs := (s.messages.filter (·.severity == .error)).map (·.render src)
+        checkEq #["2:22: error: include_str: no file nowhere.txt (paths are relative to the .wiz file)"] errs },
+    { name := "include_str: paths outside the .wiz file's directory are errors", run := fun _ => do
+        let (s, src, _) ← elabTree [("main.wiz", "import Prelude\ndef s := include_str \"../secret.txt\"\n")]
+        let errs := (s.messages.filter (·.severity == .error)).map (·.render src)
+        checkEq 1 errs.size
+        check ((errs[0]!.splitOn "leaves the directory of the .wiz file").length > 1) errs[0]!
+        let (s, src, _) ← elabTree [("main.wiz", "import Prelude\ndef s := include_str \"/etc/hostname\"\n")]
+        let errs := (s.messages.filter (·.severity == .error)).map (·.render src)
+        checkEq 1 errs.size
+        check ((errs[0]!.splitOn "is an absolute path").length > 1) errs[0]! },
+    { name := "include_str: a file that is not UTF-8 is an error", run := fun _ => do
+        let dir ← IO.FS.createTempDir
+        IO.FS.writeBinFile (dir / "bad.txt") (ByteArray.mk #[0xFF, 0xFE])
+        let src := "import Prelude\ndef s := include_str \"bad.txt\"\n"
+        let includes ← Module.includeTable dir src {}
+        let prelude ← IO.FS.readFile "lib/Prelude.wiz"
+        let s := runFrontend (R := ZeroOneMany) src
+          { loader := fun m => if m == "Prelude" then some prelude else none,
+            trustedModule := Tests.libModule, includes := some (Module.includeResolver includes) }
+        let errs := (s.messages.filter (·.severity == .error)).map (·.render src)
+        checkEq #["2:22: error: include_str: bad.txt is not UTF-8 text"] errs },
+    { name := "include_str: editing an included file invalidates the cache", run := fun _ => do
+        let dir ← IO.FS.createTempDir
+        let cache ← IO.FS.createTempDir
+        let src := "import Prelude\ndef s : String := include_str \"data.txt\"\n#eval s\n"
+        let state (text : String) : IO (CommandState ZeroOneMany) := do
+          IO.FS.writeFile (dir / "data.txt") text
+          let includes ← Module.includeTable dir src {}
+          let prelude ← IO.FS.readFile "lib/Prelude.wiz"
+          pure { loader := fun m => if m == "Prelude" then some prelude else none,
+                 trustedModule := Tests.libModule, includes := some (Module.includeResolver includes) }
+        let infos (s : CommandState ZeroOneMany) := (s.messages.filter (·.severity == .info)).map (·.text)
+        let (s1, h1) ← Cache.elaborateCached cache src (← state "one\n") 0
+        checkEq 0 h1
+        checkEq #["\"one\\n\""] (infos s1)
+        let (s2, h2) ← Cache.elaborateCached cache src (← state "two\n") 0
+        checkEq 0 h2
+        checkEq #["\"two\\n\""] (infos s2)
+        let (_, h3) ← Cache.elaborateCached cache src (← state "two\n") 0
+        check (h3 > 0) "the unchanged included file missed the cache" }
   ]
 
 /-- A `Sys` program, on the C backend and on the LLVM backend: `body` is the lines of an

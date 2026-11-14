@@ -103,6 +103,8 @@ where
         -- (9f) the files a module links are resolved per run: not kept across runs
         if base.cSources.isSome && !(Module.cSourcesOf src).isEmpty then none
         let k₀ := mixHash (hash m) (hash src)
+        -- (include-str) the files it includes: their contents decide what it elaborates to
+        let k₀ := mixHash k₀ (Module.includesKey (base.includes.getD (fun _ rel => .error s!"include_str: no file {rel}")) m src)
         let k₀ := (Module.headersOf src).foldl (fun k h => mixHash k (hash ((base.cHeaders h).getD ""))) k₀
         let (k, memo) ← (Module.importsOf src).foldlM (fun (k, memo) n => do
           let (kn, memo) ← go (m :: stack) n memo
