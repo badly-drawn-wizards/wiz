@@ -111,9 +111,13 @@ cached between runs.
   self-hosted checker or compiler, which the first case that needs it builds) stay in
   one part, so each program is built once, and the other cases fill the parts up. A new
   case counts as its group's median, with the programs most of its group uses. The
-  baseline holds only the split shards' cases, one per line (`selfhost` and `library`).
+  baseline holds only the split shards' cases, one per line (`selfhost`, `library` and
+  `scaling`; the last is a sweep over `lib/` and `examples/`, split 2 with its long case
+  in one part).
   `scripts/ci.py plan` shows the parts and their
-  estimates. To refresh the baseline from a CI run:
+  estimates. The heavy groups have dedicated shards of their own (`hdl-verified`,
+  `prop`, `audit`), so adding a slow case there does not unbalance `core`.
+  To refresh the baseline from a CI run:
   `gh run download RUN -n test-timings && scripts/ci.py baseline timings.jsonl > .github/test-timings.json`.
 * **Shard balance.** CI's wall time is its longest job, so the invariant is that **no
   test shard's test time is over 1.5× the median shard's**. Every split shard's cases
@@ -139,7 +143,9 @@ cached between runs.
 
   If a shard stays over the limit after the refresh, raise its `"split"` or make it a
   split shard. `scripts/ci.py plan` shows the predicted parts. One case longer than the
-  limit cannot be split: `grail-selfhost` is one case of about 3.5 min.
+  limit cannot be split: `grail-selfhost` is one case of several minutes, and
+  `scaling`'s sweep over `lib/` and `examples/` is one case of about 14 min (the
+  `scaling` shard's other part holds its 26 shorter cases).
 * **The exercise tree** is checked only for a release tag: the `exercise tree` job of
   `release.yml` generates it with `scripts/mkexercises.py` into a temporary directory
   and builds it (`lake build wiz grail tests`), and the tarball job (which publishes)
