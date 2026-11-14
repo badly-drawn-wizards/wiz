@@ -18,7 +18,7 @@ def usage : String := "usage:
                                    documentation: a static site (one page per module,
                                    index, search); --lib: the toolchain's library;
                                    source links are URL + path in its root + #L<line>
-  wiz fmt [FILE|-] [--check] [--width N]
+  wiz fmt [FILE|-] [--check] [--width N] [--explain]
                                    reprint a file from its syntax tree (stdin/stdout;
                                    --check: change nothing, exit 1 when it differs)
   wiz lsp                          a language server on stdin/stdout
@@ -289,10 +289,12 @@ structure FmtArgs where
   input : Option String := none
   check : Bool := false
   width : Nat := 100
+  explain : Bool := false
 
 def fmtArgs (a : FmtArgs) : List String → Except String FmtArgs
   | [] => pure a
   | "--check" :: rest => fmtArgs { a with check := true } rest
+  | "--explain" :: rest => fmtArgs { a with explain := true } rest
   | "--width" :: n :: rest => do
     let some w := n.toNat? | throw s!"wiz fmt: --width needs a number, not {n}"
     fmtArgs { a with width := w } rest
@@ -310,7 +312,7 @@ def fmtCmd (tc : Toolchain) (args : List String) : IO UInt32 := do
   let path := a.input.getD "-"
   let input ← if path == "-" then (← IO.getStdin).readToEnd else IO.FS.readFile path
   let (init, _) ← initState tc (if path == "-" then "<stdin>" else path) input
-  let r := Fmt.run init input { width := a.width }
+  let r := Fmt.run init input { width := a.width, explain := a.explain }
   unless r.errors.isEmpty do
     for e in r.errors do IO.eprintln s!"{path}:{e}"
     IO.eprintln s!"wiz fmt: {path}: not formatted (the file did not parse)"

@@ -1,5 +1,6 @@
 import Tests.Rig
 import Tests.Eval
+import Tests.Format
 import Tests.Check
 import Tests.Parser
 import Tests.Elab
@@ -33,6 +34,7 @@ def groups : List Group :=
   Elab.groups ++
   ElabFix.groups ++
   Feral.groups ++
+  Format.groups ++
   Eval.groups ++
   Grail.groups ++
   Lint.groups ++

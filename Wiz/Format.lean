@@ -26,11 +26,12 @@ every `syntax` rule anyway.
 
 Comments are the one thing a syntax tree does not keep (`Token.skipWs` drops them). They
 are recovered from the source: every leaf keeps its byte range (`SourceInfo`), so the
-text between two consecutive leaves is a run of comments, emitted before the later one,
-each on its own line. Layout-sensitive constructs (`match`'s alternatives, `by`'s
-tactics, `let`'s body) are printed with the breaks the parser's `colGe`/`colGt` rules
-need: alternatives and tactics one per line at their block's indent, a `let`'s body at
-the `let`'s indent.
+text between two consecutive leaves is a run of comments. One written at the end of a
+token's line stays there (`let x := 1; -- one`); the others go on their own line before
+the leaf they precede. Layout-sensitive constructs (`match`'s alternatives, `by`'s
+tactics, `let`'s chains) are printed with the breaks the parser's `colGe`/`colGt` rules
+need: one alternative or tactic per line at the construct's indent, a `let` on a line of
+its own (its `withPosition` stays in force for the terms after it).
 
 ## The fragment
 
@@ -62,6 +63,7 @@ inductive Doc where
   `by`'s tactics) -/
   | align (d : Doc)
   | group (d : Doc)
+  deriving Inhabited
 
 namespace Doc
 
@@ -108,7 +110,10 @@ partial def fits (w : Int) : List Cmd → Bool
     | .nest _ d => fits w ({ c with doc := d } :: rest)
     | .align d => fits w ({ c with doc := d } :: rest)
     | .group d => fits w ({ c with flat := true, doc := d } :: rest)
-    | .line _ => if c.flat then (if w <= 0 then false else fits (w - 1) rest) else true
+    | .line hard =>
+      -- a hard break ends the line the group is measured on
+      if hard then true
+      else if c.flat then (if w <= 0 then false else fits (w - 1) rest) else true
 
 /-- Render a document at most `width` columns wide (text with no break point in it may
 be longer).
@@ -135,7 +140,11 @@ partial def render (width : Nat) (d : Doc) : String :=
       | .line hard =>
         if hard || !c.flat then
           let ind := if c.indent < 0 then 0 else c.indent
-          go (out ++ "\n" ++ String.ofList (List.replicate ind.toNat ' ')) ind ind rest
+          -- nothing on this line yet: the break is already taken (a comment ends its line,
+          -- then the layout asks for one as well)
+          if col == lineIndent then go out col lineIndent rest
+          else go (out ++ "\n" ++ String.ofList (List.replicate ind.toNat ' ')) ind ind rest
+        else if col == lineIndent then go out col lineIndent rest
         else go (out ++ " ") (col + 1) lineIndent rest
   go "" 0 0 [{ indent := 0, flat := false, doc := d }]
 
@@ -149,7 +158,9 @@ a `,`/`;`, and `noWs` glues. `brk`/`nest` chunks are layout: a break after `:=` 
 `with`, and the nesting of what follows. -/
 
 inductive Chunk where
+  /-- a token (or a whole child), with the source range it came from -/
   | text (doc : Doc) (first last : Option Char) (raw : Option String) (sep : Bool := false)
+      (start stop : Nat := 0)
   | brk (hard : Bool)
   /-- nest what follows in this node (a negative number dedents) -/
   | nest (n : Int)
@@ -157,9 +168,12 @@ inductive Chunk where
   | align
   /-- no space before the next token (`noWs`) -/
   | glue
+  /-- a comment, and whether it starts on the same source line as the token before it
+  (then it stays on that line, before the break that follows) -/
+  | comment (s : String) (trailing : Bool)
 
-def mkChunk (d : Doc) (raw : Option String) (sep : Bool := false) : Chunk :=
-  .text d d.first? d.last? raw sep
+def mkChunk (d : Doc) (raw : Option String) (sep : Bool := false) (start stop : Nat := 0) : Chunk :=
+  .text d d.first? d.last? raw sep start stop
 
 /-- Identifier and keyword characters (Greek letters and subscripts too). -/
 def identish (c : Char) : Bool :=
@@ -174,7 +188,7 @@ def startsWithWs (s : String) : Bool := s.toList.head?.any (·.isWhitespace)
 `needSpace`.) -/
 def needSpace (a b : Chunk) : Bool :=
   match a, b with
-  | .text _ _ al ar asep, .text _ bf _ br bsep =>
+  | .text _ _ al ar asep _ astop, .text _ bf _ br bsep bstart _ =>
     match al, bf with
     | some x, some y =>
       if ar.any endsWithWs then false
@@ -182,6 +196,9 @@ def needSpace (a b : Chunk) : Bool :=
       else if bsep then false
       else if asep || x == ',' || x == ';' then true
       else if "([{⟨".toList.contains x || ")]}⟩,;".toList.contains y then false
+      -- tokens that were written together stay together (`!b`, `nat_ring! m` keeps its
+      -- space: an identifier may end in `!`)
+      else if astop > 0 && bstart > 0 then astop != bstart
       else if !identish x && !identish y then true
       else if ar.isSome && !identish x then false
       else if br.isSome && !identish y then false
@@ -189,15 +206,59 @@ def needSpace (a b : Chunk) : Bool :=
     | _, _ => false
   | _, _ => false
 
+/-- Move a comment that was written at the end of a line in front of the break the layout
+put there, so it stays there. -/
+def attachTrailing : List Chunk → List Chunk
+  | .brk h :: .comment s true :: rest => .comment s true :: .brk h :: attachTrailing rest
+  | c :: rest => c :: attachTrailing rest
+  | [] => []
+
+def commentsToText : List Chunk → List Chunk
+  | .comment s _ :: rest => mkChunk (.txt s) none :: commentsToText rest
+  | c :: rest => c :: commentsToText rest
+  | [] => []
+
+/-- Trim the declared spelling of the first token of a node: the spaces at its end are the
+parent's business. -/
+def trimFirst : List Chunk → List Chunk
+  | [] => []
+  | c :: rest =>
+    match c with
+    | .text _ _ _ (some r) _ start stop =>
+      let t := String.ofList (r.toList.dropWhile (·.isWhitespace))
+      mkChunk (.txt t) (some t) (start := start) (stop := stop) :: rest
+    -- the first token has no declared spelling: nothing to trim
+    | .text .. => c :: rest
+    | _ => c :: trimFirst rest
+
+/-- … and of the last token of a node. -/
+def trimLast : List Chunk → List Chunk
+  | [] => []
+  | c :: rest =>
+    match trimLast rest with
+    | [] =>
+      match c with
+      | .text _ _ _ (some r) _ start stop =>
+        let t := String.ofList (r.toList.reverse.dropWhile (·.isWhitespace)).reverse
+        [mkChunk (.txt t) (some t) (start := start) (stop := stop)]
+      | _ => [c]
+    | rest' => c :: rest'
+
 /-- Join chunks: the tokens with their spacing, the breaks and nests as they come. -/
-def joinChunks (cs : List Chunk) : Doc :=
+partial def joinChunks (cs : List Chunk) : Doc :=
+  let cs := trimLast (trimFirst (commentsToText (attachTrailing cs)))
   let rec go (cs : List Chunk) (prev : Option Chunk) (glue : Bool) (out : Array Doc) : Doc :=
     match cs with
     | [] => .cat out
     | .glue :: rest => go rest prev true out
-    | .brk h :: rest => go rest none true (out.push (.line h))
+    | .brk h :: rest =>
+      -- two breaks in a row would be a blank line (a comment already ends the line)
+      let rest := rest.dropWhile (fun c => c matches .brk _)
+      go rest none true (out.push (.line h))
     | .nest n :: rest => .cat (out.push (.nest n (go rest prev glue #[])))
     | .align :: rest => .cat (out.push (.align (go rest prev glue #[])))
+    -- (comments are turned into text before the loop; this keeps the match total)
+    | .comment s _ :: rest => go (mkChunk (.txt s) none :: rest) prev glue out
     | c@(.text ..) :: rest =>
       let sp := match prev with
         | some p => !glue && needSpace p c
@@ -231,9 +292,11 @@ def layoutAfter (kind : Name) (tok : String) : List Chunk :=
   | "command.def", ":=" => [.nest 2, .brk false]
   | "term.fun", "=>" | "term.fun", "↦" => [.nest 2, .brk false]
   | "match.alt", "=>" => [.nest 2, .brk false]
+  -- a `let` starts a line: the parser remembers its column (`withPosition`) for the
+  -- terms after it, so a `let` in the middle of a line would forbid the continuation
+  -- lines (of the `let`'s own body) to its left
   | "term.let", ";" | "term.letPair", ";" | "term.letTuple", ";" | "term.letUnit", ";"
-  | "term.letPat", ";" => [.brk false]
-  | _, "," => [.brk false]
+  | "term.letPat", ";" => [.brk true]
   | _, _ => []
 
 /-- Chunks to insert before the atom `tok` of a node of kind `kind`. -/
@@ -294,12 +357,25 @@ literals and for the comments between tokens). -/
 structure Ctx where
   fmts : Std.HashMap Name PPFormat
   src : Array Char
-  /-- the comments before the leaf that starts at this offset: their text, and whether
-  the comment starts on the same source line as the token before it (a trailing
-  comment) -/
-  comments : Std.HashMap Nat (Array (String × Bool)) := {}
+  /-- the comments that go on their own line before the leaf that starts at this offset -/
+  comments : Std.HashMap Nat (Array String) := {}
+  /-- the comments written at the end of the line of the leaf that stops at this offset
+  (after its token) -/
+  trailing : Std.HashMap Nat (Array String) := {}
 
 abbrev EM := Except String
+
+/-- Where two s-expressions first differ, with a window around it (for `--explain`). -/
+def kDiff (a b : String) : String :=
+  let al := a.toList
+  let bl := b.toList
+  let rec first (i : Nat) : Nat → List Char → List Char → Nat
+    | 0, _, _ => i
+    | _, [], _ | _, _, [] => i
+    | n + 1, x :: xs, y :: ys => if x == y then first (i + 1) n xs ys else i
+  let i := first 0 (max al.length bl.length) al bl
+  let win (l : List Char) : String := String.ofList (l.drop (i - min i 60) |>.take 160)
+  s!"\n-- original: …{win al}…\n-- reprint:  …{win bl}…"
 
 /-- Drop trailing whitespace. -/
 def trimRight (s : String) : String :=
@@ -318,43 +394,68 @@ def leafText (ctx : Ctx) (s : Syntax) : String :=
     | .node _ "str" #[.atom _ v] => v.quote
     | _ => ""
 
+/-- Does this syntax contain a `let` chain or a comment? Then a construct that
+`withPosition` (a `let`, see `Parser/Builtin.lean`) must not be started in the middle of
+a line: its own continuation lines would be left of the column its `colGt` rules saved,
+and the reprint would not parse back. So a `def`'s body, an alternative's or a `fun`'s
+body is put on its own line in that case. -/
+partial def needsOwnLine (ctx : Ctx) (s : Syntax) : Bool :=
+  match s with
+  | .atom i _ | .ident i _ => !(ctx.comments.getD i.start #[]).isEmpty
+  | .node i k as =>
+    k.startsWith "term.let" || !(ctx.comments.getD i.start #[]).isEmpty || as.any (needsOwnLine ctx)
+  | _ => false
+
 /-- The chunks for a leaf: the comments in front of it (each on its own line), then the
 token with its declared spelling. -/
 def leafChunks (ctx : Ctx) (s : Syntax) (raw : Option String) : Array Chunk := Id.run do
   let mut out : Array Chunk := #[]
-  let mut pending := false
-  for (c, trailing) in ctx.comments.getD s.info.start #[] do
-    if trailing then
-      out := out.push (mkChunk (.txt c) none) |>.push (.brk true)
-      pending := false
-    else
-      out := out.push (.brk true) |>.push (mkChunk (.txt c) none)
-      pending := true
-  if pending then out := out.push (.brk true)
-  out := out.push (mkChunk (.txt (leafText ctx s)) raw)
+  for c in ctx.comments.getD s.info.start #[] do
+    out := out.push (.brk true) |>.push (.comment c false)
+  if !out.isEmpty then out := out.push (.brk true)
+  out := out.push (mkChunk (.txt (raw.getD (leafText ctx s))) raw (start := s.info.start) (stop := s.info.stop))
+  -- a comment written after this token, on its line: it stays there, then the line ends
+  for c in ctx.trailing.getD s.info.stop #[] do
+    out := out.push (.comment c true) |>.push (.brk true)
   out
+
+/-- `$x` or `$x:cat` inside a quotation (both antiquot shapes share the kind
+`antiquot`, so the grammar in the table is only one of them). -/
+def antiquotChunks (ctx : Ctx) (s : Syntax) : Array Chunk :=
+  match s with
+  | .node _ "antiquot" args =>
+    match args.toList with
+    | [_, x] => #[mkChunk (.txt "$") none, .glue] ++ leafChunks ctx x none
+    | [_, x, _, c] =>
+      (#[mkChunk (.txt "$") none, .glue] ++ leafChunks ctx x none) ++
+        #[.glue, mkChunk (.txt ":") none, .glue] ++ leafChunks ctx c none
+    | _ => leafChunks ctx s none
+  | _ => leafChunks ctx s none
 
 mutual
 
-partial def fmtNode (ctx : Ctx) (s : Syntax) (cat : Name) (prec : Nat) : EM Doc := do
+partial def fmtNode (ctx : Ctx) (s : Syntax) (cat : Name) (_prec : Nat) : EM Doc := do
   match s with
   | .missing => throw "missing syntax"
   | .atom .. | .ident .. => pure (.group (joinChunks (leafChunks ctx s none).toList))
   | .node _ "null" _ => throw "a `null` node where a node was expected"
+  | .node _ "antiquot" _ => pure (.group (joinChunks (antiquotChunks ctx s).toList))
   | .node _ k args =>
     let some f := ctx.fmts[k]? | throw s!"no grammar for the syntax kind {k}"
-    let parenIf (d : Doc) : Doc := if cat == "term" && prec > effPrec f then .cat #[.txt "(", d, .txt ")"] else d
+    -- no parentheses are added or dropped: a `term.paren` node is the author's, and a
+    -- node printed at the position it was parsed at needs no more (verification would
+    -- catch it if it did)
     if f.leading then
       let (cs, j) ← walk ctx cat k f args 0 f.p
       if j != args.size then throw s!"{k}: its children don't fit its grammar"
       let cs := if k == "term.match" || k == "term.by" then #[.align] ++ cs else cs
-      pure (.group (parenIf (joinChunks cs.toList)))
+      pure (.group (joinChunks cs.toList))
     else
       let some lhs := args[0]? | throw s!"{k}: no left-hand side"
       let ld ← fmtNode ctx lhs f.cat f.lhsPrec
       let (cs, j) ← walk ctx cat k f args 1 f.p
       if j != args.size then throw s!"{k}: its children don't fit its grammar"
-      pure (.group (parenIf (joinChunks ((#[mkChunk ld none] ++ cs).toList))))
+      pure (.group (joinChunks ((#[mkChunk ld none] ++ cs).toList)))
 
 /-- Walk a descriptor over the children `args` from `i`: the chunks, and the next child. -/
 partial def walk (ctx : Ctx) (cat : Name) (kind : Name) (f : PPFormat) (args : Array Syntax)
@@ -365,11 +466,24 @@ partial def walk (ctx : Ctx) (cat : Name) (kind : Name) (f : PPFormat) (args : A
     | some a@(.atom _ v) =>
       if v != tok then throw s!"{kind}: expected '{tok}', found '{v}'"
       let cs := leafChunks ctx a (rawOf f tok)
-      pure ((layoutBefore kind tok).toArray ++ cs ++ (layoutAfter kind tok).toArray, i + 1)
+      let after :=
+        if (kind == "command.def" && tok == ":=") || (kind == "match.alt" && tok == "=>") ||
+            (kind == "term.fun" && (tok == "=>" || tok == "↦")) ||
+            (kind.startsWith "term.let" && tok == ";") then
+          match args[i + 1]? with
+          | some body => if needsOwnLine ctx body then
+              (layoutAfter kind tok).map fun c => match c with
+                | .brk _ => .brk true
+                | c => c
+            else layoutAfter kind tok
+          | none => layoutAfter kind tok
+        else layoutAfter kind tok
+      pure ((layoutBefore kind tok).toArray ++ cs ++ after.toArray, i + 1)
     | _ => throw s!"{kind}: expected '{tok}'"
   | .ident =>
     match args[i]? with
     | some a@(.ident ..) => pure (leafChunks ctx a none, i + 1)
+    | some a@(.node _ "antiquot" _) => pure (antiquotChunks ctx a, i + 1)
     | _ => throw s!"{kind}: expected an identifier"
   | .num =>
     match args[i]? with
@@ -383,7 +497,7 @@ partial def walk (ctx : Ctx) (cat : Name) (kind : Name) (f : PPFormat) (args : A
     match args[i]? with
     | some a => do
       let d ← fmtNode ctx a c p
-      pure (#[mkChunk d none], i + 1)
+      pure (#[mkChunk d none (start := a.info.start) (stop := a.info.stop)], i + 1)
     | none => throw s!"{kind}: missing a {c}"
   | .seq ps =>
     let mut acc : Array Chunk := #[]
@@ -408,8 +522,10 @@ partial def walk (ctx : Ctx) (cat : Name) (kind : Name) (f : PPFormat) (args : A
       if k != k' then throw s!"{kind}: expected a {k}, found a {k'}"
       let (cs, j) ← walk ctx cat k f as 0 p
       if j != as.size then throw s!"{kind}: a {k} doesn't fit its grammar"
-      -- the child's layout nests are its own (they must not reach the next sibling)
-      pure (#[mkChunk (joinChunks cs.toList) none] ++ (layoutAfterNode kind k).toArray, i + 1)
+      -- the child's layout nests are its own (they must not reach the next sibling),
+      -- and a line of its own (an alternative, a constructor, a field)
+      pure (#[mkChunk (.group (joinChunks cs.toList)) none (start := (args[i]!).info.start)
+        (stop := (args[i]!).info.stop)] ++ (layoutAfterNode kind k).toArray, i + 1)
     | _ => throw s!"{kind}: expected a {k}"
   | .many p | .many1 p =>
     match args[i]? with
@@ -439,11 +555,15 @@ partial def walk (ctx : Ctx) (cat : Name) (kind : Name) (f : PPFormat) (args : A
     match args[i]? with
     | some (.node _ "null" es) =>
       if d matches .sepBy1 .. && es.isEmpty then throw s!"{kind}: expected one more item"
+      -- (breaking a separated list at its separators is only useful where the
+      -- separators are data, as in a tuple: in a binder list it would break the header)
+      let breaks := kind == "term.tuple" || kind == "term.anon"
       let mut acc : Array Chunk := #[]
       for (e, k) in es.toList.zipIdx do
         if k % 2 == 1 then
           unless e matches .atom .. do throw s!"{kind}: expected a separator"
-          acc := acc.push (mkChunk (.txt sep) none (sep := true)) |>.push (.brk false)
+          acc := acc.push (mkChunk (.txt sep) none (sep := true))
+          if breaks then acc := acc.push (.brk false)
         else
           let xs ← iter ctx cat kind f p e
           acc := acc ++ xs
@@ -511,17 +631,26 @@ partial def commentsIn (src : Array Char) (lo hi : Nat) : EM (Array (String × B
     else throw s!"something between two tokens that is not a comment (offset {i})"
   pure out
 
-/-- The comments before each leaf of `cmd`, by the leaf's start offset. -/
-def commentsOf (src : Array Char) (cmd : Syntax) : EM (Std.HashMap Nat (Array (String × Bool))) := do
+/-- The comments of `cmd`: those on their own line, by the start offset of the leaf they
+come before; and those at the end of a token's line, by that token's stop offset. -/
+structure Comments where
+  before : Std.HashMap Nat (Array String) := {}
+  trailing : Std.HashMap Nat (Array String) := {}
+
+def commentsOf (src : Array Char) (cmd : Syntax) : EM Comments := do
   let spans := leafSpans cmd
-  let mut m : Std.HashMap Nat (Array (String × Bool)) := {}
+  let mut c : Comments := {}
   let mut prev := cmd.info.start
   for (start, stop) in spans do
     if start > prev then
       let cs ← commentsIn src prev start
-      if !cs.isEmpty then m := m.insert start cs
+      match cs.toList with
+      | (first, true) :: rest =>
+        let before := if rest.isEmpty then c.before else c.before.insert start (rest.map (·.1)).toArray
+        c := { before, trailing := c.trailing.insert prev (c.trailing.getD prev #[] |>.push first) }
+      | cs => if !cs.isEmpty then c := { c with before := c.before.insert start (cs.map (·.1)).toArray }
     prev := max prev stop
-  pure m
+  pure c
 
 /-! ### Formatting a command -/
 
@@ -529,7 +658,7 @@ def commentsOf (src : Array Char) (cmd : Syntax) : EM (Std.HashMap Nat (Array (S
 def formatCommand (tables : Std.HashMap Name PPFormat) (src : Array Char) (cmd : Syntax)
     (width : Nat := 100) : EM String := do
   let comments ← commentsOf src cmd
-  let ctx : Ctx := { fmts := tables, src, comments }
+  let ctx : Ctx := { fmts := tables, src, comments := comments.before, trailing := comments.trailing }
   let doc ← fmtNode ctx cmd "command" 0
   pure (render width doc)
 
@@ -537,6 +666,8 @@ def formatCommand (tables : Std.HashMap Name PPFormat) (src : Array Char) (cmd :
 
 structure Options where
   width : Nat := 100
+  /-- print the reprint of a refused command (what it would have been) -/
+  explain : Bool := false
   deriving Inhabited
 
 structure Result where
@@ -579,17 +710,26 @@ partial def run (init : CommandState ZeroOneMany) (input : String) (opts : Optio
           let fchars := text.toList.toArray
           match parseCommand fchars s.tables 0 with
           | .error e =>
-            .error s!"the reprint does not parse: {(e.render text).splitOn ": " |>.drop 1 |> ": ".intercalate}"
+            let (l, c) := lineCol text e.pos
+            .error s!"the reprint does not parse at {l + 1}:{c + 1}: {(e.render text).splitOn ": " |>.drop 1 |> ": ".intercalate}"
           | .ok (cmd', stop') =>
-            if skipWs fchars stop' != fchars.size then .error "the reprint does not parse to one command"
-            else if cmd'.toSExpr (atoms := true) != cmd.toSExpr (atoms := true) then
-              .error "the reprint parses to a different tree"
-            else .ok text
+            if skipWs fchars stop' != fchars.size then
+              let off := skipWs fchars stop'
+              let (l, c) := lineCol text off
+              Except.error (s!"the reprint does not parse to one command (stops at {l + 1}:{c + 1}, " ++
+                s!"before '{String.ofList (fchars.extract off (min fchars.size (off + 40))).toList}')")
+            else
+              let k := cmd.toSExpr (atoms := true)
+              let k' := cmd'.toSExpr (atoms := true)
+              if k' != k then .error s!"the reprint parses to a different tree{kDiff k k'}" else .ok text
       let lineNo := (lineCol input cmd.info.start).1 + 1
       let s' := runFrontend.go input init (chars.extract 0 stop) pos s
       match checked with
       | .error why =>
-        go s' stop stop (out ++ gap ++ original) (refused.push s!"line {lineNo}: left as written ({why})")
+        let note := match formatCommand fmts chars cmd opts.width with
+          | .ok text => if opts.explain then s!"\n-- would be:\n{text}" else ""
+          | .error e => if opts.explain then s!"\n-- no reprint: {e}" else ""
+        go s' stop stop (out ++ gap ++ original) (refused.push s!"line {lineNo}: left as written ({why}){note}")
       | .ok text => go s' stop stop (out ++ gap ++ text) refused
   go init 0 0 "" #[]
 
