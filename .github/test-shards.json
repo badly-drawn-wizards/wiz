@@ -50,6 +50,7 @@
     "optic",
     "phantom",
     "regions",
+    "=scry-wil",
     "=linear-case",
     "repr",
     "seplogic",
