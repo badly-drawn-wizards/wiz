@@ -607,7 +607,7 @@ at quantity 1, so one owner per cell, no leak, no double free and no use after f
 all type errors. The token's ghost index is the cell's value, so a function's type is its
 Hoare triple: `swap : (1 tp : Pts p a) → (1 tq : Pts q b) → (1 k : (1 tp : Pts p b) →
 (1 tq : Pts q a) → IO B) → IO B`. `Ref.get` hands back the value with an erased proof
-that it is the index. The trusted part is the four natives `wiz_ref_*` (runtime/wiz.c,
+that it is the index. The trusted part is the four natives `wiz_ref_*` (runtime/,
 over MVar cells) and their types, kept true by an invariant the API maintains; the header
 of lib/Ref.wiz has the argument. Compiled code only.
 
