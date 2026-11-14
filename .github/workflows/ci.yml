@@ -56,7 +56,8 @@ jobs:
   # "inputs" in .github/test-shards.json). A docs-only PR builds and tests nothing; a PR
   # touching only lib/ files no core test reads skips the core shard; the selfhost
   # shards run for selfhost/ and the lib/ files it imports. Everything but a
-  # pull_request (pushes, the merge queue, manual runs) runs every job.
+  # pull_request (pushes, the merge queue, manual runs) runs every job except `package`,
+  # which runs on push and workflow_dispatch only (see its comment).
   changes:
     name: changes
     if: github.event_name != 'schedule'
@@ -471,6 +472,9 @@ jobs:
           [ "${{ needs.changes.result }}" = success ] || exit 1
           code="${{ needs.changes.outputs.code }}"
           want_tests=$([ "${{ needs.changes.outputs.shards }}" != "[]" ] && echo true || echo false)
+          # `package` runs on push and workflow_dispatch only, so a skipped package is
+          # fine on a pull request (and on a docs-only push); on a code push it is needed
+          want_package=$([ "$code" = true ] && { [ "${{ github.event_name }}" = push ] || [ "${{ github.event_name }}" = workflow_dispatch ]; } && echo true || echo false)
           check() { # NAME RESULT WANTED
             if [ "$3" = true ]; then [ "$2" = success ] || { echo "$1: $2 (needed)"; exit 1; }
             else [ "$2" = success ] || [ "$2" = skipped ] || { echo "$1: $2"; exit 1; }; fi
@@ -479,7 +483,7 @@ jobs:
           check "trust ledger" "${{ needs['trust-ledger'].result }}" "$code"
           check build "${{ needs.build.result }}" "$code"
           check test "${{ needs.test.result }}" "$want_tests"
-          check package "${{ needs.package.result }}" "$code"
+          check package "${{ needs.package.result }}" "$want_package"
 
   # Stage-1 C of the toolchain = stage-2 C (scripts/fixpoint.sh). Scheduled runs use the
   # default branch (master).
