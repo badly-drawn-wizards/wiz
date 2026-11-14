@@ -10,6 +10,9 @@ def usage : String := "usage:
   wiz check [-I DIR] FILE elaborate and type check (quantities: 0, 1, ω); -I DIR: another
                           module root (a package's src/), before or after FILE
   wiz build FILE -o OUT [--llvm]   compile the definition `main` to an executable (via C or LLVM)
+  wiz build FILE -o OUT [--split N]  compile the program as N C units in parallel
+                                   (default 1: one unit; a split build is faster but the
+                                   generated program runs somewhat slower, stage 15k)
   wiz build FILE -o OUT --lib      … or the exported functions to an object file, with OUT.h
   wiz build FILE -o OUT --no-main  … or the exported functions, linked without a `main`
                                    (say, a Wasm module: --cc emcc --ldflags --no-entry)
@@ -136,6 +139,21 @@ initialize inertOpt : IO.Ref InertReg ← IO.mkRef .conv
 /-- `--unbox-structs` (22i): the last field of a structure is unboxed. Off by default: the
 representation is not stable under substitution (`unboxedSigma` in `Erase.lean`). -/
 initialize unboxOpt : IO.Ref Bool ← IO.mkRef false
+
+/-- (15k) `--split N`: compile a large program as `N` C translation units in parallel
+(0: automatically, for a large program; 1: one unit). -/
+initialize splitOpt : IO.Ref Nat ← IO.mkRef 0
+
+/-- Take `--split N` out of the arguments. -/
+def takeSplitOpt : List String → Except String (Option Nat × List String)
+  | "--split" :: n :: rest => do
+    let some k := n.toNat? | throw s!"bad --split {n}"
+    let (_, rest) ← takeSplitOpt rest
+    return (some k, rest)
+  | a :: rest => do
+    let (k, rest) ← takeSplitOpt rest
+    return (k, a :: rest)
+  | [] => return (none, [])
 
 /-- Take `--inert MODE` out of the arguments. -/
 def takeInertOpt : List String → Except String (Option InertReg × List String)
@@ -279,16 +297,17 @@ def elabFile (tc : Toolchain) (path : String) : IO (Option (CommandState ZeroOne
     if m.severity == .error then IO.eprintln s!"{path}:{m.render input}"
   pure (if s.messages.any (·.severity == .error) then none else some s)
 
-def buildCmd (tc : Toolchain) (path out : String) (llvm : Bool) (lib : Bool := false) (noMain : Bool := false) : IO UInt32 := do
+def buildCmd (tc : Toolchain) (path out : String) (llvm : Bool) (lib : Bool := false) (noMain : Bool := false)
+    (split : Nat := 0) : IO UInt32 := do
   let some s ← elabFile tc path | pure 1
-  match ← Build.build tc s "main" out llvm lib noMain with
+  match ← Build.build tc s "main" out llvm lib noMain split with
   | .error e => IO.eprintln e; pure 1
   | .ok _ => pure 0
 
-def runCmd (tc : Toolchain) (path : String) (llvm : Bool) : IO UInt32 := do
+def runCmd (tc : Toolchain) (path : String) (llvm : Bool) (split : Nat := 0) : IO UInt32 := do
   let some s ← elabFile tc path | pure 1
   let dir ← IO.FS.createTempDir
-  match ← Build.runGlobal tc s "main" dir llvm with
+  match ← Build.runGlobal tc s "main" dir llvm (split := split) with
   | .error e => IO.eprintln e; pure 1
   | .ok v => IO.print (if v.endsWith "\n" then v else v ++ "\n"); pure 0
 
@@ -333,26 +352,32 @@ def main (args : List String) : IO UInt32 := do
     | .ok (r, a) => do if let some r := r then inertOpt.set r
                        pure a
     | .error e => do IO.eprintln e; return 1
+  let args ← match takeSplitOpt args with
+    | .ok (k, a) => do
+      if let some k := k then splitOpt.set k
+      pure a
+    | .error e => do IO.eprintln e; return 1
   let args ← match kernelOpt args with
     | .ok (r, p, a) => do kernelOpts.set (r, p); pure a
     | .error e => do IO.eprintln e; return 1
   -- a `panic!` (a kernel-internal failure) ends a batch command with status 1 instead of
   -- going on with a default value; the language server keeps running
   unless args.head? == some "lsp" do exitOnPanic
+  let split ← splitOpt.get
   match args with
   | ["parse", path] => parseCmd path
   | ["check", path] => checkCmd tc path
-  | ["build", path, "-o", out] => buildCmd tc path out false
-  | ["build", path, "-o", out, "--llvm"] => buildCmd tc path out true
-  | ["build", path, "-o", out, "--lib"] => buildCmd tc path out false true
+  | ["build", path, "-o", out] => buildCmd tc path out false (split := split)
+  | ["build", path, "-o", out, "--llvm"] => buildCmd tc path out true (split := split)
+  | ["build", path, "-o", out, "--lib"] => buildCmd tc path out false true (split := split)
   | ["build", path, "-o", out, "--lib", "--llvm"] | ["build", path, "-o", out, "--llvm", "--lib"] =>
-    buildCmd tc path out true true
-  | ["build", path, "-o", out, "--no-main"] => buildCmd tc path out false false true
+    buildCmd tc path out true true (split := split)
+  | ["build", path, "-o", out, "--no-main"] => buildCmd tc path out false false true (split := split)
   | ["build", path, "-o", out, "--no-main", "--llvm"] | ["build", path, "-o", out, "--llvm", "--no-main"] =>
-    buildCmd tc path out true false true
+    buildCmd tc path out true false true (split := split)
   | "doc" :: rest => docCmd tc rest
-  | ["run", path] => runCmd tc path false
-  | ["run", path, "--llvm"] => runCmd tc path true
+  | ["run", path] => runCmd tc path false (split := split)
+  | ["run", path, "--llvm"] => runCmd tc path true (split := split)
   | "lsp" :: opts => do
     match lspOptions opts with
     | none => IO.println usage; pure 2
