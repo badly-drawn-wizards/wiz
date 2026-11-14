@@ -164,7 +164,7 @@ def genDescParam : Gen (Tm × Tm) := do
     let T0 : Tm := .mu 0 tUnit1 D0 .tt .szInf none
     let body : Tm := .con (.pair (.var 0) retPayload)
     let fnTy : Tm := .pi "A" .default qMany (.sort 1)
-      (.pi "a" .default qMany (.var 0) T0 none) none
+      (.pi "a" .default qMany (.var 0) T0 .hole) .hole
     let fn : Tm := .ann (.lam "A" (.lam "a" body)) fnTy
     let D : Tm := .darg qMany b (.lam "x" (.dret .tt))
     let T : Tm := .mu 0 tUnit1 D .tt .szInf none
@@ -211,7 +211,7 @@ def genScaseQ : Gen (Tm × Tm) := do
       if q == qZero then pure .zero else if q == qOne then pure .one else pure .many
     let sz ← pick #[pure (.szInf : Tm), pure (.szSuc .szInf)] (pure .szInf)
     let mTy := quote world.g cx0.k.lvl
-      (scaseMethodTy world.g ld (cx0.k.eval I) (cx0.k.eval D) vP (cx0.k.eval sz) (cx0.k.eval (.qlit qq)))
+      (scaseMethodTy world.g ld vT (cx0.k.eval I) (cx0.k.eval D) vP (cx0.k.eval sz) (cx0.k.eval (.qlit qq)))
     let m ← leaf mTy 1
     let x ← leaf dt 1
     pure (T, .scase ld (.qlit qq) I D vT P m sz idx x)
@@ -228,10 +228,10 @@ def genCastSigma : Gen (Tm × Tm) := do
   let A ← pick #[pure tUnit0, pure tUnit1, pure tEnum2, pure tNat, pure tAxTy] (pure tUnit1)
   let B ← pick #[pure tUnit0, pure tUnit1, pure tEnum2] (pure tUnit0)
   let q ← pick #[pure qMany, pure qZero, pure qOne] (pure qMany)
-  let sx ← pick #[pure (none : Option Level),
-    (do let some la := cx0.lvlOf A | pure none
-        let some lb := cx0.lvlOf (liftT 1 B) | pure none
-        pure (some (Level.max la lb)))] (pure none)
+  let sx ← pick #[pure BinderSorts.hole,
+    (do let some la := cx0.lvlOf A | pure BinderSorts.hole
+        let some lb := cx0.lvlOf (liftT 1 B) | pure BinderSorts.hole
+        pure ⟨la, lb⟩)] (pure BinderSorts.hole)
   let S : Tm := .sigma "x" q A (liftT 1 B) sx
   pure (S, ← leaf S 1)
 
@@ -251,7 +251,7 @@ def genStuckDelim : Gen (Tm × Tm) := do
   let P : Tm := .lam "D" (liftT 1 T)
   let some lT := cx0.lvlOf T | pure (T, .tt)
   let vP := cx0.k.eval P
-  let (ta, tb, tc, th) := delimMethodTys world.g 0 (cx0.k.eval tUnit1) vP .many
+  let (ta, tb, tc, th) := delimMethodTys world.g 0 lT (cx0.k.eval tUnit1) vP .many
   let q (x : Val Q) : Tm := quote world.g cx0.k.lvl x
   let a ← leaf (q ta) 1
   let b ← leaf (q tb) 1
@@ -306,7 +306,11 @@ def Fuzz.observations (f : Fuzz) : Array (String × Tm) :=
   | .castSigma =>
     let S := f.T
     let annotated := match S with
-      | .sigma x q A B _ => .sigma x q A B (some ((cx0.lvlOf S).getD 0))
+      | .sigma x q A B _ =>
+        let σ := match cx0.lvlOf A, cx0.lvlOf (liftT 1 B) with
+          | some la, some lb => (⟨la, lb⟩ : BinderSorts)
+          | _, _ => BinderSorts.hole
+        .sigma x q A B σ
       | _ => S
     let dropped := stripSorts S
     let flip := (flipQ S).getD S
