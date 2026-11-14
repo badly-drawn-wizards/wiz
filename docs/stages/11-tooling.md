@@ -41,6 +41,26 @@ a run is `wiz check --cache-ro $out/share/wiz/cache FILE` (or with a writable
 read-only one back. The read-only cache is shared by every user of the store path and
 is never written.
 
+**Module regions (`--region-cache`, experimental).** A module's effects are also written
+as one `<cache>/<binary ⊕ module key>.wizr`, a `Lean.CompactedRegion` (the format of
+`.olean`: an mmap'able image of the terms, saved at a base address derived from the module
+name; `Wiz/Cache.lean`, "Module regions"). `--region-cache` serves a module's cached
+commands from that region instead of decoding its `.wizc` entries. The text entries stay
+the authority and the fallback: a missing, truncated or mistagged region is a miss, and the
+next run rewrites it. The command loop (keys, imports, duplicate checks) is unchanged — it
+still parses every command and only takes the effects from the region, so the result is
+the same as the text path's. The artifact holds only `Effect`s, which have no closures, so
+the loader applies them to the live state (`Effect.apply`): `loader`, `trustedModule`,
+`pp.run` and the `Budget` stay live. `--region-stats` prints what came from a region.
+
+**Regions and layers together.** Regions live in the same directory layers as the text
+entries: a lookup tries the write cache first, then the read-only caches in order (so a
+region shipped in `--cache-ro DIR` is used, and a run with only read caches reads
+regions), and a region is only ever written to the write cache. A `--region-cache` run
+with `--cache-ro` therefore reads both kinds of artifact from both kinds of layer, never
+modifies a read-only cache, and still falls back to the text entry of the same module
+(or a later layer) when a region is missing or mistagged.
+
 Next: finer dependencies (re-elaborate only what an edit affects, not everything
 after it).
 

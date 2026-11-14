@@ -28,6 +28,9 @@ options: --cache DIR (the elaboration cache, default ~/.cache/wiz; shared, since
 content-addressed), --cache-ro DIR (repeatable: a read-only cache, searched in order
 after the write cache and never written, as in a Nix package's share/wiz/cache),
 --no-cache (both), -I DIR (another module root, after lib/)
+  --region-cache (experimental: also serve cached modules from mmap'ed .wizr regions,
+  read from the same caches and written to the write cache), --region-stats (print what
+  the regions served, with --region-cache)
 trust: --trust-native (27a: `def X : a = b := native_refl` is decided by running a and b;
 the kernel does not check it, `#print axioms` lists it), --native-fuel N (its step limit)
 experimental kernel options (D1, they turn the cache off): --regularity off|full (full:
@@ -139,6 +142,17 @@ initialize inertOpt : IO.Ref InertReg ← IO.mkRef .conv
 representation is not stable under substitution (`unboxedSigma` in `Erase.lean`). -/
 initialize unboxOpt : IO.Ref Bool ← IO.mkRef false
 
+/-- `--region-cache` (experimental): serve a module's cached effects from an mmap'ed `.wizr`
+region instead of decoding its `.wizc` entries. The text entries stay the authority and the
+fallback; off by default. -/
+initialize regionCacheOpt : IO.Ref Bool ← IO.mkRef false
+
+/-- `--region-stats`: with `--region-cache`, print what the regions served (to stderr). -/
+initialize regionStatsOpt : IO.Ref Bool ← IO.mkRef false
+
+/-- `--region-stats`' counters (per process). -/
+initialize regionStats : IO.Ref Cache.RegionCounts ← IO.mkRef {}
+
 /-- Take `--inert MODE` out of the arguments. -/
 def takeInertOpt : List String → Except String (Option InertReg × List String)
   | "--inert" :: m :: rest => do
@@ -188,10 +202,13 @@ def elaborate (tc : Toolchain) (path : String) (input : String) : IO (CommandSta
   if cacheOn && (tc.cacheDir.isSome || !tc.readCaches.isEmpty) then
     -- the key starts from the headers the file sees; modules enter it by their own keys
     let key₀ := hash (toString (headers.toList.map (·.2)))
-    pure (← Cache.elaborateCached tc.cacheDir tc.readCaches input init key₀).1
+    let region ← if ← regionCacheOpt.get then
+        pure (some ({ rig := RigTag.tag (R := ZeroOneMany), stats := some regionStats } :
+          Cache.RegionOptions))
+      else pure none
+    pure (← Cache.elaborateCached tc.cacheDir tc.readCaches input init key₀ (region := region)).1
   else
     Cache.elaborateUncached input init
-
 /-- (27a) `--trust-native` and `--native-fuel N`. -/
 def nativeOpts (tc : Toolchain) : Bool × Nat := (tc.trustNative, tc.nativeFuel.getD NativeRun.defaultFuel)
 
@@ -271,6 +288,9 @@ def checkCmd (tc : Toolchain) (path : String) : IO UInt32 := do
   for m in s.messages do
     let line := s!"{path}:{m.render input}"
     if m.severity == .error then IO.eprintln line else IO.println line
+  if ← regionStatsOpt.get then
+    let c ← regionStats.get
+    IO.eprintln s!"region cache: {c.hits} modules from a region, {c.misses} without, {c.commands} commands"
   pure (if s.messages.any (·.severity == .error) then 1 else 0)
 
 def elabFile (tc : Toolchain) (path : String) : IO (Option (CommandState ZeroOneMany)) := do
@@ -325,6 +345,10 @@ def main (args : List String) : IO UInt32 := do
   let args := args.filter (· != "--pp-all")
   if args.contains "--unbox-structs" then unboxOpt.set true
   let args := args.filter (· != "--unbox-structs")
+  regionCacheOpt.set (args.contains "--region-cache")
+  let args := args.filter (· != "--region-cache")
+  regionStatsOpt.set (args.contains "--region-stats")
+  let args := args.filter (· != "--region-stats")
   lazyProofsOpt.set (!args.contains "--eager-proofs")
   let args := args.filter (· != "--eager-proofs")
   let args ← match takeProofSteps args with

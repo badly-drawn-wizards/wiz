@@ -39,6 +39,19 @@ partial def snapshotAt (root dir : System.FilePath) : IO (List (String × String
 def snapshot (dir : System.FilePath) : IO (List (String × String × UInt64)) := do
   pure ((← snapshotAt dir dir).mergeSort (fun a b => a.1 < b.1))
 
+/-- A digest of one cached effect, for comparing the text path with the region path
+(the effect types have no `BEq`: terms are not compared structurally). -/
+def effectSig (e : Cache.Effect ZeroOneMany) : String :=
+  s!"{e.decls.toList.map (·.name)}|{e.messages.toList.map (·.text)}|{e.infos.size}|" ++
+  s!"{e.sites.size}|{e.docs.size}|{e.instances.size}|{e.builtins.length}"
+
+def effectSigs (es : Array (Cache.Effect ZeroOneMany)) : List String := es.toList.map effectSig
+
+/-- The `.wizr` module regions in a cache directory. -/
+def regionFiles (cache : System.FilePath) : IO (Array System.FilePath) := do
+  let entries ← cache.readDir
+  pure (entries.filter (fun e => e.fileName.endsWith ".wizr") |>.map (·.path))
+
 /-- A small library: `Data.Two` (in a subdirectory) imports `Prelude`; `Use` imports it. -/
 def libFiles : List (String × String) :=
   [("Data/Two.wiz", "import Prelude\ndef two : Nat := 2\n"),
@@ -433,7 +446,131 @@ def modulesGroup : Group where
           s!"messages: {s.messages.toList.map (·.text)}"
         let s := runFrontend (R := ZeroOneMany) "import A\n" { trustedModule := Tests.libModule, loader := loaderOf ms }
         check (s.messages.any fun m => (m.text.splitOn "import cycle").length > 1)
-          s!"runFrontend: {s.messages.toList.map (·.text)}" }
+          s!"runFrontend: {s.messages.toList.map (·.text)}" },
+    { name := "a module region round-trips (one artifact per module, tags checked)", run := fun _ => do
+        -- (`--region-cache`: the module's effects as one mmap'able artifact)
+        let dir ← mkTree [("M.wiz", "import Prelude\ndef x : Nat := 1 + 1\ndef y : Nat := x + x\n")]
+        let ms ← Module.loadAll ["lib", dir]
+        let cache ← IO.FS.createTempDir
+        let init : CommandState ZeroOneMany := { trustedModule := Tests.libModule, loader := loaderOf ms }
+        let rig := RigTag.tag (R := ZeroOneMany)
+        let (s, _) ← Cache.elaborateCached (some cache) "import M\n#eval y\n" init 0 (region := some { rig })
+        check (!s.messages.any (·.severity == .error)) s!"messages: {s.messages.toList.map (·.text)}"
+        let binary ← Cache.binaryId (some cache)
+        let k := Cache.moduleKey (loaderOf ms) (fun _ => none) 0 "M" (trusted := Tests.libModule)
+        -- one region for the module, not one per command
+        let regs ← regionFiles cache
+        checkEq 1 (regs.filter (fun p => p.fileName == some (Cache.regionFileName binary k))).size
+        let some a ← Cache.readModuleRegion (R := ZeroOneMany) cache binary rig k
+          | throw (IO.userError "M has no region")
+        checkEq "M" a.module
+        checkEq k a.key
+        checkEq Cache.regionFormat a.format
+        checkEq Cache.salt a.textSalt
+        checkEq Cache.regionMagic a.magic
+        check (a.effects.size > 0) "the region holds no effects"
+        check (!a.complete) "M imports Prelude, so it is not complete"
+        check (a.rerun.size > 0) "M's import is not recorded for the rerun path"
+        -- (a pure cache: write the effects back out and read them; every field survives)
+        let dir2 ← IO.FS.createTempDir
+        Cache.writeModuleRegion dir2 binary rig (k + 1) "M" a.effects a.keys a.complete a.rerun
+        let some b ← Cache.readModuleRegion (R := ZeroOneMany) dir2 binary rig (k + 1)
+          | throw (IO.userError "the region written for M does not read back")
+        checkEq (effectSigs a.effects) (effectSigs b.effects)
+        checkEq a.keys.toList b.keys.toList
+        checkEq a.effects.size a.keys.size
+        checkEq (k + 1) b.key
+        -- (the tags are checked: another rig, format or key is not this module's artifact)
+        check (b.fits binary (k + 1) rig) "a region does not fit itself"
+        check (!(b.fits binary (k + 1) "nat")) "the rig is not checked"
+        check (!(b.fits binary (k + 2) rig)) "the key is not checked"
+        let badFormat : Cache.ModuleArtifact ZeroOneMany := { b with format := 999 }
+        check (!(badFormat.fits binary (k + 1) rig)) "the format is not checked"
+        let badBinary : Cache.ModuleArtifact ZeroOneMany := { b with binary := binary + 1 }
+        check (!(badBinary.fits binary (k + 1) rig)) "the binary is not checked"
+        let badSalt : Cache.ModuleArtifact ZeroOneMany := { b with textSalt := Cache.salt + 1 }
+        check (!(badSalt.fits binary (k + 1) rig)) "the salt is not checked" },
+    { name := "a corrupt or mismatched region is a miss (the text cache answers)", run := fun _ => do
+        let dir ← mkTree [("M.wiz", "import Prelude\ndef x : Nat := 1\n")]
+        let ms ← Module.loadAll ["lib", dir]
+        let cache ← IO.FS.createTempDir
+        let init : CommandState ZeroOneMany := { trustedModule := Tests.libModule, loader := loaderOf ms }
+        let rig := RigTag.tag (R := ZeroOneMany)
+        let stats ← IO.mkRef ({} : Cache.RegionCounts)
+        let opts : Cache.RegionOptions := { rig, stats := some stats }
+        let src := "import M\n#eval x\n"
+        let (s0, _) ← Cache.elaborateCached (some cache) src init 0 (region := some opts)
+        let good := s0.messages.toList.map (·.render src)
+        check (!s0.messages.any (·.severity == .error)) s!"messages: {good}"
+        let before ← stats.get
+        let _ ← Cache.elaborateCached (some cache) src init 0 (region := some opts)
+        check ((← stats.get).hits > before.hits) "the warm run did not come from a region"
+        -- (a truncated region: a miss, not an error, and the run is rewritten)
+        for f in ← regionFiles cache do IO.FS.writeFile f ""
+        let after ← stats.get
+        let (s1, _) ← Cache.elaborateCached (some cache) src init 0 (region := some opts)
+        checkEq good (s1.messages.toList.map (·.render src))
+        check ((← stats.get).misses > after.misses) "a truncated region was not a miss"
+        for f in ← regionFiles cache do
+          check ((← f.metadata).byteSize > 0) s!"{f} was not rewritten"
+        -- (a region with the wrong format is rejected and rewritten, too)
+        let binary ← Cache.binaryId (some cache)
+        let k := Cache.moduleKey (loaderOf ms) (fun _ => none) 0 "M" (trusted := Tests.libModule)
+        Cache.writeRegionFile (R := ZeroOneMany) (cache / Cache.regionFileName binary k)
+          { magic := Cache.regionMagic, format := 999, binary, textSalt := Cache.salt, rig,
+            module := "M", key := k }
+        let after2 ← stats.get
+        let (s2, _) ← Cache.elaborateCached (some cache) src init 0 (region := some opts)
+        checkEq good (s2.messages.toList.map (·.render src))
+        check ((← stats.get).misses > after2.misses) "a mismatched region was not a miss"
+        let some a ← Cache.readModuleRegion (R := ZeroOneMany) cache binary rig k
+          | throw (IO.userError "the mismatched region was not rewritten")
+        checkEq Cache.regionFormat a.format
+        check (a.effects.size > 0) "the rewritten region holds no effects" },
+    { name := "a warm run is served from the module region, with the same state", run := fun _ => do
+        let dir ← mkTree libFiles
+        let ms ← Module.loadAll ["lib", dir]
+        let cache ← IO.FS.createTempDir
+        let init : CommandState ZeroOneMany := { trustedModule := Tests.libModule, loader := loaderOf ms }
+        let rig := RigTag.tag (R := ZeroOneMany)
+        let stats ← IO.mkRef ({} : Cache.RegionCounts)
+        let opts : Cache.RegionOptions := { rig, stats := some stats }
+        let src := "import Use\nimport Other\n#eval four + one\n"
+        let (cold, _) ← Cache.elaborateCached (some cache) src init 0 (region := some opts)
+        check (!cold.messages.any (·.severity == .error)) s!"messages: {cold.messages.toList.map (·.text)}"
+        let before ← stats.get
+        let (warm, hw) ← Cache.elaborateCached (some cache) src init 0 (region := some opts)
+        let after ← stats.get
+        check (after.hits > before.hits) s!"no module came from a region: {repr after}"
+        check (after.commands > 0) s!"no command came from a region: {repr after}"
+        -- (the text path, same directory: the same state and the same hit count)
+        let (text, ht) ← Cache.elaborateCached (some cache) src init 0
+        checkEq (warm.messages.toList.map (·.render src)) (text.messages.toList.map (·.render src))
+        checkEq warm.globals.order.toList text.globals.order.toList
+        checkEq hw ht },
+    { name := "editing a module does not serve its stale region", run := fun _ => do
+        let dir ← mkTree [("M.wiz", "import Prelude\ndef x : Nat := 1\n")]
+        let cache ← IO.FS.createTempDir
+        let rig := RigTag.tag (R := ZeroOneMany)
+        let src := "import M\n#eval x\n"
+        let recheck : IO (CommandState ZeroOneMany) := do
+          let ms ← Module.loadAll ["lib", dir]
+          let init : CommandState ZeroOneMany := { trustedModule := Tests.libModule, loader := loaderOf ms }
+          pure (← Cache.elaborateCached (some cache) src init 0 (region := some { rig })).1
+        let s1 ← recheck
+        check (s1.messages.any fun m => (m.render src).endsWith "info: 1") s!"{s1.messages.toList.map (·.render src)}"
+        IO.FS.writeFile (dir / "M.wiz") "import Prelude\ndef x : Nat := 2\n"
+        let s2 ← recheck
+        check (s2.messages.any fun m => (m.render src).endsWith "info: 2") s!"{s2.messages.toList.map (·.render src)}"
+        check (!s2.messages.any fun m => (m.render src).endsWith "info: 1") s!"stale: {s2.messages.toList.map (·.render src)}"
+        -- (the new key has its own region; the old one is stale, not served)
+        let ms ← Module.loadAll ["lib", dir]
+        let k2 := Cache.moduleKey (loaderOf ms) (fun _ => none) 0 "M" (trusted := Tests.libModule)
+        let binary ← Cache.binaryId (some cache)
+        check (← (cache / Cache.regionFileName binary k2).pathExists) "no region for the edited module"
+        let some a ← Cache.readModuleRegion (R := ZeroOneMany) cache binary rig k2
+          | throw (IO.userError "no readable region for the edited module")
+        checkEq k2 a.key }
   ]
 
 /-- A package: a library with two modules, and a file that checks against it. -/
@@ -564,7 +701,33 @@ def toolchainGroup : Group where
           checkEq s!"{args}: 0 src/Crux/A.wiz:2:1: info: 1\n" s!"{args}: {out.exitCode} {out.stdout}{out.stderr}"
         -- the usage text names -I for check
         let out ← IO.Process.output { cmd := wiz, args := #["help"] }
-        check ((out.stdout.splitOn "wiz check [-I DIR] FILE").length > 1) out.stdout }
+        check ((out.stdout.splitOn "wiz check [-I DIR] FILE").length > 1) out.stdout },
+    { name := "wiz check --region-cache: a warm run comes from regions, and corrupt ones are misses", run := fun _ => do
+        let dir ← mkTree [("M.wiz", "import Prelude\ndef x : Nat := 2\n"), ("main.wiz", "import M\n#eval x\n")]
+        let cache ← IO.FS.createTempDir
+        let wiz := (← IO.FS.realPath ".lake/build/bin/wiz").toString
+        let args := #["check", "main.wiz", "-I", dir.toString, "--cache", cache.toString,
+                      "--region-cache", "--region-stats"]
+        let run := IO.Process.output { cmd := wiz, args, cwd := some dir }
+        let o1 ← run
+        checkEq 0 o1.exitCode
+        checkEq "main.wiz:2:1: info: 2\n" o1.stdout
+        check ((o1.stderr.splitOn "region cache:").length > 1) s!"no stats: {o1.stderr}"
+        let regions ← regionFiles cache
+        check (regions.size > 0) "no region files were written"
+        -- (a warm run: modules come from the regions, the answer is the same)
+        let o2 ← run
+        checkEq 0 o2.exitCode
+        checkEq o1.stdout o2.stdout
+        check ((o2.stderr.splitOn "region cache: 0 modules").length == 1)
+          s!"nothing came from a region: {o2.stderr}"
+        -- (corrupt every region: the next run falls back to the text entries and rewrites them)
+        for f in regions do IO.FS.writeFile f ""
+        let o3 ← run
+        checkEq 0 o3.exitCode
+        checkEq o1.stdout o3.stdout
+        for f in ← regionFiles cache do
+          check ((← f.metadata).byteSize > 0) s!"{f} was not rewritten" }
   ]
 
 /-- (9f) An executable with a `link_c` file: editing the C file relinks it (only). -/
