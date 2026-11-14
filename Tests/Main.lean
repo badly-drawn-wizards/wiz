@@ -16,7 +16,6 @@ import Tests.Tower
 import Tests.Native
 import Tests.Smt
 import Tests.Doc
-import Tests.Scry
 
 -- Closed terms are normally evaluated at program start-up; that would execute
 -- unimplemented `sorry`s before any test runs.
@@ -41,7 +40,6 @@ def moduleGroups : List Group :=
   Parser.groups ++
   Rig.groups ++
   Scaling.groups ++
-  Scry.groups ++
   Tower.groups ++
   []
 

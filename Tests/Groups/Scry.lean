@@ -78,6 +78,6 @@ def scryGroup : Group where
         strataCase }
   ]
 
-def groups : List Group := [scryGroup]
+builtin_initialize registerGroup scryGroup
 
 end Tests.Scry
