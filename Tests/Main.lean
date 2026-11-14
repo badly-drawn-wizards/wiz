@@ -202,7 +202,7 @@ def main (args : List String) : IO UInt32 := do
   if let "--grail" :: rest := args then return ← Grail.cliMain rest
   -- the processes the suite starts get the toolchain as flags
   let child := match args with
-    | "--run-case" :: _ | "--prop-long" :: _ | "--prop-replay" :: _ | ["--prop-no-sizes"] | ["--prop-trace"] | "--check" :: _ | "--check-libs" :: _ | "--probe-reuse" :: _ | "--probe-reuse-ir" :: _ | "--panic-probe" :: _ | "--grail-job" :: _ | ["--list"] | ["--list-shards"] | "--list-cases" :: _ | "--allocs" :: _ => true
+    | "--run-case" :: _ | "--prop-long" :: _ | "--prop-replay" :: _ | ["--prop-no-sizes"] | ["--prop-trace"] | "--check" :: _ | "--check-libs" :: _ | "--probe-reuse" :: _ | "--probe-reuse-ir" :: _ | "--panic-probe" :: _ | "--grail-job" :: _ | "--trust-ledger" :: _ | ["--list"] | ["--list-shards"] | "--list-cases" :: _ | "--allocs" :: _ => true
     | _ => false
   let (tc, args') ← suiteToolchain args (readLocal := !child)
   toolchainRef.set tc
@@ -253,6 +253,8 @@ def main (args : List String) : IO UInt32 := do
   | "--probe-reuse-ir" :: files => Scaling.probeReuseIR files
   -- allocation counts and IR of definitions of a file (`Tests/Allocs.lean`)
   | "--allocs" :: rest => Allocs.allocsMain rest
+  -- the trust ledger (`Tests/Native.lean`, scripts/trust-ledger.sh)
+  | "--trust-ledger" :: rest => Native.trustLedgerMain rest
   | ["--list"] => do
     for g in ← allGroups do IO.println g.name
     pure 0

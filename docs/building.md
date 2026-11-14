@@ -33,6 +33,16 @@ printing the case's name and result, a failure's output, and a last line
 `GROUP #INDEX: passed|FAILED|SKIPPED`. Build the driver first (`lake build wiz tests`):
 plain `lake build` does not, and a stale driver runs whichever case had that index.
 
+**The trust ledger.** `scripts/trust-ledger.sh` walks every declaration of `lib/` (and
+`examples/hdl-verified.wiz`, which must stay axiom-free), runs `#print axioms`, and
+compares the trusted base it finds with the checked-in `.github/trust-baseline.tsv`: a
+new `axiom`, `sorry`, `native_refl` or SMT axiom, `implemented_by`/`repr:`
+implementation, `builtin` registration or `partial` definition fails until the baseline
+is updated after review. The `native` group runs the `lib/` part in CI, the
+`hdl-verified` group the example's; `scripts/trust-ledger.sh --update` regenerates the
+baseline (build the driver first). `--print` shows the recorded sources; the baseline's
+header explains the format.
+
 ### Running cases in parallel (`--jobs`)
 
 `lake test -- --jobs N` (default 1) runs the cases of a group that opted in N at a time, in
@@ -157,6 +167,22 @@ cached between runs.
   (three decimals), group subtotals and the shard's total; the `CI result` job sums the
   shards up (a table of shard totals and the grand total, and the 15 slowest cases) and
   uploads every case's time as the `test-timings` artifact.
+* **Documentation style** (the `docs_style` job): `scripts/check-docs-style.py` fails on
+  absolute paths from an agent's scratch tree, internal `agent/...` branch names and AI
+  worker roles, U+2705 status checkmarks, and decision/step phrases attributed to
+  "the user" in `README.md`, `ROADMAP.md`, `CHANGELOG.md` and `docs/**/*.md`. It runs the
+  script's fixtures (`--self-test`) and then the check, on every push and pull request
+  (including docs-only ones), and `CI result` requires it. No code block is exempt; a
+  reviewed exception goes in the script's `ALLOW` list with a reason.
+* **Trust ledger** (the `trust-ledger` job): `scripts/trust-ledger.sh --check` runs the
+  `--trust-ledger` mode of the test driver (`Tests/Native.lean`) over `lib/` and the
+  axiom-free examples, and compares the sources of trust it finds with
+  `.github/trust-baseline.tsv`: a new `axiom`, `sorry`, `native_refl` or SMT axiom,
+  `implemented_by`/`repr:` implementation, `builtin` registration or `partial`
+  definition fails until it is reviewed and the baseline regenerated with
+  `scripts/trust-ledger.sh --update`. The `native` and `hdl-verified` groups check the
+  same ledger in the shards; this job runs the whole of it without a shard's path
+  filter to skip it, and `CI result` requires it when code changed.
 * **Split shards.** A shard with `"split": N` runs as N jobs `NAME-1` … `NAME-N`, each a
   list of `=GROUP#I,J,…` selectors. `scripts/ci.py` balances the parts with the case
   times in `.github/test-timings.json`: the cases that use the same shared program (the
@@ -247,12 +273,13 @@ cached between runs.
   `gh cache list -R wiz-pl/wiz -S size_in_bytes`.
 
 * **Path filters.** On a pull request the `changes` job (`scripts/ci.py changes`) reads
-  the files the PR changes and decides what runs: nothing but `changes` and `CI result`
-  for a docs-only PR (`docs/`, `*.md`, LICENSE); every shard when a Lean file, the build,
-  the runtime, `scripts/` or `.github/` changed; otherwise each shard with `"inputs"` in
-  `.github/test-shards.json` only when one of its inputs changed (a `lib/X.wiz` input
-  brings the lib files it imports), and the shards without `"inputs"` (backends,
-  library) for any non-docs change. So a PR touching only, say, `lib/Json.wiz` skips
+  the files the PR changes and decides what runs: nothing but `changes`, `docs_style`
+  and `CI result` for a docs-only PR (`docs/`, `*.md`, LICENSE); `trust-ledger` runs
+  whenever any code did; every shard when a Lean
+  file, the build, the runtime, `scripts/` or `.github/` changed; otherwise each shard
+  with `"inputs"` in `.github/test-shards.json` only when one of its inputs changed
+  (a `lib/X.wiz` input brings the lib files it imports), and the shards without
+  `"inputs"` (backends, library) for any non-docs change. So a PR touching only, say, `lib/Json.wiz` skips
   `core` and the selfhost shards. `CI result` counts a job the filter skipped as fine
   and a job it wanted only if it succeeded. Pushes to `master`, the merge queue and
   manual runs always run everything, so a missing input shows up there at the latest.
