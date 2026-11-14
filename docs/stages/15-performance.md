@@ -282,3 +282,76 @@ per field and per tail), `c` and `llvm` (a root consumed before the last read th
 prefix, an in-place update of the root's cell while fields read through the prefix are
 live, a join point, codata between observations; the IR interpreter checks every
 reference), `selfhost` (the same in both modes; the C of a wide read has its locals).
+
+### 15k: parallelism in the build pipeline
+
+Where the time goes in `wiz build FILE -o OUT` (one compilation unit, all of it
+single-threaded) and in `grail build` (a graph of jobs, `-j N` processes at a time):
+
+| stage | threads | note |
+|---|---|---|
+| module closure read, `cc -E` per `import_c` header, elaboration through the per-command cache | 1 | command order *is* the cache key chain; module keys depend only on text |
+| erasure (`Erase.compileReachable`) | 1 | reachability worklist |
+| lowering, simplification, constant hoisting | 1 | per declaration, one pass, output sorted |
+| borrow inference | 1 | whole-program greatest fixed point |
+| dead code, RC, reuse, drop specialisation per declaration | 1 | independent once borrows are known |
+| C emission | 1 | one string, declaration order |
+| `cc -O2` (compiles `link_c` sources too) | 1 process | LLVM: `cc`, `llc`, `cc` in sequence |
+| grail jobs: `check F`, `build F`, `ir F`, `obj`, `link`, `test`, selfhost steps | up to `-j N` | each a supervised process; default `min(cores, 4)`; selfhost is a serial chain |
+
+Lake builds independent Lean modules in parallel (its own job pool, shared artifact
+cache) but never parallelises inside a module, so the frontend and backend passes
+above are serial in `wiz`/`grail` themselves.
+
+Probes (heavy, shared machine; approximate), `grail build std` (59 checks; cold
+unless said):
+
+| jobs | cold | warm cache | up to date |
+|---|---|---|---|
+| `-j1` | 174.1 s | | |
+| `-j4` | 55.7 s | 22.6 s | 1.27 s |
+| `-j8` | 44.0 s | | |
+
+So the existing job graph scales 3.1× at `-j4` and 4.0× at `-j8`: the checks form a
+depth-limited import DAG, and the marginal gain of 8 over 4 is small. Graph
+construction and per-node key computation for 59 nodes cost 1.3 s, so the serial
+scheduler is not a bottleneck. The warm-cache build spends 22.6 s replaying the
+modules' commands from their per-command cache files (one `.wizc` per command) in 59
+separate processes: each job re-reads the closure and re-preprocesses headers.
+
+The old `grail build` graph had `check F -> ir F -> c F` for an executable, three
+jobs and three processes. `ir` and `c` each re-ran the whole IR pipeline, not just
+elaboration. 23g now runs one `build F` job that checks F and writes its IR, C and
+link text (`ir F` remains for a file that is already checked as a module). Measured
+on the self-hosted compiler (`grail build selfhost-compiler -j4`, 641 KB generated
+source): **262.3 s -> 160.7 s (1.63×)**; six small examples at `-j1`: 19.8 -> 14.9 s.
+For the same source, `wiz check` is 34.1 s and `wiz build --cc true` (elaboration +
+IR + C, no C compiler) is 70.4 s, so the IR pipeline is ~36 s that the old graph ran
+once per `ir`/`c` job. The full `wiz build` of that file is 157.3 s: elaboration
+34 s, IR+C 36 s, and **one `cc -O2` process 87 s** (one core, one translation unit).
+
+What is left, in order of expected value:
+
+1. **Split the generated C into translation units and compile them in parallel.**
+   The generated program is one C file (runtime included), so `cc -O2` is 55% of a
+   big single-file build and all of it is serial; the same 87 s sits inside `grail
+   build selfhost-compiler`. A declarations header plus N program files (the runtime
+   already has a `-DWIZ_API=` mode for LLVM) compiled by N `cc -c` processes and
+   linked keeps the C text per function and the executable's behavior identical.
+   A 4-way split could take 87 s to ~30 s.
+2. **Module-effect bundles.** Have the check/build job write its modules' effects to
+   one bundle per module key (derived from, and compatible with, the per-command
+   cache), so a warm build or a `grail test` process replays one file per module
+   instead of one per command. Targets the measured 22.6 s warm build; no key
+   changes if the bundle is derived and validated by `binaryId`/module key.
+3. **Batch the check-only tests of a `grail test` run** into a few worker jobs: the
+   frontend already keeps isolated module states per process (`Frontend.isoKey`), so
+   one process checking several test files replays the common imports once. This is
+   orthogonal to the `--jobs` work in the Lean test driver.
+
+A cheaper backend variant of (1), if splitting the C is too invasive, is to
+parallelise the 36 s IR+C stage per declaration (after the serial borrow fixpoint):
+byte-identical output, ~16% end to end.
+
+Raising grail's `-j` default is not one of them: the 4 -> 8 gain is 1.27×, and
+memory per check job is the limit of the shared heavy slot.
