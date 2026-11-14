@@ -330,15 +330,26 @@ IR + C, no C compiler) is 70.4 s, so the IR pipeline is ~36 s that the old graph
 once per `ir`/`c` job. The full `wiz build` of that file is 157.3 s: elaboration
 34 s, IR+C 36 s, and **one `cc -O2` process 87 s** (one core, one translation unit).
 
-What is left, in order of expected value:
+**Splitting the C** (`wiz build --split N`, implemented) compiles a support unit (the
+runtime with `-DWIZ_API=`, the foreign glue, the exports and `main`) plus `N` units of
+generated declarations, each a `cc -c -O2` task, then links. On the same 18.8 MB
+program (12934 declarations, cold cache): single **146.9 s**, `--split 2` 103.5 s,
+`--split 4` 91.6 s, `--split 8` **85.8 s** (1.71×; its `cc` stage 16.2 s against 87 s
+for one unit); warm cache 144.0 -> 81.1 s. The generated C each build prints is
+identical. The cost is that `cc` cannot inline across unit boundaries: the program
+built with `--split 8` runs 50.5 s against 38.0 s (1.33× slower). A one-unit program
+against the split runtime runs 42.3 s, so ~11% is runtime calls and ~16% generated
+cross-unit calls. `-fvisibility=hidden` does not help; `-flto` recovers the run time
+(40.5 s) but its link costs 84.2 s, so the build is no faster than single
+(`-flto=8`: 88.1 s / 43.2 s). The split is therefore **opt-in** (`--split N`,
+default 1), for fast iteration rather than release builds.
 
-1. **Split the generated C into translation units and compile them in parallel.**
-   The generated program is one C file (runtime included), so `cc -O2` is 55% of a
-   big single-file build and all of it is serial; the same 87 s sits inside `grail
-   build selfhost-compiler`. A declarations header plus N program files (the runtime
-   already has a `-DWIZ_API=` mode for LLVM) compiled by N `cc -c` processes and
-   linked keeps the C text per function and the executable's behavior identical.
-   A 4-way split could take 87 s to ~30 s.
+What is left:
+
+1. **Recover cross-unit inlining**: inline the hot runtime fast paths (`wiz_inc`,
+   `wiz_tag`, `wiz_proj`, small-number `nat.beq`/`blt`) in `wiz_split.h`, and cut by
+   module/call graph instead of text size; clang's ThinLTO (`-flto=thin`, `lld`)
+   is the likely way to keep both the build and the run time.
 2. **Module-effect bundles.** Have the check/build job write its modules' effects to
    one bundle per module key (derived from, and compatible with, the per-command
    cache), so a warm build or a `grail test` process replays one file per module
@@ -349,9 +360,9 @@ What is left, in order of expected value:
    one process checking several test files replays the common imports once. This is
    orthogonal to the `--jobs` work in the Lean test driver.
 
-A cheaper backend variant of (1), if splitting the C is too invasive, is to
-parallelise the 36 s IR+C stage per declaration (after the serial borrow fixpoint):
-byte-identical output, ~16% end to end.
+Parallelising the 36 s IR+C stage per declaration (after the serial borrow fixpoint)
+is the fallback if cross-unit inlining cannot be recovered: byte-identical output,
+~16% end to end.
 
 Raising grail's `-j` default is not one of them: the 4 -> 8 gain is 1.27×, and
 memory per check job is the limit of the shared heavy slot.
