@@ -8,26 +8,28 @@ one sort. This file attacks that lemma, and records exactly where F0's rules sto
 
 ## The reduction
 
-`SortUniqueAt` is not proved here. It is **reduced to two named M1 statements**
-(`Obligations.lean`), and the reduction is proved — but `TyUnique` as stated is not the
-right statement at the top universe (see "The boundary of `TyUnique`" below, which also
-states the corrected `TyUniqueTyped` + `TopSortUnique` reduction):
+`SortUniqueAt` is not proved here. It is **reduced to named M1 statements**
+(`Obligations.lean`), and the reduction is proved. The stated obligations are the
+corrected pair `TyUniqueTyped` (two *typed* types of one term are convertible at one sort)
+and `TopSortUnique` (no term of sort `u1` has another sort), both for well-formed
+contexts: the unconditional `TyUnique` is false at the top universe — `F0/TopSort.lean`,
+`tyUnique_false` — so it is kept as the conditional form (`TyUnique` implies
+`TyUniqueTyped`) and `sortUniqueAt_of` (from `TyUnique`) stays for callers that assume it.
+`sortUniqueAt_of_typed` is the corrected reduction; `ConvInjSort` is what it reads off the
+common sort:
 
-* `TyUnique sg` — two types of one term are convertible at one sort. This is the `conv`
-  case of the sorting lemma, i.e. uniqueness of types up to conversion. Its proof is
-  where the formers' injectivity (`ConvInjPi`, `ConvInjSigma`, `ConvInjEq`, `ConvInjEqTy`,
-  `ConvInjEnum`) is used, and where the `irrel` case needs "a sort is not a proof of a
-  proposition".
+* `TyUniqueTyped` / `TopSortUnique` — the `conv` case of the sorting lemma, at the joint
+  `Sort u1` makes visible. `TyUniqueTyped`'s proof is where the formers' injectivity
+  (`ConvInjPi`, `ConvInjSigma`, `ConvInjEq`, `ConvInjEqTy`, `ConvInjEnum`) is used, and
+  where the `irrel` case needs "a sort is not a proof of a proposition".
 * `ConvInjSort sg` — two convertible `Sort`s are the same sort: the `irrel` case, in its
-  barest form.
+  barest form (and it follows from `ConvJoin`, below).
 
-`sortUniqueAt_of` derives `SortUniqueAt` from those two
-(`SortUniqueAt (Γ) A` at sorts `s`, `s'` gives a conversion `Sort s ≡ Sort s'` by
-`TyUnique`, and `ConvInjSort` reads off `s = s'`); `sortUnique_of` is the global form, and
-`WhRed.empty_at_prop_uncond` is `WhRed.empty_at_prop` with the same two obligations as its
-only hypotheses. `WhRed.empty_at_prop` keeps its hypothesis in `WhRed.lean`; this file's
-version is the one that is *unconditional in the term*: the caller no longer has to know
-`SortUniqueAt` at the particular type.
+`sortUniqueAt_of_typed` derives `SortUniqueAt` from the corrected pair plus `ConvInjSort`
+and `⊢ Γ`; `sortUnique_of`/`sortUniqueAt_of` are the old path; `WhRed.empty_at_prop_join`
+is the global form from `TyUnique` + `ConvJoin`. `WhRed.empty_at_prop` keeps its hypothesis
+in `WhRed.lean`; this file's versions are the ones that are *unconditional in the term*:
+the caller no longer has to know `SortUniqueAt` at the particular type.
 
 ## What is proved from the rules
 
@@ -117,12 +119,16 @@ its exact form has a boundary problem that the two new rules make visible too: a
 `∃ s, Γ ⊢ Sort u1 ≡ Sort u1 ∶ Sort s` needs `Sort u1` to be a term with a sort. It is not:
 `Srt.succ? .u1 = none`, so `Core.sort` cannot form it, and no other rule concludes a typing
 of `Sort u1` except `conv` (from another such typing) and — with `Struct` — `eqTyped`
-(from a conversion of `Sort u1`, which leads back to the same problem). The corrected
-statement is `TyUniqueTyped` below: both types are themselves typed. The reduction
-`sortUniqueAt_of` uses `TyUnique` as stated (so it is vacuous if `TyUnique` is false); the
-corrected reduction is `SortUniqueAt` from `TyUniqueTyped`, `ConvInjSort` and the top-sort
-statement `TopSortUnique` (no term of sort `u1` has another sort), both stated below. This
-boundary is an open item, not a proof.
+(from a conversion of `Sort u1`, which leads back to the same problem).
+
+This is now **proved**: `F0/TopSort.lean`'s `tyUnique_false` refutes `TyUnique ([] : Sig)`
+by a single induction over the four judgments (`HasSortU1`: a typing's term or an equation's
+or reduction's endpoint is `Sort u1`), with `Tm.inst_eq_sort` for `Pi.beta` and the empty
+signature for `delta`. The stated obligations are `TyUniqueTyped` + `TopSortUnique`
+(`Obligations.lean`, both for well-formed contexts, with `tyUniqueTyped_of_tyUnique` for
+the old statement as the conditional form), and the reduction is `sortUniqueAt_of_typed`
+below; `sortUniqueAt_of` (from the unconditional `TyUnique`) stays for callers that assume
+it.
 
 ## `irrel`
 
@@ -418,24 +424,7 @@ theorem redStar_of_sort {sg : Sig} {Γ : Ctx} {A : Tm} {s : Srt} {v : Tm}
       subst ih
       exact (red_not_sort (.red Γ _ _ A) step Γ _ _ A s rfl rfl).elim
 
-/-! ### The corrected uniqueness statement, and the top-universe case -/
-
-/-- **`TyUniqueTyped`**: the corrected `TyUnique` — the two types are themselves types
-(`Γ ⊢ A ∶ Sort sA`, `Γ ⊢ B ∶ Sort sB`). This is the statement a common-successor-sort
-argument can use: the boundary `A = B = Sort u1` of `TyUnique`, where no sort types the
-witness conversion, is excluded. -/
-def TyUniqueTyped (sg : Sig) : Prop :=
-  ∀ Γ t A B, (∃ s, Derivable (F0 sg) (Γ ⊢ A ∶ .sort s)) →
-    (∃ s, Derivable (F0 sg) (Γ ⊢ B ∶ .sort s)) →
-    Derivable (F0 sg) (Γ ⊢ t ∶ A) → Derivable (F0 sg) (Γ ⊢ t ∶ B) →
-    ∃ s, Derivable (F0 sg) (Γ ⊢ A ≡ B ∶ .sort s)
-
-/-- **`TopSortUnique`**: no term of sort `u1` has another sort. This is the branch of
-`SortUniqueAt` that `TyUniqueTyped` cannot see (`Sort u1` is not a term with a sort, so the
-boundary case has no common-sort witness). -/
-def TopSortUnique (sg : Sig) : Prop :=
-  ∀ Γ A s, Derivable (F0 sg) (Γ ⊢ A ∶ .sort .u1) →
-    Derivable (F0 sg) (Γ ⊢ A ∶ .sort s) → s = .u1
+/-! ### The corrected reduction, from the statements in `Obligations.lean` -/
 
 namespace Srt
 theorem exists_succ? {s : Srt} (h : s ≠ .u1) : ∃ s', s.succ? = some s' := by
@@ -454,9 +443,9 @@ theorem sortUniqueAt_of_typed {sg : Sig} (hty : TyUniqueTyped sg) (hsi : ConvInj
     SortUniqueAt sg Γ A := by
   intro s s' hs hs'
   by_cases h1 : s = .u1
-  · subst h1; exact (htop Γ A s' hs hs').symm
+  · subst h1; exact (htop Γ hΓ A s' hs hs').symm
   by_cases h2 : s' = .u1
-  · subst h2; exact htop Γ A s hs' hs
+  · subst h2; exact htop Γ hΓ A s hs' hs
   · obtain ⟨sA, hsA⟩ := Srt.exists_succ? h1
     obtain ⟨sB, hsB⟩ := Srt.exists_succ? h2
     have htA : Derivable (F0 sg) (Γ ⊢ .sort s ∶ .sort sA) :=
@@ -467,7 +456,7 @@ theorem sortUniqueAt_of_typed {sg : Sig} (hty : TyUniqueTyped sg) (hsi : ConvInj
       ofRule (core_in_F0 (Core.sort hsB)) (by
         simp only [List.mem_cons, List.mem_nil_iff, or_false, forall_eq]
         exact hΓ)
-    obtain ⟨c, hc⟩ := hty Γ A (.sort s) (.sort s') ⟨sA, htA⟩ ⟨sB, htB⟩ hs hs'
+    obtain ⟨c, hc⟩ := hty Γ hΓ A (.sort s) (.sort s') ⟨sA, htA⟩ ⟨sB, htB⟩ hs hs'
     exact hsi Γ s s' (.sort c) hc
 
 /-- **`ConvJoin`**: conversion is generated by reduction with a common reduct. This is the

@@ -110,14 +110,22 @@ that F0's rules do give. They are *statements to prove in M1*: the declarative r
 no inversion principle for `≡` and no normal-form theorem. Two of the rule-level gaps the
 first version of this note recorded are now rules (`Spec/Struct.lean`: `eqTyped`,
 `ctxConv`), so `Sorting.lean`'s `conv`/`cong` blockers are discharged; the `trans` case is
-not (it needs `ConvJoin`, `Sorting.lean`), and `TyUnique` as stated has a top-universe
-boundary (`Sort u1` is not a term with a sort), for which `Sorting.lean` states the
-corrected `TyUniqueTyped` and `TopSortUnique`. -/
+not (it needs `ConvJoin`, `Sorting.lean`), and `TyUnique` as stated is false at the top
+universe (`F0/TopSort.lean`, `tyUnique_false`), so this file states the corrected
+`TyUniqueTyped` and `TopSortUnique` next to it. -/
 
 /-- **`TyUnique`**: two types of one term are convertible at one sort. This is
 "uniqueness of types up to conversion"; its proof is where the injectivity lemmas
 (`ConvInjPi`, …) are used, at the `conv` case, and those lemmas in turn are where `trans`
-and `irrel` block (`F0/Sorting.lean`, "the gap"). -/
+and `irrel` block (`F0/Sorting.lean`, "the gap").
+
+**This statement is false at the top universe** (`F0/TopSort.lean`, `tyUnique_false`):
+the term `Sort u0` has type `Sort u1` twice (`Core.sort rfl`), so it would give a
+conversion `Sort u1 ≡ Sort u1 ∶ Sort c`, but `Sort u1` is a type and not a term
+(`Srt.succ? .u1 = none`), so no typing or equation may mention it at an endpoint. It is
+kept as the conditional form of the obligation: `TyUnique` implies `TyUniqueTyped`, and
+the stated obligations are `TyUniqueTyped` + `TopSortUnique` below. The reduction in
+`F0/Sorting.lean` is `sortUniqueAt_of_typed`. -/
 def TyUnique (sg : Sig) : Prop :=
   ∀ Γ t A B, Derivable (F0 sg) (Γ ⊢ t ∶ A) → Derivable (F0 sg) (Γ ⊢ t ∶ B) →
     ∃ s, Derivable (F0 sg) (Γ ⊢ A ≡ B ∶ .sort s)
@@ -158,6 +166,38 @@ def ConvInjEqTy (sg : Sig) : Prop :=
 /-- **Injectivity of `Enum`** at conversion: the sizes agree (an enumeration is its size). -/
 def ConvInjEnum (sg : Sig) : Prop :=
   ∀ Γ n m C, Derivable (F0 sg) (Γ ⊢ .enum n ≡ .enum m ∶ C) → n = m
+
+/-! ### The corrected uniqueness statements (the obligations)
+
+`TyUnique` above is false at `Sort u1` (`F0/TopSort.lean`, `tyUnique_false`), so the
+obligation is stated on *typed* types and well-formed contexts: a type is an inhabitant of
+a sort, and the boundary case where the term is a top sort has no such common sort. The
+second statement, `TopSortUnique`, is the branch of `SortUniqueAt` that the corrected
+`TyUnique` cannot see: a term of sort `u1` has no other sort. `F0/Sorting.lean` proves
+`SortUniqueAt` from the pair plus `ConvInjSort` (`sortUniqueAt_of_typed`), for a
+well-formed context. -/
+
+/-- **`TyUniqueTyped`** (the stated obligation): two *typed* types of one term are
+convertible at one sort, in a well-formed context. Excludes `A = B = Sort u1`, which is
+where `TyUnique` fails. -/
+def TyUniqueTyped (sg : Sig) : Prop :=
+  ∀ Γ, Derivable (F0 sg) (.wf Γ) → ∀ t A B,
+    (∃ s, Derivable (F0 sg) (Γ ⊢ A ∶ .sort s)) →
+    (∃ s, Derivable (F0 sg) (Γ ⊢ B ∶ .sort s)) →
+    Derivable (F0 sg) (Γ ⊢ t ∶ A) → Derivable (F0 sg) (Γ ⊢ t ∶ B) →
+    ∃ s, Derivable (F0 sg) (Γ ⊢ A ≡ B ∶ .sort s)
+
+/-- **`TopSortUnique`** (the stated obligation): no term of sort `u1` has another sort,
+in a well-formed context. This is the `u1` branch of `SortUniqueAt`; `TyUniqueTyped`
+cannot see it because `Sort u1` is not a term with a sort. -/
+def TopSortUnique (sg : Sig) : Prop :=
+  ∀ Γ, Derivable (F0 sg) (.wf Γ) → ∀ A s,
+    Derivable (F0 sg) (Γ ⊢ A ∶ .sort .u1) → Derivable (F0 sg) (Γ ⊢ A ∶ .sort s) → s = .u1
+
+/-- `TyUnique` is the unconditional form of `TyUniqueTyped` (this direction is immediate;
+the converse fails at the top universe). -/
+theorem tyUniqueTyped_of_tyUnique {sg : Sig} (h : TyUnique sg) : TyUniqueTyped sg :=
+  fun _ _ _ _ _ _ _ => h _ _ _ _
 
 /-- A bidirectional typing checker: `tc fuel Γ t A` decides `Γ ⊢ t ⇐ A`. -/
 abbrev TCChecker := Nat → Ctx → Tm → Tm → M Bool

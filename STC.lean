@@ -9,6 +9,7 @@ import STC.F0.WhRed
 import STC.F0.Obligations
 import STC.F0.Sorting
 import STC.F0.Typing
+import STC.F0.TopSort
 import STC.F0.Sanity
 
 /-!
@@ -34,6 +35,8 @@ M0.1 of the design note `/workspace/wiz-notes/stc-m0-spec.md`:
 * `F0/Typing`: what the two structural rules buy (both endpoints of any conversion typed,
   both endpoints of a `Pi.cong`/`Sigma.cong` conclusion typed from its own premises), and
   the remaining law obligation (`StructRenClosed`, `StructSubClosed`);
+* `F0/TopSort`: the checked refutation of `TyUnique` at the top universe (the obligation
+  is the corrected pair `TyUniqueTyped` + `TopSortUnique`);
 * `F0/Obligations`: `Sound(F0)`, `Con(F0)`, `WHN`, `DecConv`, `DecTC` as `Prop`s, and the
   sorting lemma's supporting statements (`TyUnique`, `ConvInj*`);
 * `F0/Sanity`: small derivations that witness that the rules are inhabited.
