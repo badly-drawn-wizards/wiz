@@ -128,7 +128,13 @@ def diffSteps : Nat → Nat → PMap U64 Nat → U64Map Nat → Nat → Nat
       else Nat.succ bad;
     if Nat.lt op 3 then diffSteps n y (PMap.insert pm k y) (U64Map.insert um k y) bad'
     else if Nat.lt op 5 then diffSteps n y (PMap.erase pm k) (U64Map.erase um k) bad'
-    else diffSteps n y pm um bad'
+    else
+      let bad2 := if Nat.beq (PMap.findD pm k 3) (U64Map.findD um k 3) then bad'
+        else Nat.succ bad';
+      let sameC := match PMap.contains pm k with
+        | .true => U64Map.contains um k
+        | .false => Bool.not (U64Map.contains um k);
+      diffSteps n y pm um (if sameC then bad2 else Nat.succ bad2)
 
 def checkDifferential : Nat :=
   let m : PMap U64 Nat := PMap.fromList [(key 8, 1), (key 16, 2), (key 24, 3)];
