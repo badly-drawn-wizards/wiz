@@ -367,7 +367,13 @@ package's `lib` targets with its module roots (dependencies included), into
   cache; Markdown; `wiz doc` on a small package with doc comments (kinds, docs, source
   links, instances, the index); every cross-link resolves; every declaration is in the
   search index; the pages without JS; `grail doc`; and the page model of the Wasm module
-  run natively on a page's JSON (hover, click, keys).
+  run natively on a page's JSON (hover, click, keys); and that the core library is
+  documented (every public declaration of `Prelude`, `Std`, `Vec` and `Word` has a doc
+  comment, and each has a module doc).
+* **The library's documentation.** Every module in `lib/` has a `/-! … -/` module doc
+  (what it is for, its main definitions, an example) and a `/-- … -/` doc comment on each
+  public declaration; `--` comments are left for implementation notes. `wiz doc --lib -o
+  OUT` builds the pages (CI's `wiz-docs` artifact).
 
 ## 11w: hovers in tactic arguments, the other infoviews, `local instance`, the browser infoview
 
@@ -449,6 +455,14 @@ text cut after it, with its open brackets closed. In Neovim 0.11, `<C-s>` in ins
 ```
 def b (xs : List Nat) : Nat := List.length ‸    -- List.length {A : Type} [(_ : List A)] : Nat
 ```
+
+### Doc comments in the editor (11s, 11t, 11u)
+
+The language server shows a declaration's doc comment (`/-- … -/`, `CommandState.docOf?`)
+as Markdown: in a hover under the type (`double : Nat → Nat`, a rule, then the doc), as
+a completion item's `documentation`, and as signature help's `documentation`. Locals have
+none; the library's declarations are documented (`lib/`), so `Nat.add` explains itself.
+
 ## 11v: the outline, workspace symbols and folding
 
 * **Document symbols** (`textDocument/documentSymbol`, `Wiz/Symbols.lean`): one symbol per

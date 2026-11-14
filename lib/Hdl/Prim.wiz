@@ -1,39 +1,44 @@
 import Hdl.Core
--- Primitive instances: vendor cells (an FPGA's I/O buffers, SERDES, PLLs, …) as black
--- boxes in the HDL (`Hw.prim`; `Prim` and the netlist's `NetOp.inst` are in Hdl.Core,
--- this module has the rest). A `Prim i o` declares one: its Verilog module name, parameters, a port
--- name per leaf of its input and output codes, and optionally a behavioural model at
--- values. At the wire instance a primitive is one netlist node (`NetOp.inst`) that
--- `Verilog.emit` prints as a module instance; at values it is its model.
---
---   def oddr : Prim (HwTy.prod HwTy.clock (HwTy.prod Bit Bit)) Bit :=
---     Prim.decl "ODDR" (.cons ("DDR_CLK_EDGE", PrimParam.str "SAME_EDGE") .nil)
---       (.cons "C" (.cons "D1" (.cons "D2" .nil))) (.cons "Q" .nil) .none
---   … Hw.prim oddr (Hw.pair Hw.clock (Hw.pair a b)) …
---   -- ODDR #(.DDR_CLK_EDGE("SAME_EDGE")) u7 (.C(clk), .D1(n3), .D2(n5), .Q(n7));
---
--- Kinds (Core's `PortKind`): a leaf under `HwTy.clock` is a clock net, under `HwTy.pad n`
--- a package pin an I/O buffer drives or reads, under `HwTy.inout n` a bidirectional one.
--- They connect primitives only: a clock goes from a circuit's clock input, the implicit
--- clock (`Hw.clock`) or a primitive's clock output to a primitive's clock input; a
--- pad goes from a circuit's input to a buffer's input, or from a buffer's output to the
--- circuit's output (a bidirectional one becomes an `inout` port). Anything else is an
--- error of the netlist (`Netlist.errors`, printed by `Verilog.emit`).
---
--- Sharing: an instance is never hash-consed (two buffers with the same inputs are two
--- buffers), so a primitive's result that is used more than once must be one value: bind
--- it with `let` (auto-share), never pass the `Hw.prim …` expression to a function that
--- reads it several times (each read would build another instance).
---
--- Simulation: a primitive without a model is 0 at values and in `Netlist.simulate`;
--- `Netlist.unmodelled` names such instances and the checked runners
--- (`Circuit.runModelled`, `Netlist.simulateModelled`) refuse to run a circuit with one.
---
--- Clocks: a circuit's registers stay on its one implicit clock. `Clocking` describes a
--- generated top-level wrapper whose clock primitive (a PLL) turns the board's clock into
--- that implicit clock (through a BUFG) and into the circuit's clock inputs.
+/-!
+# Hdl.Prim
 
--- A parameter's value, printed as Verilog.
+Primitive instances: vendor cells (an FPGA's I/O buffers, SERDES, PLLs, …) as black
+boxes in the HDL (`Hw.prim`; `Prim` and the netlist's `NetOp.inst` are in Hdl.Core,
+this module has the rest). A `Prim i o` declares one: its Verilog module name, parameters, a port
+name per leaf of its input and output codes, and optionally a behavioural model at
+values. At the wire instance a primitive is one netlist node (`NetOp.inst`) that
+`Verilog.emit` prints as a module instance; at values it is its model.
+
+  def oddr : Prim (HwTy.prod HwTy.clock (HwTy.prod Bit Bit)) Bit :=
+    Prim.decl "ODDR" (.cons ("DDR_CLK_EDGE", PrimParam.str "SAME_EDGE") .nil)
+      (.cons "C" (.cons "D1" (.cons "D2" .nil))) (.cons "Q" .nil) .none
+  … Hw.prim oddr (Hw.pair Hw.clock (Hw.pair a b)) …
+  -- ODDR #(.DDR_CLK_EDGE("SAME_EDGE")) u7 (.C(clk), .D1(n3), .D2(n5), .Q(n7));
+
+Kinds (Core's `PortKind`): a leaf under `HwTy.clock` is a clock net, under `HwTy.pad n`
+a package pin an I/O buffer drives or reads, under `HwTy.inout n` a bidirectional one.
+They connect primitives only: a clock goes from a circuit's clock input, the implicit
+clock (`Hw.clock`) or a primitive's clock output to a primitive's clock input; a
+pad goes from a circuit's input to a buffer's input, or from a buffer's output to the
+circuit's output (a bidirectional one becomes an `inout` port). Anything else is an
+error of the netlist (`Netlist.errors`, printed by `Verilog.emit`).
+
+Sharing: an instance is never hash-consed (two buffers with the same inputs are two
+buffers), so a primitive's result that is used more than once must be one value: bind
+it with `let` (auto-share), never pass the `Hw.prim …` expression to a function that
+reads it several times (each read would build another instance).
+
+Simulation: a primitive without a model is 0 at values and in `Netlist.simulate`;
+`Netlist.unmodelled` names such instances and the checked runners
+(`Circuit.runModelled`, `Netlist.simulateModelled`) refuse to run a circuit with one.
+
+Clocks: a circuit's registers stay on its one implicit clock. `Clocking` describes a
+generated top-level wrapper whose clock primitive (a PLL) turns the board's clock into
+that implicit clock (through a BUFG) and into the circuit's clock inputs.
+
+A parameter's value, printed as Verilog.
+-/
+
 inductive PrimParam where
   | str (s : String)
   | int (n : Nat)
