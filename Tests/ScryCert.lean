@@ -58,6 +58,10 @@ def scryCertGroup : Group where
           [".true", ".false"] },
     { name := "provenance to certificate: explainTuple returns a checked witness", run := fun _ =>
         probes "scry-derivation" "#eval explained" ["1"] },
+    { name := "negation: an absent atom is accepted; a present one is rejected", run := fun _ =>
+        probes "scry-derivation"
+          "#eval Scry.Derivation.check negProg negEdb negDeriv\n#eval Scry.Derivation.check negProg negEdb negBadDeriv\n#eval Scry.Derivation.check negLatProg negEdb negLatOkDeriv\n#eval Scry.Derivation.check negLatProg negEdb negLatBadDeriv"
+          [".true", ".false", ".true", ".false"] },
     { name := "the same certificate compiled to C and LLVM", run := fun _ =>
         compiled "scry-derivation" "10001011" }
   ]
