@@ -18,6 +18,13 @@ rules as given here without that development. The theorem below therefore takes 
 explicit hypothesis, which is exactly the missing statement; the reduction judgment in
 `WhRed`'s first conjunct plays no role in the emptiness (there *are* reductions at
 propositions, e.g. `Pi.beta` into a `Π` ending in `Prop`; they are just not `WhRed`).
+
+`F0/Sorting.lean` reduces `SortUniqueAt` to two named M1 statements (`TyUnique`,
+`ConvInjSort`) and proves the reduction, including the version of the theorem here that
+takes those two instead of `SortUniqueAt` at the term. It also records which rule-level
+cases block the two statements: the `trans` case of conversion needs the normalisation
+(canonical-head) theorem, and the `cong` cases need a context-conversion rule F0 does not
+have. Read that file before attempting the lemma.
 -/
 
 

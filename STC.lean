@@ -7,6 +7,7 @@ import STC.F0.Renaming
 import STC.F0.Substitution
 import STC.F0.WhRed
 import STC.F0.Obligations
+import STC.F0.Sorting
 import STC.F0.Sanity
 
 /-!
@@ -22,7 +23,10 @@ M0.1 of the design note `/workspace/wiz-notes/stc-m0-spec.md`:
 * `F0/Substitution`: the substitution lemma for F0 (the second law, proved), with
   context validity (`F0_ctx`) and the `ty`/`eq`/`red`/`wf` companions;
 * `F0/WhRed`: `WhRed` empty at propositions, modulo the sorting lemma `SortUniqueAt`;
-* `F0/Obligations`: `Sound(F0)`, `Con(F0)`, `WHN`, `DecConv`, `DecTC` as `Prop`s;
+* `F0/Sorting`: `SortUniqueAt` reduced to `TyUnique` + `ConvInjSort`, with the exact gap
+  (the `trans` case needs normalisation/confluence, not a rule) written down;
+* `F0/Obligations`: `Sound(F0)`, `Con(F0)`, `WHN`, `DecConv`, `DecTC` as `Prop`s, and the
+  sorting lemma's supporting statements (`TyUnique`, `ConvInj*`);
 * `F0/Sanity`: small derivations that witness that the rules are inhabited.
 
 Not a default Lake target; nothing imports it yet. The implementation note is

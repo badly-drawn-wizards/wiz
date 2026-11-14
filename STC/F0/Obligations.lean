@@ -14,6 +14,12 @@ metatheory will prove, not to prove it yet. This file is that list:
 
 The checker shape is `WizMeta/Checker.lean`'s: fuel-indexed, substitution-based, `M` a
 result or a fuel/error. The functions themselves are M1 work; nothing here is proved.
+
+The last section adds the statements the sorting lemma (`SortUniqueAt`, `F0/WhRed.lean`)
+reduces to: uniqueness of types up to conversion (`TyUnique`) and injectivity of the type
+formers at conversion (`ConvInjPi`, `ConvInjSigma`, `ConvInjEq`, `ConvInjEqTy`,
+`ConvInjEnum`, `ConvInjSort`). `F0/Sorting.lean` proves the reduction and records which
+rule-level cases block the statements themselves.
 -/
 
 
@@ -93,6 +99,61 @@ def DecConv (sg : Sig) : Prop :=
     (∀ n Γ t u A, conv n Γ t u A = .ok true → Derivable (F0 sg) (Γ ⊢ t ≡ u ∶ A)) ∧
     (∀ n Γ t u A, conv n Γ t u A = .ok false → ¬ Derivable (F0 sg) (Γ ⊢ t ≡ u ∶ A)) ∧
     (∀ Γ t u A, Derivable (F0 sg) (Γ ⊢ t ≡ u ∶ A) → ∃ n, conv n Γ t u A = .ok true)
+
+/-! ## The sorting lemma's supporting statements
+
+`SortUniqueAt` (`F0/WhRed.lean`) says a term has at most one sort. Its proof is
+"regularity plus uniqueness of types plus injectivity of the formers" (`stc-plan.md`,
+M1). The two statements below are that obligation, split at the joint the rules make
+visible; `F0/Sorting.lean` derives `SortUniqueAt` from them, and proves the parts of them
+that F0's rules do give. They are *statements to prove in M1*, like `SoundF0` above: the
+declarative rules have no inversion principle for `≡` and no normal-form theorem, so
+neither is derivable by rule induction (see `F0/Sorting.lean`, "the gap"). -/
+
+/-- **`TyUnique`**: two types of one term are convertible at one sort. This is
+"uniqueness of types up to conversion"; its proof is where the injectivity lemmas
+(`ConvInjPi`, …) are used, at the `conv` case, and those lemmas in turn are where `trans`
+and `irrel` block (`F0/Sorting.lean`, "the gap"). -/
+def TyUnique (sg : Sig) : Prop :=
+  ∀ Γ t A B, Derivable (F0 sg) (Γ ⊢ t ∶ A) → Derivable (F0 sg) (Γ ⊢ t ∶ B) →
+    ∃ s, Derivable (F0 sg) (Γ ⊢ A ≡ B ∶ .sort s)
+
+/-- **`ConvInjSort`**: two convertible sorts are the same sort. This is what the `irrel`
+case of `SortUniqueAt` needs: proof irrelevance must not identify a sort with anything. -/
+def ConvInjSort (sg : Sig) : Prop :=
+  ∀ Γ u v C, Derivable (F0 sg) (Γ ⊢ .sort u ≡ .sort v ∶ C) → u = v
+
+/-- **Injectivity of `Π`** at conversion: a convertible pair of `Π` types has convertible
+domains and codomains (the codomains under the binder). Together with the `Σ`, `Eq`,
+`EqTy` and `Enum` versions this is `stc-plan.md`'s "injectivity of Π, Σ, Eq/EqTy, Enum";
+it is what the `conv` case of `TyUnique` needs at an application. -/
+def ConvInjPi (sg : Sig) : Prop :=
+  ∀ Γ s₁ A₁ B₁ s₂ A₂ B₂ C, Derivable (F0 sg) (Γ ⊢ .pi s₁ A₁ B₁ ≡ .pi s₂ A₂ B₂ ∶ C) →
+    (∃ i, Derivable (F0 sg) (Γ ⊢ A₁ ≡ A₂ ∶ .sort i)) ∧
+    (∃ j, Derivable (F0 sg) ((A₁ :: Γ) ⊢ B₁ ≡ B₂ ∶ .sort j))
+
+/-- **Injectivity of `Σ`** at conversion. -/
+def ConvInjSigma (sg : Sig) : Prop :=
+  ∀ Γ s₁ A₁ B₁ s₂ A₂ B₂ C,
+    Derivable (F0 sg) (Γ ⊢ .sigma s₁ A₁ B₁ ≡ .sigma s₂ A₂ B₂ ∶ C) →
+    (∃ i, Derivable (F0 sg) (Γ ⊢ A₁ ≡ A₂ ∶ .sort i)) ∧
+    (∃ j, Derivable (F0 sg) ((A₁ :: Γ) ⊢ B₁ ≡ B₂ ∶ .sort j))
+
+/-- **Injectivity of `Eq`** at conversion: the index type and the two endpoints agree. -/
+def ConvInjEq (sg : Sig) : Prop :=
+  ∀ Γ A a b A' a' b' C, Derivable (F0 sg) (Γ ⊢ .eq A a b ≡ .eq A' a' b' ∶ C) →
+    (∃ s, Derivable (F0 sg) (Γ ⊢ A ≡ A' ∶ .sort s)) ∧
+    Derivable (F0 sg) (Γ ⊢ a ≡ a' ∶ A) ∧ Derivable (F0 sg) (Γ ⊢ b ≡ b' ∶ A)
+
+/-- **Injectivity of `EqTy`** at conversion. -/
+def ConvInjEqTy (sg : Sig) : Prop :=
+  ∀ Γ A B A' B' C, Derivable (F0 sg) (Γ ⊢ .eqTy A B ≡ .eqTy A' B' ∶ C) →
+    (∃ s, Derivable (F0 sg) (Γ ⊢ A ≡ A' ∶ .sort s)) ∧
+    (∃ s', Derivable (F0 sg) (Γ ⊢ B ≡ B' ∶ .sort s'))
+
+/-- **Injectivity of `Enum`** at conversion: the sizes agree (an enumeration is its size). -/
+def ConvInjEnum (sg : Sig) : Prop :=
+  ∀ Γ n m C, Derivable (F0 sg) (Γ ⊢ .enum n ≡ .enum m ∶ C) → n = m
 
 /-- A bidirectional typing checker: `tc fuel Γ t A` decides `Γ ⊢ t ⇐ A`. -/
 abbrev TCChecker := Nat → Ctx → Tm → Tm → M Bool
