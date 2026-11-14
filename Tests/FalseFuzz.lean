@@ -1,4 +1,4 @@
-import Tests.Prop
+import Tests.Groups.Prop
 
 /-!
 # A `False` fuzzer for the two kernels
@@ -666,7 +666,5 @@ def group : Group where
   cases := [
     { name := "closed Empty candidates for eight shapes; no hit, no verdict difference",
       run := fun _ => caseRun 20 20261114 }]
-
-def groups : List Group := [group]
 
 end Tests.FalseFuzz

@@ -15,7 +15,7 @@
    "select": [
     "=grail-selfhost"
   ]},
-  {"name": "backends", "select": [
+  {"name": "backends", "jobs": 4, "select": [
     "backend",
     "borrow",
     "=c",
@@ -28,7 +28,7 @@
     "serial",
     "sys"
   ]},
-  {"name": "library", "split": 5, "select": [
+  {"name": "library", "split": 5, "jobs": 4, "default": true, "select": [
     "builtins",
     "classes",
     "deriving",
@@ -78,7 +78,7 @@
   {"name": "audit", "select": [
     "=audit"
   ]},
-  {"name": "core",
+  {"name": "core", "jobs": 4,
    "inputs": ["selfhost/Kernel.wiz", "examples/*", "lib/Prelude.wiz", "lib/IO.wiz", "lib/Std.wiz",
               "lib/Eff.wiz", "lib/BitVec.wiz", "lib/Logic.wiz", "lib/Hdl/*"],
    "select": [
