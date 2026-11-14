@@ -831,6 +831,10 @@ structure RegionSink (R : Type) where
   /-- the source ranges of the commands that are not cacheable (commit 3's rerun path) -/
   rerun : IO.Ref (Array (Nat × Nat))
 
+/-- Remove `file` if it exists, ignoring errors (a pure cache never fails a run). -/
+def removeQuietly (file : System.FilePath) : IO Unit :=
+  try IO.FS.removeFile file catch _ => pure ()
+
 /-- The region store over the same layers as `Store.layered`: `get` searches the write
 directory first, then each read-only directory in order, and `put` writes only to the write
 directory (none: no writes). A read-only cache is never created, written or repaired, so a
@@ -839,18 +843,21 @@ directory is dropped (the next run rewrites it). -/
 def RegionStore.layered (write : Option System.FilePath) (reads : List System.FilePath)
     (binary : UInt64) (opts : RegionOptions) : IO (RegionStore R) := do
   let dirs := write.toList ++ reads
+  let inWrite (dir : System.FilePath) : Bool :=
+    some dir.toString == write.map (·.toString)
   pure {
     get := fun k => do
       for dir in dirs do
         let file := dir / regionFileName binary k
         if ← file.pathExists then
           match ← readRegionFile (R := R) file with
-          | some a => if a.fits binary k opts.rig then return some a
-            else if some dir.toString == write.map (·.toString) then
-              (try IO.FS.removeFile file catch _ => pure ())
+          | some a =>
+            if a.fits binary k opts.rig then
+              return some a
+            else if inWrite dir then
+              removeQuietly file
           | none =>
-            if some dir.toString == write.map (·.toString) then
-              (try IO.FS.removeFile file catch _ => pure ())
+            if inWrite dir then removeQuietly file
       pure none
     put := fun a => match write with
       | some dir => do
