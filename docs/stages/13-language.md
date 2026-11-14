@@ -709,8 +709,5 @@ not "expected unknown escape sequence …". Strings print with Lean's escapes (`
 a carriage return). Tests: `language` ("string escapes …"); `selfhost` ("the lexer in
 Wiz agrees with the Lean lexer", whose input now has every escape and a bad one).
 
-## Other sections of this stage
-
-Sections without a letter live in `13-language/`:
-
-* [`include_str`: a file's text, as a string literal](13-language/include-str.md)
+Sections of this stage without a letter live in `13-language/`:
+[`include_str`: a file's text, as a string literal](13-language/include-str.md).

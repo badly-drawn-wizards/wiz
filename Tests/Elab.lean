@@ -454,7 +454,8 @@ def ioFails (src : String) (fragment : String) : IO Unit := do
   unless (errs[0]!.splitOn fragment).length > 1 do throw (IO.userError s!"error does not mention '{fragment}':\n{errs[0]!}")
 
 /-- (9f) Elaborate `main.wiz` in a fresh directory holding `files` (modules under it are
-importable), resolving `link_c` files as `wiz` does, relative to each file. -/
+importable), resolving `link_c` files as `wiz` does, relative to each file, and
+(include_str) `include_str` files too. -/
 def elabTree (files : List (String × String)) : IO (CommandState ZeroOneMany × String × System.FilePath) := do
   let dir ← IO.FS.createTempDir
   for (p, text) in files do
