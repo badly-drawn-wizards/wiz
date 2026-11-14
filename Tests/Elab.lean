@@ -1895,6 +1895,32 @@ def selfhostOutput (file : String) : IO (Option String) := do
     unless out.exitCode == 0 do throw (IO.userError s!"the checker failed ({out.exitCode}): {out.stderr}")
     pure (some out.stdout)
 
+/-- (A14) The self-hosted checker's output for a set of module files: `input.wiz` is the
+root module, the others are modules (written beside it, subdirectories included). `args`
+go to the checker (`-I DIR`, `--key`). -/
+def selfhostModuleOutput (files : List (String × String)) (args : Array String := #[]) :
+    IO (Option String) := do
+  match ← selfhostChecker with
+  | .error e =>
+    if (e.splitOn "gmp.h").length > 1 then
+      skip "no toolchain"
+      pure none
+    else throw (IO.userError e)
+  | .ok exe =>
+    let dir ← IO.FS.createTempDir
+    for (name, text) in files do
+      if let some parent := (dir / name).parent then IO.FS.createDirAll parent
+      IO.FS.writeFile (dir / name) text
+    let out ← IO.Process.output { cmd := "timeout", args := #["120", exe.toString] ++ args, cwd := dir }
+    unless out.exitCode == 0 do throw (IO.userError s!"the checker failed ({out.exitCode}): {out.stderr}")
+    pure (some out.stdout)
+
+/-- (A14) Check a set of module files with the self-hosted checker and compare its output. -/
+def selfhostCheckModules (files : List (String × String)) (expected : String)
+    (args : Array String := #[]) : IO Unit := do
+  let some out ← selfhostModuleOutput files args | return
+  checkEq expected out
+
 /-- (D1) The compiled program `main` of `src` doesn't finish within `secs` seconds
 (memory capped: a loop in the kernel allocates). -/
 def ioDiverges (src : String) (secs : Nat := 5) : IO Unit := do
