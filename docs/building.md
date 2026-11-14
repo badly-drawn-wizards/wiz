@@ -215,7 +215,25 @@ cached between runs.
   win) and, for `wiz`, the packaged standard library as a module root after `./lib`. CI
   pushes it to the public Cachix cache `badlydrawnwizards` on pushes and on pull
   requests from this repository (which have the token). The tests still use Lake, whose
-  artifact cache rebuilds only what changed.
+  artifact cache rebuilds only what changed. `packages.tests` is the test driver
+  (`nix run .#tests -- --list`), from the same build, so building `wiz` builds it too.
+* **The packaged read-only elaboration cache.** The `wiz` package prewarms the
+  elaboration cache with **every** module of `lib/` (all 59 `.wiz` files today, in
+  sorted order: one `wiz check` of a one-line `import M` for each module `M`) during its
+  build and installs it at
+  `$out/share/wiz/cache`: the `.wizc` effects and the `.wizm` seen markers, with no
+  `bin/` memo and `a-w` permissions. Both wrappers (`wiz` and `grail`) add
+  `--cache-ro $out/share/wiz/cache` after their toolchain flags, so a packaged run
+  replays the standard library instead of elaborating it; a user's `--cache` (the
+  default `~/.cache/wiz`) is still written, so the store cache is only ever read.
+  Flags parse left to right: a later `--no-cache` turns both the packaged cache and the
+  write cache off, and a user's `--cache-ro DIR` appends another read-only layer
+  (`--cache-ro` is repeatable and searched in the order given). The entries are keyed
+  by the packaged binary's hash (its bytes) and by `lib`'s text and module names, so
+  the Nix build invalidates them automatically; there is no manual invalidation and a
+  stale store path is never reused (a new build gets new keys). The cache is
+  read-only in the store, so a miss (a user's own module) is elaborated and written to
+  the write cache as usual.
 * **The Wiz build caches.** Each test shard keeps what the suite builds from Wiz
   programs between runs: the elaboration cache (`lake test -- --cache ~/.cache/wiz …`),
   `.grail`, and the self-hosted checker and compiler that the tests compile
