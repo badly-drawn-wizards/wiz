@@ -51,6 +51,7 @@
     "phantom",
     "regions",
     "=scry-wil",
+    "=scry-ai",
     "=scry-taint",
     "=linear-case",
     "repr",
@@ -103,7 +104,6 @@
     "parser",
     "quantity",
     "rig",
-    "=scry-ai",
     "sized",
     "universes"
   ]}
