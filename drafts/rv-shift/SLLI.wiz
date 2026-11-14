@@ -8,7 +8,7 @@ import BitVecShift
 -- 4); the rest are the identity. `Bits.low_shift`/`Bits.low_low` turn the composition
 -- into `low 32 (x * 2^5)`, which is `BitVec.shl`'s normal form.
 --
--- Check: wiz check -I /workspace/wiz-rv/src drafts/rv-shift/SLLI.wiz
+-- Check: wiz check -I /workspace/wt/wiz-rv-rtl/src drafts/rv-shift/SLLI.wiz
 
 def Rs.stage1 (x : BitVec 32) : BitVec 32 := BitVec.shlStage 31 1 x
 def Rs.stage2 (x : BitVec 32) : BitVec 32 := BitVec.shlStage 30 2 x
