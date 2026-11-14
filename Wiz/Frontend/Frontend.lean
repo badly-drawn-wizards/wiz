@@ -264,6 +264,7 @@ where
             -- (a pristine state may still list imports, of modules without commands; the
             -- isolated state may come from another run: the loader and headers are ours)
             | some iso => if s.pristine then ({ iso with checked, loader := s.loader, cHeaders := s.cHeaders, cSources := s.cSources,
+                                                          includes := s.includes,
                                                           imported := iso.imported.filter (!s.imported.contains ·) ++ s.imported }, memo) else
                 go' src base srcChars 0 { s with imported := m :: s.imported, messages := #[], module := m } memo
             | none => go' src base srcChars 0 { s with imported := m :: s.imported, messages := #[], module := m } memo
