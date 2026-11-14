@@ -6205,6 +6205,30 @@ def main : IO Unit := IO.bind (MVar.new (A := Nat)) (fun r =>
       IO.println (Nat.toString (x + 1000000 * total (U32Array.push a (U32.ofNat 1)) (U64Map.insert m (U64.ofNat 1) 0)))))))
 "
 
+/-- Persistent maps and sets (`lib/PMap.wiz`): `examples/persistent.wiz` checks
+persistence, the BST invariant, sorted `toList`, round trips, a differential test against
+`U64Map`, the expected laws, structural sharing, sets and a generic key type, returning 0
+when all hold. `examples/persistent-bench.wiz` with no arguments prints the checksums of
+its three modes (the persistent tree, `U64Map`'s list model and the native `U64Map`),
+which must agree. -/
+def persistentGroup : Group where
+  name := "persistent"
+  exercise := "persistent data structures: lib/PMap.wiz (PMap, PSet), examples/persistent.wiz"
+  cases := [
+    { name := "the model (#eval) passes every check", run := fun _ => do
+        let src ← IO.FS.readFile "examples/persistent.wiz"
+        okLibs (src ++ "\n#eval main\n") ["0"] },
+    { name := "compiled (C) passes every check", run := fun _ => do
+        let src ← IO.FS.readFile "examples/persistent.wiz"
+        cRunLibs src "0" },
+    { name := "compiled (LLVM) passes every check", run := fun _ => do
+        let src ← IO.FS.readFile "examples/persistent.wiz"
+        cRunLibs src "0" (llvm := true) },
+    { name := "the benchmark: the tree, U64Map's model and the native U64Map agree", run := fun _ => do
+        let src ← IO.FS.readFile "examples/persistent-bench.wiz"
+        cRunLibs src "86477693 86477693 86477693\n" }
+  ]
+
 def nativesGroup : Group where
   name := "natives"
   exercise := "S0: lib/WordArray.wiz, lib/WordMap.wiz, lib/Intern.wiz (docs/stages/29-natives.md)"
@@ -9614,6 +9638,7 @@ def groups : List Group :=
   serialGroup ::
   sizedGroup ::
   stdGroup ::
+  persistentGroup ::
   nativesGroup ::
   structGroup ::
   sysGroup ::
