@@ -8641,6 +8641,25 @@ def hdlGroup : Group where
     { name := "Verilog: declarations before use (regs, wires, then the updates), sized initial values", run := fun _ =>
         okLibs (hdlVerilogSrc ++ "#eval v1\n")
           ["\"module counter(input clk, input [0:0] x, output [7:0] y);\\n  reg [7:0] r; initial r = 8'd250;\\n  wire [7:0] n3 = r + 8'd1;\\n  always @(posedge clk) r <= n3;\\n  assign y = r;\\nendmodule\\n\""] },
+    { name := "C1: clock domains: a clk2 circuit emits input clk2 and posedge clk2; Hw.clockOf drives a primitive", run := fun _ => do
+        -- `n2.clocks` is the named domain; its Verilog names the port and the always block
+        -- after it; an ODDR clocked by `Hw.clockOf d2` connects `.C(clk2)`.
+        okLibs ("import Hdl.Core\nimport Hdl.Prim\n" ++
+          "def u8 : HwTy := HwTy.bits 8\n" ++
+          "def c1 : Circuit (HwTy.bits 1) u8 := Circuit.mk u8 (BitVec.ofNat 8 250) (fun s u => Hw.pair (Hw.add s (Hw.lit 8 1)) s)\n" ++
+          "def d2 : ClockDomain := ClockDomain.named \"clk2\"\n" ++
+          "def n2 : Netlist := Circuit.netlistIn d2 \"dom2\" c1\n" ++
+          "#eval Hdl.map (fun (d : ClockDomain) => (d.name, d.periodPs)) n2.clocks\n" ++
+          "#eval Verilog.emit n2\n" ++
+          "def oddrP : Prim (HwTy.prod HwTy.clock (HwTy.prod HwTy.bit HwTy.bit)) HwTy.bit :=\n" ++
+          "  Prim.decl \"ODDR\" .nil (.cons \"C\" (.cons \"D1\" (.cons \"D2\" .nil))) (.cons \"Q\" .nil) .none\n" ++
+          "def primC : Circuit (HwTy.bits 8) HwTy.bit :=\n" ++
+          "  Circuit.mk (HwTy.bits 8) (BitVec.ofNat 8 0)\n" ++
+          "    (fun s x => Hw.pair s (Hw.prim oddrP (Hw.pair (Hw.clockOf d2) (Hw.pair (Hw.lit 1 0) (Hw.lit 1 1)))))\n" ++
+          "#eval Verilog.emit (Circuit.netlistIn d2 \"dom3\" primC)\n")
+          [".cons (\"clk2\", 0) .nil",
+           "\"module dom2(input clk2, input [0:0] x, output [7:0] y);\\n  reg [7:0] r; initial r = 8'd250;\\n  wire [7:0] n3 = r + 8'd1;\\n  always @(posedge clk2) r <= n3;\\n  assign y = r;\\nendmodule\\n\"",
+           "\"module dom3(input clk2, input [7:0] x, output [0:0] y);\\n  reg [7:0] r; initial r = 8'd0;\\n  wire [0:0] n6;\\n  ODDR u5 (.C(clk2), .D1(1'd0), .D2(1'd1), .Q(n6));\\n  always @(posedge clk2) r <= r;\\n  assign y = n6;\\nendmodule\\n\""] },
     { name := "S1: bundles, composition, reset and enable at random cycles; netlist simulation = values; names, test bench, PCF, VCD", run := fun _ => do
         -- t1–t6: (agreement of the netlist simulations with `Circuit.run`, the netlist size
         -- and the outputs) for the bundled counter, a delay chain, `par`, a feedback loop,

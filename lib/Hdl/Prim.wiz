@@ -152,7 +152,7 @@ def Hdl.concatMap {A : Type} (f : A → String) : List A → String
   | .cons x xs => f x <+> Hdl.concatMap f xs
 
 def Netlist.renamed (n : Netlist) (name : String) : Netlist :=
-  Netlist.mk name n.nodes n.regs n.inputs n.outputs n.hints n.mems n.errors
+  Netlist.mk name n.nodes n.regs n.inputs n.outputs n.hints n.mems n.clocks n.errors
 
 -- The ports of `clocks`/`signals` must be inputs of the circuit.
 def Clocking.missing (ins : List String) : List (String × String) → List String
