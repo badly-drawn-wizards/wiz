@@ -59,12 +59,36 @@ compiles C can peak at a few hundred MB).
 
 **Embedded files.** Lake does not track files a module reads with `include_str`, so each
 embedded file gets a library of its own whose `needs` names the file as an
-`input_file` (`lakefile.toml`): Lake mixes the file's content hash into that library's
+`input_file` (`lakefile.lean`): Lake mixes the file's content hash into that library's
 module traces, so editing the file rebuilds the embedding module and its importers, and
 the artifact cache never serves a stale one. The only one today is the C runtime:
 `runtime/wiz.c`, embedded by `runtime/WizRuntime.lean` (library `WizRuntime`, imported by
 `Wiz/Compiler/C.lean`). A new `include_str` goes in such a library too, not in `Wiz`
 (a `needs` on `Wiz` would rebuild all of it); `scripts/test-embed.sh` checks the setup (CI runs it in the build job).
+
+## Test layout
+
+Adding a test group touches no shared file:
+
+* **A new group is a new module** `Tests/Groups/<Name>.lean` that ends with
+  `builtin_initialize registerGroup myGroup` (`Tests/Harness.lean`). Lake generates
+  `Tests/Groups.lean` (an import of every file in `Tests/Groups/`; not committed, see the
+  `testGroups` target in `lakefile.lean`) and `Tests/Main.lean` imports it, so the group
+  is in the suite as soon as its file exists. Copy a small one (e.g.
+  `Tests/Groups/Struct.lean`) to start. Set `shard := "backends"` in the group to run it
+  in a shard other than the default (`library`), or add a selector to
+  `.github/test-shards.json`.
+* **New cases of an existing group** go in its module: the group `elab: structural
+  types` is `structGroup` in `Tests/Groups/Struct.lean` (`grep -l 'name := "…"'
+  Tests/Groups/*.lean` finds a group by name). A helper only one group uses lives in
+  that group's module; `Tests/Elab.lean` holds the helpers several groups use (`ok`,
+  `fails`, the library loaders, the self-hosted programs, …).
+* The older modules (`Tests/Grail.lean`, `Tests/Lint.lean`, …) still list their groups
+  (`groups` at their end, concatenated by `Tests/Main.lean`); a new group goes in
+  `Tests/Groups/` all the same.
+* `scripts/migrate-tests.py` made this layout from the old single `Tests/Elab.lean`,
+  deterministically; a branch that still edits the old file replays its changes with it
+  (AGENTS.md, "Test layout").
 
 ## What `wiz build` links
 
@@ -119,13 +143,11 @@ one is configured); the elan toolchain and `.lake` (including Lake's artifact ca
 cached between runs.
 
 * **The test suite** runs in parallel shards, one job per entry of `.github/test-shards.json` (each entry
-  is a list of `lake test` selectors). The build job checks that every group of
-  `Tests/Main.lean` is in exactly one shard (`scripts/ci.py check-shards`, which checks
-  every case after splitting), so **a new test group must be added to
-  `.github/test-shards.json`** (one selector per line, sorted within its shard) and to
-  the `groups` list at the end of its test module (`Tests/*.lean`, one group per line,
-  sorted; `Tests/Main.lean` only concatenates the modules' lists). Both are laid out so
-  that branches adding different groups don't touch the same lines. Each shard's job summary has a table of every case's time
+  is a list of `lake test` selectors). A group that no shard's selectors pick runs in
+  the shard its `Group.shard` names, else in the shard marked `"default": true`
+  (`library`), so **a new group needs no edit there**; the build job checks that every
+  case is in exactly one shard (`scripts/ci.py check-shards`, after splitting). See
+  "Test layout" below for where a new group goes. Each shard's job summary has a table of every case's time
   (three decimals), group subtotals and the shard's total; the `CI result` job sums the
   shards up (a table of shard totals and the grand total, and the 15 slowest cases) and
   uploads every case's time as the `test-timings` artifact.
