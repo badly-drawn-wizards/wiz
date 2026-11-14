@@ -51,8 +51,9 @@ directory, or a fixed path that no other case touches), and a group has no build
 directory in the work tree, no port, no environment variable of the driver and no cached
 program another case builds; no case
 may assert on wall time or on the machine's load (a `scaling`-style bound). A case that
-needs a shared program the first case builds (the self-hosted checker, `tower-wiz`) is
-not parallel-safe: N processes would build it N times. `--jobs-all` also parallelizes the
+needs a shared program the first case builds (the self-hosted checker, the Wiz `tower` in
+`.lake/build/tower-wiz`) is not parallel-safe: N processes would build it N times.
+`--jobs-all` also parallelizes the
 groups that did not opt in, for auditing one group's isolation — not for CI. On a 4-core
 runner `--jobs 4` is the useful setting; more jobs only add memory pressure (a case that
 compiles C can peak at a few hundred MB).

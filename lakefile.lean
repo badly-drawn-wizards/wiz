@@ -39,9 +39,6 @@ lean_lib WizMeta where
 
 lean_lib Grail
 
--- the toolchain manager (stage 26): it doesn't import Wiz
-lean_lib Tower
-
 -- The C runtime as text (`include_str`, runtime/WizRuntime.lean), a library of its own so
 -- that only it depends on runtime/wiz.c: `needs` mixes the file's hash into its modules'
 -- traces, so editing wiz.c rebuilds it and its importers (Lake doesn't track include_str)
@@ -60,9 +57,6 @@ lean_exe tests where
 @[default_target] lean_exe grail where
   root := `Grail.Main
   moreLinkObjs := #[`@/sockets, `@/proc]
-
-@[default_target] lean_exe tower where
-  root := `Tower.Main
 
 -- Unix-domain sockets for `wiz lsp --infoview` (Lean's library has none): a C file that
 -- the linker compiles into each executable
