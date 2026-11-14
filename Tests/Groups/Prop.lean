@@ -54,14 +54,14 @@ compile until it is added here (and to `ctorName`). -/
   | .var i => pure (.var i)
   | .const n ls => return .const n (← ls.mapM fl)
   | .sort l => return .sort (← fl l)
-  | .pi x bi q a b s => return .pi x bi (← f 0 q) (← f 0 a) (← f 1 b) ⟨← fl s.dom, ← fl s.cod⟩
+  | .pi x bi q a b σ => return .pi x bi (← f 0 q) (← f 0 a) (← f 1 b) (← σ.mapM fl)
   | .lam x b => return .lam x (← f 1 b)
   | .app a b => return .app (← f 0 a) (← f 0 b)
   | .letE x q t v b => return .letE x (← f 0 q) (← f 0 t) (← f 0 v) (← f 1 b)
   | .letUnit u b => return .letUnit (← f 0 u) (← f 0 b)
   | .ann a b => return .ann (← f 0 a) (← f 0 b)
   | .mvar i => pure (.mvar i)
-  | .sigma x q a b s => return .sigma x (← f 0 q) (← f 0 a) (← f 1 b) ⟨← fl s.dom, ← fl s.cod⟩
+  | .sigma x q a b σ => return .sigma x (← f 0 q) (← f 0 a) (← f 1 b) (← σ.mapM fl)
   | .pair a b => return .pair (← f 0 a) (← f 0 b)
   | .fst t => return .fst (← f 0 t)
   | .snd t => return .snd (← f 0 t)
@@ -143,14 +143,14 @@ partial def hashTm : Tm → UInt64
   | .var i => h 1 (hash i)
   | .const n ls => h 2 (h (hash n) (hash ls))
   | .sort l => h 3 (hash l)
-  | .pi x bi q a b s => h 4 (h (hash x) (h (biHash bi) (h (hashTm q) (h (hashTm a) (h (hashTm b) (lvHash s))))))
+  | .pi x bi q a b σ => h 4 (h (hash x) (h (biHash bi) (h (hashTm q) (h (hashTm a) (h (hashTm b) (sortsHash σ))))))
   | .lam x b => h 5 (h (hash x) (hashTm b))
   | .app a b => h 6 (h (hashTm a) (hashTm b))
   | .letE x q t v b => h 7 (h (hash x) (h (hashTm q) (h (hashTm t) (h (hashTm v) (hashTm b)))))
   | .letUnit u b => h 8 (h (hashTm u) (hashTm b))
   | .ann a b => h 9 (h (hashTm a) (hashTm b))
   | .mvar i => h 10 (hash i)
-  | .sigma x q a b s => h 11 (h (hash x) (h (hashTm q) (h (hashTm a) (h (hashTm b) (lvHash s)))))
+  | .sigma x q a b σ => h 11 (h (hash x) (h (hashTm q) (h (hashTm a) (h (hashTm b) (sortsHash σ)))))
   | .pair a b => h 12 (h (hashTm a) (hashTm b))
   | .fst t => h 13 (hashTm t)
   | .snd t => h 14 (hashTm t)
@@ -202,7 +202,7 @@ partial def hashTm : Tm → UInt64
     h 50 (h (hash l) (h (hashTm I) (h (hashTm D) (h (hashTm S) (h (hashTm st) (h (hashTm i) (hashTm s)))))))
   | .natLit n => h 51 (hash n)
   | .natOp op args => h 52 (h (hash op) (ha args))
-  | .ulift k l A => h 53 (h (hash k) (h (hash l) (hashTm A)))
+  | .ulift k l A => h 53 (h (lvHash k) (h (hash l) (hashTm A)))
   | .up a => h 54 (hashTm a)
   | .down t => h 55 (hashTm t)
   | .prf l t => h 56 (h (hash l) (hashTm t))
@@ -217,8 +217,10 @@ where
     | .default => 1
     | .implicit => 2
     | .instImplicit => 3
-  lvHash : BinderSorts → UInt64
-    | s => h (mixHash 0x5bd1e995 (hash s.dom)) (mixHash 0x5bd1e995 (hash s.cod))
+  lvHash (l : Level) : UInt64 := mixHash 0x5bd1e995 (hash l)
+  /-- A `Π`/`Σ`'s two component sorts. -/
+  sortsHash : BinderSorts → UInt64
+    | σ => h (lvHash σ.dom) (lvHash σ.cod)
   qHash : Q → UInt64
     | .zero => 1
     | .one => 2
@@ -276,11 +278,12 @@ where
   go (t : Tm) : StateM (List String) Unit := do
     let _ ← mapKidsM (fun l => do modify (l.params ++ ·); pure l) (fun _ c => do go c; pure c) t
 
-/-- Drop every optional sort annotation of a `Π`/`Σ`. -/
+/-- Drop the sorts of every `Π`/`Σ` (to holes: the sorts pass fills them again, from the
+components' types). -/
 partial def stripSorts (t : Tm) : Tm :=
   match mapKids id (fun _ c => stripSorts c) t with
-  | .pi x bi q a b _ => .pi x bi q a b ⟨.hole, .hole⟩
-  | .sigma x q a b _ => .sigma x q a b ⟨.hole, .hole⟩
+  | .pi x bi q a b _ => .pi x bi q a b .hole
+  | .sigma x q a b _ => .sigma x q a b .hole
   | t => t
 
 /-- Does the term mention a size, or a primitive of the sized fragment? -/
@@ -504,18 +507,22 @@ partial def toM : Tm → Option MTm
     | some (n + 1) => some (.univ n)
     | some 0 => some .prop
     | _ => none
-  | .pi _ _ q a b s => do
+  | .pi _ _ q a b σ => do
     let core ← match q with
       | .qlit .many => pure (MTm.pi (← toM a) (← toM b))
       | .qlit r => pure (MTm.piq r (← toM a) (← toM b))
       | _ => none
-    pure (MTm.sortedOf s core)
-  | .sigma _ q a b s => do
+    match σ.dom.toNat?, σ.cod.toNat? with
+    | some i, some j => pure (.sorted i j core)
+    | _, _ => pure core
+  | .sigma _ q a b σ => do
     let core ← match q with
       | .qlit .many => pure (MTm.sigma (← toM a) (← toM b))
       | .qlit r => pure (MTm.sigmaq r (← toM a) (← toM b))
       | _ => none
-    pure (MTm.sortedOf s core)
+    match σ.dom.toNat?, σ.cod.toNat? with
+    | some i, some j => pure (.sorted i j core)
+    | _, _ => pure core
   | .lam _ b => return .lam (← toM b)
   | .app f a => return .app (← toM f) (← toM a)
   | .letE _ (.qlit .many) t v b => return .letE (← toM t) (← toM v) (← toM b)
@@ -613,21 +620,16 @@ structure World where
   /-- the types of the gadgets, with their sorts: leaves of the type generator -/
   gadgetTys : List (Tm × Tm) := []
 
-/-- (mandatory sorts) Fill the `Π`/`Σ`/`ULift` sorts before the kernel sees the term,
-as every declaration's own sorts pass does. -/
-def fillSorts (g : Gl) (t : Tm) : Tm :=
-  if t.hasHole then (Mark.infer { globals := g, sortsOnly := true } t).1 else t
-
 /-- (P2) The term as the elaborator delivers it: the marking pass over `t`, and `none`
 when the pre-P2 kernel (the marker's requirement off) rejects it — the pass checks
 nothing, and a random term can be ill-typed. -/
 def markInf (g : Gl) (t : Tm) : Option Tm :=
-  -- (the first check tolerates sort holes: the term may be ill typed, and the sorts pass
-  -- is only run once it is known well typed)
+  -- (mandatory sorts: the pre-check tolerates the holes the generator writes, which the
+  -- pass then fills — `leanVerdict` does the same)
   let ctx : Ctx Q := { globals := { g with lazyProofs := false, sortHolesOk := true } }
   match infer (R := Q) ctx t with
   | .error _ => none
-  | .ok _ => some (Mark.infer { globals := g } (fillSorts g t)).1
+  | .ok _ => some (Mark.infer { globals := g } t).1
 
 def accepts (g : Gl) (t : Tm) : Bool :=
   match markInf g t with
@@ -666,7 +668,8 @@ def withGadgets (w : World) (ts : List Tm) : World :=
   { w with gadgets, gadgetTys := tys }
 
 def E2 : Tm := .enum (MTm.labels 2)
-def piW (a b : Tm) : Tm := .pi "x" .default (.qlit .many) a b ⟨.hole, .hole⟩
+def piW (a b : Tm) : Tm := .pi "x" .default (.qlit .many) a b .hole
+/-- A `Π` with its components' sorts written (`i` the domain's, `j` the codomain's). -/
 def piS (a b : Tm) (i j : Level) : Tm := .pi "x" .default (.qlit .many) a b ⟨i, j⟩
 
 /-- The world both kernels share: the globals of the differential test. -/
@@ -782,7 +785,8 @@ def lvlOf (cx : Cx) (A : Tm) : Option Level :=
   match memoFind memo k with
   | some a => a.level
   | none =>
-    let ctx0 := { cx.k with globals := { cx.g with lazyProofs := false } }
+    -- (mandatory sorts: the pre-check tolerates the generator's holes, as `markAt` does)
+    let ctx0 := { cx.k with globals := { cx.g with lazyProofs := false, sortHolesOk := true } }
     let l := match checkType ctx0 A with
       | .error _ => none
       | .ok _ => match checkType cx.k (Mark.type cx.k A).1 with
@@ -792,7 +796,9 @@ def lvlOf (cx : Cx) (A : Tm) : Option Level :=
 
 /-- (P2) `t : T` marked, or `none` when the pre-P2 kernel rejects it. -/
 def markAt (cx : Cx) (t T : Tm) : Option Tm :=
-  let ctx0 := { cx.k with globals := { cx.g with lazyProofs := false } }
+  -- (mandatory sorts: the generator writes `Π`/`Σ` holes, which the sorts pass fills; the
+  -- pre-check runs before it and must tolerate them, as `leanVerdict`/`markInf` do)
+  let ctx0 := { cx.k with globals := { cx.g with lazyProofs := false, sortHolesOk := true } }
   match Wiz.check ctx0 t (ctx0.eval T) with
   | .error _ => none
   | .ok _ => some (Mark.check cx.k t (cx.k.eval T))
@@ -853,8 +859,8 @@ partial def fitDepth (cx : Cx) (ty : Val Q) (vT : Val Q) (n : Nat) (lvl : Nat) (
 /-- The outermost binder's quantity literal changed (`ω ↦ 1 ↦ 0 ↦ ω`): two types that
 differ in a quantity only. -/
 def flipQ : Tm → Option Tm
-  | .pi x bi (.qlit q) a b s => some (.pi x bi (.qlit (nextQ q)) a b s)
-  | .sigma x (.qlit q) a b s => some (.sigma x (.qlit (nextQ q)) a b s)
+  | .pi x bi (.qlit q) a b σ => some (.pi x bi (.qlit (nextQ q)) a b σ)
+  | .sigma x (.qlit q) a b σ => some (.sigma x (.qlit (nextQ q)) a b σ)
   | _ => none
 where
   nextQ : Q → Q
@@ -876,18 +882,22 @@ computes it): the types the kernel builds itself (the methods of the eliminators
 none. -/
 partial def annotate (cx : Cx) (t : Tm) : Tm :=
   match t with
-  | .pi x bi q A B s =>
+  | .pi x bi q A B σ =>
     let A' := annotate cx A
     let cx' := cx.push A'
     let B' := annotate cx' B
-    let s' := BinderSorts.fill s (cx.lvlOf A') (cx'.lvlOf B')
-    .pi x bi q A' B' s'
-  | .sigma x q A B s =>
+    let σ' := match σ.hasHole, cx.lvlOf A', cx'.lvlOf B' with
+      | true, some i, some j => ⟨i, j⟩
+      | _, _, _ => σ
+    .pi x bi q A' B' σ'
+  | .sigma x q A B σ =>
     let A' := annotate cx A
     let cx' := cx.push A'
     let B' := annotate cx' B
-    let s' := BinderSorts.fill s (cx.lvlOf A') (cx'.lvlOf B')
-    .sigma x q A' B' s'
+    let σ' := match σ.hasHole, cx.lvlOf A', cx'.lvlOf B' with
+      | true, some i, some j => ⟨i, j⟩
+      | _, _, _ => σ
+    .sigma x q A' B' σ'
   | t => t
 
 mutual
@@ -921,8 +931,10 @@ partial def genTy (cx : Cx) (l : Level) (fuel : Nat) : Gen Tm := do
       let la := if !isPi && levelIs l 0 then 0 else la
       let A ← genTy cx la f
       let B ← genTy (cx.push A) l f
-      let sk : BinderSorts := if (← choose 2) == 0 || w.strict then ⟨la, l⟩ else ⟨.hole, .hole⟩
-      return if isPi then .pi "x" .default q A B sk else .sigma "x" q A B sk
+      -- (mandatory sorts: the components are the domain's level and the codomain's,
+      -- which the generator knows; a hole in the variants that leave it to the pass)
+      let σ : BinderSorts := if (← choose 2) == 0 || w.strict then ⟨la, l⟩ else .hole
+      return if isPi then .pi "x" .default q A B σ else .sigma "x" q A B σ
     alts := alts ++ #[binder true, binder false]
     if levelIs l 0 then
       alts := alts ++ #[
@@ -989,7 +1001,7 @@ partial def variantTy (cx : Cx) (l : Level) (A : Tm) (fuel : Nat) : Gen Tm := do
         if i != j && cx.convTy (cx.rawTy i) (cx.rawTy j) then alts := alts.push (pure (replT A i (.var j)))
       if cx.whq (cx.rawTy i) == .qty then
         alts := alts ++ #[pure (replT A i (.qlit .one)), pure (replT A i (.qlit .many))]
-  if hasBinder A then alts := alts.push (pure (if cx.w.strict then A else stripSorts A))
+  if hasBinder A then alts := alts.push (pure A)
   if let some B := flipQ A then alts := alts.push (pure B)
   if bumpLevels A != A then alts := alts.push (pure (bumpLevels A))
   pick alts (pure A)
@@ -1133,10 +1145,10 @@ partial def genTm (cx : Cx) (T : Tm) (fuel : Nat) : Gen Tm := do
           let q : Tm := if (← choose 3) == 1 then .qlit .zero else .qlit .many
           let body ← genTm (cx.push A) (liftT 1 T) f
           let arg ← genTm cx A f
-          return .app (.ann (.lam "x" body) (.pi "x" .default q A (liftT 1 T) ⟨.hole, .hole⟩)) arg),
+          return .app (.ann (.lam "x" body) (.pi "x" .default q A (liftT 1 T) .hole)) arg),
       -- a linear identity
       (do let t ← genTm cx T f
-          return .app (.ann (.lam "x" (.var 0)) (.pi "x" .default (.qlit .one) T (liftT 1 T) ⟨.hole, .hole⟩)) t),
+          return .app (.ann (.lam "x" (.var 0)) (.pi "x" .default (.qlit .one) T (liftT 1 T) .hole)) t),
       (do let A ← genTy cx 1 f
           let v ← genTm cx A f
           let body ← genTm (cx.push A) (liftT 1 T) f
@@ -1151,8 +1163,8 @@ partial def genTm (cx : Cx) (T : Tm) (fuel : Nat) : Gen Tm := do
           let t ← genTm cx T f
           let u ← genTm cx B f
           let q ← genQ cx
-          return if (← choose 2) == 0 then .fst (.ann (.pair t u) (.sigma "x" (.qlit .many) T (liftT 1 B) ⟨.hole, .hole⟩))
-            else .snd (.ann (.pair u t) (.sigma "x" q B (liftT 1 T) ⟨.hole, .hole⟩))),
+          return if (← choose 2) == 0 then .fst (.ann (.pair t u) (.sigma "x" (.qlit .many) T (liftT 1 B) .hole))
+            else .snd (.ann (.pair u t) (.sigma "x" q B (liftT 1 T) .hole))),
       (do let s ← genTm cx E2 f
           let a ← genTm cx T f
           let b ← genTm cx T f
@@ -1161,7 +1173,7 @@ partial def genTm (cx : Cx) (T : Tm) (fuel : Nat) : Gen Tm := do
       -- a pair taken apart
       (do let A ← genTy cx 1 f
           let B ← genTy cx 1 f
-          let S : Tm := .sigma "x" (.qlit .many) A (liftT 1 B) ⟨.hole, .hole⟩
+          let S : Tm := .sigma "x" (.qlit .many) A (liftT 1 B) .hole
           let p ← genTm cx S f
           let body ← genTm ((cx.push A).push (liftT 1 B)) (liftT 2 T) f
           return .split (.qlit .many) (mkInf p S) "z" (liftT 1 T) "x" "y" body)]
@@ -1205,7 +1217,7 @@ partial def genTm (cx : Cx) (T : Tm) (fuel : Nat) : Gen Tm := do
                 let x ← genTm cx dt f
                 return .ind ld I D l P m i x)
           if w.sizes then alts := alts ++ #[
-            (do let m ← genTm cx (quote g cx.k.lvl (scaseMethodTy g ld l vI vD vP .szInf (cx.k.eval (.qlit .many)))) f
+            (do let m ← genTm cx (quote g cx.k.lvl (scaseMethodTy g ld l vI vD vP .szInf (.qlit .many))) f
                 let x ← genTm cx dt f
                 return .scase ld (.qlit .many) I D l P m .szInf i x),
             (do let fn ← genTm cx (quote g cx.k.lvl (sfixFunTy g ld l vI vD vP .many)) f
@@ -1377,7 +1389,7 @@ def instJ (j : Jd) (k : Nat) (a : Tm) : Jd :=
 /-- Why the Lean kernel rejects a judgment. (In the pre-P2 mode, so that the marker's
 requirement does not hide the real error; the marks are the pass's job.) -/
 def why (g : Gl) (j : Jd) : String :=
-  match infer (R := Q) { globals := { g with lazyProofs := false } } (fillSorts g (close j.ctx j.t j.T)) with
+  match infer (R := Q) { globals := { g with lazyProofs := false } } (close j.ctx j.t j.T) with
   | .ok _ => "(accepted)"
   | .error e => (toString e).replace "\n" " "
 
@@ -1398,8 +1410,10 @@ def instancesFor (w : World) (ctx : Array Tm) (k : Nat) (iseed : Nat) : List Tm 
   | _ =>
     let cands := (([#[], #[1], #[2], #[0, 1]] : List (Array Nat)).map fun pre => (runGen pre none (genTm cx A 1)).1) ++
       [(runGen #[] (some (iseed + k)) (genTm cx A 2)).1] ++ (cx.varsOfTy A).toList
-    -- (annotated when it can only be checked: an instance lands in positions that infer)
-    (((cands.eraseDups.filter fun a => cx.chk a A).take 3).map (mkInf · A))
+    -- (annotated when it can only be checked: an instance lands in positions that infer;
+    -- mandatory sorts: the instance is the *marked* term — the sorts pass fills its
+    -- `Π`/`Σ` holes — so that substituting it keeps the judgment well typed)
+    ((cands.eraseDups.filterMap fun a => (cx.markAt a A).map fun a' => mkInf a' A).take 3)
 
 def subsFor (w : World) (ctx : Array Tm) (iseed : Nat) : List (Nat × Tm) :=
   (List.range ctx.size).flatMap fun k => (instancesFor w ctx k iseed).map (k, ·)
@@ -1443,8 +1457,8 @@ partial def countTm (g : Gl) (t : Tm) (applied : Nat := 0) : StateM (Array Strin
     | .qlit .many => add s!"feature {what} at quantity ω"
     | _ => add s!"feature {what} at a quantity variable"
   match t with
-  | .pi _ _ q _ _ s => do qf "Π" q; add (if !s.hasHole then "feature Π with its sort" else "feature Π without a sort")
-  | .sigma _ q _ _ s => do qf "Σ" q; add (if !s.hasHole then "feature Σ with its sort" else "feature Σ without a sort")
+  | .pi _ _ q _ _ σ => do qf "Π" q; add (if σ.hasHole then "feature Π with the pass's sorts" else "feature Π with its sorts")
+  | .sigma _ q _ _ σ => do qf "Σ" q; add (if σ.hasHole then "feature Σ with the pass's sorts" else "feature Σ with its sorts")
   | .letE _ q .. => qf "let" q
   | .darg q .. | .drec q .. | .dhrec q .. => qf "a description field" q
   | .const n _ =>
@@ -1492,7 +1506,9 @@ def rewrites (cx : Cx) (t T : Tm) : List (String × Bool × Bool × Tm) :=
     | .sigma .. => [("η for pairs", false, true, .pair (.fst ti) (.snd ti))]
     | .ulift .. => [("η for up", true, true, .up (.down ti))]
     | .sort _ =>
-      if stripSorts t != t && !cx.w.strict then [("no sort annotations", true, true, stripSorts t)] else []
+      -- (mandatory sorts: a `Π`/`Σ` without its sorts is a hole, which the kernel rejects,
+      -- so "the same term with the sorts dropped" is not a rewrite to a well-typed term)
+      []
     | _ => []
   let lifted : List (String × Bool × Bool × Tm) := match cx.lvlOf T with
     | some l => [("down (up t)", true, true, .down (.ann (.up t) (.ulift l l T)))]
@@ -1510,9 +1526,12 @@ def lawsOn (w : World) (what : String) (j : Jd) (extra : List Tm) (subs : List (
   let g := w.g
   let cx := mkCx w j.ctx
   let k := cx.k
-  -- (P2) the term as the elaborator delivers it: the marking pass's output. Everything
-  -- below (evaluation, conversion, substitution, the rewrites) is about that term.
-  let j : Jd := { j with t := cx.markKnown j.t j.T }
+  -- (P2, mandatory sorts) the judgment as the elaborator delivers it: the sorts pass
+  -- fills the type too (a hole in it is a kernel error, and it is quoted as `nT` and as
+  -- `close`'s codomain), then the marking pass the term. Everything below (evaluation,
+  -- conversion, substitution, the rewrites) is about that judgment.
+  let T := (Mark.infer cx.k j.T).1
+  let j : Jd := { j with T, t := cx.markKnown j.t T }
   let n := j.ctx.size
   let vT := k.eval j.T
   let vt := k.eval j.t
@@ -2230,12 +2249,15 @@ def wizCase (b : Budget) : IO Unit := do
     IO.println s!"      {mine.length} × {r} ({(mine.filter (·.2 != "error")).length} not `error`)"
   let kernel ← IO.FS.readFile "selfhost/Kernel.wiz"
   let verdict :=
-    "def rawVerdict (t : Tm) : String := match infer empty (sortsTy t) with\n  | .ok ty _ => show .nil 0 (quote 0 ty)\n  | .err _ => \"error\"\n" ++
-    "def markedVerdict (t : Tm) : String := rawVerdict (MR.tm (markInfer (TCtx.relevant empty) (sortsTy t)))\n" ++
+    "def rawVerdict (t : Tm) : String := match infer empty t with\n  | .ok ty _ => show .nil 0 (quote 0 ty)\n  | .err _ => \"error\"\n" ++
+    "def markedVerdict (t : Tm) : String := rawVerdict (MR.tm (markInfer (TCtx.relevant empty) t))\n" ++
     -- (P2) every query gets its proof markers first (the kernel requires them); a term the
     -- pre-P2 kernel rejects is marked only when that kernel accepts it, as in `Tests/Elab`
-    "def verdict (t : Tm) : String := match infer (TCtx.noMarkers empty) (sortsTy t) with\n  | .err _ => \"error\"\n  | .ok _ _ => markedVerdict (sortsTy t)\n" ++
-    "def markedNormalize (t : Tm) : String := show .nil 0 (quote 0 (eval .nil (MR.tm (markInfer (TCtx.relevant empty) (sortsTy t)))))\n"
+    -- (mandatory sorts: the queries are `MTm` terms, whose `Π`/`Σ` sorts are holes until
+    -- the sorts pass fills them; the kernel rejects a hole)
+    "def verdict (t : Tm) : String := let u := sortsInfer t; match infer (TCtx.noMarkers empty) u with\n  | .err _ => \"error\"\n  | .ok _ _ => markedVerdict u\n" ++
+    "def markedNormalize0 (t : Tm) : String := show .nil 0 (quote 0 (eval .nil (MR.tm (markInfer (TCtx.relevant empty) t))))\n" ++
+    "def markedNormalize (t : Tm) : String := markedNormalize0 (sortsInfer t)\n"
   let printAll := "def printAll : List String → IO Unit\n  | .nil => IO.pure ()\n  | .cons s ss => do\n    IO.println s;\n    printAll ss\n"
   let defs := String.join ((List.range qs.length).zip qs |>.map fun (i, (m, _, nf)) =>
     s!"def q{i} (u : Unit) : String := {if nf then "markedNormalize" else "verdict"} {m.toWiz}\n")
@@ -2290,7 +2312,7 @@ def group : Group where
   exercise := "property harness"
   cases := [
     { name := "substitution laws P1–P4, P6 in the Lean kernel (enumerated and sampled terms; coverage gate)",
-      run := fun _ => leanCase {} }]
+      run := fun _ => leanCase {}}]
 
 def kernelGroup : Group where
   name := "prop-kernels"

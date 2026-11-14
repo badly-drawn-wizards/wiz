@@ -403,22 +403,31 @@ def Decl.withSorts (g : Globals R) (d : Decl R) : Decl R :=
   let has := d.type.hasHole || (d.value.any (·.hasHole)) || (d.impl.any (·.hasHole)) ||
     (d.witness.any (·.hasHole))
   if !has then d else
-  let ctx : Ctx R := { globals := g, sortsOnly := true }
-  let type := (Mark.type ctx d.type).1
+  let type := (Mark.type { globals := g, sortsOnly := true } d.type).1
+  -- (a recursive definition mentions itself, and it is not in the globals yet — its own
+  -- check is what adds it. Give the pass the declaration (with its filled type and no
+  -- value: a neutral), so that a self-reference has a type and the traversal descends
+  -- into its arguments; before, it was an unknown constant and the whole application
+  -- was left as it was, holes in it and all.)
+  let ctx : Ctx R := { globals := g.insert { d with type, value := none, impl := none, witness := none },
+                       sortsOnly := true }
   let ty : Thunk (VTy R) := Thunk.mk fun _ => ctx.eval type
   let fill (t : Term R) : Term R :=
     if !t.hasHole then t else
-    match t with
-    -- (the shapes only an expected type can type: they need it, so it is evaluated)
-    | .lam .. | .pair .. | .tt | .up .. | .dret .. | .darg .. | .drec .. | .dhrec ..
-    | .con .. | .cocon .. => Mark.check ctx t ty.get
-    -- (where inference completes, it needs no type; the expected one, evaluated, only
-    -- where it does not: a term it could not type falls back to `check` as before)
-    | t => match Mark.infer ctx t with
+    -- (the shapes only an expected type can type need it, so it is evaluated; elsewhere
+    -- inference fills without it, and the expected type — evaluated — only where
+    -- inference does not manage: it returns no type, or leaves a hole. A hole must not
+    -- reach the kernel, and the pass is untrusted, so a second strategy costs nothing.)
+    let needsType : Bool := match t with
+      | .lam .. | .pair .. | .tt | .up .. | .dret .. | .darg .. | .drec .. | .dhrec ..
+      | .con .. | .cocon .. => true
+      | _ => false
+    if needsType then Mark.check ctx t ty.get else
+    let byInfer : Term R := match Mark.infer ctx t with
       | (t', some _) => t'
-      | (_, none) => Mark.check ctx t ty.get
-  { d with type, value := d.value.map fill, impl := d.impl.map fill,
-           witness := d.witness.map fill }
+      | (_, none) => t
+    if !byInfer.hasHole then byInfer else Mark.check ctx t ty.get
+  { d with type := type, value := d.value.map fill, impl := d.impl.map fill, witness := d.witness.map fill }
 
 /-- A declaration with its proof markers (and the `Π`/`Σ` sorts it fills on the way):
 what the kernel requires (`Check.lean`, "the proof marker"). -/

@@ -503,7 +503,7 @@ def tmSubst (ps : List String) (ls : List Lvl) : Tm → Tm
   | .darg q S D => .darg (tmSubst ps ls q) (tmSubst ps ls S) (tmSubst ps ls D)
   | .drec q j D => .drec (tmSubst ps ls q) (tmSubst ps ls j) (tmSubst ps ls D)
   | .dhrec q H j D => .dhrec (tmSubst ps ls q) (tmSubst ps ls H) (tmSubst ps ls j) (tmSubst ps ls D)
-  | .sigmaQ q i j a b => .sigmaQ (tmSubst ps ls q) i j (tmSubst ps ls a) (tmSubst ps ls b)
+  | .sigmaQ q i j a b => .sigmaQ (tmSubst ps ls q) (substLvl ps ls i) (substLvl ps ls j) (tmSubst ps ls a) (tmSubst ps ls b)
   | .delim v P a b c h D => .delim v (tmSubst ps ls P) (tmSubst ps ls a) (tmSubst ps ls b) (tmSubst ps ls c)
       (tmSubst ps ls h) (tmSubst ps ls D)
   | .mu l I D i => .mu l (tmSubst ps ls I) (tmSubst ps ls D) (tmSubst ps ls i)
@@ -715,7 +715,7 @@ def tmEq : Tm → Tm → Bool
   | .dhrec q a b c, .dhrec q' d e f => Bool.and (tmEq q q') (Bool.and (tmEq a d) (Bool.and (tmEq b e) (tmEq c f)))
   | .qty, .qty => .true
   | .qlit q, .qlit q' => qEq q q'
-  | .sigmaQ q _ _ a b, .sigmaQ q' _ _ c d => Bool.and (tmEq q q') (Bool.and (tmEq a c) (tmEq b d))
+  | .sigmaQ q i j a b, .sigmaQ q' i' j' c d => Bool.and (Bool.and (lvlEquiv i i') (lvlEquiv j j')) (Bool.and (tmEq q q') (Bool.and (tmEq a c) (tmEq b d)))
   | .delim v a b c d e f, .delim v' a' b' c' d' e' f' => Bool.and (Nat.beq v v') (Bool.and (tmEq a a')
       (Bool.and (tmEq b b') (Bool.and (tmEq c c') (Bool.and (tmEq d d') (Bool.and (tmEq e e') (tmEq f f'))))))
   | .mu l a b c, .mu l' d e f => Bool.and (Nat.beq l l') (Bool.and (tmEq a d) (Bool.and (tmEq b e) (tmEq c f)))
