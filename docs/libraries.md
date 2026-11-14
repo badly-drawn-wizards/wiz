@@ -781,4 +781,4 @@ rotations) are checked by the tests rather than proved. Examples: `examples/pers
 (the checks, group `persistent`) and `examples/persistent-bench.wiz`. The representation,
 complexity, persistence guarantees, benchmark plan and the migration path for replacing
 `U64Map` with a pure model plus a native backend are in
-`/workspace/wiz-notes/persistent-data.md`.
+`wiz-notes/persistent-data.md`.
