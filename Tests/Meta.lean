@@ -344,6 +344,7 @@ end Review
 open Review in
 def group : Group where
   name := "meta"
+  parallel := true
   exercise := "WizMeta (metatheory-plan M1c): the reference checker"
   cases := [
     { name := "the reference checker agrees with the Lean kernel on the differential test's terms (samples + 400 generated)", run := fun _ => do
