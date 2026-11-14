@@ -74,7 +74,8 @@ abbrev WhnfStrategy := Nat → Ctx → Tm → Tm → Option Tm
 
 /-- **`WHN`**: a deterministic weak-head strategy reaches a whnf at every term of a type
 that is not a proposition. At a proposition no proof is reduced (`WhRed` is empty there),
-so the hypothesis `s.NeverZero` is essential. -/
+so the hypothesis `s.NeverZero` is essential. The emptiness of `WhRed` at a proposition
+needs the sorting lemma `SortUniqueAt` (`F0/WhRed.lean`); see the note there. -/
 def WHN (sg : Sig) : Prop :=
   ∃ whnf : WhnfStrategy,
     (∀ n Γ A t u, whnf n Γ A t = some u → RedStar sg Γ A t u ∧ Whnf sg Γ u A) ∧
