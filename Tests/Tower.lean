@@ -396,6 +396,20 @@ def wizGroup : Group where
           args := #["test"] ++ (← toolchain).toFlags.toArray }
         if o.exitCode != 0 then throw (IO.userError s!"grail test in tower/:\n{o.stdout}{o.stderr}")
         checkHas o.stdout "1 passed, 0 failed" } ::
+    { name := "self install: the Wiz tower and shims in the home", run := fun _ => do
+        let impl ← wizImpl
+        let e ← mkEnv impl
+        tower e ["self", "install"]
+        let installed := e.binDir / "tower"
+        check (← installed.pathExists) "self install did not copy tower"
+        checkEq s!"tower {Wiz.version}" (← runOut installed.toString ["--version"])
+        let shim ← IO.FS.readFile (e.binDir / "wiz")
+        checkHas shim s!"'{installed}'"
+        checkHas shim s!"--home '{e.home}'"
+        -- the copy is this tower (it runs the same command), not the test driver
+        let (r, out, err) ← towerOut { e with self := [installed.toString] } ["settings"]
+        check (r == 0) s!"the installed tower failed: {err}{out}"
+        checkHas out "source auto" } ::
     cases wizImpl
 
 /-- This module's test groups, which `Tests/Main.lean` runs: one per line, in sorted
