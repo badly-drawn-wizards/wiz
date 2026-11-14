@@ -26,5 +26,7 @@ cp -R "$root/tower/." "$work/"
   HOME=${HOME:-"$work"} "$grail" build tower "$@"
 )
 mkdir -p "$(dirname "$out")"
+# (the checkout's .lake/build/bin/tower is read-only: a lake output)
+rm -f "$out"
 cp "$work/.grail/bin/tower" "$out"
 echo "$out"
