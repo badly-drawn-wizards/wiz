@@ -7,18 +7,6 @@ import C.Schema
 --   kinds, fields, supertypes | ofName/ofIdx round trip | _declarator's subtype count |
 --   function_definition's fields | body's allowed kinds |
 --   allows body compound_statement (true) / a body identifier (false).
-def countKinds (i : Nat) : Nat := match C.Kind.ofIdx i with
-  | .none => i
-  | .some _ => countKinds (Nat.succ i)
-
-def countFields (i : Nat) : Nat := match C.Field.ofIdx i with
-  | .none => i
-  | .some _ => countFields (Nat.succ i)
-
-def countSuper (i : Nat) : Nat := match C.Supertype.ofIdx i with
-  | .none => i
-  | .some _ => countSuper (Nat.succ i)
-
 def declSubs : List String := match C.Supertype.ofName "_declarator" with
   | .none => .nil
   | .some t => List.map C.Kind.name (C.Supertype.subtypes t)
@@ -38,8 +26,8 @@ def round : String := match C.Kind.ofName "call_expression" with
       | .false => "roundtrip mismatch"
 
 #eval String.intercalate " | " [
-  "kinds " ++ Nat.repr (countKinds 0) ++ ", fields " ++ Nat.repr (countFields 0)
-    ++ ", supertypes " ++ Nat.repr (countSuper 0),
+  "kinds " ++ Nat.repr C.kindCount ++ ", fields " ++ Nat.repr C.fieldCount
+    ++ ", supertypes " ++ Nat.repr C.supertypeCount,
   "roundtrip " ++ round,
   "_declarator " ++ Nat.repr (List.length declSubs) ++ ": "
     ++ String.intercalate "," declSubs,

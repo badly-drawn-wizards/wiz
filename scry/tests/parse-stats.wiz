@@ -1,8 +1,8 @@
 -- test: run
 import Scry.Cli
--- The small corpus: three JSON fact stores (a call, a loop, a broken function) and one
--- native scry-cst spill of the first. `parse --stats` reads the format from the first
--- line, so the JSON and native paths print the same shape; the last line is the total.
+-- `parse --stats` reads each format from the text: two C files parse now through the
+-- tree-sitter shim (one valid, one malformed: the recovery tree is reported), and a
+-- JSON fact store and a `scry-cst` spill print the same stats shape. The last line is
+-- the corpus total.
 def main : IO Unit := Scry.mainArgs ["parse", "--stats",
-  "corpus/hello.facts.json", "corpus/loop.facts.json", "corpus/broken.facts.json",
-  "corpus/hello.cst"]
+  "fixtures/hello.c", "fixtures/broken.c", "fixtures/demo.cst", "fixtures/demo.facts.json"]

@@ -267,9 +267,8 @@ ScryStore *scry_parse(const char *lang, const char *src, uint64_t len) {
   Builder b;
   memset(&b, 0, sizeof b);
   b.nf = 1; /* field id 0 is the empty name */
-  uint32_t field_count = ts_language_field_count(language);
   b.symbol_to_kind = (uint32_t *)malloc(65536 * sizeof(uint32_t));
-  b.field_to_id = (uint32_t *)calloc((size_t)field_count + 1, sizeof(uint32_t));
+  b.field_to_id = (uint32_t *)calloc(65536, sizeof(uint32_t));
   if (!b.symbol_to_kind || !b.field_to_id) {
     set_error(bad, "out of memory (intern maps)");
     free(b.symbol_to_kind); free(b.field_to_id);
@@ -365,10 +364,6 @@ ScryStore *scry_parse(const char *lang, const char *src, uint64_t len) {
   }
   return s;
 }
-
-/* The finalizer is plain `free` (the store is one block); this alias is kept for
-   callers that prefer a named function. */
-void scry_store_free(ScryStore *s) { free(s); }
 
 /* ---- Scalars ------------------------------------------------------------ */
 

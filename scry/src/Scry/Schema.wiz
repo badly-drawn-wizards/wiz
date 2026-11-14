@@ -14,7 +14,7 @@ prints it.
 * **Spans.** `Span.start` and `Span.stop` are byte offsets into the file (`stop` is
   exclusive). The store is UTF-8; S1's tree-sitter shim keeps the same convention.
 * **Columns, not objects.** This Wiz model is the *checkable* view. S1's native store
-  (`native/store.c`) keeps the same columns in C (a struct of arrays) and exposes them as
+  (`native/ts_shim.c`) keeps the same columns in C (a struct of arrays) and exposes them as
   `foreign_type`; the model here is what the loader tests against it.
 * **CSR adjacency.** `Adj` is compressed sparse row: node `i`'s outgoing arcs are
   `targets[offsets[i] .. offsets[i+1]]`, with parallel `labels`. `Facts.out` and

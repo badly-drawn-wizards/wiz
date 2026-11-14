@@ -22,12 +22,12 @@ def Scry.fail (m : String) : IO String :=
 def Scry.genOf (path : String) : IO String :=
   IO.bind (IO.readFile path) (fun text => match Json.parse text with
     | .error e => Scry.fail (path ++ ": invalid JSON: " ++ e)
-    | .ok j => match Scry.Codegen.generate j with
+    | .ok j => match Scry.generate j with
       | .error e => Scry.fail (path ++ ": " ++ e)
       | .ok out => IO.pure out)
 
 /-- The first difference, from line `i` on (`""` when the rest is equal). -/
-def Scry.firstDiffGo (i : Nat) : List String → List String → String
+partial def Scry.firstDiffGo (i : Nat) : List String → List String → String
   | .nil, .nil => ""
   | .cons x xt, .cons y yt => match String.eq x y with
     | .true => Scry.firstDiffGo (Nat.succ i) xt yt

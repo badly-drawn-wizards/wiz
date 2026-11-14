@@ -1,19 +1,18 @@
 import Word
 import Text
+import Functor
 import WordArray
 import Intern
-import Functor
-import Scry.Schema
 import Scry.Facts
 /-!
 # Scry.CstStore: the native CST columns
 
 A struct-of-arrays store for one source file's concrete syntax tree (design
 `wiz-notes/code-analysis-design.md` §3 and §4.1, layout notes
-`wiz-notes/scry-s1-prep.md`). It is the tree-sitter-free half of S1: a `Scry.Facts`
-(JSON-loaded or, later, produced by the shim) converts to columns with `ofFacts`, and
-`toFacts` converts back, so the Wiz model stays the checkable view and the native store
-is what scales.
+`wiz-notes/scry-s1-prep.md`). It is the model half of S1: a `Scry.Facts` (JSON-loaded,
+or produced by the tree-sitter shim through `Scry.Native.toCstStore`) converts to
+columns with `ofFacts`, and `toFacts` converts back, so the Wiz model stays the
+checkable view and the native store is what scales.
 
 ```
 CstStore
@@ -202,15 +201,12 @@ def Scry.CstStore.missingOf (s : Scry.CstStore) (i : Nat) : Bool :=
 
 -- ## Building from the model
 
-/-- The consecutive pairs of a CSR row: `(x0, x1), (x1, x2), …`. -/
-partial def Scry.rowPairsFrom (prev : Nat) (rest : List Nat) : List (Nat × Nat) :=
-  match rest with
-  | .nil => .nil
-  | .cons y more => .cons (prev, y) (Scry.rowPairsFrom y more)
-
-def Scry.rowPairs : List Nat → List (Nat × Nat)
-  | .nil => .nil
-  | .cons x rest => Scry.rowPairsFrom x rest
+/-- The consecutive pairs of a CSR row: `(x0, x1), (x1, x2), …`. By index (a
+structural recursion would have to pass the current element along, which Wiz's
+termination checker refuses). -/
+def Scry.rowPairs (row : List Nat) : List (Nat × Nat) :=
+  List.map (fun j => (List.getD row j 0, List.getD row (Nat.succ j) 0))
+    (Scry.range (Nat.sub (List.length row) 1))
 
 /-- The value for key `i` (0 when absent), with the +1 sentinel. -/
 def Scry.nextEntryOf (pairs : List (Nat × Nat)) (i : Nat) : Nat :=
@@ -402,38 +398,40 @@ def Scry.relRows (s : Scry.CstStore) (i : Nat) : List String :=
       ++ Nat.repr arity ++ "\t" ++ Nat.repr (List.length rows)]
     (List.map Scry.renderNats rows)
 
-/-- The strings of an intern table, by id. -/
-def Scry.CstStore.namesOf (t : InternTable) : List String :=
+/-- The names of an intern table, by id (for rendering the spill format). -/
+def Scry.tableNames (t : InternTable) : List String :=
   List.map (fun i => InternTable.lookup t (U32.ofNat i)) (Scry.range (InternTable.size t))
 
 /-- The store as the `scry-cst 1` text format (see the module doc). -/
 def Scry.CstStore.render (s : Scry.CstStore) : String :=
   let n := Scry.CstStore.nodeCount s;
+  let m := Scry.CstStore.edgeCount s;
   let r := Scry.CstStore.relationCount s;
-  let kindLines := List.map Scry.cstEnc (Scry.CstStore.namesOf s.kinds);
-  let fieldLines := List.map Scry.cstEnc (Scry.CstStore.namesOf s.fields);
-  let pathLines := List.map Scry.cstEnc (Scry.CstStore.namesOf s.paths);
+  let kindLines := List.map Scry.cstEnc (Scry.tableNames s.kinds);
+  let fieldLines := List.map Scry.cstEnc (Scry.tableNames s.fields);
+  let pathLines := List.map Scry.cstEnc (Scry.tableNames s.paths);
   let byteLines := List.map (fun i => Nat.repr (UIntN.toNat (U64Array.get s.bytes i)))
     (Scry.range (U64Array.size s.bytes));
   let nodeLines := List.map (Scry.nodeRow s) (Scry.range n);
-  let edgeLines := List.map (Scry.edgeRow s) (Scry.range (Scry.CstStore.edgeCount s));
+  let edgeLines := List.map (Scry.edgeRow s) (Scry.range m);
   let relLines := List.concat (List.map (Scry.relRows s) (Scry.range r));
-  Scry.cstJoinLines (List.concat [
-    ["scry-cst 1", "language\t" ++ Scry.cstEnc s.language,
-     "kinds\t" ++ Nat.repr (InternTable.size s.kinds)],
-    kindLines,
-    ["fields\t" ++ Nat.repr (InternTable.size s.fields)],
-    fieldLines,
-    ["paths\t" ++ Nat.repr (InternTable.size s.paths)],
-    pathLines,
-    ["bytes\t" ++ Nat.repr (U64Array.size s.bytes)],
-    byteLines,
-    ["nodes\t" ++ Nat.repr n],
-    nodeLines,
-    ["edges\t" ++ Nat.repr (Scry.CstStore.edgeCount s)],
-    edgeLines,
-    ["relations\t" ++ Nat.repr r],
-    relLines])
+  let l0 := ["scry-cst 1",
+    "language\t" ++ Scry.cstEnc s.language,
+    "kinds\t" ++ Nat.repr (InternTable.size s.kinds)];
+  let l1 := List.append l0 kindLines;
+  let l2 := List.append l1 ["fields\t" ++ Nat.repr (InternTable.size s.fields)];
+  let l3 := List.append l2 fieldLines;
+  let l4 := List.append l3 ["paths\t" ++ Nat.repr (InternTable.size s.paths)];
+  let l5 := List.append l4 pathLines;
+  let l6 := List.append l5 ["bytes\t" ++ Nat.repr (U64Array.size s.bytes)];
+  let l7 := List.append l6 byteLines;
+  let l8 := List.append l7 ["nodes\t" ++ Nat.repr n];
+  let l9 := List.append l8 nodeLines;
+  let l10 := List.append l9 ["edges\t" ++ Nat.repr m];
+  let l11 := List.append l10 edgeLines;
+  let l12 := List.append l11 ["relations\t" ++ Nat.repr r];
+  let l13 := List.append l12 relLines;
+  Scry.cstJoinLines l13
 
 -- ## Parsing the spill format
 
@@ -515,20 +513,11 @@ def Scry.parseRelTable (r : Nat) (ls : List String) :
 /-- The `i`th value of a row, 0 when short (the loader checks the length). -/
 def Scry.rowAt (row : List Nat) (i : Nat) : Nat := List.getD row i 0
 
-/-- The edge rows whose source is `i`, in edge order. -/
-def Scry.keepSrc (i : Nat) : List (List Nat) → List (List Nat)
-  | .nil => .nil
-  | .cons e es => match Nat.beq (Scry.rowAt e 0) i with
-    | .true => .cons e (Scry.keepSrc i es)
-    | .false => Scry.keepSrc i es
-
-/-- One CSR row: `rows`' edge rows whose source is `i`. -/
-def Scry.csrRow (rows : List (List Nat)) (i : Nat) : List (List Nat) :=
-  Scry.keepSrc i rows
-
-/-- The CSR of `n` nodes' outgoing rows, from `rows[src]`'s edge rows in edge order. -/
-def Scry.csrOfRows (n : Nat) (rows : List (List Nat)) : List (List (List Nat)) :=
-  List.map (Scry.csrRow rows) (Scry.range n)
+/-- The edges of `n` nodes, grouped by source (one list of edge rows per node, in edge
+order). -/
+def Scry.csrOfRows (n : Nat) (edgeRows : List (List Nat)) : List (List (List Nat)) :=
+  List.map (fun i => List.filter (fun e => Nat.beq (Scry.rowAt e 0) i) edgeRows)
+    (Scry.range n)
 
 /-- Build a store from parsed tables (the sections of `scry-cst 1`). The CSR and
 next-sibling columns are derived from the edge rows, so a spill file need not write
@@ -580,37 +569,67 @@ def Scry.CstStore.finish (language : String) (kindNames fieldNames paths : List 
           | .error e => .error ("scry-cst: " ++ e)
           | .ok _ => .ok store
 
-/-- A section header line: its count and the rest. -/
-def Scry.section (name : String) (rest : List String) : Except String (Nat × List String) :=
-  match rest with
-  | .nil => .error ("scry-cst: expected a " ++ name ++ " section")
-  | .cons h t => match Scry.countLine (name ++ "\t") h with
-    | .none => .error ("scry-cst: expected a " ++ name ++ " section")
-    | .some n => .ok (n, t)
-
 /-- Parse a `scry-cst 1` store. The sections are counted, so a truncated or reordered
 file is an error naming the section. -/
 def Scry.CstStore.ofText (text : String) : Except String Scry.CstStore :=
   match List.filter (fun l => Bool.not (String.isEmpty l)) (String.splitOn text "\n") with
   | .nil => .error "scry-cst: empty store"
-  | .cons magic rest => match String.eq magic "scry-cst 1" with
+  | .cons magic rest =>
+    match String.eq magic "scry-cst 1" with
     | .false => .error ("scry-cst: expected \"scry-cst 1\", got \"" ++ magic ++ "\"")
-    | .true => match rest with
-      | .nil => .error "scry-cst: truncated store (no language line)"
+    | .true =>
+      match rest with
+      | .nil => .error "scry-cst: truncated header"
       | .cons langLine rest1 =>
-        Except.bind (Scry.section "kinds" rest1) (fun ks =>
-        Except.bind (Scry.parseStrTable ks.1 ks.2) (fun pk =>
-        Except.bind (Scry.section "fields" pk.2) (fun fs =>
-        Except.bind (Scry.parseStrTable fs.1 fs.2) (fun pf =>
-        Except.bind (Scry.section "paths" pf.2) (fun ps =>
-        Except.bind (Scry.parseStrTable ps.1 ps.2) (fun pp =>
-        Except.bind (Scry.section "bytes" pp.2) (fun bs =>
-        Except.bind (Scry.parseNatTable bs.1 bs.2) (fun pb =>
-        Except.bind (Scry.section "nodes" pb.2) (fun ns =>
-        Except.bind (Scry.parseRecordTable ns.1 ns.2) (fun pn =>
-        Except.bind (Scry.section "edges" pn.2) (fun es =>
-        Except.bind (Scry.parseRecordTable es.1 es.2) (fun pe =>
-        Except.bind (Scry.section "relations" pe.2) (fun rs =>
-        Except.bind (Scry.parseRelTable rs.1 rs.2) (fun pr =>
-          Scry.CstStore.finish (Scry.cstDec (Scry.afterTab langLine))
-            pk.1 pf.1 pp.1 pb.1 ns.1 pn.1 es.1 pe.1 pr.1))))))))))))))
+        match rest1 with
+        | .nil => .error "scry-cst: truncated header"
+        | .cons kindsHdr rest2 =>
+          match Scry.countLine "kinds\t" kindsHdr with
+          | .none => .error "scry-cst: expected a kinds section"
+          | .some nk =>
+            Except.bind (Scry.parseStrTable nk rest2) (fun pk =>
+            match pk.2 with
+            | .nil => .error "scry-cst: truncated after kinds"
+            | .cons fieldsHdr rest3 =>
+              match Scry.countLine "fields\t" fieldsHdr with
+              | .none => .error "scry-cst: expected a fields section"
+              | .some nf =>
+                Except.bind (Scry.parseStrTable nf rest3) (fun pf =>
+                match pf.2 with
+                | .nil => .error "scry-cst: truncated after fields"
+                | .cons pathsHdr rest4 =>
+                  match Scry.countLine "paths\t" pathsHdr with
+                  | .none => .error "scry-cst: expected a paths section"
+                  | .some np =>
+                    Except.bind (Scry.parseStrTable np rest4) (fun pp =>
+                    match pp.2 with
+                    | .nil => .error "scry-cst: truncated after paths"
+                    | .cons bytesHdr rest5 =>
+                      match Scry.countLine "bytes\t" bytesHdr with
+                      | .none => .error "scry-cst: expected a bytes section"
+                      | .some nb =>
+                        Except.bind (Scry.parseNatTable nb rest5) (fun pb =>
+                        match pb.2 with
+                        | .nil => .error "scry-cst: truncated after bytes"
+                        | .cons nodesHdr rest6 =>
+                          match Scry.countLine "nodes\t" nodesHdr with
+                          | .none => .error "scry-cst: expected a nodes section"
+                          | .some nn =>
+                            Except.bind (Scry.parseRecordTable nn rest6) (fun pn =>
+                            match pn.2 with
+                            | .nil => .error "scry-cst: truncated after nodes"
+                            | .cons edgesHdr rest7 =>
+                              match Scry.countLine "edges\t" edgesHdr with
+                              | .none => .error "scry-cst: expected an edges section"
+                              | .some ne =>
+                                Except.bind (Scry.parseRecordTable ne rest7) (fun pe =>
+                                match pe.2 with
+                                | .nil => .error "scry-cst: truncated after edges"
+                                | .cons relsHdr rest8 =>
+                                  match Scry.countLine "relations\t" relsHdr with
+                                  | .none => .error "scry-cst: expected a relations section"
+                                  | .some nr =>
+                                    Except.bind (Scry.parseRelTable nr rest8) (fun pr =>
+                                    Scry.CstStore.finish
+                                      (Scry.cstDec (Scry.afterTab langLine)) pk.1 pf.1 pp.1
+                                      pb.1 nn pn.1 ne pe.1 pr.1)))))))

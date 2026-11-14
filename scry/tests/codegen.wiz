@@ -12,7 +12,7 @@ def main : IO Unit := do
   | .error e => do
     IO.println ("tree-sitter-c/node-types.json: invalid JSON: " ++ e);
     Process.exit 1
-  | .ok j => match Scry.Codegen.generate j with
+  | .ok j => match Scry.generate j with
     | .error e => do
       IO.println ("codegen: " ++ e);
       Process.exit 1
