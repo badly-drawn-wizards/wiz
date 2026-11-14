@@ -12,6 +12,7 @@ import Tests.Allocs
 import Tests.Scaling
 import Tests.Audit
 import Tests.Prop
+import Tests.FalseFuzz
 import Tests.Feral
 import Tests.Tower
 import Tests.Native
@@ -34,6 +35,7 @@ def groups : List Group :=
   ElabFix.groups ++
   Feral.groups ++
   Eval.groups ++
+  FalseFuzz.groups ++
   Grail.groups ++
   Lint.groups ++
   LSP.groups ++
@@ -236,6 +238,9 @@ def main (args : List String) : IO UInt32 := do
   -- the property harness's long run (`Tests/Prop.lean`)
   | "--prop-long" :: rest => Prop.longMain rest
   | "--prop-replay" :: rest => Prop.replayMain rest
+  | "--false-fuzz" :: rest => FalseFuzz.main rest
+  | "--false-fuzz-replay" :: rest => FalseFuzz.replayMain rest
+  | "--false-fuzz-check" :: rest => FalseFuzz.checkMain rest
   | ["--prop-no-sizes"] => Prop.flagMain true false
   | ["--prop-trace"] => Prop.flagMain false true
   | ["--probe-reuse"] => Scaling.probeReuse
