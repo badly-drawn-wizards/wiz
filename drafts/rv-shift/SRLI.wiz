@@ -4,111 +4,156 @@ import BitVecShift
 --
 -- A right stage is `concat (fill) (slice j (32-j) x)`, i.e. `BitVec.shrStage (32-j) j f`
 -- (lib/BitVecShift.wiz). For SRLI the fill is `Hw.and d.alt (bit 31 a)` with `d.alt = 0`,
--- so it is the zero word (`BitVec.and_zero_left`). `shamt = 9` turns on stages 1 and 8;
--- `BitVec.high_low`/`high_high`/`low_low_rev` put the composition in `BitVec.lshr`'s
--- normal form without a bound on the intermediate values.
+-- so its value is 0 — but the proofs keep the fill *value* `K = fill.toNat` symbolic (a
+-- stuck application, so every `Nat` step is a genuine equation rather than the `Nat`
+-- normalizer's `True`; see wiz-notes/rv-shift-lemmas.md §7). `shamt = 9` turns on stages
+-- 1 and 8; `Bits.high_low`/`high_high`/`high_add_pow_l`/`low_low_rev` put the
+-- composition in `BitVec.lshr`'s normal form, and the final `K = 0` steps eliminate the
+-- fill products by `transp` from their (definitionally true) zero instances.
 --
--- Check: wiz check -I /workspace/wiz-rv/src drafts/rv-shift/SRLI.wiz
---
--- WIP: this does NOT check yet. `Rs.rStage1_toNat` (and the stage chain) go through
--- `BitVec.shrStage_toNat`, whose zero fill leaves `Nat.add (Nat.mul 0 (2^m)) L` in the
--- term; the kernel's `Nat` normalizer makes that identity definitionally true (so it is
--- `True`-typed and cannot be an `Eq.trans` step), while conversion between it and `L`
--- does not terminate when `L` is a stuck application (`Bits.low`/`Bits.high`/`Nat.div`).
--- Reproducer and the workaround (a fill-*value*-parameterised stage, so the `Nat` is
--- symbolic until a `transp` along the fill = 0 equation): wiz-notes/rv-shift-lemmas.md §7.
+-- Check: wiz check --no-cache -I /workspace/wiz-rv/src drafts/rv-shift/SRLI.wiz
 
--- one right stage at width 32 (`m = 32 - j`)
-def Rs.rStage1 (f : BitVec 1) (x : BitVec 32) : BitVec 32 := BitVec.shrStage 31 1 f x
-def Rs.rStage2 (f : BitVec 2) (x : BitVec 32) : BitVec 32 := BitVec.shrStage 30 2 f x
-def Rs.rStage4 (f : BitVec 4) (x : BitVec 32) : BitVec 32 := BitVec.shrStage 28 4 f x
-def Rs.rStage8 (f : BitVec 8) (x : BitVec 32) : BitVec 32 := BitVec.shrStage 24 8 f x
-def Rs.rStage16 (f : BitVec 16) (x : BitVec 32) : BitVec 32 := BitVec.shrStage 16 16 f x
+-- the barrel's fill word at width `j`, by the fill bit `F`
+def Rs.fillW (j : Nat) (F : BitVec 1) : BitVec j :=
+  match BitVec.isTrue F with
+  | .true => BitVec.ofNat j (Nat.sub (Nat.pow 2 j) 1)
+  | .false => BitVec.ofNat j 0
+
+-- its value, with the fill bit symbolic
+def Rs.fillW_toNat (j : Nat) (F : BitVec 1) :
+    (Rs.fillW j F).toNat = Nat.mul F.toNat (Nat.sub (Nat.pow 2 j) 1) :=
+  Or.elim (UIntN.cases1 F)
+    (fun e => transp (fun t _ => (Rs.fillW j t).toNat
+        = Nat.mul t.toNat (Nat.sub (Nat.pow 2 j) 1)) (BitVec.toNat_zero j) (Eq.symm e))
+    (fun e => transp (fun t _ => (Rs.fillW j t).toNat
+        = Nat.mul t.toNat (Nat.sub (Nat.pow 2 j) 1))
+      (Eq.trans
+        (Eq.trans (Bits.wofNat_val j (Nat.sub (Nat.pow 2 j) 1))
+          (Bits.low_of_lt j (Nat.sub (Nat.pow 2 j) 1) (Word.pow_pred_lt j)))
+        (Eq.symm (Nat.one_mul (Nat.sub (Nat.pow 2 j) 1))))
+      (Eq.symm e))
+
+-- one stage at width 32 (`m = 32 - j`), the barrel's own shape
+def Rs.stage1 (F : BitVec 1) (x : BitVec 32) : BitVec 32 :=
+  BitVec.concat (Rs.fillW 1 F) (BitVec.ofNat 31 (Nat.shiftRight x.toNat 1))
+def Rs.stage8 (F : BitVec 1) (y : BitVec 32) : BitVec 32 :=
+  BitVec.concat (Rs.fillW 8 F) (BitVec.ofNat 24 (Nat.shiftRight y.toNat 8))
 
 -- the stage chain of `shamt = 9` (stages 1 and 8; 2, 4 and 16 are off)
-def Rs.srli9Stages (x : BitVec 32) : BitVec 32 :=
-  Rs.rStage8 (BitVec.ofNat 8 0) (Rs.rStage1 (BitVec.ofNat 1 0) x)
+def Rs.srli9Stages (F : BitVec 1) (x : BitVec 32) : BitVec 32 := Rs.stage8 F (Rs.stage1 F x)
 
-def Rs.rStage1_toNat (x : BitVec 32) :
-    (Rs.rStage1 (BitVec.ofNat 1 0) x).toNat = Bits.low 31 (Bits.high 1 x.toNat) :=
-  let L1 := Bits.low 31 (Bits.high 1 x.toNat);
-  let s1 : (Rs.rStage1 (BitVec.ofNat 1 0) x).toNat
-      = Bits.low 32 (Nat.add (Nat.mul (BitVec.ofNat 1 0).toNat (Nat.pow 2 31)) L1) :=
-    BitVec.shrStage_toNat 31 1 (BitVec.ofNat 1 0) x;
-  let s2 : (Rs.rStage1 (BitVec.ofNat 1 0) x).toNat
-      = Bits.low 32 (Nat.add (Nat.mul 0 (Nat.pow 2 31)) L1) :=
-    Bits.congr (fun t => Bits.low 32 (Nat.add (Nat.mul t (Nat.pow 2 31)) L1))
-      (BitVec.toNat_zero 1);
-  let s3 : (Rs.rStage1 (BitVec.ofNat 1 0) x).toNat = Bits.low 32 L1 :=
-    Bits.congr (fun t => Bits.low 32 t) (Bits.zero_mul_add (Nat.pow 2 31) L1);
-  Eq.trans s1 (Eq.trans s2 (Eq.trans s3 (Bits.low_low_rev 31 32 L1 rfl)))
+def Rs.barrel9_eq (F : BitVec 1) (x : BitVec 32) :
+    barrel (r := HwTy.El) (BitVec.ofNat 1 0) F (BitVec.ofNat 5 9) x = Rs.srli9Stages F x := rfl
 
-def Rs.srli9Stages_toNat (x : BitVec 32) :
-    (Rs.srli9Stages x).toNat = Bits.low 32 (Bits.high 9 x.toNat) :=
-  let y1 : BitVec 32 := Rs.rStage1 (BitVec.ofNat 1 0) x;
+def Rs.stage1_toNat (F : BitVec 1) (x : BitVec 32) :
+    (Rs.stage1 F x).toNat
+      = Bits.low 32 (Nat.add (Nat.mul (Nat.mul F.toNat (Nat.sub (Nat.pow 2 1) 1)) (Nat.pow 2 31))
+          (Bits.low 31 (Bits.high 1 x.toNat))) :=
+  Eq.trans
+    (BitVec.shrStage_toNat 31 1 (Rs.fillW 1 F) x)
+    (Bits.congr (fun t => Bits.low 32 (Nat.add (Nat.mul t (Nat.pow 2 31))
+        (Bits.low 31 (Bits.high 1 x.toNat)))) (Rs.fillW_toNat 1 F))
+
+def Rs.stage8_toNat (F : BitVec 1) (y : BitVec 32) :
+    (Rs.stage8 F y).toNat
+      = Bits.low 32 (Nat.add (Nat.mul (Nat.mul F.toNat (Nat.sub (Nat.pow 2 8) 1)) (Nat.pow 2 24))
+          (Bits.low 24 (Bits.high 8 y.toNat))) :=
+  Eq.trans
+    (BitVec.shrStage_toNat 24 8 (Rs.fillW 8 F) y)
+    (Bits.congr (fun t => Bits.low 32 (Nat.add (Nat.mul t (Nat.pow 2 24))
+        (Bits.low 24 (Bits.high 8 y.toNat)))) (Rs.fillW_toNat 8 F))
+
+def Rs.srli9Stages_toNat (F : BitVec 1) (x : BitVec 32) :
+    (Rs.srli9Stages F x).toNat
+      = Bits.low 32 (Nat.add (Nat.mul (Nat.mul F.toNat (Nat.sub (Nat.pow 2 8) 1)) (Nat.pow 2 24))
+          (Bits.low 24 (Nat.add (Nat.mul (Nat.mul F.toNat (Nat.sub (Nat.pow 2 1) 1)) (Nat.pow 2 23))
+            (Bits.low 23 (Bits.high 9 x.toNat))))) :=
+  let K := F.toNat;
+  let F1 := Nat.mul K (Nat.sub (Nat.pow 2 1) 1);
+  let F8 := Nat.mul K (Nat.sub (Nat.pow 2 8) 1);
   let L1 := Bits.low 31 (Bits.high 1 x.toNat);
   let H9 := Bits.high 9 x.toNat;
-  let h23 : Nat.lt H9 (Nat.pow 2 23) = .true :=
-    Bits.high_lt 9 23 x.toNat (UIntN.toNat_lt x);
-  let h32 : Nat.lt H9 (Nat.pow 2 32) = .true :=
-    Bits.high_lt_pow 9 32 x.toNat (UIntN.toNat_lt x);
-  let s1 : (Rs.srli9Stages x).toNat
-      = Bits.low 32 (Nat.add (Nat.mul (BitVec.ofNat 8 0).toNat (Nat.pow 2 24))
-          (Bits.low 24 (Bits.high 8 y1.toNat))) :=
-    BitVec.shrStage_toNat 24 8 (BitVec.ofNat 8 0) y1;
-  let s2 : (Rs.srli9Stages x).toNat
-      = Bits.low 32 (Nat.add (Nat.mul 0 (Nat.pow 2 24))
-          (Bits.low 24 (Bits.high 8 y1.toNat))) :=
-    Bits.congr (fun t => Bits.low 32 (Nat.add (Nat.mul t (Nat.pow 2 24))
-        (Bits.low 24 (Bits.high 8 y1.toNat)))) (BitVec.toNat_zero 8);
-  let s3 : (Rs.srli9Stages x).toNat
-      = Bits.low 32 (Bits.low 24 (Bits.high 8 y1.toNat)) :=
-    Bits.congr (fun t => Bits.low 32 t)
-      (Bits.zero_mul_add (Nat.pow 2 24) (Bits.low 24 (Bits.high 8 y1.toNat)));
-  let s4 : (Rs.srli9Stages x).toNat
-      = Bits.low 32 (Bits.low 24 (Bits.high 8 (Bits.low 31 (Bits.high 1 x.toNat)))) :=
-    Bits.congr (fun t => Bits.low 32 (Bits.low 24 (Bits.high 8 t))) (Rs.rStage1_toNat x);
-  let s5 : (Rs.srli9Stages x).toNat
-      = Bits.low 32 (Bits.low 24 (Bits.low 23 (Bits.high 8 (Bits.high 1 x.toNat)))) :=
-    Bits.congr (fun t => Bits.low 32 (Bits.low 24 t)) (Bits.high_low 8 23 (Bits.high 1 x.toNat));
-  let s6 : (Rs.srli9Stages x).toNat
-      = Bits.low 32 (Bits.low 24 (Bits.low 23 H9)) :=
-    Bits.congr (fun t => Bits.low 32 (Bits.low 24 (Bits.low 23 t))) (Bits.high_high 8 1 x.toNat);
-  let s7 : (Rs.srli9Stages x).toNat = Bits.low 32 (Bits.low 23 H9) :=
-    Bits.congr (fun t => Bits.low 32 t) (Bits.low_low_rev 23 24 H9 rfl);
-  let s8 : (Rs.srli9Stages x).toNat = Bits.low 23 H9 := Bits.low_low_rev 23 32 H9 rfl;
-  let s9 : (Rs.srli9Stages x).toNat = H9 := Bits.low_of_lt 23 H9 h23;
-  Eq.trans s1 (Eq.trans s2 (Eq.trans s3 (Eq.trans s4 (Eq.trans s5 (Eq.trans s6
-    (Eq.trans s7 (Eq.trans s8 (Eq.trans s9 (Eq.symm (Bits.low_of_lt 32 H9 h32))))))))))
+  Eq.trans
+    (Rs.stage8_toNat F (Rs.stage1 F x))
+    (Eq.trans
+      (Bits.congr (fun t => Bits.low 32 (Nat.add (Nat.mul F8 (Nat.pow 2 24))
+          (Bits.low 24 (Bits.high 8 t)))) (Rs.stage1_toNat F x))
+      (Eq.trans
+        (Bits.congr (fun t => Bits.low 32 (Nat.add (Nat.mul F8 (Nat.pow 2 24))
+            (Bits.low 24 t))) (Bits.high_low 8 24 (Nat.add (Nat.mul F1 (Nat.pow 2 31)) L1)))
+        (Eq.trans
+          (Bits.congr (fun t => Bits.low 32 (Nat.add (Nat.mul F8 (Nat.pow 2 24))
+              (Bits.low 24 (Bits.low 24 t)))) (Bits.high_add_pow_l 23 8 F1 L1))
+          (Eq.trans
+            (Bits.congr (fun t => Bits.low 32 (Nat.add (Nat.mul F8 (Nat.pow 2 24))
+                (Bits.low 24 (Bits.low 24 (Nat.add (Nat.mul F1 (Nat.pow 2 23)) t)))))
+              (Eq.trans
+                (Bits.high_low 8 23 (Bits.high 1 x.toNat))
+                (Bits.congr (fun t => Bits.low 23 t) (Bits.high_high 8 1 x.toNat))))
+            (Bits.congr (fun t => Bits.low 32 (Nat.add (Nat.mul F8 (Nat.pow 2 24)) t))
+              (Bits.low_low 24 24 (Nat.add (Nat.mul F1 (Nat.pow 2 23)) (Bits.low 23 H9)) rfl))))))
 
--- the same, with the barrel's own expression: `shamt = 9` turns stages 1 and 8 on, the
--- others reduce to `x`, and the zero fill makes each stage's fill word `0…0`
-def Rs.barrel9_toNat (x : BitVec 32) :
-    (barrel (r := HwTy.El) (BitVec.ofNat 1 0) (BitVec.ofNat 1 0) (BitVec.ofNat 5 9) x).toNat
+-- the SRLI leaf: fill = 0, so the two fill products vanish and the chain ends at `lshr`
+def Rs.srli9_toNat (x : BitVec 32) :
+    (barrel (r := HwTy.El) (BitVec.ofNat 1 0)
+        (BitVec.and (BitVec.ofNat 1 0) (BitVec.ofNat 1 (Nat.shiftRight x.toNat 31))) (BitVec.ofNat 5 9) x).toNat
       = Bits.low 32 (Bits.high 9 x.toNat) :=
-  Rs.srli9Stages_toNat x
+  let F := BitVec.and (BitVec.ofNat 1 0) (BitVec.ofNat 1 (Nat.shiftRight x.toNat 31));
+  let K := F.toNat;
+  let F1 := Nat.mul K (Nat.sub (Nat.pow 2 1) 1);
+  let F8 := Nat.mul K (Nat.sub (Nat.pow 2 8) 1);
+  let L1 := Bits.low 31 (Bits.high 1 x.toNat);
+  let H9 := Bits.high 9 x.toNat;
+  let hf : K = 0 := BitVec.and_zero_toNat (BitVec.ofNat 1 (Nat.shiftRight x.toNat 31));
+  let h23 : Nat.lt H9 (Nat.pow 2 23) = .true := Bits.high_lt 9 23 x.toNat (UIntN.toNat_lt x);
+  let h32 : Nat.lt H9 (Nat.pow 2 32) = .true := Bits.high_lt_pow 9 32 x.toNat (UIntN.toNat_lt x);
+  let hX : Nat.mul F8 (Nat.pow 2 24) = 0 :=
+    transp (fun t _ => Nat.mul (Nat.mul t (Nat.sub (Nat.pow 2 8) 1)) (Nat.pow 2 24) = 0)
+      rfl (Eq.symm hf);
+  let hZ : Nat.mul F1 (Nat.pow 2 23) = 0 :=
+    transp (fun t _ => Nat.mul (Nat.mul t (Nat.sub (Nat.pow 2 1) 1)) (Nat.pow 2 23) = 0)
+      rfl (Eq.symm hf);
+  let hY : Nat.add (Nat.mul F8 (Nat.pow 2 24))
+        (Bits.low 24 (Nat.add (Nat.mul F1 (Nat.pow 2 23)) (Bits.low 23 H9)))
+      = Bits.low 24 (Nat.add (Nat.mul F1 (Nat.pow 2 23)) (Bits.low 23 H9)) :=
+    transp (fun t _ => Nat.add t (Bits.low 24 (Nat.add (Nat.mul F1 (Nat.pow 2 23)) (Bits.low 23 H9)))
+        = Bits.low 24 (Nat.add (Nat.mul F1 (Nat.pow 2 23)) (Bits.low 23 H9))) rfl (Eq.symm hX);
+  let hW : Nat.add (Nat.mul F1 (Nat.pow 2 23)) (Bits.low 23 H9) = Bits.low 23 H9 :=
+    transp (fun t _ => Nat.add t (Bits.low 23 H9) = Bits.low 23 H9) rfl (Eq.symm hZ);
+  Eq.trans
+    (Bits.congr (fun w => w.toNat) (Rs.barrel9_eq F x))
+    (Eq.trans
+      (Rs.srli9Stages_toNat F x)
+      (Eq.trans
+        (Bits.congr (fun t => Bits.low 32 t) hY)
+        (Eq.trans
+          (Bits.congr (fun t => Bits.low 32 (Bits.low 24 t)) hW)
+          (Eq.trans
+            (Bits.low_low_rev 24 32 (Bits.low 23 H9) rfl)
+            (Eq.trans
+              (Bits.low_low_rev 23 24 H9 rfl)
+              (Eq.trans
+                (Bits.low_of_lt 23 H9 h23)
+                (Eq.symm (Bits.low_of_lt 32 H9 h32))))))))
 
-def Rs.barrel9 (x : BitVec 32) :
-    barrel (r := HwTy.El) (BitVec.ofNat 1 0) (BitVec.ofNat 1 0) (BitVec.ofNat 5 9) x
+def Rs.barrel9_srli (x : BitVec 32) :
+    barrel (r := HwTy.El) (BitVec.ofNat 1 0)
+        (BitVec.and (BitVec.ofNat 1 0) (BitVec.ofNat 1 (Nat.shiftRight x.toNat 31))) (BitVec.ofNat 5 9) x
       = BitVec.lshr x 9 :=
-  UIntN.ext (barrel (r := HwTy.El) (BitVec.ofNat 1 0) (BitVec.ofNat 1 0) (BitVec.ofNat 5 9) x)
+  UIntN.ext
+    (barrel (r := HwTy.El) (BitVec.ofNat 1 0)
+      (BitVec.and (BitVec.ofNat 1 0) (BitVec.ofNat 1 (Nat.shiftRight x.toNat 31))) (BitVec.ofNat 5 9) x)
     (BitVec.lshr x 9)
-    (Eq.trans (Rs.barrel9_toNat x) (Eq.symm (BitVec.lshr_low_toNat 32 9 x)))
+    (Eq.trans (Rs.srli9_toNat x) (Eq.symm (BitVec.lshr_low_toNat 32 9 x)))
 
--- The execute cycle, as `Pf.ok` needs it. The fill is `Hw.and d.alt (bit 31 a)`; for
--- SRLI `d.alt = 0`, and `Hw.and 0 b = 0` (`BitVec.and_zero_left`), so it is the zero word.
+-- The execute cycle, as `Pf.ok` needs it
 def Rs.srli_pc (a : Arch) : BitVec 32 := BitVec.add a.pc (BitVec.ofNat 32 4)
 
 def Rs.srli9_G (a : Arch) (m0 m1 m2 m3 : BitVec 9 → BitVec 8) (x1 x2 acc dv rm : BitVec 32)
     (cnt srd : BitVec 5) (sf3 : BitVec 3) (slo : BitVec 2) (sio : BitVec 1) :
     Pf.G a (Pf.w (A.srli 9 2 9)) 9 m0 m1 m2 m3 x1 x2 acc dv rm cnt srd sf3 slo sio
         (Pf.bytes (Pf.w (A.srli 9 2 9))) = Pf.spec a (Pf.w (A.srli 9 2 9)) 9 :=
-  Eq.congrArg (fun v => (Rs.srli_pc a, v))
-    (Eq.trans
-      (Eq.congrArg (fun f =>
-          barrel (r := HwTy.El) (BitVec.ofNat 1 0) f (BitVec.ofNat 5 9) (Pf.rf a (BitVec.ofNat 4 2)))
-        (BitVec.and_zero_left (Hw.slice 31 1 (Pf.rf a (BitVec.ofNat 4 2)))))
-      (Rs.barrel9 (Pf.rf a (BitVec.ofNat 4 2))))
+  Eq.congrArg (fun v => (Rs.srli_pc a, v)) (Rs.barrel9_srli (Pf.rf a (BitVec.ofNat 4 2)))
 
 def Rs.srli_ok : Pf.Claim (Pf.w (A.srli 9 2 9)) 9 :=
   fun a m0 m1 m2 m3 x1 x2 acc dv rm cnt srd sf3 slo sio h =>

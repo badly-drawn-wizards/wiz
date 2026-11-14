@@ -48,10 +48,14 @@ bits of a product); `Bits.low_shift` and `Bits.low_low` compose stages. The righ
 side has `BitVec.lshr_toNat`/`lshr_low_toNat` (`Bits.high`, the barrel's other normal
 form), the stage `BitVec.shrStage`/`shrStage_toNat`, and the stage-composition facts
 `Bits.low_of_lt`, `Bits.low_low_rev`, `Bits.high_high`, `Bits.high_lt`,
-`Bits.div_add_pow`/`high_add_pow`, `Bits.high_low`, plus the fill lemmas
-`BitVec.and_zero_left`/`and_one_left`. For arithmetic shifts `Bits.sub_one_high` is the
-ones-fill identity, and `Bits.pow_add`/`pow_sub`/`dec_mul`/`add_sub_one` are its `Nat`
-lemmas. This is the lemma set the RV core's barrel shifter proofs need (SLLI is closed;
+`Bits.div_add_pow`/`high_add_pow`, `Bits.high_add_pow_l`, `Bits.high_low`, plus the fill
+lemmas `BitVec.and_zero_left`/`and_one_left`/`and_zero_toNat` and the fill-by-value
+stage `BitVec.fillWord`/`shrStageK` (a symbolic fill value, so a probe's `Nat` steps are
+genuine equations). For arithmetic shifts `Bits.sub_one_high` and `Bits.sub_pow_ones` are
+the ones-fill identities, `Bits.pow_add`/`pow_sub`/`dec_mul`/`add_sub_one` are its `Nat`
+lemmas, and `IntN.shiftRight_pos_toNat`/`neg_toNat`/`neg_ones_toNat` read
+`IntN.shiftRight` (the `BitVec.ashr` of `lib/BitVec.wiz`) in `toNat` form; they use the
+now-public `IntN.shiftRightBody`/`IntN.below_toNat` of `lib/Word.wiz`. This is the lemma set the RV core's barrel shifter proofs need (SLLI is closed;
 the right-shift instruction probes are blocked on a conversion limitation, see
 `wiz-notes/rv-shift-lemmas.md`). It imports `BitBlast` for `Bits.low`, so it is a proof
 module, not part of `BitVec` itself.

@@ -233,6 +233,11 @@ private def UIntN.below {0 w : Nat} (x b : Nat) (0 h : Nat.lt b (Nat.pow 2 w) = 
 private def IntN.below {0 w : Nat} (x b : Nat) (0 h : Nat.lt b (Nat.pow 2 w) = .true) : IntN w :=
   IntN.mkR (Word.min x b) (Word.min_lt x b (Nat.pow 2 w) h)
 
+/-- `IntN.below`'s bits: `min x b`, which is how `IntN.shiftRight`'s value is read (the
+constructor is private, so this is where its `toNat` is stated). -/
+def IntN.below_toNat {0 w : Nat} (x b : Nat) (h : Nat.lt b (Nat.pow 2 w) = .true) :
+    (IntN.below x b h).toNat = Word.min x b := rfl
+
 /-- `n` mod `2^w` as a word: `UIntN.ofNat 8 300` is `44`. -/
 def UIntN.ofNat (w n : Nat) : UIntN w :=
   UIntN.below (Nat.mod n (Nat.pow 2 w)) (Nat.sub (Nat.pow 2 w) 1) (Word.pow_pred_lt w)
@@ -359,12 +364,27 @@ def IntN.lt {ω w : Nat} (a b : IntN w) : Bool := match IntN.isNeg a, IntN.isNeg
   | _, _ => Nat.lt a.toNat b.toNat
 /-- Signed `a ≤ b`. -/
 def IntN.le {ω w : Nat} (a b : IntN w) : Bool := Bool.not (IntN.lt b a)
-/-- Arithmetic shift right: copies of the sign bit come in. -/
-def IntN.shiftRight {ω w : Nat} (a : IntN w) (k : Nat) : IntN w := match IntN.isNeg a with
+/-- The body of `IntN.shiftRight`, by the sign (so proofs can split on it). -/
+def IntN.shiftRightBody (w k : Nat) (b : Bool) (a : IntN w) : IntN w := match b with
   | .true =>
     let n := IntN.not a;
     IntN.not (IntN.below (Nat.shiftRight n.toNat k) n.toNat n.toNat_lt)
   | .false => IntN.below (Nat.shiftRight a.toNat k) a.toNat a.toNat_lt
+/-- Arithmetic shift right: copies of the sign bit come in. -/
+def IntN.shiftRight {ω w : Nat} (a : IntN w) (k : Nat) : IntN w := IntN.shiftRightBody w k (IntN.isNeg a) a
+/-- `IntN.not`'s bits: `2^w - 1 - a` (the min is `Word.below`'s). -/
+def IntN.not_toNat {0 w : Nat} (a : IntN w) :
+    (IntN.not a).toNat = Word.min (Nat.sub (Nat.sub (Nat.pow 2 w) 1) a.toNat) (Nat.sub (Nat.pow 2 w) 1) := rfl
+/-- `IntN.shiftRightBody`'s value when the sign is clear: `a >> k` (the min is `below`'s). -/
+def IntN.shiftRightBody_pos_toNat (w k : Nat) (a : IntN w) :
+    (IntN.shiftRightBody w k .false a).toNat = Word.min (Nat.shiftRight a.toNat k) a.toNat := rfl
+/-- `IntN.shiftRightBody`'s value when the sign is set: `2^w - 1 - (n >> k)` with
+`n = ~a` (all three mins are `below`'s). -/
+def IntN.shiftRightBody_neg_toNat (w k : Nat) (a : IntN w) :
+    (IntN.shiftRightBody w k .true a).toNat
+      = Word.min (Nat.sub (Nat.sub (Nat.pow 2 w) 1)
+          (Word.min (Nat.shiftRight (IntN.not a).toNat k) (IntN.not a).toNat))
+        (Nat.sub (Nat.pow 2 w) 1) := rfl
 /-- To width `v`: sign-extending or truncating. -/
 def IntN.resize {ω w : Nat} (ω v : Nat) (a : IntN w) : IntN v := match IntN.isNeg a with
   | .true => IntN.ofNeg v (IntN.natAbs a)
