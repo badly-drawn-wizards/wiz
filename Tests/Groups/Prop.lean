@@ -2359,6 +2359,7 @@ def flagMain (noSizes trace : Bool) : IO UInt32 := do
     IO.eprintln e
     pure 1
 
-def groups : List Group := [group, kernelGroup]
+builtin_initialize registerGroup group
+builtin_initialize registerGroup kernelGroup
 
 end Tests.Prop

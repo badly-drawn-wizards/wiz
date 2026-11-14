@@ -27,7 +27,7 @@
     "serial",
     "sys"
   ]},
-  {"name": "library", "split": 5, "select": [
+  {"name": "library", "split": 5, "default": true, "select": [
     "builtins",
     "classes",
     "deriving",
