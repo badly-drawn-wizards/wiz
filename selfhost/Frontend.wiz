@@ -3099,6 +3099,14 @@ def splitCtors (gs : Globals) (mc : MatchCtx) (es : ES) (cx : Cx) (expected : Va
               | .true => .app indT (.eqRefl (IAt d) (shiftTm (d - L) 0 idx))
               | .false => indT;
             .ok (tApps withE (genVars d G (p + 1))) es'
+-- a constructor of another member of a mutual family (its index `res`, the tag of its
+-- member) at a member's closed index `idx`: ruled out whatever the clauses say (two
+-- members may have constructors of the same name, `.s`)
+def otherMember (idx res : Tm) : Bool := match idx with
+  | .tag _ i => match res with
+    | .tag _ j => Bool.not (Nat.beq i j)
+    | _ => .false
+  | _ => .false
 -- one branch per constructor, in the context of the method's binders (`cx3`, at depth
 -- `d + 3`): `fun rest ih => let fields; (let hyps; let cur✝; fun q =>) …`
 def branches (gs : Globals) (mc : MatchCtx) (es : ES) (cx3 : Cx) (expected : Val) (cols : List Col)
@@ -3126,9 +3134,10 @@ def branches (gs : Globals) (mc : MatchCtx) (es : ES) (cx3 : Cx) (expected : Val
     | .mk L _ _ _ => match fieldCols np L d0 args cx5 0 qs fs with
       | .mk wrap fcols recs cx6 =>
         let cls' := specialize T c k F impl col cls;
-        match Bool.and modeB (isNilCl cls') with
+        match Bool.and modeB (Bool.or (isNilCl cls') (otherMember idx res)) with
         | .true =>
-          -- no clause: ruled out by the index (else a missing case)
+          -- no clause (or another member's constructor): ruled out by the index (else a
+          -- missing case)
           match absurdBranch cx6 np L d d0 F args I idx res MBi with
           | .some body => match next es with
             | .ok bs es'' => .ok (.tcons (.lam (.lam (wrap body))) bs) es''

@@ -945,6 +945,7 @@ def panicProbe (mode site : String) : IO UInt32 := do
 
 def lintGroup : Group where
   name := "lint"
+  parallel := true
   exercise := "kernel hygiene (wiz-notes/kernel-lint.md)"
   cases := [
     { name := "Term: every constructor in the source has a witness row, with the source's children", run := fun _ => do

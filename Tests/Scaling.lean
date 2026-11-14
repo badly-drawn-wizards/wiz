@@ -511,6 +511,23 @@ def r : Nat := last (Circuit.run ram (Rep.go 50000 List.nil))
 #eval r
 "
 
+/-- hdl-temporal-uart's record-eq-eta repro (`wiz-notes/perf-repros/record-eq-eta`): a Mealy
+machine whose state is a record of 10 fields, and the one-line lemma about its next state. -/
+def recordEqEta : String :=
+  "import Prelude\ndef Trace (A : Type) : Type := Nat → A\ndef Mealy (S I O : Type) : Type := S → I → S × O\n" ++
+  "def Mealy.stateAt {S I O : Type} (m : Mealy S I O) (s0 : S) (xs : Trace I) : Nat → S\n  | .zero => s0\n" ++
+  "  | .succ t => (m (Mealy.stateAt m s0 xs t) (xs t)).1\n" ++
+  "structure Bits8 where\n  b0 : Bool\n  b1 : Bool\n  b2 : Bool\n  b3 : Bool\n  b4 : Bool\n  b5 : Bool\n  b6 : Bool\n  b7 : Bool\n" ++
+  "def Bits8.zero : Bits8 := Bits8.mk .false .false .false .false .false .false .false .false\n" ++
+  "def S : Type := Nat × (Nat × Bits8)\n" ++
+  "def spec (s : S) (x : Bool × Bits8) : S × Bool :=\n  (match Nat.beq s.1 0 with\n    | .true => (match x.1 with\n" ++
+  "      | .true => (10, (0, x.2))\n      | .false => (match Nat.beq s.2.1 3 with\n        | .true => (0, (0, s.2.2))\n" ++
+  "        | .false => (0, (Nat.succ s.2.1, s.2.2))))\n    | .false => (match Nat.beq s.2.1 3 with\n" ++
+  "      | .true => (Nat.sub s.1 1, (0, s.2.2))\n      | .false => (s.1, (Nat.succ s.2.1, s.2.2))),\n   s.2.2.b0)\n" ++
+  "def s0 : S := (0, (0, Bits8.zero))\n" ++
+  "def tSlow (xs : Trace (Bool × Bits8)) (t : Nat) :\n" ++
+  "    Mealy.stateAt spec s0 xs (Nat.succ t) = (spec (Mealy.stateAt spec s0 xs t) (xs t)).1 := rfl\n"
+
 def group : Group where
   name := "scaling"
   exercise := "super-linear time and memory"
@@ -747,7 +764,24 @@ def group : Group where
     -- a disabled memory write is the memory itself at values (`off` by `rfl`), so a RAM's
     -- value simulation is linear in cycles: 50000 cycles of reads after one write
     { name := "the HDL's value simulation of a memory is linear in cycles (a disabled write adds nothing)", run := fun _ =>
-        within 120 1500 fun _ => Tests.Elab.okLibs hdlMemScaleSrc ["42"] }]
+        within 120 1500 fun _ => Tests.Elab.okLibs hdlMemScaleSrc ["42"] },
+    -- (wiz-notes/wishful/conv-sigma-eta-neutral.md, hdl-temporal-uart's record-eq-eta) two
+    -- stuck values of a record type were η-split into their fields, each of which compared
+    -- the whole stuck value again (a Mealy machine with a 10-field state: 101 s before)
+    { name := "two stuck values of a record type are compared once, not field by field (record-eq-eta)", run := fun _ => do
+        let _ ← within 8 1000 fun _ => elabOk recordEqEta
+        pure () },
+    -- ... and η still decides when the neutral comparison fails: stuck values whose fields
+    -- are equal by η at `Unit`, a pair against a neutral, and an inequality
+    { name := "η at Σ and Π still applies when two neutrals differ", run := fun _ => do
+        let _ ← elabOk ("import Prelude\n" ++
+          "def u (h : Nat → Unit × Unit) (k : Unit × Unit → Type) (x : k (h 0)) : k (h 1) := x\n" ++
+          "def f (h : Nat → Nat → Unit) (k : (Nat → Unit) → Type) (x : k (h 0)) : k (h 1) := x\n" ++
+          "def p (q : Nat × Bool) (k : Nat × Bool → Type) (x : k q) : k (q.1, q.2) := x\n")
+        let loader ← Tests.Elab.preludeLoader
+        let st := runFrontend (R := ZeroOneMany)
+          "import Prelude\ndef w (h : Nat → Nat × Nat) (k : Nat × Nat → Type) (x : k (h 0)) : k (h 1) := x\n" { loader }
+        check (st.messages.any (·.severity == .error)) "two different stuck pairs were taken as equal" }]
 
 
 /-! ### A probe (`tests --probe-checker [unbox] [rc]`): where building the self-hosted checker spends

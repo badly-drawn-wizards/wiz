@@ -508,7 +508,7 @@ def Effect.ofSx? (x : Sx) : Option (Effect R) := do
 /-- The cache's version: change it whenever the format or the elaborator's output changes.
 (The directory store also mixes in the binary's own hash, `binaryId`, so two builds of
 wiz never share entries; the salt is for invalidating by hand.) -/
-def salt : UInt64 := hash "wiz-cache-30-sorts-prf"  -- 30: mandatory component sorts (Π/Σ carry ⟨dom, cod⟩, ULift its content's sort); 29: error codes, `Info.fix`, `scase` quantity (K1), `letUnit`; 20: proof markers (P2: declarations are stored marked); 15: doc comments and declaration kinds (11s); 14: a builtin key is registered once; 13: witnesses, assumed registrations, warnings; 12: private constructors, observations, fields (13b); 11: 22i, marked structure tails; 9: private names (13b); 8: Q4
+def salt : UInt64 := hash "wiz-cache-30-sorts-prf-mutual-ctor-names-error-codes-scase-qty-letUnit"  -- 30: mandatory component sorts (Π/Σ carry ⟨dom, cod⟩, ULift its content's sort), a mutual block's constructors named per type, error codes, `Info.fix`, `scase` quantity (K1), `letUnit`; 20: proof markers (P2: declarations are stored marked); 15: doc comments and declaration kinds (11s); 14: a builtin key is registered once; 13: witnesses, assumed registrations, warnings; 12: private constructors, observations, fields (13b); 11: 22i, marked structure tails; 9: private names (13b); 8: Q4
 
 /-! ## Keys and atomic writes (stage 23c)
 
@@ -698,7 +698,7 @@ where
               hits := hits + h
               let errs := inner.messages.filter (·.severity == .error)
               let msg : Msg := { info := cmd.info, severity := .error, code := ErrorCode.moduleErrors,
-                                 text := s!"module {m} has errors: {errs.toList.map (·.render src)}" }
+                                 text := importErrorsText m src errs }
               -- (a module's warnings, such as an unchecked `builtin`, are shown at the import)
               let warns := (inner.messages.filter (·.severity == .warning)).map fun w =>
                 ({ info := cmd.info, severity := .warning, text := s!"module {m}: {w.render src}" } : Msg)

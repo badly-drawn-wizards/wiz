@@ -2,7 +2,9 @@
   {"name": "selfhost", "split": 4, "heavy": true,
    "inputs": ["selfhost/*", "lib/Prelude.wiz", "lib/IO.wiz", "lib/Std.wiz"],
    "select": [
-    "=selfhost"
+    "=prop-kernels",
+    "=selfhost",
+    "=audit-kernels"
   ]},
   {"name": "hdl-verified", "heavy": true, "select": [
     "=hdl-verified"
@@ -12,7 +14,7 @@
    "select": [
     "=grail-selfhost"
   ]},
-  {"name": "backends", "select": [
+  {"name": "backends", "jobs": 4, "select": [
     "backend",
     "borrow",
     "=c",
@@ -25,7 +27,7 @@
     "serial",
     "sys"
   ]},
-  {"name": "library", "split": 3, "select": [
+  {"name": "library", "split": 5, "jobs": 4, "default": true, "select": [
     "builtins",
     "classes",
     "deriving",
@@ -66,7 +68,16 @@
     "vec",
     "word"
   ]},
-  {"name": "core",
+  {"name": "scaling", "split": 2, "select": [
+    "=scaling"
+  ]},
+  {"name": "prop", "select": [
+    "=prop"
+  ]},
+  {"name": "audit", "select": [
+    "=audit"
+  ]},
+  {"name": "core", "jobs": 4,
    "inputs": ["selfhost/Kernel.wiz", "examples/*", "lib/Prelude.wiz", "lib/IO.wiz", "lib/Std.wiz",
               "lib/Eff.wiz", "lib/BitVec.wiz", "lib/Logic.wiz", "lib/Hdl/*"],
    "select": [
@@ -87,7 +98,6 @@
     "parser",
     "quantity",
     "rig",
-    "scaling",
     "sized",
     "universes"
   ]}

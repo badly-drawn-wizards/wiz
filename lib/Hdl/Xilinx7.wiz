@@ -1,16 +1,20 @@
 import Hdl.Prim
--- Xilinx 7-series primitives (UG953, "7 Series FPGA Libraries Guide"), as `Prim`
--- declarations and typed functions over them. These are the cells a DDR3 PHY on an
--- Artix-7 needs (I/O buffers, ODDR, OSERDESE2, ISERDESE2, IDELAYE2, IDELAYCTRL, BUFG) and
--- PLLE2_BASE as a `Clocking`. openXC7 (yosys synth_xilinx, nextpnr-xilinx, Project X-Ray)
--- supports all of them.
---
--- Port lists name only the ports the functions use; the others are left unconnected,
--- which takes their defaults (UG953). Models: the buffers have one (a buffer is its
--- input; a bidirectional one reads back what it drives, and 0 while it is in
--- tristate); IDELAYCTRL is ready at once. The clocked cells (ODDR, the SERDES, IDELAYE2)
--- have none: their outputs change faster than the circuit's clock, so the checked
--- simulations refuse a circuit with one (`Circuit.runModelled`).
+/-!
+# Hdl.Xilinx7
+
+Xilinx 7-series primitives (UG953, "7 Series FPGA Libraries Guide"), as `Prim`
+declarations and typed functions over them. These are the cells a DDR3 PHY on an
+Artix-7 needs (I/O buffers, ODDR, OSERDESE2, ISERDESE2, IDELAYE2, IDELAYCTRL, BUFG) and
+PLLE2_BASE as a `Clocking`. openXC7 (yosys synth_xilinx, nextpnr-xilinx, Project X-Ray)
+supports all of them.
+
+Port lists name only the ports the functions use; the others are left unconnected,
+which takes their defaults (UG953). Models: the buffers have one (a buffer is its
+input; a bidirectional one reads back what it drives, and 0 while it is in
+tristate); IDELAYCTRL is ready at once. The clocked cells (ODDR, the SERDES, IDELAYE2)
+have none: their outputs change faster than the circuit's clock, so the checked
+simulations refuse a circuit with one (`Circuit.runModelled`).
+-/
 
 def X7.B1 : HwTy := HwTy.bits 1
 

@@ -55,6 +55,19 @@ def Msg.render (input : String) (m : Msg) : String :=
   let sev := match m.severity with | .error => "error" | .warning => "warning" | .info => "info"
   s!"{l + 1}:{c + 1}: {sev}: {m.text}"
 
+/-- The error at an `import` of a module `m` (text `src`) whose own check reported
+`errs`. Its own errors are listed once, one per line with their positions in `m`; an
+error that is itself about a module `m` imports (code `module-errors`) is passed on as
+it is, named through `m`, instead of nested inside another list. So a broken module's
+errors appear once in every importer, however deep. -/
+def importErrorsText (m : String) (src : String) (errs : Array Msg) : String :=
+  let own := errs.filter (·.code != "module-errors")
+  let through := errs.filter (·.code == "module-errors")
+  let ownTxt := if own.isEmpty then "" else
+    s!"module {m} has errors:" ++ String.join (own.toList.map fun e => s!"\n  {m}:{e.render src}")
+  let throughTxt := through.toList.map fun e => s!"imported module {m} → {e.text}"
+  "\n".intercalate ((if ownTxt.isEmpty then [] else [ownTxt]) ++ throughTxt)
+
 /-- (11s) A declaration, for documentation: what made it (`def`, `inductive`,
 `structure`, `class`, `instance`, `axiom`, `coinductive`, `extern`, …, or `constructor`
 and `field` for those of a type, `auxiliary` for what the elaborator adds for its own
@@ -141,6 +154,9 @@ structure CommandState (R : Type) where
   kindSites : Std.HashMap Name (SourceInfo × String) := {}
   catSites : Std.HashMap Name (SourceInfo × String) := {}
   nextScope : Nat := 1000000
+  /-- inside the commands a `mutual` block of inductive types expands to: its family's
+  constructors are named by their members (`A.c`, `ctorConst`) -/
+  mutualCtors : Bool := false
   /-- (`runFrontend`) the modules already checked in isolation, with their errors
   (`none` while one is being checked: an import cycle) -/
   checked : Std.HashMap Name (Option (Array Msg)) := {}
@@ -281,9 +297,11 @@ def renamePrivate (s : CommandState R) (added : Array Name) : CommandState R :=
   { s with globals := { g with decls, order, heights, instCache, builtins := rb g.builtins, assumed := rb g.assumed },
            builtins := rb s.builtins }
 
-/-- Metas are untyped, so `?A : Sort ?u` never learns `?u` from `?A := A`. For each
-recorded constraint whose hole is now solved, ask the kernel for the solution's type
-and unify its level. -/
+/-- Metas are untyped, so `?A : Sort ?u` never learns `?u` from `?A := A`, and
+`?C : Category.{?a, ?b}` never learns `?a`, `?b` from `?C := C`. For each recorded
+constraint (`addSortConstraint`, `addTypeConstraint`) whose hole is now solved, ask the
+kernel for the solution's type and unify it with the recorded one. A solved level may
+complete another constraint's solution, so this runs until nothing changes. -/
 def solveSortConstraints : ElabM R Unit := do
   finishInstances
   -- size metavariables nothing constrained default to `∞`
@@ -292,19 +310,45 @@ def solveSortConstraints : ElabM R Unit := do
     if e.desc == "a size" && e.solution.isNone then
       let sol : Term R := (List.range e.arity).foldl (fun t _ => .lam "_" t) .szInf
       solveMeta m (eval (← getGlobals) [] sol)
-  for _ in [0:2] do
-    for (ctx, t, l) in (← get).sortConstraints do
-      let t ← zonk ctx.lvl t
-      if !t.mvars.isEmpty then continue
-      -- (a holed sort is no error here: the term is not checked for acceptance, and the
-      -- sorts pass runs later, `Decl.withSorts`)
-      let kctx : Ctx R := { globals := { (← getGlobals) with sortHolesOk := true }, env := ctx.env, names := ctx.names,
-                            qtys := ctx.names.map fun _ => QPoly.const QuantitySyntax.explicitDefault,
-                            types := ctx.types, lvl := ctx.lvl, proof := true }
-      if let .ok (ty, _) := Wiz.infer kctx t then
-        if let .sort l' ← force ty then
-          try unifyLevel l l' catch e => throwAt ctx.info e.msg
-
+  -- the solution's type, if it is complete and the kernel can infer it (in the context of
+  -- the hole, with the variables' types as they are now: a binder's type may have been a
+  -- hole when it was bound)
+  let typeOf (ctx : LocalCtx R) (t : Term R) : ElabM R (Option (VTy R)) := do
+    let t ← zonk ctx.lvl t
+    if !t.mvars.isEmpty then return none
+    let kctx : Ctx R := { globals := { (← getGlobals) with sortHolesOk := true }, env := ctx.env, names := ctx.names,
+                          qtys := ctx.names.map fun _ => QPoly.const QuantitySyntax.explicitDefault,
+                          types := ctx.types, lvl := ctx.lvl, proof := true }
+    match Wiz.infer kctx t with
+    | .ok (ty, _) => return some ty
+    | .error _ =>
+      match Wiz.infer { kctx with types := (← zonkedTypes ctx).toList.reverse } t with
+      | .ok (ty, _) => return some ty
+      | .error _ => return none
+  let solvedLevels : ElabM R Nat := do
+    return (← get).levelMetas.foldl (fun n l => if l.isSome then n + 1 else n) 0
+  let mut doneSort : Std.HashSet Nat := {}
+  let mut doneType : Std.HashSet Nat := {}
+  repeat
+    let before ← solvedLevels
+    for (ctx, t, l) in (← get).sortConstraints, i in [0:(← get).sortConstraints.size] do
+      if doneSort.contains i then continue
+      let some ty ← typeOf ctx t | continue
+      doneSort := doneSort.insert i
+      if let .sort l' ← force ty then
+        try unifyLevel l l' catch e => throwAt ctx.info e.msg
+    for (ctx, t, A) in (← get).typeConstraints, i in [0:(← get).typeConstraints.size] do
+      if doneType.contains i then continue
+      -- (nothing left to learn once the type's levels are known)
+      let g ← getGlobals
+      unless (← zonk ctx.lvl (quote g ctx.lvl A)).hasLevelMVar do
+        doneType := doneType.insert i; continue
+      let some ty ← typeOf ctx t | continue
+      doneType := doneType.insert i
+      -- (a mismatch is the kernel's to report, with the whole declaration)
+      let s ← get
+      try unify ctx.lvl (← refreshVal ctx A) ty catch _ => set s
+    if (← solvedLevels) == before then break
 /-- Elaborate the header and body of a `def` or `axiom` to closed, zonked terms. -/
 def elabDeclTerms (binders : Array Syntax) (typeStx : Option Syntax) (valStx : Option Syntax)
     (info : SourceInfo) (declName? : Option (Name × SourceInfo × Nat) := none) :
@@ -512,7 +556,7 @@ where
     let Δb : List (B R) := Δargs.map fun a => fun d => a.lift (d - L)
     let mut methods' : List (Term R) := []
     for c in ctors, m in methods do
-      let cd ← g.find? (T ++ "." ++ c)
+      let cd ← g.find? (ctorConst T c)
       let fields := (peelPis cd.type).1.drop nΔ
       let F := fields.length
       let recs := fields.zipIdx.filterMap fun ((_, _, _, A), fi) => (recView T nΔ A).map (·, fi)
@@ -638,7 +682,7 @@ def elabDefEqns (name : Name) (cmd : Syntax) (isPartial : Bool := false) :
   let params := (tele.filterMap fun (x, bi, _, _) => if bi == .default then some x else none).toList
   let allParams := (tele.map fun (x, bi, _, _) => (x, bi == .default)).toList
   let rc : Option RecCtx := if recursive then some { fn := name, params, pos, cols := n, allParams, colExplicit } else none
-  if let some x := vars.head? then recordMatch cmd.info alts clauses ctx'.types[ctx'.lvl - x - 1]!
+  if let some x := vars.head? then recordMatch cmd.info alts clauses ctx'.types[ctx'.lvl - x - 1]! ctx'.types.reverse.toArray
   -- a recursive definition whose first argument has a size-variable size: compile to `sfix`
   if rc.isSome && pos == 0 then
     if let some x0 := vars.head? then
@@ -1122,8 +1166,11 @@ def builtinShapeError (g : Globals R) (key : Name) (d : Decl R) : Option String 
                                                  inductive A_B : A_B.Tag → Type (all constructors)
                                                  def A : Type := A_B A_B.Tag.A   (and B)
 
-Inside the constructors, `A` and `B` stand for their family members. Matching works on
-the family's constructors (at a concrete index). No parameters or indices yet. -/
+Inside the constructors, `A` and `B` stand for their family members. Each constructor
+is named by its member, `A.c` (the family's tag for it is `A.c`, `ctorConst`), so two
+members may have constructors of the same name, and `.c` at an expected `A` is `A.c`
+(`dotCtor?`). Matching works on the family's constructors (at a concrete index).
+`deriving C` on a member derives `C` for the family. No parameters or indices yet. -/
 partial def mutualInductive (tables : ParserTables) (defs : Array Syntax) : Except String (List Syntax) := do
   let names := defs.map fun d => ((d.getArg 1).getId?).getD "_"
   for d in defs do
@@ -1133,9 +1180,11 @@ partial def mutualInductive (tables : ParserTables) (defs : Array Syntax) : Exce
   let parse (text : String) : Except String Syntax := match parseCommand text.toList.toArray tables 0 with
     | .ok (stx, _) => pure stx
     | .error _ => throw s!"internal error: could not parse {text}"
-  let tagCmd ← parse s!"inductive {fam}.Tag where{String.join (names.toList.map (s!"\n  | " ++ ·))}"
+  -- the tags name the members without dots (a private member is `_private.M._0.A`)
+  let tagOf (n : Name) : Name := (Globals.privateBase n).replace "." "_"
+  let tagCmd ← parse s!"inductive {fam}.Tag where{String.join (names.toList.map (s!"\n  | " ++ tagOf ·))}"
   let famFrame ← parse s!"inductive {fam} : {fam}.Tag → Type where"
-  let substs ← names.mapM fun n => match parseCategory tables "term" s!"({fam} {fam}.Tag.{n})" with
+  let substs ← names.mapM fun n => match parseCategory tables "term" s!"({fam} {fam}.Tag.{tagOf n})" with
     | .ok t => pure (n, t)
     | .error e => throw s!"internal error: {e}"
   let rec subst (stx : Syntax) : Syntax := match stx with
@@ -1144,12 +1193,27 @@ partial def mutualInductive (tables : ParserTables) (defs : Array Syntax) : Exce
       | none => .node i "term.ident" #[.ident j n]
     | .node i k as => .node i k (as.map subst)
     | s => s
-  let ctors := (defs.zip substs).flatMap fun (d, (_, self)) => (d.getArg 6).args.map fun c =>
+  -- each constructor is named by its member (`A.c`, `ctorConst`): two members may have
+  -- constructors of the same name
+  let ctors := (defs.zip substs).flatMap fun (d, (n, self)) => (d.getArg 6).args.map fun c =>
     let c := subst c
+    let c := match c.getArg 2 with
+      | .ident i x => c.setArg 2 (.ident i (n ++ "." ++ x))
+      | _ => c
     if (c.getArg 4).args.isEmpty then c.setArg 4 (.node {} "null" #[.atom {} ":", self]) else c
   let famCmd := famFrame.setArg 6 (.node {} "null" ctors)
-  let typeDefs ← names.mapM fun n => parse s!"def {n} : Type := {fam} {fam}.Tag.{n}"
-  pure ([tagCmd, famCmd] ++ typeDefs.toList)
+  let typeDefs ← names.mapM fun n => parse s!"def {n} : Type := {fam} {fam}.Tag.{tagOf n}"
+  -- `deriving C` on a member: for the family (one instance `C (A_B t)` covers every
+  -- member, and its methods recurse through all of them)
+  let classes := defs.foldl (init := ([] : List Name)) fun acc d =>
+    let stx := d.child "deriving"
+    if stx.isNone then acc else
+    (stx.getArg 1).args.foldl (fun acc c => match c.getId? with
+      | some C => if acc.contains C then acc else acc ++ [C]
+      | none => acc) acc
+  let derivs ← if classes.isEmpty then pure [] else
+    pure [← parse s!"deriving instance {", ".intercalate classes} for {fam}"]
+  pure ([tagCmd, famCmd] ++ typeDefs.toList ++ derivs)
 
 /-- (13b) Does a `structure` command say `private mk ::` after `where`? -/
 def structurePrivateMk (cmd : Syntax) : Bool :=
@@ -1618,7 +1682,10 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     let defs := members.map (·.1)
     if cmd.isOfKind "command.mutual" && defs.all (·.isOfKind "command.inductive") then
       match mutualInductive s.tables defs with
-      | .ok cmds => for c in cmds do elabCommand c
+      | .ok cmds =>
+        modify fun s => { s with mutualCtors := true }
+        for c in cmds do elabCommand c
+        modify fun s => { s with mutualCtors := false }
       | .error e => report .error cmd.info e
       return
     let typeOf (d : Syntax) : Option Syntax :=
@@ -1891,8 +1958,14 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
     let name := ((cmd.child "name").getId?).getD "_"
     let levelParams := ((cmd.child "univParams").getArg 1).args.toList.filterMap Syntax.getId?
     let ctorSpec := if cmd.isOfKind "command.structure" then (cmd.child "where").child "ctor" else .missing
+    -- a constructor's name is one identifier (only a `mutual` block's are qualified by
+    -- their member, `ctorConst`)
+    let dotted := if cmd.isOfKind "command.inductive" && !s.mutualCtors then
+      (cmd.child "ctors").args.find? fun c => ((c.child "name").getId?).any (·.contains '.') else none
     if s.globals.contains name then
       reportDup (cmd.child "name").info name
+    else if let some c := dotted then
+      report .error (c.child "name").info s!"a constructor's name is a single identifier, not {((c.child "name").getId?).getD "_"}"
     else if cmd.isOfKind "command.structure" && !ctorSpec.args.isEmpty &&
         (ctorSpec.getArg 1).getId? != some "mk" then
       report .error (ctorSpec.getArg 1).info s!"a structure's constructor is `mk` (only `private mk ::` can be written)"
@@ -1956,7 +2029,7 @@ partial def elabCommand (cmd : Syntax) : StateM (CommandState R) Unit := do
           unless privCtors.isEmpty do
             -- (and the description: `μ T.desc i` written out is the type with nothing
             -- hidden; a raw `con` builds a value of it, and it lists the private fields)
-            let names := privCtors.map (name ++ "." ++ ·) ++ recNames ++ [name ++ ".desc"]
+            let names := privCtors.map (ctorConst name ·) ++ recNames ++ [name ++ ".desc"]
             g := { g with privates := names.foldl (fun m n => m.insert n s.module) g.privates,
                           opaques := g.opaques.insert name s.module }
         -- (13b) `private mk ::`: the constructor is private to this module, and elsewhere

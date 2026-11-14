@@ -1064,6 +1064,12 @@ partial def groundEqTy (g : Globals R) (d : Nat) (A B : Val R) : Bool :=
 ground. A tag field is compared branch by branch; any other field under an atom. -/
 partial def groundEqDesc (g : Globals R) (d : Nat) (I D D' : Val R) : Bool :=
   d < 64 &&
+  -- (one closed global at the same levels, `T.desc` of a type without parameters say: the
+  -- same description, without walking every constructor of it)
+  (match D, D' with
+    | .unfold n us #[] _, .unfold n' us' #[] _ =>
+      n == n' && us.length == us'.length && (us.zip us').all fun (u, u') => u.equiv u'
+    | _, _ => false) ||
   match whnf D, whnf D' with
   | .dret j, .dret j' => groundEqVal g d I j j'
   | .drec q j E, .drec q' j' E' =>

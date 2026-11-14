@@ -30,6 +30,7 @@ def libFiles : List (String × String) :=
 
 def modulesGroup : Group where
   name := "modules"
+  parallel := true
   exercise := "Stage 23b–c"
   cases := [
     { name := "dotted names are paths", run := fun _ => do
@@ -260,6 +261,20 @@ def modulesGroup : Group where
         let (s, _) := Query.elaborate (R := ZeroOneMany) {} src { init with termInfo := true }
         checkEq (some ("favA", "Color")) (Query.hoverAt s 21)
         check (s.messages.any fun m => (m.text.splitOn "inferred: Color").length > 1) s!"{s.messages.toList.map (·.text)}" },
+    { name := "a private mutual block's constructors are named per type (Ev.s, Od.s) and private (13b)", run := fun _ => do
+        let dir ← mkTree [("Q/M.wiz", "import Prelude\nimport Deriving\nprivate mutual\ninductive Ev where\n  | z\n  | s (o : Od)\n  deriving Repr\ninductive Od where\n  | s (e : Ev)\nend\nprivate mutual\ndef evN : Ev → Nat\n  | .z => 0\n  | Ev.s o => Nat.succ (odN o)\ndef odN : Od → Nat\n  | .s e => Nat.succ (evN e)\nend\ndef three : Nat := odN (Od.s (Ev.s (.s .z)))\ndef shown : String := Repr.repr (Ev.s (Od.s Ev.z))\n")]
+        let ms ← Module.loadAll ["lib", dir]
+        let init : CommandState ZeroOneMany := { trustedModule := Tests.libModule, loader := loaderOf ms }
+        let cache ← IO.FS.createTempDir
+        let paths (src : String) : IO (List (String × CommandState ZeroOneMany)) := do
+          let cold := (← Cache.elaborateCached cache src init 0).1
+          let warm := (← Cache.elaborateCached cache src init 0).1
+          pure [("cold cache", cold), ("warm cache", warm), ("no cache", ← Cache.elaborateUncached src init),
+                ("runFrontend", runFrontend src init)]
+        let src := "import Q.M\n#eval three\n#eval shown\ndef x := Od.s\n"
+        for (how, s) in ← paths src do
+          checkEq (how, "[2:1: info: 3, 3:1: info: \"Ev.s (Od.s Ev.z)\", 4:10: error: 'Od.s' is private to module Q.M]")
+            (how, toString (s.messages.toList.map (·.render src))) },
     { name := "trust is part of a module's cache key (22f)", run := fun _ => do
         -- the same Prelude, elaborated as untrusted and as trusted through one cache: the
         -- warnings and `#print axioms` of the one run are never replayed in the other
@@ -360,6 +375,17 @@ def toolchainGroup : Group where
         for f in files do
           let text ← IO.FS.readFile f
           check ((text.splitOn "getEnv \"WIZ").length == 1) s!"{f} reads a WIZ_ variable" },
+    { name := "wiz: an unknown flag or command is an error (exit 2), the usage alone is not", run := fun _ => do
+        let wiz := ".lake/build/bin/wiz"
+        let run (args : Array String) := IO.Process.output { cmd := wiz, args }
+        let o ← run #["--impl=elab", "check", "x.wiz"]
+        checkEq 2 o.exitCode
+        check ((o.stderr.splitOn "unknown flag: --impl=elab").length > 1) s!"stderr: {o.stderr}"
+        let o ← run #["frobnicate", "x.wiz"]
+        checkEq 2 o.exitCode
+        check ((o.stderr.splitOn "unknown command").length > 1) s!"stderr: {o.stderr}"
+        checkEq 0 (← run #[]).exitCode
+        checkEq 0 (← run #["--help"]).exitCode },
     { name := "flags fill the toolchain record", run := fun _ => do
         let (tc, rest) := ({} : Toolchain).parseFlags
           ["check", "--cc", "clang", "--cflags", "-I/a  -I/b", "-I", "src", "x.wiz", "--no-cache", "--llvm"]
@@ -874,9 +900,31 @@ def testRunnerGroup : Group where
         for bad in [#["--run", "driver-fixtures", "4"], #["--run", "driver-fixtures", "x"],
             #["--run", "no-such-group", "0"], #["--run", "driver-fixtures"],
             #["--run", "driver-fixtures", "0", "extra"], #["=no-such-group"], #["=testrunner#99"],
-            #["testrunner", "--no-such-flag"]] do
+            #["testrunner", "--no-such-flag"], #["=rig", "--jobs", "0"], #["=rig", "--jobs", "x"]] do
           let (code, out) ← run bad
-          check (code == 2) s!"tests {" ".intercalate bad.toList}: exit code {code}, not 2:\n{out}" }
+          check (code == 2) s!"tests {" ".intercalate bad.toList}: exit code {code}, not 2:\n{out}" },
+    -- `--jobs N` runs an opted-in group's cases in a bounded pool; its log is the
+    -- sequential log but for the times (the cases are printed in case order, whether
+    -- they finished in that order or not)
+    { name := "--jobs N: an opted-in group's log is the --jobs 1 log, in case order", run := fun _ => do
+        let self ← IO.appPath
+        let run (args : Array String) : IO (UInt32 × String) := do
+          let o ← IO.Process.output { cmd := self.toString, args }
+          pure (o.exitCode, o.stdout)
+        let (c1, one) ← run #["--jobs", "1", "=rig"]
+        let (c4, four) ← run #["--jobs", "4", "=rig"]
+        checkEq 0 c1; checkEq 0 c4
+        -- the case lines, without their times (`(0.032 s)`); the group total too
+        let norm (out : String) : List String :=
+          (out.splitOn "\n").filterMap fun l =>
+            if l.startsWith "── " then some l
+            else if l.startsWith "  ✓ " || l.startsWith "  ⊘ " || l.startsWith "  ✗ " then some (l.splitOn " (").head!
+            else none
+        check ((norm four).length > 4) "no cases in the --jobs 4 log"
+        checkEq (norm one) (norm four)
+        -- and the same result
+        checkEq (one.splitOn "\n" |>.find? (·.endsWith " passed, 0 failed"))
+          (four.splitOn "\n" |>.find? (·.endsWith " passed, 0 failed")) }
   ]
 
 /-- The language tour's examples (docs/tour.md): every file in `examples/tour/`, run as
