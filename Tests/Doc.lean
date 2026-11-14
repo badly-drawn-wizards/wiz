@@ -166,6 +166,7 @@ def libDocCase : Case :=
 
 def docGroup : Group where
   name := "doc"
+  parallel := true
   exercise := "Stage 11s (docs/stages/11-tooling.md)"
   cases := [
     { name := "doc comments are stored on declarations: commands, constructors, fields, mutual, private", run := fun _ => do
