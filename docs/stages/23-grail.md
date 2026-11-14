@@ -118,9 +118,12 @@ nothing; `grail test FILTER` runs the tests whose path contains it, and
 
 ## 23g: parallel jobs
 
-The jobs form an explicit graph (`Grail/Graph.lean`): `ir F` depends on `check F`, …,
-`link E` on `obj F`, a check on the checks of the package modules it imports, a `run` test
-on its executable, the bootstrap steps on each other. A node's key is computed when its
+The jobs form an explicit graph (`Grail/Graph.lean`): `obj F` depends on `build F`
+(which checks `F` and writes its IR and C in one job: as `check F`, `ir F` and `c F`
+it elaborated the same source three times), …, `link E` on `obj F`, a check on the
+checks of the package modules it imports, a `run` test on its executable, the bootstrap
+steps on each other. A file that is already checked as a package module keeps its
+`check F` job and its C comes from `ir F`. A node's key is computed when its
 dependencies are done (an object's key hashes the C its `c` node wrote); a node whose
 output exists is up to date, the rest are jobs in a ready queue. `grail build -j N`
 (default: the cores, at most 4) runs up to `N` jobs at a time, each as a separate process
