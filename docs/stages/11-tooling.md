@@ -22,6 +22,25 @@ too. Commands that change the grammar or the macros rerun (they are cheap).
 `Wiz/Cache.lean` serialises terms as S-expressions (quantities through the rig's
 literal syntax). Every example gives the same output from the cache as without it.
 
+The store is **layered**: one directory is read and written (`--cache DIR`), and any
+number of further directories are read-only (`--cache-ro DIR`, repeatable). A lookup
+tries the write cache first, then the read caches in the order given; a missing or
+unparsable entry falls through to the next, and only a full miss is a miss. `put` and
+the module marker (`markSeen`) write to the write cache alone; with no write cache the
+marker stays in memory for the run. `binaryId`'s memo (`bin/`) also belongs to the write
+cache: a `--cache-ro`-only run hashes the executable each time, so a read-only directory
+is never created or modified. `--no-cache` clears both lists; flags parse left to right,
+so a later `--cache`/`--cache-ro` adds one again. `grail` takes the same flags (and
+`cache-ro` as a build-file setting) and forwards them to its jobs.
+
+This is what a Nix package uses: its build ships a cache in `$out/share/wiz/cache`, and
+a run is `wiz check --cache-ro $out/share/wiz/cache FILE` (or with a writable
+`--cache ~/.cache/wiz` in front). For a run with *only* read caches, say
+`--no-cache --cache-ro DIR`: `wiz` and `grail` default to a writable cache, and
+`--no-cache` clears it (it clears both lists) before the later `--cache-ro` adds the
+read-only one back. The read-only cache is shared by every user of the store path and
+is never written.
+
 Next: finer dependencies (re-elaborate only what an edit affects, not everything
 after it).
 
