@@ -754,3 +754,14 @@ def v (p q : Q) : (p + q) * (p + q) ≈ p * p + 2 * p * q + q * q :=
 `lib/WordArray.wiz` (`U8Array`, `U32Array`, `U64Array`), `lib/WordMap.wiz` (`U64Map V`)
 and `lib/Intern.wiz` (`InternTable`, ids as `U32`): list models with laws, run natively
 in compiled code, updated in place when unique. See `docs/stages/29-natives.md`.
+
+## Scry: Wil, the analysis IR (`lib/Scry/Wil.wiz`)
+
+`import Scry.Wil` is the small three-address IR of the `scry` analyser
+(`wiz-notes/code-analysis-design.md` §4.3): typed variables and ids, `Rhs`/`Stmt`/
+`Term`, basic blocks and functions over a CompCert-style block memory, and a concrete,
+fuel-bounded small-step semantics (`Wil.step`, `Wil.Step`, `Wil.run`). `import
+Scry.WilExamples` is the hand-built golden corpus (`Scry.arith`, `Scry.sumTo`,
+`Scry.facLoop`, …) used by the `scry-wil` test group. There is no parser or C lowering
+in this stage; `wiz-notes/scry-wil.md` has the grammar, the rules, the corpus and what
+S2 still needs.
